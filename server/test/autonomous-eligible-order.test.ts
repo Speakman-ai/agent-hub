@@ -1,14 +1,14 @@
 /**
  * Verifies the ordering contract of `getEligibleAutonomousCards`.
  *
- * The autonomous dispatch loop must drain columns in this exact order:
- *   1. "To Do" top → bottom (position ASC)
- *   2. "Backlog" top → bottom (position ASC)
+ * The autonomous dispatch loop drains cards in this exact order:
+ *   1. Column: "To Do" before "Backlog".
+ *   2. Within a column: `priority` (urgent → high → medium → low → unset).
+ *   3. Within a column + priority: `position` ASC (visual top of the column).
  *
- * Priority is intentionally NOT a sort key — operators express priority by
- * dragging cards between columns / to the top of a column. Previously the SQL
- * sorted by priority first, which meant a "high" backlog card would jump ahead
- * of a "low" To Do card; that defeated manual ordering.
+ * Column ordering is the operator's coarsest signal: an urgent Backlog card
+ * never jumps ahead of a low-priority To Do card. Within a single column,
+ * higher-priority work drains first; `position` is only the tiebreaker.
  */
 import type supertest from 'supertest';
 import { getRequest, createProject, createCard } from './helpers.js';
@@ -68,37 +68,54 @@ async function makeCardInEpic(
 }
 
 describe('getEligibleAutonomousCards — ordering contract', () => {
-  it('returns To Do cards (position ASC) before Backlog cards (position ASC)', async () => {
+  it('drains all To Do cards before any Backlog cards, regardless of priority', async () => {
     const { projectId, epicId, todoCol, backlogCol } = await setup();
 
-    // `createCard` appends to a column — first insert → position 0, second → 1.
-    // Interleave insertions across the two columns to prove the SQL does the
-    // sorting rather than just returning insertion/rowid order.
-    //
-    // Priorities are intentionally inverted vs. desired ordering so that a
-    // priority-based sort would fail this test.
-    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-top', 'urgent'); // bk pos 0
-    await makeCardInEpic(projectId, epicId, todoCol, 'todo-top', 'low'); // todo pos 0
-    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-bottom', 'high'); // bk pos 1
-    await makeCardInEpic(projectId, epicId, todoCol, 'todo-bottom', 'low'); // todo pos 1
+    // Interleave insertions across the two columns to prove the SQL — not
+    // insertion order — does the sorting. Backlog cards are deliberately
+    // higher-priority than the To Do cards to prove the column gate wins.
+    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-urgent', 'urgent');
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low-1', 'low');
+    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-high', 'high');
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low-2', 'low');
 
     const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
     const titles = rows.map((r) => r.title);
 
-    expect(titles).toEqual(['todo-top', 'todo-bottom', 'backlog-top', 'backlog-bottom']);
-
-    // Sanity: an urgent Backlog card still loses to low-priority To Do cards.
-    expect(titles.indexOf('todo-bottom')).toBeLessThan(titles.indexOf('backlog-top'));
+    // Both To Do cards come first (column gate), then both Backlog cards
+    // (sorted urgent → high within Backlog).
+    expect(titles).toEqual(['todo-low-1', 'todo-low-2', 'backlog-urgent', 'backlog-high']);
+    expect(titles.indexOf('todo-low-2')).toBeLessThan(titles.indexOf('backlog-urgent'));
   });
 
-  it('ignores priority entirely when both cards are in the same column', async () => {
+  it('sorts by priority within a single column (urgent → high → medium → low)', async () => {
     const { projectId, epicId, todoCol } = await setup();
 
-    // First inserted → position 0 → should come first even though it's low.
-    await makeCardInEpic(projectId, epicId, todoCol, 'first-low', 'low');
-    await makeCardInEpic(projectId, epicId, todoCol, 'second-urgent', 'urgent');
+    // Insert in scrambled order so we know SQL is doing the sort, not insertion
+    // order. `position` runs 0..3 in the order shown.
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-medium', 'medium'); // pos 0
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-urgent', 'urgent'); // pos 1
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low', 'low'); // pos 2
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-high', 'high'); // pos 3
 
     const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
-    expect(rows.map((r) => r.title)).toEqual(['first-low', 'second-urgent']);
+    expect(rows.map((r) => r.title)).toEqual([
+      'todo-urgent',
+      'todo-high',
+      'todo-medium',
+      'todo-low',
+    ]);
+  });
+
+  it('uses position as a tiebreaker among equal-priority cards in the same column', async () => {
+    const { projectId, epicId, todoCol } = await setup();
+
+    // All four are `high`. Position should decide the order (insertion order).
+    await makeCardInEpic(projectId, epicId, todoCol, 'high-first', 'high');
+    await makeCardInEpic(projectId, epicId, todoCol, 'high-second', 'high');
+    await makeCardInEpic(projectId, epicId, todoCol, 'high-third', 'high');
+
+    const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
+    expect(rows.map((r) => r.title)).toEqual(['high-first', 'high-second', 'high-third']);
   });
 });
