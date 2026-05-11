@@ -2200,14 +2200,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           botGithubToken: config.botGithubToken,
           userGhToken,
         });
-        if (agent.role === 'reviewer') {
-          // Isolation runs BEFORE credential injection: it scrubs any
-          // inherited GH_TOKEN / GITHUB_TOKEN from the cloned process.env,
-          // then `applyGithubSpawnCredentials` below re-sets the bot token
-          // (when present) so the scrub doesn't clobber a valid credential.
-          // See `applyReviewerSpawnIsolation` for the full rationale.
-          applyReviewerSpawnIsolation(base, config);
-        }
+        // Universal reviewer-spawn isolation (option A in card
+        // 1f9c8215-…). `applyReviewerSpawnIsolation` runs on every spawn
+        // regardless of role so:
+        //   1. AGENT_HUB_REVIEWER_LOCK=1 is set everywhere. The github
+        //      skill's `gh-pr.sh` write subcommands (most importantly
+        //      `review`) then refuse to invoke `gh` directly and point
+        //      the agent at `POST /api/pr/review` — the only correct
+        //      identity path (App-mediated, server-side bot identity).
+        //      Without this universal lock, dev/author/lead spawns were
+        //      able to post formal PR reviews under the session-owner's
+        //      OAuth token, mis-attributing automated reviews to the
+        //      human (see surveytracker PR #604 evidence).
+        //   2. Inherited GH_TOKEN / GITHUB_TOKEN / GH_ENTERPRISE_TOKEN /
+        //      GITHUB_ENTERPRISE_TOKEN vars are scrubbed from the cloned
+        //      process.env. `applyGithubSpawnCredentials` below then
+        //      re-installs the per-user OAuth/PAT (non-reviewer roles)
+        //      or bot installation token (reviewer role) via env vars
+        //      plus a process-scoped git credential helper, so
+        //      `git push` / `gh pr create` continue to attribute commits
+        //      to the human (intentional — only formal PR reviews are
+        //      gated).
+        //   3. GH_CONFIG_DIR is rerouted to an empty Hub-managed
+        //      directory so `gh` cannot fall back to the host operator's
+        //      `gh auth login` identity.
+        applyReviewerSpawnIsolation(base, config);
         applyGithubSpawnCredentials(base, tokenToInject);
         if (config.apiKey) {
           base.AGENT_HUB_API_KEY = config.apiKey;
