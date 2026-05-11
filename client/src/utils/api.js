@@ -55,13 +55,15 @@ export const api = {
   // the project's cwd, polls healthPath for 2xx with a 30s deadline, snaps
   // a screenshot, and tears down. Returns
   // `{ ok, ports: { allocated }, durationMs, screenshotUrl?, error? }`.
-  // We disable the default fetch timeout because the server-side run can
-  // legitimately take ~30s (health-check deadline) before responding.
+  // The server's own deadline is 30s health-check + ~3s grace. We set a
+  // defensive 60s client-side ceiling so a hung server (network partition,
+  // frozen Node process) surfaces as a recoverable AbortError in the UI
+  // instead of spinning the Test button forever.
   testProjectPreview: (projectId) =>
     fetchJSON(`/projects/${projectId}/preview/test`, {
       method: 'POST',
       body: JSON.stringify({}),
-      timeout: null,
+      timeout: 60_000,
     }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {
