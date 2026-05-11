@@ -124,13 +124,20 @@ export default function NewProjectAdaptiveFlow({
       const patch = buildPreviewPatch(decision);
       if (!patch) return;
       try {
-        await fetch(`${getApiBase()}/projects/${createdProjectId}`, {
+        const res = await fetch(`${getApiBase()}/projects/${createdProjectId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(patch),
         });
-      } catch {
-        /* best-effort */
+        if (!res.ok) {
+          console.warn(
+            '[NewProjectAdaptiveFlow] preview PATCH failed:',
+            res.status,
+            await res.text().catch(() => ''),
+          );
+        }
+      } catch (err) {
+        console.warn('[NewProjectAdaptiveFlow] preview PATCH error:', err);
       }
     },
     [createdProjectId],

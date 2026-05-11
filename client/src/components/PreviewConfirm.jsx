@@ -286,9 +286,18 @@ export function buildPreviewPatch(confirmed) {
       .map((r) => (typeof r === 'string' ? r.trim() : ''))
       .filter(Boolean);
   }
-  const n = Number(confirmed.idleTTL);
-  if (confirmed.idleTTL !== '' && confirmed.idleTTL != null && Number.isInteger(n) && n > 0) {
-    preview.idleTTL = n;
+  // Guard against empty-string / null / non-positive idleTTL.
+  // `Number('') === 0` and `Number.isInteger(0) === true`, so a naive check
+  // would silently coerce a cleared input to 0 — which the server may either
+  // reject (PATCH swallowed by best-effort try/catch, no user signal) or
+  // accept (preview idles out immediately). Clamp to the `<input min/max>`
+  // range (60..86400) when a positive integer is supplied; otherwise omit
+  // the field so the server default applies.
+  if (confirmed.idleTTL !== '' && confirmed.idleTTL != null) {
+    const n = Number(confirmed.idleTTL);
+    if (Number.isInteger(n) && n > 0) {
+      preview.idleTTL = Math.min(86400, Math.max(60, n));
+    }
   }
   return {
     prEnv: { enabled: false, preview },
