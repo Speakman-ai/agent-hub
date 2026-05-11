@@ -54,6 +54,7 @@ const {
   autonomousProjects,
   autonomousCrons,
   lastDispatchedReviewId,
+  lastBlockerSkipSignature,
   isPrMergeDirty,
 } = await import('./autonomous.js');
 
@@ -203,6 +204,7 @@ beforeEach(() => {
   for (const t of autonomousCrons.values()) t.stop?.();
   autonomousCrons.clear();
   lastDispatchedReviewId.clear();
+  lastBlockerSkipSignature.clear();
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -861,6 +863,183 @@ describe('runAutonomousLoop — blocker filter', () => {
     // Only the ready card gets its iteration counter bumped.
     expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
     expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('r-card');
+  });
+
+  // ─── Visible-signal contract ────────────────────────────────────────────
+  //
+  // Before this fix the only signal that the dispatcher had skipped a card
+  // for blocker reasons was a `console.log` line — invisible to anyone
+  // watching the UI. The contract is now: on the FIRST tick where a card
+  // is skipped for a particular blocker set, post one `system` comment on
+  // the card naming the unresolved blockers, then debounce until the
+  // signature changes.
+
+  it('posts a system comment on the skipped card naming the unresolved blockers', async () => {
+    const blocked = makeCard({ id: 'blocked-card', title: 'Needs upstream' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked]) },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'blocked-card',
+            blockedBy: 'upstream-card',
+            blockerColumn: 'In Progress',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // One system comment on the blocked card.
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(1);
+    const args = stmts.createKanbanCardComment.run.mock.calls[0] as unknown[];
+    // args: [id, cardId, author, content]
+    expect(args[1]).toBe('blocked-card');
+    expect(args[2]).toBe('system');
+    const content = args[3] as string;
+    expect(content).toContain('Autonomous dispatch skipped');
+    expect(content).toContain('title-upstream-card'); // blocker title
+    expect(content).toContain('upstream-card'); // blocker id
+    // UI gets notified so the comment renders without a manual refresh.
+    expect(deps.broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
+  });
+
+  it('debounces — does not re-comment on subsequent ticks with the same blocker set', async () => {
+    const blocked = makeCard({ id: 'blocked-card', title: 'Needs upstream' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked]) },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'blocked-card',
+            blockedBy: 'upstream-card',
+            blockerColumn: 'In Progress',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+    await runAutonomousLoop('proj-1');
+    await runAutonomousLoop('proj-1');
+
+    // Three ticks, one comment — debounced by signature.
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-emits the comment when the blocker set changes (different blocker)', async () => {
+    const blocked = makeCard({ id: 'blocked-card', title: 'Needs upstream' });
+    const firstBlocker = [
+      blockerRow({
+        card: 'blocked-card',
+        blockedBy: 'first-upstream',
+        blockerColumn: 'In Progress',
+        blockedColumn: 'To Do',
+      }),
+    ];
+    const secondBlocker = [
+      blockerRow({
+        card: 'blocked-card',
+        blockedBy: 'second-upstream',
+        blockerColumn: 'In Progress',
+        blockedColumn: 'To Do',
+      }),
+    ];
+    const getBlockersForBoard = vi
+      .fn()
+      .mockReturnValueOnce(firstBlocker)
+      .mockReturnValueOnce(secondBlocker);
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked]) },
+      getBlockersForBoard: { all: getBlockersForBoard },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+    await runAutonomousLoop('proj-1');
+
+    // Signature changed (different blocker id) → second comment posted.
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the debounce key when the card becomes eligible again', async () => {
+    const card = makeCard({ id: 'flappy-card', title: 'Sometimes blocked' });
+    const blockedRows = [
+      blockerRow({
+        card: 'flappy-card',
+        blockedBy: 'upstream',
+        blockerColumn: 'In Progress',
+        blockedColumn: 'To Do',
+      }),
+    ];
+    const clearedRows = [
+      blockerRow({
+        card: 'flappy-card',
+        blockedBy: 'upstream',
+        blockerColumn: 'Done',
+        blockedColumn: 'To Do',
+      }),
+    ];
+    const blockedAgainRows = [
+      blockerRow({
+        card: 'flappy-card',
+        blockedBy: 'upstream',
+        blockerColumn: 'In Progress',
+        blockedColumn: 'To Do',
+      }),
+    ];
+    const getBlockersForBoard = vi
+      .fn()
+      .mockReturnValueOnce(blockedRows)
+      .mockReturnValueOnce(clearedRows)
+      .mockReturnValueOnce(blockedAgainRows);
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      getBlockersForBoard: { all: getBlockersForBoard },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    // Tick 1: blocked → comment.
+    await runAutonomousLoop('proj-1');
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(1);
+    expect(lastBlockerSkipSignature.has('flappy-card')).toBe(true);
+
+    // Tick 2: blocker now Done → card eligible, debounce key cleared.
+    await runAutonomousLoop('proj-1');
+    expect(lastBlockerSkipSignature.has('flappy-card')).toBe(false);
+
+    // Tick 3: blocker regressed → fresh comment (not silenced by stale signature).
+    await runAutonomousLoop('proj-1');
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(2);
   });
 });
 
