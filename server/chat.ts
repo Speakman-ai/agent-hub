@@ -68,6 +68,11 @@ import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantContr
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import {
+  writeSystemPromptFile,
+  applyArgvPromptCap,
+  logArgvCapTruncation,
+} from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import { ensureSpawnCwd } from './spawn-cwd.js';
 import {
@@ -1838,11 +1843,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let args: string[];
       let bin: string;
+      // Prompt content to write to the child's stdin after spawn. Used by
+      // the codex-cli branch (which uses the `-` stdin sentinel) — null
+      // for every other engine so the spawn site can switch stdio modes
+      // without branching the handle logic.
+      let stdinPrompt: string | null = null;
+      // Temp-file cleanup thunk for the claude-code branch's
+      // `--system-prompt-file <path>` payload. null when no temp file
+      // was written. Invoked from the `proc.on('close')` handler so we
+      // don't leak per-spawn tmp dirs.
+      let systemPromptFileCleanup: (() => void) | null = null;
       if (engine === 'cursor-agent') {
-        const prompt =
+        const rawPrompt =
           isNewEngineSession || forceSystemPromptThisTurn
             ? `${enrichedPrompt}\n\n${finalPrompt}`
             : cliContent + imagePromptSuffix;
+        // cursor-agent has no documented stdin or --prompt-file flag, so
+        // the entire prompt rides in a single `-p` argv element. Apply
+        // the soft cap to avoid the kernel's 128 KiB MAX_ARG_STRLEN
+        // cliff; emit TOOL_ERROR when we trim so growth shows up in
+        // session health.
+        const capped = applyArgvPromptCap(rawPrompt);
+        if (capped.truncated) {
+          logArgvCapTruncation('cursor-agent', sessionId, capped.originalBytes, rawPrompt.length);
+        }
+        const prompt = capped.prompt;
         args = [
           '-p',
           prompt,
@@ -1870,7 +1895,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // `needsHistoryBootstrap` branch earlier already concatenates prior
         // messages into `finalPrompt` when engineSessionId is null, which is
         // exactly the shape Gemini expects.
-        const prompt = `${enrichedPrompt}\n\n${finalPrompt}`;
+        const rawPrompt = `${enrichedPrompt}\n\n${finalPrompt}`;
+        // Gemini CLI takes the prompt as a single `-p` argv string with
+        // no documented stdin/file alternative. Same kernel cap applies
+        // as cursor-agent — see spawn-prompt-payload.ts.
+        const capped = applyArgvPromptCap(rawPrompt);
+        if (capped.truncated) {
+          logArgvCapTruncation('gemini-cli', sessionId, capped.originalBytes, rawPrompt.length);
+        }
+        const prompt = capped.prompt;
         args = ['-p', prompt, '--output-format', 'stream-json'];
         if (model && model !== 'auto') {
           args.push('--model', model);
@@ -1931,18 +1964,38 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
           );
         }
-        args.push(prompt);
+        // Pass the prompt via stdin using the documented `-` sentinel.
+        // Per `codex exec` docs: "If you omit the prompt argument, Codex
+        // reads the prompt from stdin. Use `codex exec -` when you want
+        // to force that behavior explicitly." This sidesteps the kernel
+        // MAX_ARG_STRLEN cap (128 KiB) — the previous shape of pushing
+        // `${enrichedPrompt}\n\n${finalPrompt}` as a single argv element
+        // would `spawn E2BIG` once the combined prompt cleared that
+        // threshold (which is now routine for reviewer dispatches that
+        // load the full `agent-hub` skill + references).
+        args.push('-');
+        stdinPrompt = prompt;
         bin = CODEX_BIN;
       } else {
         const isAskMode = !!session!.ask_mode;
+        // Write the enriched system prompt to a temp file and pass it
+        // via `--system-prompt-file` instead of `--system-prompt
+        // <huge-string>`. The argv-string form trips the Linux kernel's
+        // 128 KiB MAX_ARG_STRLEN cap once the enriched prompt
+        // (identity + AGENTS.md + SOUL.md + MEMORY.md + skill bodies
+        // including their references/*.md + wiki retrieval) gets large,
+        // surfacing as `spawn E2BIG`. The file form has no such cap.
+        // Cleanup is wired into the `proc.on('close')` handler below.
+        const promptFile = writeSystemPromptFile(enrichedPrompt, sessionId);
+        systemPromptFileCleanup = promptFile.cleanup;
         args = [
           '--print',
           '--permission-mode',
           isAskMode ? 'plan' : 'bypassPermissions',
           '--model',
           model,
-          '--system-prompt',
-          enrichedPrompt,
+          '--system-prompt-file',
+          promptFile.path,
           '--output-format',
           'stream-json',
           '--include-partial-messages',
@@ -2207,14 +2260,35 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const cliTurnStartMs = Date.now();
+      // Open stdin as a pipe only when the engine branch staged a
+      // `stdinPrompt` (currently codex-cli using the `-` sentinel).
+      // Every other engine leaves stdin closed so an over-eager CLI
+      // never blocks on a read that will never come.
+      const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
       const proc = spawn(bin, args, {
         cwd: effectiveCwd,
         env: spawnEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [childStdin, 'pipe', 'pipe'],
         // Run as its own process-group leader so killProcessGroup(proc) reaches
         // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
         detached: true,
       });
+      // Feed the prompt to the child once the pipe is open. We
+      // explicitly call `.end()` so the child sees EOF and codex's
+      // `exec -` finalizes the prompt buffer. If the write fails (e.g.
+      // the child died between spawn and write) we swallow the error
+      // — the close handler picks up the exit code and surfaces a
+      // sane message.
+      if (stdinPrompt !== null && proc.stdin) {
+        try {
+          proc.stdin.end(stdinPrompt, 'utf8');
+        } catch (err) {
+          console.error(
+            `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
 
       const S = stmts;
 
@@ -2464,6 +2538,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       proc.on('close', async (code: number | null) => {
         activeProcesses.delete(sessionId);
+        // Best-effort cleanup of the per-spawn system-prompt temp file
+        // (claude-code only — see writeSystemPromptFile in
+        // spawn-prompt-payload.ts). Failures are swallowed inside
+        // cleanup(); we null the ref so a long-lived closure (e.g.
+        // delegationWorkPromise) can't accidentally re-trigger.
+        if (systemPromptFileCleanup) {
+          systemPromptFileCleanup();
+          systemPromptFileCleanup = null;
+        }
         try {
           S.deleteActiveTask.run(sessionId);
         } catch {}
@@ -3697,6 +3780,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       proc.on('error', (err: Error) => {
         spawnErrored = true;
         activeProcesses.delete(sessionId);
+        // Also clean up the per-spawn system-prompt temp file when
+        // spawn itself fails (e.g. ENOENT before exec). The close
+        // handler will still fire, but it runs after this and we want
+        // the rm to happen even if a later handler short-circuits.
+        if (systemPromptFileCleanup) {
+          systemPromptFileCleanup();
+          systemPromptFileCleanup = null;
+        }
         try {
           S.deleteActiveTask.run(sessionId);
         } catch {}
