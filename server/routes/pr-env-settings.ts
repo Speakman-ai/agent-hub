@@ -28,6 +28,7 @@ import {
   type PrEnvConfigWrite,
 } from '../pr-env-store.js';
 import type { GitHubAppConfig, RouteDeps } from '../types.js';
+import { isPrEnvKillSwitchOn, PR_ENV_KILL_SWITCH_MESSAGE } from '../pr-env-killswitch.js';
 
 interface ValidateCheck {
   name: string;
@@ -473,6 +474,18 @@ export default function createPrEnvSettingsRoutes(
     checkGithubApp: extra.adapters?.checkGithubApp ?? defaultCheckGithubApp,
     checkRoute53: extra.adapters?.checkRoute53 ?? defaultCheckRoute53,
   };
+  // Kill-switch gate (epic 88367984): every route in this module becomes
+  // 410 Gone while the PR-env subsystem is being removed. Mounted as a
+  // module-scoped middleware so we don't need to repeat the check inside
+  // each handler. Subsequent cards in the epic delete the routes entirely.
+  router.use((_req: Request, res: Response, next): void => {
+    if (isPrEnvKillSwitchOn()) {
+      res.status(410).json({ error: PR_ENV_KILL_SWITCH_MESSAGE });
+      return;
+    }
+    next();
+  });
+
   const resolveNginxPaths = (): {
     certPath: string;
     baseVhostPath: string;

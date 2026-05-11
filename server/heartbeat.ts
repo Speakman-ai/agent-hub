@@ -29,6 +29,7 @@ import {
   POOL_ALERTS_CRON,
 } from './container-pool/pool-alerts-heartbeat.js';
 import { PoolAllocator } from './container-pool/allocator.js';
+import { isPrEnvKillSwitchOn } from './pr-env-killswitch.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -931,81 +932,92 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   // wildcard preview cert. No-op when the PR-env feature flag is off.
   // Wrapped in try/catch because readPrEnvConfig throws on partial
   // config — we don't want one bad key to block the whole scheduler.
-  const certRenewalTask = cron.schedule(
-    CERT_RENEWAL_CRON,
-    wrapCronTick(
-      () =>
-        runCertRenewalHeartbeat({
-          getConfig: () => {
-            try {
-              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
-            } catch (err) {
-              console.error('[cert-renewal] config read failed:', (err as Error).message);
-              return null;
-            }
-          },
-        }).catch((err: unknown) => {
-          console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
-        }),
-      'system:cert-renewal',
-    ),
-    defaultTickOptions({
-      intervalSeconds: estimateIntervalSeconds(CERT_RENEWAL_CRON),
-      name: 'system:cert-renewal',
-    }),
-  );
-  scheduledTasks.set('system:cert-renewal', certRenewalTask);
-  console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
+  //
+  // Kill-switch override (epic 88367984): skip registering the three
+  // container-pool crons (cert-renewal, reaper, pool-alerts) entirely
+  // while the PR-env subsystem is being removed. Without this guard
+  // the crons would still run their bodies and find `getConfig()` →
+  // null on every tick, which is functionally a no-op but pollutes
+  // `/api/crons` and the scheduled-tasks list.
+  if (isPrEnvKillSwitchOn()) {
+    console.log('[Scheduler] PR-env kill switch ON — skipping cert-renewal / reaper / pool-alerts');
+  } else {
+    const certRenewalTask = cron.schedule(
+      CERT_RENEWAL_CRON,
+      wrapCronTick(
+        () =>
+          runCertRenewalHeartbeat({
+            getConfig: () => {
+              try {
+                return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
+              } catch (err) {
+                console.error('[cert-renewal] config read failed:', (err as Error).message);
+                return null;
+              }
+            },
+          }).catch((err: unknown) => {
+            console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
+          }),
+        'system:cert-renewal',
+      ),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(CERT_RENEWAL_CRON),
+        name: 'system:cert-renewal',
+      }),
+    );
+    scheduledTasks.set('system:cert-renewal', certRenewalTask);
+    console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
 
-  // Container-pool reaper — every 3 min, reconciles pool_slots against
-  // the live Docker daemon and GitHub PR state so a dropped webhook
-  // doesn't leave a slot busy forever. No-op when PR-env feature is off
-  // (`getConfig()` returns null inside `runReaperHeartbeat`). The
-  // allocator is constructed lazily here because the container-pool
-  // dispatcher doesn't have a production home yet; when W1 lands in
-  // production, swap the lazy allocator out for the shared singleton.
-  const reaperAllocator = new PoolAllocator(db);
-  const reaperTask = cron.schedule(
-    REAPER_CRON,
-    wrapCronTick(
-      () =>
-        runReaperHeartbeat({
-          db,
-          allocator: reaperAllocator,
-          getConfig: () => {
-            try {
-              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
-            } catch (err) {
-              console.error('[reaper] config read failed:', (err as Error).message);
-              return null;
-            }
-          },
-        }).catch((err: unknown) => {
-          console.error('[reaper] heartbeat threw:', (err as Error).message);
-        }),
-      'system:reaper',
-    ),
-    defaultTickOptions({
-      intervalSeconds: estimateIntervalSeconds(REAPER_CRON),
-      name: 'system:reaper',
-    }),
-  );
-  scheduledTasks.set('system:reaper', reaperTask);
-  console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
+    // Container-pool reaper — every 3 min, reconciles pool_slots against
+    // the live Docker daemon and GitHub PR state so a dropped webhook
+    // doesn't leave a slot busy forever. No-op when PR-env feature is off
+    // (`getConfig()` returns null inside `runReaperHeartbeat`). The
+    // allocator is constructed lazily here because the container-pool
+    // dispatcher doesn't have a production home yet; when W1 lands in
+    // production, swap the lazy allocator out for the shared singleton.
+    const reaperAllocator = new PoolAllocator(db);
+    const reaperTask = cron.schedule(
+      REAPER_CRON,
+      wrapCronTick(
+        () =>
+          runReaperHeartbeat({
+            db,
+            allocator: reaperAllocator,
+            getConfig: () => {
+              try {
+                return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
+              } catch (err) {
+                console.error('[reaper] config read failed:', (err as Error).message);
+                return null;
+              }
+            },
+          }).catch((err: unknown) => {
+            console.error('[reaper] heartbeat threw:', (err as Error).message);
+          }),
+        'system:reaper',
+      ),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(REAPER_CRON),
+        name: 'system:reaper',
+      }),
+    );
+    scheduledTasks.set('system:reaper', reaperTask);
+    console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
 
-  // Pool-alerts heartbeat — every minute, evaluates pool_metrics rows
-  // against alert thresholds and fires/resolves rows in pool_alerts.
-  // Pure SQLite reads/writes, no network or process spawn.
-  const poolAlertsTask = cron.schedule(
-    POOL_ALERTS_CRON,
-    wrapCronTick(() => runPoolAlertsHeartbeat({ db }), 'system:pool-alerts'),
-    defaultTickOptions({
-      intervalSeconds: estimateIntervalSeconds(POOL_ALERTS_CRON),
-      name: 'system:pool-alerts',
-    }),
-  );
-  scheduledTasks.set('system:pool-alerts', poolAlertsTask);
-  console.log(`[Scheduler] Pool-alerts heartbeat scheduled: ${POOL_ALERTS_CRON}`);
+    // Pool-alerts heartbeat — every minute, evaluates pool_metrics rows
+    // against alert thresholds and fires/resolves rows in pool_alerts.
+    // Pure SQLite reads/writes, no network or process spawn.
+    const poolAlertsTask = cron.schedule(
+      POOL_ALERTS_CRON,
+      wrapCronTick(() => runPoolAlertsHeartbeat({ db }), 'system:pool-alerts'),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(POOL_ALERTS_CRON),
+        name: 'system:pool-alerts',
+      }),
+    );
+    scheduledTasks.set('system:pool-alerts', poolAlertsTask);
+    console.log(`[Scheduler] Pool-alerts heartbeat scheduled: ${POOL_ALERTS_CRON}`);
+  } // end kill-switch guard
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 

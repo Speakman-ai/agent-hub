@@ -27,6 +27,7 @@ import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { getProjects } from '../project-model.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
+import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -278,6 +279,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         cursorBin: fileConfig.cursorBin || null,
         geminiBin: fileConfig.geminiBin || null,
         codexBin: fileConfig.codexBin || null,
+      },
+      // Feature flags surfaced to clients so the UI can hide deprecated
+      // sections (Settings → PR Environments, the provisioning wizard,
+      // any PR-env badges) without a separate request. `prEnv: false`
+      // means the PR-env subsystem is killed at boot (epic 88367984).
+      features: {
+        prEnv: !isPrEnvKillSwitchOn(),
       },
     });
   });

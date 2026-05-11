@@ -28,6 +28,7 @@ import type {
   PrEnvBuilderDeps,
   PrEnvGithubCreds,
 } from './pr-env-builder.js';
+import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
 import type { PrEnvConfigRow } from '../pr-env-store.js';
 import type { GitHubAppConfig } from '../types.js';
@@ -195,6 +196,12 @@ export function readPrEnvConfig(
   dbRow: PrEnvConfigRow | null = null,
   appConfig: PrEnvAppConfigRef | null = null,
 ): PrEnvRuntimeConfig | null {
+  // Kill switch — first gate. The PR-env subsystem is being removed
+  // (epic 88367984). Returning null here makes every downstream caller
+  // (webhook dispatch, container-pool crons, fullstack preview) treat
+  // the feature as disabled regardless of DB / file / env state, which
+  // is exactly the "disabled at boot regardless of config" contract.
+  if (isPrEnvKillSwitchOn()) return null;
   const fileBlock = (fileConfig?.prEnv as Partial<PrEnvRuntimeConfig> | undefined) ?? {};
   // Boolean precedence: DB (authoritative if row exists) → file.
   // `dbRow != null` means the UI has written at least once, so the DB value is

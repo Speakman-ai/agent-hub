@@ -32,6 +32,7 @@ import {
   type PrEnvExecutor,
   type PrEnvProvisionPayload,
 } from '../pr-env-provisioning/orchestrator.js';
+import { isPrEnvKillSwitchOn, PR_ENV_KILL_SWITCH_MESSAGE } from '../pr-env-killswitch.js';
 
 export interface PrEnvProvisionDeps {
   /** Test hook — production leaves unset and the route uses `stubExecutor`. */
@@ -56,6 +57,17 @@ export default function createPrEnvProvisionRoutes(deps: PrEnvProvisionDeps = {}
   const router = Router();
   const executor = deps.executor ?? stubExecutor;
   const newJobId = deps.newJobId ?? (() => uuidv4());
+
+  // Kill-switch gate (epic 88367984): provisioning wizard is being
+  // removed alongside the rest of the PR-env subsystem. Mounted as a
+  // module-scoped middleware so every route returns 410 Gone uniformly.
+  router.use((_req: Request, res: Response, next): void => {
+    if (isPrEnvKillSwitchOn()) {
+      res.status(410).json({ error: PR_ENV_KILL_SWITCH_MESSAGE });
+      return;
+    }
+    next();
+  });
 
   router.post('/api/settings/pr-env/provision', (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
