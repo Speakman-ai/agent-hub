@@ -251,6 +251,20 @@ const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
 let reviewPollCron: cron.ScheduledTask | null = null;
 
+/**
+ * Debounce key for blocker-skip card comments: cardId → signature of the
+ * unresolved-blocker set the last time we commented. Without this the
+ * 60-second safety-net cron would post a "still blocked" comment every
+ * minute, which would bury the rest of the card's discussion.
+ *
+ * The signature is a stable join of `id:column_id` for each unresolved
+ * blocker, so we re-comment only when the blocking set actually changes
+ * (new blocker added, blocker moved to a different non-Done column, etc.).
+ * When the card becomes eligible again, the entry is deleted so a future
+ * blocker triggers a fresh comment.
+ */
+const lastBlockerSkipSignature = new Map<string, string>();
+
 // ─── Injected dependencies (set via init()) ────────────────────────────────
 let deps: AutonomousDeps | null = null;
 
@@ -280,7 +294,7 @@ export function initAutonomous(d: AutonomousDeps): void {
 
 // ─── Getters for shared state (used by index.ts) ───────────────────────────
 
-export { autonomousCrons, autonomousProjects, lastDispatchedReviewId };
+export { autonomousCrons, autonomousProjects, lastDispatchedReviewId, lastBlockerSkipSignature };
 
 // ─── Core Dispatch ─────────────────────────────────────────────────────────
 
@@ -339,22 +353,63 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     epic.autonomous_max_iterations,
   ) as KanbanCardRow[];
 
-  // Filter out cards whose blockers aren't all Done. We log each skip so
-  // operators can see WHY autonomous mode isn't picking up a card that
-  // otherwise matches the SQL eligibility criteria.
+  // Filter out cards whose blockers aren't all Done. Re-loaded on every
+  // tick so newly-cleared blockers (the blocking card landed in Done since
+  // the last run) become eligible without restarting the cron. We log each
+  // skip and post a one-shot card comment naming the blockers so operators
+  // can see WHY autonomous mode isn't picking up a card that otherwise
+  // matches the SQL eligibility criteria — `console.log` alone is invisible
+  // to a user watching the UI.
   const blockerIndex = loadBoardBlockers(d.stmts, boardData.board.id);
   const eligible: KanbanCardRow[] = [];
+  let anyBlockerCommentPosted = false;
   for (const card of rawEligible) {
     if (hasUnresolvedBlockers(card.id, blockerIndex)) {
-      const unresolved = (blockerIndex.blockersByCard.get(card.id) ?? [])
-        .filter((b) => !b.done)
-        .map((b) => b.title);
-      console.log(
-        `[Autonomous] Skipping "${card.title}" — blocked by ${unresolved.length} unresolved card(s): ${unresolved.join(', ')}`,
+      const unresolvedLinks = (blockerIndex.blockersByCard.get(card.id) ?? []).filter(
+        (b) => !b.done,
       );
+      const titles = unresolvedLinks.map((b) => b.title);
+      console.log(
+        `[Autonomous] Skipping "${card.title}" — blocked by ${unresolvedLinks.length} unresolved card(s): ${titles.join(', ')}`,
+      );
+
+      // Stable signature of the blocking set. Sorted so iteration order
+      // doesn't false-positive a "changed" check. Includes column_id so
+      // moving a blocker from one non-Done column to another (e.g. Backlog
+      // → In Progress) is treated as a meaningful change worth noting.
+      const signature = unresolvedLinks
+        .map((b) => `${b.id}:${b.column_id ?? ''}`)
+        .sort()
+        .join('|');
+      const prev = lastBlockerSkipSignature.get(card.id);
+      if (prev !== signature) {
+        try {
+          const bulletList = unresolvedLinks
+            .map((b) => `- **${b.title}** (\`${b.id}\`)`)
+            .join('\n');
+          d.stmts.createKanbanCardComment.run(
+            uuidv4(),
+            card.id,
+            'system',
+            `⏸️ **Autonomous dispatch skipped — unresolved blockers**\n\nWaiting on:\n${bulletList}\n\nThis card will be picked up automatically once every blocker lands in a Done column. No restart needed.`,
+          );
+          lastBlockerSkipSignature.set(card.id, signature);
+          anyBlockerCommentPosted = true;
+        } catch (_) {
+          /* best-effort: a failed comment write must not strand the dispatch loop */
+        }
+      }
       continue;
     }
+    // Card is no longer blocked. Clear the debounce key so a future block
+    // (e.g. someone manually adds a new blocker edge) re-emits the comment.
+    if (lastBlockerSkipSignature.has(card.id)) {
+      lastBlockerSkipSignature.delete(card.id);
+    }
     eligible.push(card);
+  }
+  if (anyBlockerCommentPosted) {
+    d.broadcast({ type: 'kanban_update', projectId });
   }
 
   if (eligible.length === 0) {

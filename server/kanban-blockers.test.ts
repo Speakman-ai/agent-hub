@@ -324,6 +324,65 @@ describe('loadBoardBlockers + hasUnresolvedBlockers', () => {
     expect(hasUnresolvedBlockers('A', idx)).toBe(true);
   });
 
+  // ─── AC coverage — autonomous dispatcher eligibility predicate ──────────
+  //
+  // The four cases below map 1:1 to the acceptance criteria from the
+  // "Autonomous mode does not handle blockers well" ticket. They cover the
+  // exact predicate the dispatcher consults — `hasUnresolvedBlockers` — so
+  // a regression there immediately surfaces as a named test failure.
+
+  it('AC: card with no blockers is eligible', () => {
+    const db = buildDb();
+    seedBoard(db, 'b1', [{ id: 'solo', columnName: 'To Do' }]);
+    const stmts = makeStmts(db) as unknown as Stmts;
+    const idx = loadBoardBlockers(stmts, 'b1');
+    expect(hasUnresolvedBlockers('solo', idx)).toBe(false);
+  });
+
+  it('AC: card whose every blocker is Done is eligible', () => {
+    const db = buildDb();
+    seedBoard(db, 'b1', [
+      { id: 'target', columnName: 'To Do' },
+      { id: 'up1', columnName: 'Done' },
+      { id: 'up2', columnName: 'Done ✅' },
+    ]);
+    link(db, 'target', 'up1');
+    link(db, 'target', 'up2');
+    const stmts = makeStmts(db) as unknown as Stmts;
+    const idx = loadBoardBlockers(stmts, 'b1');
+    expect(hasUnresolvedBlockers('target', idx)).toBe(false);
+  });
+
+  it('AC: card with any blocker not-Done is ineligible', () => {
+    const db = buildDb();
+    seedBoard(db, 'b1', [
+      { id: 'target', columnName: 'To Do' },
+      { id: 'up1', columnName: 'Done' },
+      { id: 'up2', columnName: 'In Progress' }, // not Done
+    ]);
+    link(db, 'target', 'up1');
+    link(db, 'target', 'up2');
+    const stmts = makeStmts(db) as unknown as Stmts;
+    const idx = loadBoardBlockers(stmts, 'b1');
+    expect(hasUnresolvedBlockers('target', idx)).toBe(true);
+  });
+
+  it('AC: every Done-column variant resolves blockers', () => {
+    // The bug report flagged that operators rename "Done" freely. Each
+    // variant must count as resolved so renames don't strand the loop.
+    for (const variant of ['Done', 'Done ✅', 'Deployed / Done', 'DONE', 'done']) {
+      const db = buildDb();
+      seedBoard(db, 'b1', [
+        { id: 'target', columnName: 'To Do' },
+        { id: 'upstream', columnName: variant },
+      ]);
+      link(db, 'target', 'upstream');
+      const stmts = makeStmts(db) as unknown as Stmts;
+      const idx = loadBoardBlockers(stmts, 'b1');
+      expect(hasUnresolvedBlockers('target', idx)).toBe(false);
+    }
+  });
+
   it('does not leak edges across boards', () => {
     const db = buildDb();
     seedBoard(db, 'b1', [{ id: 'A', columnName: 'To Do' }]);
