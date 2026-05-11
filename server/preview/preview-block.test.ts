@@ -273,7 +273,7 @@ describe('detectPreviewBlock — malformed payloads produce reasons, not crashes
 // ─── Handler tests ─────────────────────────────────────────────────────
 
 describe('handlePreviewBlock — gating', () => {
-  it('emits preview_unavailable with wizardUrl when project has no prEnv', async () => {
+  it('emits preview_unavailable with wizard intent + legacy wizardUrl when project has no prEnv', async () => {
     const project = { id: 'p1', name: 'p', cwd: '/r', ahw: '/a', agents: [] } as Project;
     const deps = makeDeps({ project });
     const startCalls: number[] = [];
@@ -285,9 +285,14 @@ describe('handlePreviewBlock — gating', () => {
     await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
 
     expect(deps.events).toHaveLength(1);
-    expect(deps.events[0].kind).toBe('preview_unavailable');
-    expect(deps.events[0].unavailableReason).toBe('no-pr-env');
-    expect(deps.events[0].wizardUrl).toContain('/projects/p1/settings/');
+    const ev = deps.events[0];
+    expect(ev.kind).toBe('preview_unavailable');
+    expect(ev.unavailableReason).toBe('no-pr-env');
+    // Preferred contract: structured navigation intent.
+    expect(ev.wizard).toEqual({ view: 'settings:preview', projectId: 'p1' });
+    // Legacy fallback: string URL retained for one release of compat so
+    // older client builds that read `wizardUrl` still render the card.
+    expect(ev.wizardUrl).toContain('/projects/p1/settings/');
     expect(fake.startPreviewCalls).toBe(beforeStart);
     startCalls.push(fake.startPreviewCalls);
   });
@@ -306,20 +311,27 @@ describe('handlePreviewBlock — gating', () => {
     await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
 
     expect(deps.events).toHaveLength(1);
-    expect(deps.events[0].kind).toBe('preview_unavailable');
-    expect(deps.events[0].unavailableReason).toBe('preview-disabled');
-    expect(deps.events[0].wizardUrl).toBeTruthy();
+    const ev = deps.events[0];
+    expect(ev.kind).toBe('preview_unavailable');
+    expect(ev.unavailableReason).toBe('preview-disabled');
+    expect(ev.wizard).toEqual({ view: 'settings:preview', projectId: 'proj-1' });
+    expect(ev.wizardUrl).toBeTruthy();
   });
 
-  it('emits preview_unavailable when runtime is null even if config is present', async () => {
+  it('emits preview_unavailable with wizard intent when runtime is null even if config is present', async () => {
     const deps = makeDeps({ runtime: null });
 
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
 
     expect(deps.events[0].kind).toBe('preview_unavailable');
+    // The runtime-null path also needs to carry the navigation intent
+    // so the user can resolve the deep-link even when the runtime isn't
+    // wired (e.g. on a server whose preview subsystem failed to boot).
+    expect(deps.events[0].wizard).toEqual({ view: 'settings:preview', projectId: 'proj-1' });
+    expect(deps.events[0].wizardUrl).toBeTruthy();
   });
 
-  it('respects an injected buildWizardUrl', async () => {
+  it('respects an injected buildWizardUrl (legacy fallback override)', async () => {
     const project = { id: 'p1', name: 'p', cwd: '/r', ahw: '/a', agents: [] } as Project;
     const deps = makeDeps({
       project,
@@ -329,6 +341,22 @@ describe('handlePreviewBlock — gating', () => {
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
 
     expect(deps.events[0].wizardUrl).toBe('/custom/p1/wizard');
+    // Default wizard intent still emitted side-by-side.
+    expect(deps.events[0].wizard).toEqual({ view: 'settings:preview', projectId: 'p1' });
+  });
+
+  it('respects an injected buildWizard (preferred intent override)', async () => {
+    const project = { id: 'p1', name: 'p', cwd: '/r', ahw: '/a', agents: [] } as Project;
+    const deps = makeDeps({
+      project,
+      buildWizard: (id) => ({ view: `custom:preview:${id}`, projectId: id }),
+    });
+
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+
+    expect(deps.events[0].wizard).toEqual({ view: 'custom:preview:p1', projectId: 'p1' });
+    // Legacy wizardUrl is still produced from the default builder.
+    expect(deps.events[0].wizardUrl).toBeTruthy();
   });
 });
 
