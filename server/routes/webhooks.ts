@@ -1,6 +1,9 @@
 import crypto from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
+
+const execFileAsync = promisify(execFile);
 import express, { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
@@ -24,6 +27,7 @@ import {
   scheduleReviewerAnalyzePhaseTransition,
 } from '../reviewer-analyze-phase-timer.js';
 import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup.js';
+import { buildResolvePrompt } from './pr-resolve.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import type {
@@ -2042,6 +2046,29 @@ function handleWebhookPrClosed(
     });
 
     tryAutonomousDispatch();
+
+    // Fan-out: when this PR's merge changes the base sha, GitHub does NOT
+    // emit webhooks for sibling PRs targeting the same base that just got
+    // dirtied. The reconciliation poller (`reconcileKanbanWithGitHub` in
+    // autonomous.ts, every 3 min) eventually notices and escalates, but
+    // detection lags up to 3 minutes. Trigger the autofix dispatch path
+    // immediately so the cascade case resolves in ~5s instead.
+    //
+    // Fire-and-forget: the merge bookkeeping above must not wait on N gh
+    // CLI calls. Errors are logged but never bubble up to the webhook
+    // delivery.
+    const baseRef = payload.pull_request?.base?.ref;
+    if (repoFullName && baseRef && typeof prNumber === 'number') {
+      void fanOutMergeConflictAutofix(deps, project, repoFullName, baseRef, prNumber).catch(
+        (err) => {
+          console.error(
+            `[Webhook/FanOut] merge fan-out failed for #${prNumber} on ${repoFullName}: ${
+              (err as Error).message.split('\n')[0]
+            }`,
+          );
+        },
+      );
+    }
     return true;
   } else {
     const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
@@ -2071,6 +2098,167 @@ function handleWebhookPrClosed(
     });
     return true;
   }
+}
+
+// ─── Merge fan-out: dispatch conflict autofix to sibling PRs ─────
+//
+// GitHub does NOT webhook us when a merge changes the base sha and
+// thereby dirties a peer PR (the head of the peer didn't change, only
+// the base did). Without this fan-out, the only mechanism that notices
+// is the every-3-minute reconciliation poller in autonomous.ts — and
+// even then it only escalates, it doesn't dispatch the autofix.
+//
+// This helper:
+//   1. Lists open PRs targeting the same base via `gh pr list`.
+//   2. For each (excluding the just-merged PR), runs `gh pr view --json
+//      mergeable,mergeStateStatus,...` to confirm dirty state. GitHub
+//      computes mergeability asynchronously, but the merge of A bumps
+//      sibling PRs into the recompute queue and we typically see the
+//      `CONFLICTING` / `DIRTY` answer within a couple of seconds.
+//   3. For each dirty sibling that has a linked kanban card, builds a
+//      conflict-only prompt with `buildResolvePrompt` and dispatches it
+//      through `dispatchReviewFeedback` (which routes to the card's
+//      existing session, or spawns a new one).
+//
+// Exported for tests; production callers go through
+// `handleWebhookPrClosed`.
+export interface FanOutSiblingPr {
+  number: number;
+  url: string;
+}
+
+interface FanOutPrView {
+  number?: number;
+  title?: string;
+  url?: string;
+  mergeable?: string;
+  mergeStateStatus?: string;
+  headRefName?: string;
+  baseRefName?: string;
+}
+
+export interface FanOutResult {
+  checked: number;
+  dirty: number;
+  dispatched: Array<{ prNumber: number; sessionId: string | null }>;
+}
+
+export async function fanOutMergeConflictAutofix(
+  deps: RouteDeps,
+  project: Project,
+  repoFullName: string,
+  baseRef: string,
+  mergedPrNumber: number,
+): Promise<FanOutResult> {
+  const { stmts } = deps;
+  const result: FanOutResult = { checked: 0, dirty: 0, dispatched: [] };
+
+  let siblings: FanOutSiblingPr[];
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--repo',
+        repoFullName,
+        '--base',
+        baseRef,
+        '--state',
+        'open',
+        '--json',
+        'number,url',
+        '--limit',
+        '100',
+      ],
+      { timeout: 15000 },
+    );
+    siblings = JSON.parse(stdout || '[]') as FanOutSiblingPr[];
+  } catch (err) {
+    console.error(
+      `[Webhook/FanOut] gh pr list failed for ${repoFullName} base="${baseRef}": ${
+        (err as Error).message.split('\n')[0]
+      }`,
+    );
+    return result;
+  }
+
+  for (const sib of siblings) {
+    if (!sib || typeof sib.number !== 'number' || sib.number === mergedPrNumber) continue;
+    result.checked += 1;
+
+    let view: FanOutPrView;
+    try {
+      const { stdout } = await execFileAsync(
+        'gh',
+        [
+          'pr',
+          'view',
+          String(sib.number),
+          '--repo',
+          repoFullName,
+          '--json',
+          'number,title,url,mergeable,mergeStateStatus,headRefName,baseRefName',
+        ],
+        { timeout: 15000 },
+      );
+      view = JSON.parse(stdout || '{}') as FanOutPrView;
+    } catch (err) {
+      console.error(
+        `[Webhook/FanOut] gh pr view #${sib.number} failed on ${repoFullName}: ${
+          (err as Error).message.split('\n')[0]
+        }`,
+      );
+      continue;
+    }
+
+    // `gh pr view` returns uppercase strings:
+    //   mergeable: MERGEABLE | CONFLICTING | UNKNOWN
+    //   mergeStateStatus: CLEAN | DIRTY | BLOCKED | BEHIND | UNSTABLE | UNKNOWN | HAS_HOOKS
+    // Treat CONFLICTING or DIRTY as "this PR cannot merge cleanly until
+    // someone reconciles it" — same predicate the conflict-resolve template
+    // is written for. Skip UNKNOWN; GitHub will recompute and a subsequent
+    // synchronize / poll cycle will catch it.
+    const mergeableUp = (view.mergeable ?? '').toString().toUpperCase();
+    const stateUp = (view.mergeStateStatus ?? '').toString().toUpperCase();
+    const isDirty = mergeableUp === 'CONFLICTING' || stateUp === 'DIRTY';
+    if (!isDirty) continue;
+    result.dirty += 1;
+
+    const card = stmts.getKanbanCardByPrUrl?.get(sib.url) as KanbanCardRow | undefined;
+    if (!card) {
+      console.log(
+        `[Webhook/FanOut] PR #${sib.number} dirty after #${mergedPrNumber} merged — no linked kanban card; skipping autofix dispatch`,
+      );
+      continue;
+    }
+
+    const prRecord: Record<string, unknown> = {
+      number: view.number ?? sib.number,
+      title: view.title ?? card.title,
+      html_url: view.url ?? sib.url,
+      head: view.headRefName,
+      base: view.baseRefName ?? baseRef,
+      mergeable: mergeableUp === 'CONFLICTING' ? false : null,
+      mergeable_state: stateUp ? stateUp.toLowerCase() : 'dirty',
+    };
+    const prompt = buildResolvePrompt(prRecord, [], [], [], repoFullName, ['conflict']);
+    try {
+      const dispatch = await dispatchReviewFeedback(deps, card, project, prompt);
+      result.dispatched.push({ prNumber: sib.number, sessionId: dispatch.sessionId });
+      console.log(
+        `[Webhook/FanOut] PR #${sib.number} dirty after #${mergedPrNumber} merged → dispatched conflict autofix to session ${
+          dispatch.sessionId || '(failed)'
+        }`,
+      );
+    } catch (err) {
+      console.error(
+        `[Webhook/FanOut] dispatch for #${sib.number} threw: ${(err as Error).message.split('\n')[0]}`,
+      );
+    }
+  }
+
+  return result;
 }
 
 function handleWebhookPrSynchronize(
