@@ -17,9 +17,10 @@
  *   - Every PR-env route returns `410 Gone` with the same body.
  *   - The three container-pool crons (cert-renewal, reaper, pool-alerts)
  *     are not registered.
- *   - The `<agenthub:preview target="fullstack">` handler emits a
- *     `preview_failed` event with a directive pointing operators at the
- *     frontend-only worktree preview.
+ *   - The `<agenthub:preview target="fullstack">` escape hatch and its
+ *     handler module were deleted by card #2. The preview parser now
+ *     rejects `target: "fullstack"` with `reason: "invalid-target"` so
+ *     the dispatcher never sees a fullstack task in the first place.
  *
  * Tests opt out via `__setPrEnvKillSwitchForTests(false)` so the existing
  * legacy code paths can still be exercised until cards #2–#6 delete them.

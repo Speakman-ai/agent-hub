@@ -28,14 +28,13 @@ import {
 import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
 import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
 import createPrEnvProvisionRoutes from './routes/pr-env-provision.js';
-import { handleFullstackPreviewBlock } from './preview/fullstack-preview.js';
 import {
   PR_ENV_CONFIG_SCHEMA,
   __resetPrEnvStoreForTests,
   __setPrEnvKeyFilePathForTests,
   writePrEnvConfig,
 } from './pr-env-store.js';
-import type { RouteDeps, Project, BroadcastFn } from './types.js';
+import type { RouteDeps } from './types.js';
 
 beforeEach(() => {
   __setPrEnvKillSwitchForTests(true);
@@ -136,54 +135,20 @@ describe('PR-env kill switch — production contract', () => {
     expect(lastRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
   });
 
-  it('fullstack preview emits preview_failed with the removal directive', async () => {
-    const events: Array<Record<string, unknown>> = [];
-    const broadcast: BroadcastFn = (event) => {
-      events.push(event as Record<string, unknown>);
-    };
-    const project: Project = {
-      id: 'acme',
-      name: 'Acme',
-      cwd: '/tmp/acme',
-      // The handler reads `project.prEnv` *after* the kill switch gate,
-      // so we can leave it set to something that would otherwise pass.
-      prEnv: { enabled: true } as Project['prEnv'],
-    } as Project;
-
-    // Spies that would touch git/gh/the pool — if the kill switch ever
-    // misses, the broadcast won't be `preview_failed` and we'll fail.
-    const git = vi.fn();
-    const gh = vi.fn();
-    const getPoolSlotByPrNumber = vi.fn();
-
-    await handleFullstackPreviewBlock(
-      'sess-1',
-      {
-        target: 'fullstack',
-        route: '/',
-        reason: 'test',
-      } as never,
-      {
-        broadcast,
-        project,
-        worktreePath: '/tmp/acme',
-        previewBaseUrl: 'https://preview.example.com',
-        git: git as never,
-        gh: gh as never,
-        getPoolSlotByPrNumber: getPoolSlotByPrNumber as never,
-      },
+  it('fullstack preview block is rejected at parse time — handler is gone', async () => {
+    // PR-Env Removal #2 deleted the fullstack preview handler module and
+    // dropped `'fullstack'` from `PreviewTarget`. The parse-time gate in
+    // `detectPreviewBlock` now rejects `target: 'fullstack'` outright,
+    // so the dispatcher never even sees a fullstack task and the kill
+    // switch has nothing left to gate. Pin that contract here so a
+    // future re-introduction has to update this test.
+    const { detectPreviewBlock } = await import('./preview/preview-block.js');
+    const result = detectPreviewBlock(
+      `<agenthub:preview>{"target":"fullstack","route":"/"}</agenthub:preview>`,
     );
-
-    expect(git).not.toHaveBeenCalled();
-    expect(gh).not.toHaveBeenCalled();
-    expect(getPoolSlotByPrNumber).not.toHaveBeenCalled();
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      kind: 'preview_failed',
-      sessionId: 'sess-1',
-      target: 'fullstack',
-      error: 'fullstack preview removed; use frontend-only worktree preview',
-    });
+    expect(result.present).toBe(true);
+    expect(result.task).toBeNull();
+    expect(result.reason).toBe('invalid-target');
   });
 
   it('webhook PR-env dispatch is skipped when kill switch is on', async () => {

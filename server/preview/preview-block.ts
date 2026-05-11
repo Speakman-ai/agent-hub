@@ -35,15 +35,14 @@ import type { PreviewRuntime } from './preview-runtime.js';
 /**
  * Which side of the application the agent wants previewed.
  *
- * - `client` / `server` resolve to the per-session preview runtime
- *   (`startPreview` against the worktree).
- * - `fullstack` is the escape hatch for changes that touch the backend
- *   or DB: it opens a draft PR via `gh pr create --draft`, then polls
- *   the existing PR-env container pool until the per-PR container
- *   reports `busy`, and broadcasts the standard PR-env preview URL.
- *   Implemented in `./fullstack-preview.ts`.
+ * Both targets resolve to the per-session preview runtime
+ * (`startPreview` against the worktree). The previous `fullstack`
+ * escape hatch (draft PR + PR-env container pool) has been removed
+ * along with the rest of the PR-environments subsystem — agents now
+ * preview frontend-only changes via the worktree runtime, and any
+ * full-stack verification rides the normal PR review flow.
  */
-export type PreviewTarget = 'client' | 'server' | 'fullstack';
+export type PreviewTarget = 'client' | 'server';
 
 export interface PreviewTask {
   target: PreviewTarget;
@@ -92,14 +91,6 @@ export interface PreviewBroadcastEvent {
   fullUrl?: string;
   port?: number;
   screenshotPath?: string | null;
-  /**
-   * Draft PR URL — only populated for `target: 'fullstack'` previews,
-   * which open a draft PR to spin up the container-pool PR-env. Lets
-   * the client render a "Draft PR #N" chip linked to the PR.
-   */
-  prUrl?: string;
-  /** Numeric PR id (for the `Draft PR #N` chip). */
-  prNumber?: number;
 
   // — `kind === 'preview_unavailable'` payload ——
   /** Sub-reason: project has no `prEnv` block, or its `preview.enabled` is false. */
@@ -159,9 +150,8 @@ const BLOCK_TAG_RE = /<agenthub:preview>\s*([\s\S]*?)\s*<\/agenthub:preview>/;
  * with a `reason` field when the block is present but malformed.
  *
  * Accepts:
- *   - `target`: `"client"`, `"server"`, or `"fullstack"` (case-insensitive,
- *     trimmed). Anything else → `invalid-target`. Missing/empty →
- *     `missing-target`.
+ *   - `target`: `"client"` or `"server"` (case-insensitive, trimmed).
+ *     Anything else → `invalid-target`. Missing/empty → `missing-target`.
  *   - `route`: must be a non-empty string starting with `/`. Missing →
  *     `missing-route`; bad shape → `invalid-route`.
  *   - `reason`: optional string. Other types (number, object, …) are dropped
@@ -196,7 +186,6 @@ export function detectPreviewBlock(text: string): PreviewDetectionResult {
   let target: PreviewTarget;
   if (rawTarget === 'client') target = 'client';
   else if (rawTarget === 'server') target = 'server';
-  else if (rawTarget === 'fullstack') target = 'fullstack';
   else return { present: true, task: null, reason: 'invalid-target', rawBody };
 
   // route — required, must start with `/`
@@ -228,7 +217,7 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
     case 'missing-target':
       return 'Preview block is missing the "target" field';
     case 'invalid-target':
-      return 'Preview block has an invalid "target" — expected "client", "server", or "fullstack"';
+      return 'Preview block has an invalid "target" — expected "client" or "server"';
     case 'missing-route':
       return 'Preview block is missing the "route" field';
     case 'invalid-route':
