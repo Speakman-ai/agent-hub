@@ -280,7 +280,7 @@ export default function MyClaudeAuthSection() {
         </div>
         {apiKeyStatus && (
           <div
-            role="alert"
+            role={apiKeyStatus.type === 'success' ? 'status' : 'alert'}
             className={`flex items-center gap-2 text-xs ${
               apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
             }`}
@@ -371,7 +371,7 @@ export default function MyClaudeAuthSection() {
           <button
             type="button"
             onClick={handleSaveOauth}
-            disabled={!oauthInput.trim().replace(/\s+/g, '') || oauthSaving}
+            disabled={!oauthInput.replace(/\s+/g, '') || oauthSaving}
             className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
           >
             {oauthSaving ? <Loader2 size={12} className="animate-spin" /> : null}
@@ -380,7 +380,7 @@ export default function MyClaudeAuthSection() {
         </div>
         {oauthStatus && (
           <div
-            role="alert"
+            role={oauthStatus.type === 'success' ? 'status' : 'alert'}
             className={`flex items-center gap-2 text-xs ${
               oauthStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
             }`}
