@@ -373,9 +373,9 @@ export function subscribeProvisioningEvents(wsUrl, handlers) {
     }
   }
 
-  // The wsUrl returned by /api/projects/provision and
-  // /api/settings/pr-env/provision is bare — the server can't know the
-  // caller's JWT. Browsers can't add headers to `new WebSocket(...)` and
+  // The wsUrl returned by /api/projects/provision is bare — the server
+  // can't know the caller's JWT. Browsers can't add headers to
+  // `new WebSocket(...)` and
   // the server's WS auth path only reads `?token=` / `?apiKey=` from the
   // URL, so we splice the credential in here. Single-user dev (no JWT
   // configured) falls through unchanged.

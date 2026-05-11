@@ -411,9 +411,9 @@ describe('subscribeProvisioningEvents', () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  // Regression: server-issued wsUrls (POST /api/projects/provision and
-  // POST /api/settings/pr-env/provision) come back without an auth
-  // credential. The client must splice ?token= / ?apiKey= in before
+  // Regression: server-issued wsUrls (POST /api/projects/provision)
+  // come back without an auth credential. The client must splice
+  // ?token= / ?apiKey= in before
   // opening the socket — otherwise multi-user hubs close the upgrade
   // with 4401 and surface "Provisioning stream dropped and could not be
   // resumed." See `appendAuthToWsUrl` in connection.js.

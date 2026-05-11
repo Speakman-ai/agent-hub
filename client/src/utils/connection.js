@@ -112,9 +112,9 @@ export function getWsUrl() {
  * from the browser. The server's WS auth path
  * (`authenticateWsDetailed` in `server/auth.ts`) only reads `?token=` /
  * `?apiKey=` from the URL — cookies are *not* consulted. Server routes
- * that hand back a `wsUrl` (e.g. `/api/projects/provision`,
- * `/api/settings/pr-env/provision`) cannot inject the user's JWT
- * themselves, so the client must splice it in before opening the socket.
+ * that hand back a `wsUrl` (e.g. `/api/projects/provision`) cannot
+ * inject the user's JWT themselves, so the client must splice it in
+ * before opening the socket.
  *
  * Returns the URL unchanged when no credential is available (single-user
  * dev) or when the input isn't a string — callers shouldn't have to

@@ -43,8 +43,8 @@ describe('PreviewAttachment', () => {
     const event = {
       kind: 'preview_unavailable',
       previewId: '',
-      wizardUrl: '/projects/agent-hub/settings/pr-environments',
-      unavailableReason: 'no-pr-env',
+      wizardUrl: '/projects/agent-hub/settings/projects',
+      unavailableReason: 'no-runtime',
       agentReason: 'show me the new badge',
     };
     render(<PreviewAttachment event={event} />);
@@ -53,22 +53,20 @@ describe('PreviewAttachment', () => {
     const link = screen.getByRole('link', { name: /Configure preview/i });
     // Wizard URL should always carry `focus=preview` so the wizard
     // jumps straight to the preview sub-section on open.
-    expect(link.getAttribute('href')).toBe(
-      '/projects/agent-hub/settings/pr-environments?focus=preview',
-    );
+    expect(link.getAttribute('href')).toBe('/projects/agent-hub/settings/projects?focus=preview');
   });
 
   it('appends focus=preview correctly when wizardUrl already has a query string', () => {
     const event = {
       kind: 'preview_unavailable',
       previewId: '',
-      wizardUrl: '/projects/agent-hub/settings/pr-environments?tab=runtime',
-      unavailableReason: 'no-pr-env',
+      wizardUrl: '/projects/agent-hub/settings/projects?tab=runtime',
+      unavailableReason: 'preview-disabled',
     };
     render(<PreviewAttachment event={event} />);
     const link = screen.getByRole('link', { name: /Configure preview/i });
     expect(link.getAttribute('href')).toBe(
-      '/projects/agent-hub/settings/pr-environments?tab=runtime&focus=preview',
+      '/projects/agent-hub/settings/projects?tab=runtime&focus=preview',
     );
   });
 
@@ -77,8 +75,8 @@ describe('PreviewAttachment', () => {
     const event = {
       kind: 'preview_unavailable',
       previewId: '',
-      wizardUrl: '/projects/agent-hub/settings/pr-environments',
-      unavailableReason: 'no-pr-env',
+      wizardUrl: '/projects/agent-hub/settings/projects',
+      unavailableReason: 'preview-disabled',
     };
     const { container } = render(<PreviewAttachment event={event} onSkip={onSkip} />);
     fireEvent.click(screen.getByRole('button', { name: /Skip/i }));
@@ -91,8 +89,8 @@ describe('PreviewAttachment', () => {
     const event = {
       kind: 'preview_unavailable',
       previewId: '',
-      wizardUrl: '/projects/agent-hub/settings/pr-environments',
-      unavailableReason: 'no-pr-env',
+      wizardUrl: '/projects/agent-hub/settings/projects',
+      unavailableReason: 'preview-disabled',
     };
     render(<PreviewAttachment event={event} onConfigure={onConfigure} />);
     fireEvent.click(screen.getByRole('link', { name: /Configure preview/i }));

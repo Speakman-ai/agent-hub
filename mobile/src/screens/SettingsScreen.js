@@ -22,7 +22,6 @@ import { parseAllowlist, serializeAllowlist, parseAllowlistFromBackend } from '.
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import PrEnvSettingsSection from '../components/PrEnvSettingsSection';
 
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
@@ -2720,7 +2719,6 @@ export default function SettingsScreen() {
     { id: 'crons', label: 'Crons' },
     { id: 'projects', label: 'Projects' },
     { id: 'webhooks', label: 'Webhooks' },
-    { id: 'pr-environments', label: 'PR Envs' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
     { id: 'config', label: 'Backup' },
@@ -2766,7 +2764,6 @@ export default function SettingsScreen() {
           {tab === 'crons' && <CronSection />}
           {tab === 'projects' && <ProjectsSection />}
           {tab === 'webhooks' && <WebhookSection />}
-          {tab === 'pr-environments' && <PrEnvSettingsSection />}
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && <AgentConfigSection />}
           {tab === 'config' && <ConfigBackupSection />}

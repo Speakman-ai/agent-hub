@@ -19,8 +19,6 @@ import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
-import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
-import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -2199,14 +2197,6 @@ function ProjectsSection({
   showToast,
   /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
   initialExpandedProjectId = null,
-  /**
-   * Deep-link from the chat preview teach-moment:
-   * `{ projectId, focus: 'preview' }`. When set, auto-opens the
-   * PR-env wizard for that project with the preview sub-section in
-   * focus. Cleared via `onClearInitialPrEnvWizard` after use.
-   */
-  initialPrEnvWizard = null,
-  onClearInitialPrEnvWizard,
 }) {
   const [projectWorkflow, setProjectWorkflow] = useState({});
   const [modelConfig, setModelConfig] = useState(null);
@@ -2235,30 +2225,6 @@ function ProjectsSection({
 
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
-
-  // PR-env wizard target — when set, renders the modal for that project.
-  const [prEnvWizardProject, setPrEnvWizardProject] = useState(null);
-  /** Optional focus hint for the wizard (e.g. `'preview'`). Cleared when
-   *  the wizard closes so a manual reopen lands on step 0 again. */
-  const [prEnvWizardFocus, setPrEnvWizardFocus] = useState(null);
-  /** Guards the deep-link auto-open so we run it once per `initialPrEnvWizard` value. */
-  const lastPrEnvDeepLinkRef = useRef(null);
-
-  // Honour the chat → settings preview deep-link. When the URL carries
-  // `?focus=preview&prEnvProject=<id>`, App.jsx populates
-  // `initialPrEnvWizard` and we open the wizard once the matching
-  // project is loaded. We clear App's state via the prop callback so
-  // tab-switching inside Settings doesn't re-trigger the open.
-  useEffect(() => {
-    if (!initialPrEnvWizard?.projectId) return;
-    if (lastPrEnvDeepLinkRef.current === initialPrEnvWizard.projectId) return;
-    const target = projects.find((p) => p.id === initialPrEnvWizard.projectId);
-    if (!target) return;
-    setPrEnvWizardProject(target);
-    setPrEnvWizardFocus(initialPrEnvWizard.focus || null);
-    lastPrEnvDeepLinkRef.current = initialPrEnvWizard.projectId;
-    if (typeof onClearInitialPrEnvWizard === 'function') onClearInitialPrEnvWizard();
-  }, [initialPrEnvWizard, projects, onClearInitialPrEnvWizard]);
 
   useEffect(() => {
     if (!initialExpandedProjectId) {
@@ -2842,47 +2808,6 @@ function ProjectsSection({
                       )}
                     </div>
 
-                    {/* PR Preview Environment */}
-                    <div className="pt-2 border-t border-gray-800 space-y-2">
-                      <label className={labelClass}>PR Preview Environment</label>
-                      <div className="flex items-center justify-between gap-3 bg-gray-900/40 border border-gray-800 rounded-lg p-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            {p.prEnv?.enabled ? (
-                              <>
-                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-                                <span className="text-xs text-emerald-300 font-medium">
-                                  Enabled
-                                </span>
-                                <span className="text-xs text-gray-500 font-mono truncate">
-                                  {p.prEnv?.startScript} :{p.prEnv?.internalPort}
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="inline-block w-2 h-2 rounded-full bg-gray-600" />
-                                <span className="text-xs text-gray-500">
-                                  Not configured — auto-build a preview env on every PR.
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => {
-                            // Reset deep-link focus on a manual open so
-                            // step 0 (the explainer toggle) is shown.
-                            setPrEnvWizardFocus(null);
-                            setPrEnvWizardProject(p);
-                          }}
-                          className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 flex-shrink-0"
-                        >
-                          <GitBranch size={12} />
-                          {p.prEnv?.enabled ? 'Edit' : 'Configure'}
-                        </button>
-                      </div>
-                    </div>
-
                     {/* Delete Project */}
                     <div className="pt-2 border-t border-gray-800">
                       <button
@@ -2917,22 +2842,6 @@ function ProjectsSection({
           })}
         </div>
       </div>
-      {prEnvWizardProject && (
-        <PrEnvProjectWizard
-          project={prEnvWizardProject}
-          focus={prEnvWizardFocus}
-          onClose={() => {
-            setPrEnvWizardProject(null);
-            setPrEnvWizardFocus(null);
-          }}
-          onSaved={() => {
-            setPrEnvWizardProject(null);
-            setPrEnvWizardFocus(null);
-            if (typeof onProjectsChange === 'function') onProjectsChange();
-          }}
-          showToast={showToast}
-        />
-      )}
     </div>
   );
 }
@@ -7932,7 +7841,6 @@ const SETTINGS_GROUPS = [
     label: 'Operations',
     tabs: [
       { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
-      { id: 'pr-environments', iconName: 'GitBranch', text: 'PR Environments' },
       { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
       { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
       { id: 'logs', iconName: 'FileText', text: 'Logs' },
@@ -7983,54 +7891,14 @@ export default function SettingsPage({
   initialTab,
   /** When opening Settings → GitHub from Workflows, expand this project's card. */
   initialGithubExpandedProjectId = null,
-  /**
-   * Deep-link from the chat preview teach-moment. When set to
-   * `{ projectId, focus: 'preview' }`, SettingsPage switches to the
-   * Projects tab and forwards the focus into ProjectsSection so it can
-   * auto-open `PrEnvProjectWizard` scrolled to the preview sub-section.
-   */
-  initialPrEnvWizard = null,
-  /** Called once the wizard has consumed the deep-link so the parent
-   *  can clear its state and avoid re-opening on tab switches. */
-  onClearInitialPrEnvWizard,
   onNavigate,
   showToast,
   wsRef,
 }) {
-  // Honour the preview deep-link by switching to the Projects tab on
-  // first render — the wizard mounts inside ProjectsSection and won't
-  // appear from any other tab.
   const [tab, setTab] = useState(
-    initialPrEnvWizard?.projectId
-      ? 'projects'
-      : initialTab === 'integrations'
-        ? 'general'
-        : initialTab || 'general',
+    initialTab === 'integrations' ? 'general' : initialTab || 'general',
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  // Server-reported feature flags. Used to hide deprecated sections like
-  // PR Environments while the subsystem is being removed (epic 88367984).
-  // Defaults to `prEnv: false` so the tab is hidden on first render until
-  // the fetch lands — matches the production server contract.
-  const [features, setFeatures] = useState({ prEnv: false });
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/config')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((cfg) => {
-        if (cancelled || !cfg) return;
-        if (cfg.features && typeof cfg.features === 'object') {
-          setFeatures({ prEnv: cfg.features.prEnv === true });
-        }
-      })
-      .catch(() => {
-        /* leave defaults */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Legacy MCP location was Settings → Integrations; MCP now lives under Skills & Context → MCP.
   useEffect(() => {
@@ -8044,18 +7912,7 @@ export default function SettingsPage({
     if (initialTab && initialTab !== 'integrations') setTab(initialTab);
   }, [initialTab]);
 
-  // Filter deprecated tabs out of the sidebar based on server feature
-  // flags. PR Environments is gated by `features.prEnv` — when the
-  // subsystem is killed (epic 88367984) the tab disappears entirely.
-  const visibleSettingsGroups = useMemo(() => {
-    return SETTINGS_GROUPS.map((group) => ({
-      ...group,
-      tabs: group.tabs.filter((t) => {
-        if (t.id === 'pr-environments' && !features.prEnv) return false;
-        return true;
-      }),
-    })).filter((group) => group.tabs.length > 0);
-  }, [features.prEnv]);
+  const visibleSettingsGroups = SETTINGS_GROUPS;
 
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
@@ -8171,11 +8028,7 @@ export default function SettingsPage({
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   showToast={showToast}
-                  initialExpandedProjectId={
-                    initialGithubExpandedProjectId || initialPrEnvWizard?.projectId || null
-                  }
-                  initialPrEnvWizard={initialPrEnvWizard}
-                  onClearInitialPrEnvWizard={onClearInitialPrEnvWizard}
+                  initialExpandedProjectId={initialGithubExpandedProjectId || null}
                 />
               )}
               {tab === 'orgs' && <OrganizationsSection />}
@@ -8196,7 +8049,6 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'usage' && <UsageSection />}
-              {tab === 'pr-environments' && features.prEnv && <PrEnvironmentsSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'backup' && (
                 <>
