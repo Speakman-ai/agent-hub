@@ -492,6 +492,93 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     expect(autoPrEvents.length).toBeGreaterThan(0);
     const lastPrUrl = autoPrEvents[autoPrEvents.length - 1][0].prUrl;
     expect(lastPrUrl).toBe('https://github.com/test/repo/pull/42');
+
+    // Regression: the pre-check must short-circuit `gh pr create` — calling
+    // create at all (even when it fails) was the bug, because in resolve-
+    // comment flows on a fresh worktree branch the create call SUCCEEDS and
+    // opens a duplicate PR.
+    const createCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(createCalls).toHaveLength(0);
+  });
+
+  it('skips gh pr create entirely when the branch already has an open PR (resolve-comment regression)', async () => {
+    // Resolve-comment regression: when a session pushes to a branch that
+    // already has an open PR — whether that's the original PR branch
+    // (linked-session reuse) or any branch GitHub sees an open PR for —
+    // we must NOT invoke `gh pr create`. The previous behaviour relied on
+    // `gh pr create` failing and a regex pulling the URL out of stderr;
+    // when the resolve session ran on a fresh worktree branch the create
+    // call SUCCEEDED instead of failing, producing one new PR per review
+    // round. The fix pre-checks `gh pr view <branch>` and short-circuits.
+    const execCalls: string[] = [];
+    const mockBroadcast = vi.fn();
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'Resolve comment session' })) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD'))
+          return ok('agent-hub/test/session-resolve\n');
+        // Pre-check: branch already has an open PR.
+        if (cmd.startsWith('gh pr view')) return ok('https://github.com/test/repo/pull/123\n');
+        // `gh pr create` MUST NOT be invoked — fail loudly if it is so the
+        // assertion below pinpoints the regression.
+        if (cmd.startsWith('gh pr create')) {
+          return callback?.(new Error('gh pr create should not be called'), {
+            stdout: '',
+            stderr: '',
+          });
+        }
+        return ok('');
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'resolve-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-resolve', 'agent-resolve', project, agent, '/worktree-resolve', '');
+
+    // The fix: no `gh pr create` call at all.
+    const createCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(createCalls).toHaveLength(0);
+
+    // The existing PR must still be surfaced via auto_pr_created so the
+    // card lifecycle (move to Review, etc.) runs.
+    const autoPrEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
+    );
+    expect(autoPrEvents.length).toBeGreaterThan(0);
+    expect(autoPrEvents[autoPrEvents.length - 1][0].prUrl).toBe(
+      'https://github.com/test/repo/pull/123',
+    );
+
+    // And the branch must still be pushed so the existing PR sees the
+    // additional commits — the whole point of the resolve flow.
+    const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
+    expect(pushCalls.length).toBeGreaterThan(0);
+    expect(pushCalls[0]).toContain('agent-hub/test/session-resolve');
   });
 
   it('sets git identity before commit when not configured in worktree', async () => {

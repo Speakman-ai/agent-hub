@@ -1511,6 +1511,55 @@ async function commitPushAndCreatePR(
       );
     }
 
+    // ── Pre-check: existing open PR for this branch ───────────────────
+    //
+    // Resolve-comment / review-feedback flows push additional commits to
+    // a PR branch that already has an open PR. Calling `gh pr create`
+    // against a branch that already has an open PR returns a non-zero
+    // exit which is then handled by the catch-block below — but only
+    // when the gh error message includes the existing PR URL on stdout
+    // or stderr. That format has drifted across `gh` versions and is
+    // not contractual. Worse, when a fresh resolve session is spawned
+    // on a NEW worktree branch, `gh pr create` SUCCEEDS and opens a
+    // duplicate PR for the same logical change (one new PR per review
+    // round). Pre-checking via `gh pr view --json url,state` is the
+    // authoritative source of truth and removes both failure modes.
+    //
+    // `gh pr view <branch>` exits non-zero when the branch has no PR,
+    // which we treat as "no existing PR — fall through to create".
+    let existingPrForBranch: string | null = null;
+    try {
+      prLog('\n$ gh pr view (check for existing open PR) …\n');
+      const { stdout: preCheckOut } = await runGhStreamed(
+        [
+          'pr',
+          'view',
+          changes.branch,
+          '--json',
+          'url,state',
+          '--jq',
+          'select(.state == "OPEN") | .url',
+        ],
+        effectiveCwd,
+        15000,
+        prLog,
+      );
+      const url = preCheckOut.trim();
+      if (url && /^https:\/\/github\.com\/[^\s]+\/pull\/\d+/.test(url)) {
+        existingPrForBranch = url;
+      }
+    } catch {
+      // No open PR for this branch — proceed with `gh pr create`.
+    }
+
+    if (existingPrForBranch) {
+      console.log(
+        `[auto-commit] Existing open PR for branch "${changes.branch}": ${existingPrForBranch} — pushing additional commits without opening a new PR`,
+      );
+      await broadcastAndMove(existingPrForBranch);
+      return { ok: true, prUrl: existingPrForBranch };
+    }
+
     try {
       const createArgs = [
         'pr',
