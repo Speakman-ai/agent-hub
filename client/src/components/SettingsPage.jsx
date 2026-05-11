@@ -8011,6 +8011,29 @@ export default function SettingsPage({
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // Server-reported feature flags. Used to hide deprecated sections like
+  // PR Environments while the subsystem is being removed (epic 88367984).
+  // Defaults to `prEnv: false` so the tab is hidden on first render until
+  // the fetch lands — matches the production server contract.
+  const [features, setFeatures] = useState({ prEnv: false });
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cancelled || !cfg) return;
+        if (cfg.features && typeof cfg.features === 'object') {
+          setFeatures({ prEnv: cfg.features.prEnv === true });
+        }
+      })
+      .catch(() => {
+        /* leave defaults */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Legacy MCP location was Settings → Integrations; MCP now lives under Skills & Context → MCP.
   useEffect(() => {
     if (initialTab === 'integrations' && typeof onNavigate === 'function') {
@@ -8023,14 +8046,27 @@ export default function SettingsPage({
     if (initialTab && initialTab !== 'integrations') setTab(initialTab);
   }, [initialTab]);
 
+  // Filter deprecated tabs out of the sidebar based on server feature
+  // flags. PR Environments is gated by `features.prEnv` — when the
+  // subsystem is killed (epic 88367984) the tab disappears entirely.
+  const visibleSettingsGroups = useMemo(() => {
+    return SETTINGS_GROUPS.map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((t) => {
+        if (t.id === 'pr-environments' && !features.prEnv) return false;
+        return true;
+      }),
+    })).filter((group) => group.tabs.length > 0);
+  }, [features.prEnv]);
+
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
-    for (const group of SETTINGS_GROUPS) {
+    for (const group of visibleSettingsGroups) {
       const found = group.tabs.find((t) => t.id === tab);
       if (found) return found;
     }
-    return SETTINGS_GROUPS[0].tabs[0];
-  }, [tab]);
+    return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
+  }, [tab, visibleSettingsGroups]);
 
   const handleSelectTab = (id) => {
     setTab(id);
@@ -8039,7 +8075,7 @@ export default function SettingsPage({
 
   const sidebar = (
     <nav aria-label="Settings sections" className="space-y-5">
-      {SETTINGS_GROUPS.map((group) => (
+      {visibleSettingsGroups.map((group) => (
         <div key={group.id}>
           <p className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold px-3 mb-1.5">
             {group.label}
@@ -8163,7 +8199,7 @@ export default function SettingsPage({
               )}
               {tab === 'usage' && <UsageSection />}
               {tab === 'pool' && <PoolSection />}
-              {tab === 'pr-environments' && <PrEnvironmentsSection />}
+              {tab === 'pr-environments' && features.prEnv && <PrEnvironmentsSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'backup' && (
                 <>

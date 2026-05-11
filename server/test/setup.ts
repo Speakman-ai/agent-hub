@@ -102,6 +102,21 @@ cp.execFileSync = makeGuard('execFileSync', cp.execFileSync);
 mkdirSync(TEST_DATA_DIR, { recursive: true });
 writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
 
+// PR-env kill switch is ON in production (epic 88367984) — every PR-env
+// code path short-circuits. Tests need the legacy paths to keep working
+// until cards #2–#6 delete the code; flip it OFF here so historical
+// suites that exercise `readPrEnvConfig`, the PR-env routes, the
+// container-pool crons, and fullstack preview still see the old
+// behaviour. The dedicated kill-switch test
+// (`server/pr-env-killswitch.test.ts`) flips it back on for the
+// assertions that prove the production gates fire.
+//
+// Imported lazily so the module's module-level state is reset for every
+// test file (per-FILE isolation matches the rest of this setup).
+await import('../pr-env-killswitch.js').then((mod) => {
+  mod.__setPrEnvKillSwitchForTests(false);
+});
+
 afterAll(() => {
   try {
     rmSync(TEST_DATA_DIR, { recursive: true, force: true });

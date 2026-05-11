@@ -10,6 +10,7 @@ import { githubApiRequest, resolveInstallationId, getInstallationToken } from '.
 import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from '../container-pool/pr-env-dispatch.js';
 import { getPrEnvBuilderDeps, readPrEnvConfig } from '../container-pool/pr-env-runtime.js';
 import { readPrEnvConfigRow } from '../pr-env-store.js';
+import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import { getDb } from '../db.js';
 import {
   CHECK_RUN_NAME,
@@ -1673,11 +1674,29 @@ async function handleKanbanWebhookEvent(
   // operator-owned `prEnv.enabled` toggle (DB row → file fallback);
   // `getPrEnvBuilderDeps()` returns null when disabled and the dispatch
   // becomes a no-op.
+  //
+  // Kill-switch override: the PR-env subsystem is being removed
+  // (epic 88367984). When the kill switch is on we skip dispatch entirely
+  // and log a one-line skip so operators tailing the webhook log can prove
+  // no container-pool activity was triggered.
   if (
+    isPrEnvKillSwitchOn() &&
     event === 'pull_request' &&
     payload.pull_request &&
     payload.repository?.full_name &&
     (action === 'opened' || action === 'synchronize' || action === 'closed')
+  ) {
+    console.log(
+      `[Webhook/PR-Env] kill switch ON — skipped ${action} dispatch for ` +
+        `${payload.repository.full_name}#${payload.pull_request.number}`,
+    );
+  }
+  if (
+    event === 'pull_request' &&
+    payload.pull_request &&
+    payload.repository?.full_name &&
+    (action === 'opened' || action === 'synchronize' || action === 'closed') &&
+    !isPrEnvKillSwitchOn()
   ) {
     const pr = payload.pull_request;
     const repoFullName = payload.repository.full_name;

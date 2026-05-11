@@ -42,6 +42,7 @@ import type {
   PreviewMalformedReason,
   PreviewTask,
 } from './preview-block.js';
+import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -208,6 +209,20 @@ export async function handleFullstackPreviewBlock(
       ...extra,
     } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
   };
+
+  // ── Gate 0: kill switch (epic 88367984) ─────────────────────────────
+  // The PR-env container pool is being removed; fullstack preview rides
+  // on it so it must short-circuit here. Emit `preview_failed` with a
+  // clear directive so the chat UI tells the user to use the
+  // frontend-only worktree preview instead.
+  if (isPrEnvKillSwitchOn()) {
+    emit({
+      kind: 'preview_failed',
+      error: 'fullstack preview removed; use frontend-only worktree preview',
+      logTail: [],
+    });
+    return;
+  }
 
   // ── Gate 1: project's PR-env config must be enabled ────────────────
   if (!project.prEnv || project.prEnv.enabled !== true) {
