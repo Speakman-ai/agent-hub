@@ -20,6 +20,7 @@ import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolve
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
+import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -1107,6 +1108,49 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         : null,
     });
   });
+
+  // ─── One-shot preview test ────────────────────────────────────────
+  //
+  // Settings → Preview's "Test preview" button calls this endpoint. It
+  // runs the configured startScript inside `project.cwd/client`,
+  // allocates a port, polls `healthPath` with a 30s timeout, captures a
+  // single screenshot on success, and tears down the spawned process in
+  // a `finally` so no orphaned dev server is left behind. Pure read of
+  // `projects.json` — no session, no worktree, no DB row written.
+  //
+  // Response shape:
+  //   { ok, ports: { allocated }, durationMs, screenshotUrl?, error? }
+  //
+  // Errors are always `200 OK` with `ok:false` + `error` so the panel can
+  // render them inline (this isn't a server fault, it's user config).
+  router.post(
+    '/api/projects/:projectId/preview/test',
+    async (req: Request, res: Response): Promise<void> => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      // `serverDir/uploads` matches the static-file mount in `index.ts`.
+      const uploadsDir = path.join(deps.serverDir, 'uploads');
+      try {
+        const result = await runPreviewTest({
+          project,
+          uploadsDir,
+          publicUrl: config.publicUrl,
+        });
+        res.json(result);
+      } catch (err) {
+        // runPreviewTest is designed to swallow all operational failures
+        // and return ok:false. A throw here is unexpected — surface it
+        // verbatim so we can debug rather than papering over the bug.
+        res.status(500).json({
+          ok: false,
+          error: `Unexpected preview-test error: ${(err as Error).message}`,
+        });
+      }
+    },
+  );
 
   // ─── Branch listing for the PR base-branch picker ─────────────────
   //
