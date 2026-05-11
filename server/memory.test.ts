@@ -1,76 +1,60 @@
+// Tests for the memory reconciliation flows. These intentionally don't
+// exercise engine selection — that's covered in `engine-resolver.test.ts`
+// and `engine-availability.test.ts`. Here we mock both the resolver and
+// the one-shot spawn so the tests can focus on prompt assembly, the
+// NO_CHANGES_NEEDED short-circuit, the size-guard, the .bak backup, and
+// the reconciliation mutex.
+
 import { vi, type Mock } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import type { ChildProcess } from 'child_process';
 
-vi.mock('child_process', () => {
-  const mockSpawn = vi.fn();
-  return { spawn: mockSpawn };
+vi.mock('./engine-resolver.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('./engine-resolver.js')>('./engine-resolver.js');
+  return {
+    ...actual,
+    // Default — succeed with claude-code. Individual tests can override
+    // via `(resolveOneShotEngine as Mock).mockImplementationOnce(...)`.
+    resolveOneShotEngine: vi.fn(async () => ({
+      engine: 'claude-code' as const,
+      model: 'claude-sonnet-4-5',
+      fallbackUsed: false,
+      availability: {} as never,
+    })),
+  };
 });
 
-const { spawn } = await import('child_process');
+vi.mock('./one-shot-spawn.js', () => ({
+  runOneShotPrompt: vi.fn(),
+}));
+
+const { resolveOneShotEngine, NoEnginesAvailableError } = await import('./engine-resolver.js');
+const { runOneShotPrompt } = await import('./one-shot-spawn.js');
 const { reconcileMemoryAfterSession, reconcileMemoryFromWiki, localDateStr } =
   await import('./memory.js');
 
-const spawnMock = spawn as Mock;
+const runOneShotMock = runOneShotPrompt as Mock;
+const resolveMock = resolveOneShotEngine as Mock;
 
-interface MockProc {
-  stdout: { on: Mock };
-  stderr: { on: Mock };
-  on: Mock;
-  kill: Mock;
+function setupRunReturn(output: string): void {
+  // `runOneShotPrompt` trims its return value in production — mirror
+  // that here so tests model the real return shape.
+  runOneShotMock.mockImplementation(async () => output.trim());
 }
 
-function setupSpawnMock(output: string | null, exitCode = 0): void {
-  spawnMock.mockImplementation((): MockProc => {
-    const proc: MockProc = {
-      stdout: { on: vi.fn() },
-      stderr: { on: vi.fn() },
-      on: vi.fn(),
-      kill: vi.fn(),
-    };
-    setTimeout(() => {
-      if (output != null) {
-        const stdoutCb = proc.stdout.on.mock.calls.find((c: unknown[]) => c[0] === 'data')?.[1] as
-          | ((buf: Buffer) => void)
-          | undefined;
-        if (stdoutCb) stdoutCb(Buffer.from(output));
-      }
-      const closeCb = proc.on.mock.calls.find((c: unknown[]) => c[0] === 'close')?.[1] as
-        | ((code: number) => void)
-        | undefined;
-      if (closeCb) closeCb(exitCode);
-    }, 5);
-    return proc;
-  });
-}
-
-function setupSpawnError(errorMsg: string, exitCode = 1): void {
-  spawnMock.mockImplementation((): MockProc => {
-    const proc: MockProc = {
-      stdout: { on: vi.fn() },
-      stderr: { on: vi.fn() },
-      on: vi.fn(),
-      kill: vi.fn(),
-    };
-    setTimeout(() => {
-      const stderrCb = proc.stderr.on.mock.calls.find((c: unknown[]) => c[0] === 'data')?.[1] as
-        | ((buf: Buffer) => void)
-        | undefined;
-      if (stderrCb) stderrCb(Buffer.from(errorMsg));
-      const closeCb = proc.on.mock.calls.find((c: unknown[]) => c[0] === 'close')?.[1] as
-        | ((code: number) => void)
-        | undefined;
-      if (closeCb) closeCb(exitCode);
-    }, 5);
-    return proc;
+function setupRunReject(message: string): void {
+  runOneShotMock.mockImplementation(async () => {
+    throw new Error(message);
   });
 }
 
 const DEFAULT_OPTS = {
-  claudeBin: '/usr/local/bin/claude',
-  spawnEnv: {},
+  // The resolver is mocked, so we only need an object that satisfies the
+  // type — none of these fields are read in the test path.
+  cfg: {} as never,
+  spawnEnv: {} as NodeJS.ProcessEnv,
   cwd: '/tmp',
 };
 
@@ -82,7 +66,15 @@ beforeEach(() => {
     `memory-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   mkdirSync(tmpDir, { recursive: true });
-  spawnMock.mockReset();
+  runOneShotMock.mockReset();
+  resolveMock.mockReset();
+  // Default resolver behaviour: claude-code, no fallback.
+  resolveMock.mockImplementation(async () => ({
+    engine: 'claude-code' as const,
+    model: 'claude-sonnet-4-5',
+    fallbackUsed: false,
+    availability: {} as never,
+  }));
 });
 
 afterEach(() => {
@@ -120,31 +112,31 @@ describe('reconcileMemoryAfterSession', () => {
   describe('early returns', () => {
     it('returns immediately if workspace is falsy', async () => {
       await reconcileMemoryAfterSession(undefined, 'some summary', DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if sessionSummary is falsy', async () => {
       await reconcileMemoryAfterSession(tmpDir, '', DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if MEMORY.md does not exist', async () => {
       await reconcileMemoryAfterSession(tmpDir, 'some summary', DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if MEMORY.md is empty', async () => {
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), '   \n  ', 'utf-8');
       await reconcileMemoryAfterSession(tmpDir, 'some summary', DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
   });
 
   describe('NO_CHANGES_NEEDED detection', () => {
-    it('does not overwrite MEMORY.md when Claude responds NO_CHANGES_NEEDED', async () => {
+    it('does not overwrite MEMORY.md when the model responds NO_CHANGES_NEEDED', async () => {
       const original = '# Memory\n\nSome existing content here that is long enough.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnMock('NO_CHANGES_NEEDED');
+      setupRunReturn('NO_CHANGES_NEEDED');
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -155,7 +147,7 @@ describe('reconcileMemoryAfterSession', () => {
     it('does not overwrite when response contains NO_CHANGES_NEEDED among other text', async () => {
       const original = '# Memory\n\nSome existing content here that is long enough.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnMock('After review: NO_CHANGES_NEEDED for this file.');
+      setupRunReturn('After review: NO_CHANGES_NEEDED for this file.');
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -168,7 +160,7 @@ describe('reconcileMemoryAfterSession', () => {
     it('rejects result that is too short (< 50 chars)', async () => {
       const original = '# Memory\n\nSome content that is reasonable length for a memory file.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnMock('Too short');
+      setupRunReturn('Too short');
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -180,7 +172,7 @@ describe('reconcileMemoryAfterSession', () => {
       const original = '# Memory\n\n' + 'x'.repeat(500);
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
       const hugeResult = '# Memory\n\n' + 'y'.repeat(2000);
-      setupSpawnMock(hugeResult);
+      setupRunReturn(hugeResult);
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -192,7 +184,7 @@ describe('reconcileMemoryAfterSession', () => {
       const original = '# Memory\n\n' + 'x'.repeat(69);
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
       const validResult = '# Memory\n\n' + 'Updated content. '.repeat(30);
-      setupSpawnMock(validResult);
+      setupRunReturn(validResult);
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -206,7 +198,7 @@ describe('reconcileMemoryAfterSession', () => {
       const original = '# Memory\n\nOld content that is long enough for the size check to pass.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
       const updated = '# Memory\n\nUpdated content that is long enough for the size check to pass.';
-      setupSpawnMock(updated);
+      setupRunReturn(updated);
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
@@ -218,15 +210,37 @@ describe('reconcileMemoryAfterSession', () => {
   });
 
   describe('error handling', () => {
-    it('does not overwrite MEMORY.md when Claude exits non-zero', async () => {
+    it('does not overwrite MEMORY.md when the runner rejects', async () => {
       const original = '# Memory\n\nSome existing content that should not be changed.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnError('Something went wrong', 1);
+      setupRunReject('Something went wrong');
 
       await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
 
       const after = readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8');
       expect(after).toBe(original);
+    });
+
+    it('handles NoEnginesAvailableError without overwriting MEMORY.md', async () => {
+      const original = '# Memory\n\nExisting content that must remain when no engines are set up.';
+      writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
+      // The resolver throws NoEnginesAvailableError when nothing is authed.
+      resolveMock.mockImplementationOnce(async () => {
+        throw new NoEnginesAvailableError({} as never);
+      });
+      const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
+
+      const after = readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8');
+      expect(after).toBe(original);
+      // The catch block tags the no-engines case distinctly so ops can
+      // tell it apart from a generic spawn failure.
+      expect(consoleErrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('No AI engine credentials available'),
+        expect.any(String),
+      );
+      consoleErrSpy.mockRestore();
     });
   });
 });
@@ -239,31 +253,31 @@ describe('reconcileMemoryFromWiki', () => {
   describe('early returns', () => {
     it('returns immediately if workspace is falsy', async () => {
       await reconcileMemoryFromWiki(undefined, sampleWikiPages, DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if wikiPages is empty', async () => {
       await reconcileMemoryFromWiki(tmpDir, [], DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if MEMORY.md does not exist', async () => {
       await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
 
     it('returns immediately if MEMORY.md is empty', async () => {
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), '  \n', 'utf-8');
       await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(runOneShotMock).not.toHaveBeenCalled();
     });
   });
 
   describe('NO_CHANGES_NEEDED', () => {
-    it('does not overwrite when Claude says no changes needed', async () => {
+    it('does not overwrite when the model says no changes needed', async () => {
       const original = '# Memory\n\nExisting wiki-derived content, long enough to pass checks.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnMock('NO_CHANGES_NEEDED');
+      setupRunReturn('NO_CHANGES_NEEDED');
 
       await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
 
@@ -276,7 +290,7 @@ describe('reconcileMemoryFromWiki', () => {
     it('rejects too-short result', async () => {
       const original = '# Memory\n\nContent with enough length to be meaningful for the test.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
-      setupSpawnMock('Short');
+      setupRunReturn('Short');
 
       await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
 
@@ -290,7 +304,7 @@ describe('reconcileMemoryFromWiki', () => {
       const original = '# Memory\n\nOld wiki-derived content that is long enough to pass checks.';
       writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
       const updated = '# Memory\n\nNew wiki-derived content that is long enough to pass checks.';
-      setupSpawnMock(updated);
+      setupRunReturn(updated);
 
       await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
 
@@ -298,6 +312,47 @@ describe('reconcileMemoryFromWiki', () => {
       expect(after).toBe(updated);
       const backup = readFileSync(path.join(tmpDir, 'MEMORY.md.bak'), 'utf-8');
       expect(backup).toBe(original);
+    });
+
+    it('falls back to a non-Claude engine without disturbing the result', async () => {
+      // Resolver reports a fallback was needed (Claude unavailable). The
+      // memory function should still apply the result — the engine choice
+      // is opaque to the caller.
+      resolveMock.mockImplementationOnce(async () => ({
+        engine: 'cursor-agent' as const,
+        model: 'auto',
+        fallbackUsed: true,
+        fallbackFromReason: 'claude-code:no-credentials',
+        availability: {} as never,
+      }));
+      const original = '# Memory\n\nOld wiki-derived content that is long enough to pass checks.';
+      writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
+      const updated = '# Memory\n\nFallback-engine update content that is also sufficiently long.';
+      setupRunReturn(updated);
+
+      await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
+
+      const after = readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8');
+      expect(after).toBe(updated);
+    });
+
+    it('skips the sync (no overwrite) when the resolver throws NoEnginesAvailableError', async () => {
+      const original = '# Memory\n\nExisting content that must remain when no engines are set up.';
+      writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
+      resolveMock.mockImplementationOnce(async () => {
+        throw new NoEnginesAvailableError({} as never);
+      });
+      const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await reconcileMemoryFromWiki(tmpDir, sampleWikiPages, DEFAULT_OPTS);
+
+      const after = readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8');
+      expect(after).toBe(original);
+      expect(consoleErrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('No AI engine credentials available'),
+        expect.any(String),
+      );
+      consoleErrSpy.mockRestore();
     });
   });
 });
@@ -308,31 +363,12 @@ describe('mutex serialization', () => {
     writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
 
     let callCount = 0;
-    spawnMock.mockImplementation((): MockProc => {
-      callCount++;
-      const currentCall = callCount;
-      const proc: MockProc = {
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        on: vi.fn(),
-        kill: vi.fn(),
-      };
-      const delay = currentCall === 1 ? 30 : 5;
-      setTimeout(() => {
-        const stdoutCb = proc.stdout.on.mock.calls.find((c: unknown[]) => c[0] === 'data')?.[1] as
-          | ((buf: Buffer) => void)
-          | undefined;
-        if (stdoutCb) {
-          stdoutCb(
-            Buffer.from(`# Memory\n\nUpdate from call ${currentCall} with enough length to pass.`),
-          );
-        }
-        const closeCb = proc.on.mock.calls.find((c: unknown[]) => c[0] === 'close')?.[1] as
-          | ((code: number) => void)
-          | undefined;
-        if (closeCb) closeCb(0);
-      }, delay);
-      return proc;
+    runOneShotMock.mockImplementation(async () => {
+      callCount += 1;
+      const me = callCount;
+      const delay = me === 1 ? 30 : 5;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return `# Memory\n\nUpdate from call ${me} with enough length to pass.`;
     });
 
     const p1 = reconcileMemoryAfterSession(tmpDir, 'summary 1', DEFAULT_OPTS);
@@ -340,7 +376,7 @@ describe('mutex serialization', () => {
 
     await Promise.all([p1, p2]);
 
-    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(runOneShotMock).toHaveBeenCalledTimes(2);
     const after = readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8');
     expect(after).toContain('Update from call 2');
   });

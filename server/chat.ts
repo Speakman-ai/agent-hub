@@ -3351,7 +3351,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   appendDailyNote(project.ahw, `**Session Summary** (${agent.name}):\n${summary}`);
 
                   reconcileMemoryAfterSession(project.ahw, summary, {
-                    claudeBin: config.claudeBin,
+                    cfg: config,
                     spawnEnv: buildSpawnEnv(config),
                     cwd: project.cwd,
                   }).catch((err: unknown) => {

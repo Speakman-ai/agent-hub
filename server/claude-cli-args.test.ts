@@ -53,7 +53,10 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
     { file: 'room-chat.ts', reason: 'conference room replies' },
     { file: 'heartbeat.ts', reason: 'runClaude — heartbeats / crons / workflow' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
-    { file: 'memory.ts', reason: 'memory reconciliation' },
+    // memory.ts used to spawn Claude directly; it now delegates to the
+    // unified one-shot spawner so the Skill-disable wiring lives in
+    // one-shot-spawn.ts (covered below) instead of memory.ts itself.
+    { file: 'one-shot-spawn.ts', reason: 'unified one-shot spawner (memory / analyze / etc.)' },
     { file: 'design-multi-engine.ts', reason: 'Design Studio (via design-chat)' },
   ];
 
@@ -87,7 +90,10 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
   // disallowed-tools push and the prompt push.
   const bareTrailingPromptSites: Array<{ file: string; reason: string }> = [
     { file: 'heartbeat.ts', reason: 'runClaude — heartbeats / crons / webhooks' },
-    { file: 'memory.ts', reason: 'memory reconciliation' },
+    // memory.ts no longer spawns Claude directly — the bare-prompt site
+    // moved to one-shot-spawn.ts which now powers memory reconciliation
+    // (and project analyze fallback). Pin the separator there instead.
+    { file: 'one-shot-spawn.ts', reason: 'unified one-shot spawner (memory / analyze / etc.)' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
     { file: 'room-chat.ts', reason: 'conference room replies' },
     { file: 'delegation.ts', reason: '<delegate> sub-agent fan-out (claude-code default)' },
