@@ -187,23 +187,8 @@ resource "aws_security_group" "instance" {
     cidr_blocks = var.web_cidr_blocks
   }
 
-  # PR-env mode: per-PR preview containers bind to host ports in 3100-3999
-  # and are reverse-proxied by host nginx on 80/443 — they are NEVER exposed
-  # via the ALB. The 127.0.0.1/32 source CIDR is documentation-only since
-  # AWS security groups don't filter loopback traffic; the rule's job is to
-  # make the port range visible in `terraform plan`/`describe-security-groups`
-  # output as "yes, this range is intentionally used by the host" without
-  # actually opening anything externally.
-  dynamic "ingress" {
-    for_each = local.pr_env_host_nginx_enabled ? [1] : []
-    content {
-      description = "PR-env preview containers (host-local; reverse-proxied via host nginx)"
-      from_port   = 3100
-      to_port     = 3999
-      protocol    = "tcp"
-      cidr_blocks = ["127.0.0.1/32"]
-    }
-  }
+  # PR-env preview-container ingress (3100-3999) removed in PR-Env Removal #6.
+  # See alb.tf for the teardown note.
 
   # Dedicated ALB → app port. Must live inline on this aws_security_group — do not
   # pair this resource with aws_vpc_security_group_ingress_rule for the same
@@ -274,12 +259,10 @@ resource "aws_instance" "app" {
     volume_type = var.root_volume_type
   }
 
-  # AWS caps EC2 user_data at 16 KiB. Once the PR-envs bootstrap (host nginx +
-  # certbot + sudoers + docker-socket bind + Tier-3 config writer) is enabled,
-  # the rendered template clears 18 KiB raw, blowing through that limit. We
-  # gzip+base64 the payload here — cloud-init detects the gzip magic bytes and
-  # decompresses automatically before executing, buying ~3–5× headroom under
-  # the same 16 KiB ceiling (which is enforced post-decode by AWS).
+  # AWS caps EC2 user_data at 16 KiB. We gzip+base64 the payload here —
+  # cloud-init detects the gzip magic bytes and decompresses automatically
+  # before executing, buying ~3–5× headroom under the same 16 KiB ceiling
+  # (which is enforced post-decode by AWS).
   user_data_base64 = base64gzip(
     var.bootstrap_agent_hub ? local.user_data_templated : (
       var.docker_bootstrap ? templatefile("${path.module}/bootstrap.sh.tftpl", {
@@ -312,16 +295,7 @@ resource "aws_instance" "app" {
     # line, plan, and apply.
     ignore_changes = [ami]
 
-    # PR-env first-boot wildcard cert: certbot --dns-route53 needs a contact
-    # email to register with Let's Encrypt. Without it the bootstrap would
-    # silently skip cert issuance (or fail at runtime), leaving host nginx
-    # missing /etc/letsencrypt/live/<previewHost>/{fullchain,privkey}.pem and
-    # the per-PR vhost broken. Surface this at plan time instead.
-    precondition {
-      condition = !local.pr_env_host_nginx_enabled || (
-        var.cert_renewal_email != null && trimspace(var.cert_renewal_email) != ""
-      )
-      error_message = "PR-env host nginx is enabled (enable_pr_environments = true, or enable_pr_env_host_nginx = true) but cert_renewal_email is unset. Set cert_renewal_email = \"ops@example.com\" — the address is registered with Let's Encrypt for expiration notices when certbot --dns-route53 issues the wildcard cert at first boot. Alternatively, set enable_pr_environments = false (or enable_pr_env_host_nginx = false) to skip host nginx entirely."
-    }
+    # PR-env cert_renewal_email precondition removed in PR-Env Removal #6.
+    # See alb.tf for the teardown note.
   }
 }

@@ -262,89 +262,9 @@ resource "aws_route53_record" "agenthub" {
   }
 }
 
-# --- PR Envs: wildcard ACM cert for *.<pr_env_preview_subdomain>.<alb_fqdn> --
-#
-# Issued for host nginx to terminate TLS on per-PR preview hostnames such as
-# `pr-123.preview.agenthub.ryan.dev.surveytracker.io`. NOT attached to the ALB
-# listener — the ALB only fronts the canonical Agent Hub host. Default-disabled
-# (gated on local.pr_env_wildcard_cert_enabled) so existing stacks plan as 0
-# changes until they opt in.
-
-locals {
-  pr_env_preview_host = local.alb_fqdn != null ? "${var.pr_env_preview_subdomain}.${local.alb_fqdn}" : null
-}
-
-resource "aws_acm_certificate" "pr_env_wildcard" {
-  count = local.pr_env_wildcard_cert_enabled ? 1 : 0
-
-  domain_name       = "*.${local.pr_env_preview_host}"
-  validation_method = "DNS"
-
-  lifecycle {
-    create_before_destroy = true
-
-    precondition {
-      condition     = local.has_route53_zone
-      error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true so DNS-01 validation records can be written. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
-    }
-
-    precondition {
-      condition     = local.alb_fqdn != null
-      error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but alb_fqdn does not resolve. Set public_fqdn (preferred) or set name + dns_subdomain + base_domain so the wildcard host *.<pr_env_preview_subdomain>.<alb_fqdn> can be composed. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
-    }
-  }
-
-  tags = {
-    Name = "${var.project_name}-pr-env-wildcard"
-  }
-}
-
-resource "aws_route53_record" "pr_env_wildcard_cert_validation" {
-  for_each = local.pr_env_wildcard_cert_enabled ? {
-    for dvo in aws_acm_certificate.pr_env_wildcard[0].domain_validation_options : dvo.domain_name => dvo
-  } : {}
-
-  zone_id = local.route53_zone_id_effective
-  name    = each.value.resource_record_name
-  type    = each.value.resource_record_type
-  ttl     = 60
-  records = [each.value.resource_record_value]
-}
-
-resource "aws_acm_certificate_validation" "pr_env_wildcard" {
-  count = local.pr_env_wildcard_cert_enabled ? 1 : 0
-
-  certificate_arn         = aws_acm_certificate.pr_env_wildcard[0].arn
-  validation_record_fqdns = [for r in aws_route53_record.pr_env_wildcard_cert_validation : r.fqdn]
-}
-
-# Wildcard DNS: *.<pr_env_preview_subdomain>.<alb_fqdn> → ALB so per-PR preview
-# hostnames resolve (TLS then terminates on host nginx via the LE wildcard cert).
-# Without this record, ACM/Let's Encrypt validation can succeed while client DNS
-# for pr-N.preview... stays NXDOMAIN.
-resource "aws_route53_record" "pr_env_preview_wildcard" {
-  count = (
-    local.r53_alias && local.pr_env_preview_host != null && local.pr_env_host_nginx_enabled ? 1 : 0
-  )
-
-  zone_id = local.route53_zone_id_effective
-  name    = "*.${trimsuffix(local.pr_env_preview_host, ".${var.base_domain}")}"
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.agenthub[0].dns_name
-    zone_id                = aws_lb.agenthub[0].zone_id
-    evaluate_target_health = true
-  }
-
-  depends_on = [aws_lb_listener.agenthub_https]
-
-  lifecycle {
-    precondition {
-      condition = (
-        endswith(local.pr_env_preview_host, ".${var.base_domain}")
-      )
-      error_message = "preview host (${local.pr_env_preview_host}) must be under var.base_domain (${var.base_domain}) so the wildcard record can be created in the managed zone."
-    }
-  }
-}
+# PR-env teardown (PR-Env Removal #6): the PR-env wildcard ACM cert,
+# DNS-01 validation records, and *.preview.<alb_fqdn> A-record alias
+# used to live here. They have been removed along with the rest of the
+# PR-env subsystem (cards #1–#5). Operators must run `terraform apply`
+# against prod state to actually destroy the ACM cert + Route 53
+# records the previous plan provisioned.

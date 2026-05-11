@@ -26,14 +26,5 @@ check "agent_hub_bootstrap_source" {
   }
 }
 
-# Early-warning surface for the PR-env wildcard cert. The hard error lives on
-# aws_acm_certificate.pr_env_wildcard's preconditions (alb.tf), which halt
-# `terraform plan`. This `check` block additionally surfaces the same advice
-# when only lookup_route53_zone_in_this_account is wired (no explicit zone id),
-# so operators see one consolidated message in plan output.
-check "pr_env_wildcard_requires_zone" {
-  assert {
-    condition     = !local.pr_env_wildcard_cert_enabled || local.has_route53_zone
-    error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id directly, or set lookup_route53_zone_in_this_account = true so the zone for base_domain is resolved in this account. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
-  }
-}
+# pr_env_wildcard_requires_zone check removed in PR-Env Removal #6. See
+# alb.tf for the teardown note.

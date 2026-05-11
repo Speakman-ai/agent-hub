@@ -40,15 +40,3 @@ allowed_origins = "AUTO"
 #
 # agent_hub_default_username = "admin"
 # agent_hub_default_password = "auto"
-
-# ── PR Environments ──────────────────────────────────────────────────────────
-# `enable_pr_environments` defaults to TRUE — a fresh apply provisions the full
-# stack (wildcard ACM cert, Route 53 IAM policy, host nginx + certbot, SG
-# ports 3100-3999, Tier-3 prEnv config). Set false on hosts that will never
-# run per-PR previews. The per-piece `enable_pr_env_wildcard_cert`,
-# `enable_pr_env_route53_iam`, `enable_pr_env_host_nginx` overrides remain
-# (default null = follow the root flag); set them to true/false only when
-# disabling a single piece for testing.
-#
-# enable_pr_environments = true
-# cert_renewal_email     = "ops@example.com"  # required when PR-env stack on
