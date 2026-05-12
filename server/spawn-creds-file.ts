@@ -36,7 +36,8 @@
  *   as a path segment — defence-in-depth against accidental directory
  *   traversal even though callers come from inside the server.
  */
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'fs';
+import { randomBytes } from 'crypto';
 import path from 'path';
 
 const SUBDIR = 'spawn-creds';
@@ -79,7 +80,7 @@ export function writeSpawnCredsFile(sessionId: string, token: string, dataDir: s
   // 0600 to be guaranteed every write, so we explicitly write a tmp
   // file with the right mode then rename. The rename is atomic on
   // POSIX, which prevents readers from ever seeing a partial token.
-  const tmp = `${filePath}.${process.pid}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   writeFileSync(tmp, token, { mode: 0o600, encoding: 'utf8' });
   // Best-effort fsync-equivalent: rename overwrites the destination
   // atomically on POSIX. On Windows the rename may fail if the
@@ -96,8 +97,12 @@ export function writeSpawnCredsFile(sessionId: string, token: string, dataDir: s
  */
 export function readSpawnCredsFile(sessionId: string, dataDir: string): string | null {
   const filePath = spawnCredsPath(sessionId, dataDir);
-  if (!existsSync(filePath)) return null;
-  return readFileSync(filePath, 'utf8').trim();
+  try {
+    return readFileSync(filePath, 'utf8').trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 /**

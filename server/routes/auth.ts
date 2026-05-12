@@ -341,10 +341,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
           ownerUserId: user.id,
         });
         console.log(
-          `[Auth] /setup spawn-creds recovery: candidates=${result.candidates} recovered=${result.recovered} failed=${result.failed}`,
+          `[Auth] /setup spawn-creds recovery: event=spawn_creds_recovery candidates=${result.candidates} recovered=${result.recovered} failed=${result.failed}`,
         );
       } catch (err) {
-        console.warn('[Auth] spawn-creds recovery skipped:', (err as Error).message);
+        console.warn(
+          `[Auth] spawn-creds recovery skipped: event=spawn_creds_recovery error=${(err as Error).message}`,
+        );
       }
     }
 
