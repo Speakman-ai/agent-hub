@@ -234,15 +234,23 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/docker rm -f agenthub-server
-# Reap dangling images older than 24h before each restart. The just-pulled
-# `:main` is preserved (it's tagged + fresh), but the previous untagged
-# `:main` digests left over from prior pushes get GC'd. Without this, ~30
-# deploys filled the dev sandbox disk to 98% and `docker pull` silently
-# failed. See kanban card b2528863 for the post-mortem.
+# Reap dangling images, containers, build cache, and volumes older than 24h
+# before each restart. The just-pulled `:main` is preserved (it's tagged +
+# fresh), but the previous untagged `:main` digests left over from prior
+# pushes get GC'd along with build-cache layers and orphan containers
+# (e.g. stale ecs-agent). Without this sweep we have lost the dev sandbox
+# to disk-full → docker pull → ALB unhealthy 502 multiple times (see kanban
+# cards b2528863 and 8b59c789 for post-mortems).
 # `-f` (force) is required because prune is interactive by default.
-# `--filter until=24h` shields the freshly-pulled image from the sweep.
-# `-` prefix makes the unit tolerant of prune failures (e.g. no images yet).
+# `--filter until=24h` shields freshly-pulled artifacts from the sweep
+# (system + image + builder prune all honor it; container/volume prune do
+# not, but only stopped/dangling targets are reaped so the running
+# container and bind mounts are safe).
+# `-` prefix makes each step tolerant of prune failures (e.g. no images yet).
+ExecStartPre=-/usr/bin/docker container prune -f
 ExecStartPre=-/usr/bin/docker image prune -af --filter until=24h
+ExecStartPre=-/usr/bin/docker builder prune -af --filter until=24h
+ExecStartPre=-/usr/bin/docker volume prune -f
 ExecStart=/usr/local/bin/agenthub-server-run.sh
 ExecStop=/usr/bin/docker stop -t 30 agenthub-server
 Restart=always
@@ -253,8 +261,52 @@ TimeoutStartSec=300
 WantedBy=multi-user.target
 UNIT
 
+# Daily docker GC timer — the ExecStartPre sweep above only fires when the
+# unit restarts. If the container stays up for days while CI keeps pushing
+# new `:main` digests, overlay2 + build cache drift up unbounded between
+# restarts. This timer runs the same prune chain at 03:00 UTC daily so the
+# sandbox reclaims disk without needing a deploy to trigger it.
+cat >/usr/local/bin/agenthub-docker-gc.sh <<'GCSCRIPT'
+#!/usr/bin/env bash
+# Best-effort: each step is independent and a failure of one (e.g. nothing
+# to prune) must not block the rest.
+set +e
+/usr/bin/docker container prune -f
+/usr/bin/docker image prune -af --filter until=24h
+/usr/bin/docker builder prune -af --filter until=24h
+/usr/bin/docker volume prune -f
+df -h / | tail -1
+exit 0
+GCSCRIPT
+chmod 0755 /usr/local/bin/agenthub-docker-gc.sh
+
+cat >/etc/systemd/system/agenthub-docker-gc.service <<'GCUNIT'
+[Unit]
+Description=Agent Hub daily docker GC (image/container/builder/volume prune)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/agenthub-docker-gc.sh
+GCUNIT
+
+cat >/etc/systemd/system/agenthub-docker-gc.timer <<'GCTIMER'
+[Unit]
+Description=Run agenthub-docker-gc daily at 03:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
+GCTIMER
+
 systemctl daemon-reload
 systemctl enable --now agenthub-server.service
+systemctl enable --now agenthub-docker-gc.timer
 
 # Surface the running image + tag for debugging.
 sleep 3
