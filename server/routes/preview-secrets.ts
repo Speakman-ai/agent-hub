@@ -21,7 +21,9 @@ import type { RouteDeps } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import {
   listPreviewSecrets,
+  listRawPreviewSecretsForCarry,
   replacePreviewSecrets,
+  replacePreviewSecretsWithCarry,
   parseDotEnv,
   PreviewSecretValidationError,
   type PreviewSecretInput,
@@ -137,32 +139,37 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
           kind: p.kind ?? defaultKind,
         }));
 
-        let finalInputs = inputs;
-        if (mode === 'merge') {
-          const existing = listPreviewSecrets(project.id);
-          const merged = new Map<string, PreviewSecretInput>();
-          for (const row of existing) {
-            // existing.value is MASK for secret-kind rows; we can't
-            // re-encrypt MASK as the live value. Skip secret-kind
-            // rows on merge — the import only ever adds/overwrites.
-            // plain-kind rows can round-trip safely since their value
-            // is the real plaintext.
-            if (row.kind === 'plain') {
-              merged.set(row.key, { key: row.key, value: row.value, kind: 'plain' });
-            } else {
-              // Preserve the existing secret-kind row by skipping it
-              // here — the parsed entry below will overwrite if the
-              // user re-supplied the same key; otherwise we have to
-              // drop secret-kind preserves on merge (limitation
-              // documented in the route's JSDoc above).
-            }
-          }
-          for (const p of inputs) merged.set(p.key, p);
-          finalInputs = [...merged.values()];
-        }
-
         const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
-        const result = replacePreviewSecrets(project.id, finalInputs, actorUserId);
+        let result;
+        if (mode === 'merge') {
+          // Fetch raw existing rows so we can carry secret-kind rows
+          // through by ciphertext — list() would only give us MASK for
+          // secret-kind values, and re-encrypting MASK would corrupt them.
+          const rawExisting = listRawPreviewSecretsForCarry(project.id);
+          const inputKeys = new Set(inputs.map((p) => p.key));
+
+          // Plain-kind rows not overwritten by the import are re-supplied
+          // as new inputs (their plaintext is available from list()).
+          const existingMasked = listPreviewSecrets(project.id);
+          const plainKeep: PreviewSecretInput[] = existingMasked
+            .filter((r) => r.kind === 'plain' && !inputKeys.has(r.key))
+            .map((r) => ({ key: r.key, value: r.value, kind: 'plain' as SecretKind }));
+
+          // Secret-kind rows not overwritten by the import are carried
+          // through by ciphertext — they never leave encrypted form.
+          const secretCarry = rawExisting.filter(
+            (r) => r.kind === 'secret' && !inputKeys.has(r.key),
+          );
+
+          result = replacePreviewSecretsWithCarry(
+            project.id,
+            [...plainKeep, ...inputs],
+            secretCarry,
+            actorUserId,
+          );
+        } else {
+          result = replacePreviewSecrets(project.id, inputs, actorUserId);
+        }
         res.json({
           imported: inputs.length,
           mode,

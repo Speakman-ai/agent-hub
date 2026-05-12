@@ -279,25 +279,29 @@ describe('audit on upsert', () => {
 });
 
 describe('parseDotEnv', () => {
-  it('parses simple KEY=value pairs', () => {
+  // parseDotEnv intentionally emits kind:undefined so that the route-layer
+  // defaultKind override (defaultKind=plain) is actually reachable. The store's
+  // validateKindOrThrow defaults undefined → 'secret', preserving the existing
+  // behavior when no override is provided.
+  it('parses simple KEY=value pairs (kind omitted — defaults at store layer)', () => {
     const out = parseDotEnv('FOO=bar\nBAZ=qux');
     expect(out).toEqual([
-      { key: 'FOO', value: 'bar', kind: 'secret' },
-      { key: 'BAZ', value: 'qux', kind: 'secret' },
+      { key: 'FOO', value: 'bar' },
+      { key: 'BAZ', value: 'qux' },
     ]);
   });
 
   it('strips a leading `export `', () => {
     const out = parseDotEnv('export FOO=bar');
-    expect(out).toEqual([{ key: 'FOO', value: 'bar', kind: 'secret' }]);
+    expect(out).toEqual([{ key: 'FOO', value: 'bar' }]);
   });
 
   it('strips matching double / single quote wrappers but preserves inner content', () => {
     const out = parseDotEnv(`A="hello world"\nB='single quoted'\nC="has=inner=eq"`);
     expect(out).toEqual([
-      { key: 'A', value: 'hello world', kind: 'secret' },
-      { key: 'B', value: 'single quoted', kind: 'secret' },
-      { key: 'C', value: 'has=inner=eq', kind: 'secret' },
+      { key: 'A', value: 'hello world' },
+      { key: 'B', value: 'single quoted' },
+      { key: 'C', value: 'has=inner=eq' },
     ]);
   });
 
@@ -308,7 +312,7 @@ describe('parseDotEnv', () => {
 
   it('keeps the LAST occurrence on duplicate keys', () => {
     const out = parseDotEnv('FOO=first\nFOO=second\nFOO=third');
-    expect(out).toEqual([{ key: 'FOO', value: 'third', kind: 'secret' }]);
+    expect(out).toEqual([{ key: 'FOO', value: 'third' }]);
   });
 
   it('skips lines with invalid identifiers', () => {

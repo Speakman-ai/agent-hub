@@ -188,6 +188,22 @@ function appendAudit(opts: {
   );
 }
 
+// ─── Internal carry-through type ────────────────────────────────────
+
+/**
+ * A pre-existing raw row to be carried through a merge without
+ * re-encrypting. Used by the merge import path so secret-kind rows
+ * that aren't in the import blob survive the `replacePreviewSecrets`
+ * DELETE+INSERT cycle intact.
+ */
+export interface PreviewSecretCarryRow {
+  key: string;
+  kind: SecretKind;
+  value_ciphertext: string;
+  value_iv: string;
+  value_tag: string;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
@@ -205,6 +221,96 @@ export function listPreviewSecrets(projectId: string): PreviewSecretRow[] {
     )
     .all(projectId) as RawRow[];
   return rows.map(rowToPublic);
+}
+
+/**
+ * Return raw (still-encrypted) rows for a project. Used exclusively by
+ * the merge import path to carry secret-kind rows through without
+ * decrypting them — `loadProjectEnvForSpawn` is the only caller that
+ * decrypts, keeping the "never echo secret values" invariant intact.
+ */
+export function listRawPreviewSecretsForCarry(projectId: string): PreviewSecretCarryRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT key, kind, value_ciphertext, value_iv, value_tag
+         FROM worktree_preview_secrets
+        WHERE project_id = ?
+        ORDER BY key ASC`,
+    )
+    .all(projectId) as PreviewSecretCarryRow[];
+  return rows;
+}
+
+/**
+ * Bulk-replace the project's preview secrets, carrying through
+ * pre-existing raw rows (already encrypted) alongside newly-supplied
+ * inputs. Used by the merge import path so secret-kind rows that are
+ * absent from the import blob survive the DELETE+INSERT cycle.
+ *
+ * `carryRows` are inserted as-is (no re-encryption). `newInputs` are
+ * validated and encrypted normally. Keys present in both arrays take
+ * the `newInputs` entry (caller is responsible for deduplication).
+ *
+ * Returns the resulting masked list.
+ */
+export function replacePreviewSecretsWithCarry(
+  projectId: string,
+  newInputs: readonly PreviewSecretInput[],
+  carryRows: readonly PreviewSecretCarryRow[],
+  actorUserId?: string | null,
+): PreviewSecretRow[] {
+  // Validate new inputs first (abort whole batch on any error).
+  const normalizedNew: Array<{ key: string; value: string; kind: SecretKind }> = [];
+  const seen = new Set<string>();
+  for (const raw of newInputs) {
+    validateKeyOrThrow(raw.key);
+    validateValueOrThrow(raw.value, raw.key);
+    const kind = validateKindOrThrow(raw.kind, raw.key);
+    if (seen.has(raw.key)) {
+      throw new PreviewSecretValidationError(
+        `duplicate key "${raw.key}" in batch — bulk replace requires unique keys`,
+      );
+    }
+    seen.add(raw.key);
+    normalizedNew.push({ key: raw.key, value: raw.value, kind });
+  }
+  // Carry rows must not collide with new inputs (caller deduplicates).
+  const filteredCarry = carryRows.filter((r) => !seen.has(r.key));
+
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
+    const insert = db.prepare(
+      `INSERT INTO worktree_preview_secrets
+         (id, project_id, key, value_ciphertext, value_iv, value_tag, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of normalizedNew) {
+      const ciphertext = encryptSecret(row.value);
+      const { iv, tag } = splitIvTag(ciphertext);
+      insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+    }
+    for (const row of filteredCarry) {
+      insert.run(
+        uuidv4(),
+        projectId,
+        row.key,
+        row.value_ciphertext,
+        row.value_iv,
+        row.value_tag,
+        row.kind,
+      );
+    }
+  });
+  tx();
+
+  const allKeys = [
+    ...normalizedNew.map((r) => r.key),
+    ...filteredCarry.map((r) => r.key),
+  ];
+  appendAudit({ projectId, keys: allKeys, action: 'upsert', actorUserId });
+  return listPreviewSecrets(projectId);
 }
 
 /**
@@ -315,7 +421,10 @@ export function parseDotEnv(blob: string): PreviewSecretInput[] {
       }
     }
     if (!VALID_KEY_RE.test(key)) continue; // skip syntactic garbage
-    out.set(key, { key, value, kind: 'secret' });
+    // Emit kind: undefined so the route-layer defaultKind override is
+    // reachable. The store's validateKindOrThrow defaults undefined to
+    // 'secret', preserving the current behavior when no defaultKind is set.
+    out.set(key, { key, value });
   }
   return [...out.values()];
 }

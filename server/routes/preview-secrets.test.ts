@@ -197,11 +197,14 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
       .expect(200);
     const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
     const rows = list.body.secrets as Array<{ key: string; value: string; kind: string }>;
-    for (const r of rows) expect(r.kind).toBe('secret'); // parser hardcodes secret
-    // (defaultKind only applies when parser yielded no explicit kind; the
-    // parser already tags every row as `secret`, so defaultKind=plain
-    // does not override. The route-level test for this lives in the
-    // store unit test; here we just verify the route accepts the field.)
+    // defaultKind=plain → parser now emits kind:undefined → route applies
+    // defaultKind → entries stored as plain-kind, returned in clear.
+    for (const r of rows) {
+      expect(r.kind).toBe('plain');
+      expect(r.value).not.toBe(MASK);
+    }
+    expect(rows.find((r) => r.key === 'FEATURE_X')?.value).toBe('on');
+    expect(rows.find((r) => r.key === 'FEATURE_Y')?.value).toBe('off');
   });
 
   it('replaces existing on `mode: replace` (default)', async () => {
@@ -247,6 +250,47 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
     // Parsed entries land as secret-kind (masked on GET), overwriting FOO.
     expect(map.FOO).toMatchObject({ value: MASK, kind: 'secret' });
     expect(map.NEWKEY).toMatchObject({ value: MASK, kind: 'secret' });
+  });
+
+  it('merge preserves existing secret-kind rows not in the import blob', async () => {
+    // Regression for the silent-delete bug: secret-kind rows absent from the
+    // imported blob must survive a merge (previously they were silently dropped
+    // because list() returns MASK for them and we can't re-encrypt MASK).
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/preview/secrets`)
+      .send({
+        secrets: [
+          { key: 'STRIPE_KEY', value: 'sk_live_REAL', kind: 'secret' },
+          { key: 'DATABASE_URL', value: 'postgres://prod/db', kind: 'secret' },
+          { key: 'FEATURE_X', value: 'on', kind: 'plain' },
+        ],
+      })
+      .expect(200);
+
+    // Import only adds NEW_FLAG — STRIPE_KEY and DATABASE_URL are absent.
+    await request
+      .post(`/api/projects/${projectId}/preview/secrets/import`)
+      .send({ env: 'NEW_FLAG=1', mode: 'merge' })
+      .expect(200);
+
+    const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
+    const map = Object.fromEntries(
+      (list.body.secrets as Array<{ key: string; value: string; kind: string }>).map((r) => [
+        r.key,
+        r,
+      ]),
+    );
+    // Secret-kind rows absent from the import must survive.
+    expect(map.STRIPE_KEY).toMatchObject({ kind: 'secret', value: MASK });
+    expect(map.DATABASE_URL).toMatchObject({ kind: 'secret', value: MASK });
+    // Plain-kind row also survives.
+    expect(map.FEATURE_X).toMatchObject({ kind: 'plain', value: 'on' });
+    // The imported row lands.
+    expect(map.NEW_FLAG).toMatchObject({ kind: 'secret', value: MASK });
+    // No leaked real values.
+    expect(JSON.stringify(list.body)).not.toContain('sk_live_REAL');
+    expect(JSON.stringify(list.body)).not.toContain('postgres://prod/db');
   });
 
   it('rejects an .env that contains a reserved key', async () => {
