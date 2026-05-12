@@ -335,13 +335,16 @@ export default function PreviewSection({
     setWizardError(null);
     try {
       const res = await api.startPreviewWizard(project.id);
-      if (typeof onOpenSession === 'function' && res?.sessionId) {
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+      } else if (typeof onOpenSession === 'function') {
         onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
       } else {
+        // Parent didn't supply an opener — surface the session id
+        // inline rather than silently stranding the user. The wizard
+        // session has already been spawned on the server side.
         setWizardError(
-          res?.sessionId
-            ? 'Wizard session started but no session handler is available'
-            : 'Server did not return a wizard session id',
+          `Wizard session spawned (id ${res.sessionId}) but no session opener is wired up. Open it manually from the agent's session list.`,
         );
       }
     } catch (err) {

@@ -65,4 +65,23 @@ describe('preview-setup default skill — SKILL.md frontmatter', () => {
     expect(statSync(envScan).mode & 0o100).toBeTruthy();
     expect(statSync(pkgScan).mode & 0o100).toBeTruthy();
   });
+
+  it('body uses placeholder substitution syntax (not undefined shell env vars)', () => {
+    // The route writes PROJECT_ID / PROJECT_CWD / SKILL_SCRIPTS_DIR into
+    // the kickoff prompt as "bound values". It does NOT export them as
+    // shell env vars — adding new keys to EXTRA_ENV_ALLOWLIST is the
+    // only path for that and we deliberately keep it tight. So the
+    // skill body MUST reference `<PROJECT_ID>` placeholders (which the
+    // agent substitutes from the prompt) and MUST NOT reference the
+    // historical `$PREVIEW_WIZARD_*` / `$AGENT_HUB_SKILL_DIR` shell
+    // variables, which would expand to empty strings at runtime and
+    // break every curl URL + scanner path.
+    const body = readFileSync(SKILL_MD, 'utf8');
+    expect(body).toMatch(/<PROJECT_ID>/);
+    expect(body).toMatch(/<PROJECT_CWD>/);
+    expect(body).toMatch(/<SKILL_SCRIPTS_DIR>/);
+    expect(body).not.toMatch(/\$PREVIEW_WIZARD_PROJECT_ID/);
+    expect(body).not.toMatch(/\$PREVIEW_WIZARD_CWD/);
+    expect(body).not.toMatch(/\$AGENT_HUB_SKILL_DIR/);
+  });
 });

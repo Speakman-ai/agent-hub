@@ -36,7 +36,17 @@ import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PREVIEW_SETUP_SKILL_DIR = path.join(__dirname, '..', 'default-skills', 'preview-setup');
+// Absolute path to the bundled preview-setup skill's scripts directory.
+// We surface this in the kickoff prompt so the agent can shell out to
+// the env-usage / package-script scanners without needing an env-var
+// injection path through the spawn allowlist. Exported for tests.
+export const PREVIEW_SETUP_SKILL_SCRIPTS_DIR = path.resolve(
+  __dirname,
+  '..',
+  'default-skills',
+  'preview-setup',
+  'scripts',
+);
 
 /**
  * Choose the agent the wizard session should attach to. Prefer the
@@ -59,14 +69,26 @@ function pickWizardAgent(project: Project): string | null {
  * load via the `<agenthub:skill>` block so the SKILL.md body is
  * injected on the next turn — same protocol as any other skill load.
  */
-function buildKickoffPrompt(projectId: string, projectCwd: string): string {
+// Exported for tests so the prompt-contract regression in
+// `preview-wizard-prompt.test.ts` can assert the bound values land
+// verbatim in the kickoff message body.
+export function buildKickoffPrompt(
+  projectId: string,
+  projectCwd: string,
+  skillScriptsDir: string,
+): string {
   return [
     '# Preview Setup Wizard',
     '',
     'You have been spawned to walk the user through configuring the per-session worktree preview for this project.',
     '',
-    `**Project id**: \`${projectId}\``,
-    `**Project cwd**: \`${projectCwd}\``,
+    '## Bound values (substitute these verbatim wherever SKILL.md references them)',
+    '',
+    `- **PROJECT_ID**: \`${projectId}\``,
+    `- **PROJECT_CWD**: \`${projectCwd}\``,
+    `- **SKILL_SCRIPTS_DIR**: \`${skillScriptsDir}\``,
+    '',
+    'Use these literal values directly in every curl URL and shell invocation in the skill body. **Do not** rely on shell env vars named `$PREVIEW_WIZARD_PROJECT_ID`, `$PREVIEW_WIZARD_CWD`, or `$AGENT_HUB_SKILL_DIR` — they are NOT set in your spawn environment.',
     '',
     'Load the `preview-setup` skill and follow its instructions. The skill explains the full step-by-step flow (static detector → env-usage scan → `agenthub:ask` block → persist → optional verification → broadcast completion).',
     '',
@@ -114,7 +136,9 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       const engine = agentLookup.agent.engine || 'claude-code';
       const model = agentLookup.agent.model || defaultModelForEngine(engine);
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
-      // Wizards read the project checkout but never mutate code — no worktree needed.
+      // The wizard explicitly never mutates code — it only reads the
+      // project checkout. So we always opt out of worktree isolation,
+      // regardless of project mode or default flag.
       const useWorktree = 0;
       const askMode = 0;
       stmts.createSession.run(
@@ -129,7 +153,7 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       );
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
-      const prompt = buildKickoffPrompt(project.id, cwd);
+      const prompt = buildKickoffPrompt(project.id, cwd, PREVIEW_SETUP_SKILL_SCRIPTS_DIR);
       // Fire-and-forget — `handleChat` writes the user message and
       // kicks off the streaming spawn. The HTTP response carries
       // enough to attach the client side.
@@ -138,11 +162,14 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         agentId,
         sessionId,
         content: prompt,
-        extraEnv: {
-          PREVIEW_WIZARD_PROJECT_ID: project.id,
-          PREVIEW_WIZARD_CWD: cwd,
-          AGENT_HUB_SKILL_DIR: PREVIEW_SETUP_SKILL_DIR,
-        },
+        // Intentionally no `extraEnv`: the kickoff prompt surfaces
+        // PROJECT_ID / PROJECT_CWD / SKILL_SCRIPTS_DIR as literal
+        // "bound values" and SKILL.md references them via
+        // `<PROJECT_ID>` placeholders. The legacy
+        // `PREVIEW_WIZARD_*` env-var path was removed when the
+        // reviewer flagged that empty-string expansion was breaking
+        // every scanner invocation; see `extra-env-allowlist.ts` for
+        // the orphaned allowlist entries kept for backwards-compat.
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
@@ -161,19 +188,28 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
   // The skill calls this after PUT-ing `prEnv.preview` + secrets so
   // the open Settings panel knows to refetch. No body — the broadcast
   // payload identifies the project.
+  //
+  // Gated behind `requireRole('User')` so anonymous callers can't
+  // (a) probe project-id existence via the 404/200 split, or
+  // (b) spam refetches across every connected browser. The wizard
+  // session inherits the spawning user's identity / API key so the
+  // gate is transparent to legitimate callers.
+  //
+  // We deliberately do NOT distinguish "unknown project" from
+  // "known project" in the response — both return `{ ok: true }` —
+  // so the route reveals nothing beyond "you're authenticated". The
+  // broadcast only fires when the project exists.
   router.post(
     '/api/projects/:projectId/preview/wizard-complete',
     requireRole('User'),
     (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
-      if (!project) {
-        res.status(404).json({ error: 'Project not found' });
-        return;
+      if (project) {
+        broadcast({
+          type: 'preview_wizard_complete',
+          projectId: project.id,
+        });
       }
-      broadcast({
-        type: 'preview_wizard_complete',
-        projectId: project.id,
-      });
       res.json({ ok: true });
     },
   );

@@ -160,19 +160,32 @@ describe('POST /api/projects/:projectId/preview/setup-wizard', () => {
 });
 
 describe('POST /api/projects/:projectId/preview/wizard-complete', () => {
-  it('404 for unknown project', async () => {
-    await request
+  it('401 for unauthenticated callers', async () => {
+    const res = await request
       .post('/api/projects/no-such-project/preview/wizard-complete')
-      .set('Authorization', `Bearer ${adminJwt}`)
-      .send({})
-      .expect(404);
+      .send({});
+    expect(res.status).toBe(401);
   });
 
-  it('returns { ok: true } for a known project', async () => {
+  it('returns { ok: true } even for unknown projects to hide existence', async () => {
+    // The gate has already passed (User role); we deliberately do NOT
+    // distinguish unknown-project from known-project in the response
+    // to avoid leaking a project-id oracle. No broadcast fires for an
+    // unknown project — that side-effect is asserted in the happy-path
+    // test below by virtue of being the only path that emits one.
+    const res = await request
+      .post('/api/projects/no-such-project/preview/wizard-complete')
+      .set('Authorization', `Bearer ${userJwt}`)
+      .send({})
+      .expect(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+
+  it('returns { ok: true } for a known project (User role passes the gate)', async () => {
     const projectId = await makeProject();
     const res = await request
       .post(`/api/projects/${projectId}/preview/wizard-complete`)
-      .set('Authorization', `Bearer ${adminJwt}`)
+      .set('Authorization', `Bearer ${userJwt}`)
       .send({})
       .expect(200);
     expect(res.body).toEqual({ ok: true });

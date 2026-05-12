@@ -309,6 +309,52 @@ describe('PreviewSection — render & save', () => {
     expect(err.textContent).toMatch(/Forbidden/);
   });
 
+  it('AI Setup surfaces an error when the parent does not supply onOpenSession', async () => {
+    // The previous shape silently stranded the user if the parent
+    // (SettingsPage) forgot to thread `onOpenSession` through: the
+    // server had already spawned a wizard session, but neither the
+    // spinner nor the error banner cleared. The fix turns that
+    // missing-handler branch into a surface-able error.
+    api.startPreviewWizard.mockResolvedValueOnce({
+      sessionId: 'sess-orphan',
+      agentId: 'agent-xyz',
+    });
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} /* no onOpenSession */ />,
+    );
+    fireEvent.click(getByTestId('preview-ai-setup-button'));
+    const err = await findByTestId('preview-ai-setup-error');
+    expect(err.textContent).toMatch(/sess-orphan/);
+  });
+
+  it('refetches projects when the agenthub:preview_wizard_complete DOM event fires', async () => {
+    const onProjectsChange = vi.fn();
+    render(<PreviewSection projects={[projectWithPreview]} onProjectsChange={onProjectsChange} />);
+    // Simulate the WS-to-DOM bridge in App.jsx dispatching the event
+    // for our project id.
+    window.dispatchEvent(
+      new CustomEvent('agenthub:preview_wizard_complete', {
+        detail: { projectId: 'proj-1' },
+      }),
+    );
+    await waitFor(() => {
+      expect(onProjectsChange).toHaveBeenCalled();
+    });
+  });
+
+  it('ignores agenthub:preview_wizard_complete for a different project id', async () => {
+    const onProjectsChange = vi.fn();
+    render(<PreviewSection projects={[projectWithPreview]} onProjectsChange={onProjectsChange} />);
+    window.dispatchEvent(
+      new CustomEvent('agenthub:preview_wizard_complete', {
+        detail: { projectId: 'some-other-project' },
+      }),
+    );
+    // Give React a tick to settle. We expect NO refetch.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onProjectsChange).not.toHaveBeenCalled();
+  });
+
   it('registers an unsaved-changes guard with the parent', async () => {
     const calls = [];
     const registerGuard = (fn) => calls.push(fn);

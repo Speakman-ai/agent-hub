@@ -27,12 +27,19 @@ local Agent Hub API to persist config and secrets.
 
 ## What you will receive
 
-- `$PREVIEW_WIZARD_PROJECT_ID` — the project slug. Use it on every API
-  call.
-- `$PREVIEW_WIZARD_CWD` — absolute path to the project checkout on
-  disk. Your CWD is already set to this directory.
-- `$AGENT_HUB_URL` / `$AGENT_HUB_API_KEY` — REST base + auth header for
-  the local API.
+The kickoff prompt (the first user message you saw) declares three
+**bound values** under a "Bound values" header. Substitute them
+literally into every command below — they are **not** exported as
+shell env vars:
+
+- **`PROJECT_ID`** — the project slug. Use it on every API call.
+- **`PROJECT_CWD`** — absolute path to the project checkout on disk.
+- **`SKILL_SCRIPTS_DIR`** — absolute path to the bundled helper scripts
+  (`scan-env-usage.sh`, `scan-package-scripts.sh`). Invoke them by
+  full path; **do not** look for an env var to hold this value.
+
+The standard Agent Hub spawn env vars (`$AGENT_HUB_URL`,
+`$AGENT_HUB_API_KEY`) ARE set — use them as-is in your curl commands.
 
 ## Required steps
 
@@ -47,8 +54,11 @@ curl -s -X POST \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  "$AGENT_HUB_URL/api/projects/$PREVIEW_WIZARD_PROJECT_ID/preview/detect"
+  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/detect"
 ```
+
+(Substitute `<PROJECT_ID>` with the literal value from the kickoff
+prompt's Bound values block.)
 
 If `detected` is non-null, the baseline is `{ startScript, port,
 captureRoutes, idleTTL }` plus a `stack` tag (`vite`, `next`, …,
@@ -68,10 +78,12 @@ variable reads**:
 - `ENV['FOO']` / `ENV.fetch('FOO')` (Ruby)
 - `os.Getenv("FOO")` (Go)
 
-The bundled helper does this for you:
+The bundled helper does this for you. Replace `<SKILL_SCRIPTS_DIR>`
+and `<PROJECT_CWD>` with the literal absolute paths from the kickoff
+prompt:
 
 ```bash
-bash "$AGENT_HUB_SKILL_DIR/scripts/scan-env-usage.sh" "$PREVIEW_WIZARD_CWD"
+bash "<SKILL_SCRIPTS_DIR>/scan-env-usage.sh" "<PROJECT_CWD>"
 ```
 
 It emits one env-key per line, deduped. **Skip `NODE_ENV`,
@@ -83,7 +95,7 @@ Also enumerate npm scripts to make sure your draft `startScript` is
 plausible:
 
 ```bash
-bash "$AGENT_HUB_SKILL_DIR/scripts/scan-package-scripts.sh" "$PREVIEW_WIZARD_CWD"
+bash "<SKILL_SCRIPTS_DIR>/scan-package-scripts.sh" "<PROJECT_CWD>"
 ```
 
 ### 3. Propose a draft and ask the user
@@ -127,7 +139,7 @@ Two API calls, in this order:
      -H "x-api-key: $AGENT_HUB_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"prEnv":{"healthPath":"/","preview":{"enabled":true,"startScript":"npm run dev","captureRoutes":["/"],"idleTTL":600}}}' \
-     "$AGENT_HUB_URL/api/projects/$PREVIEW_WIZARD_PROJECT_ID"
+     "$AGENT_HUB_URL/api/projects/<PROJECT_ID>"
    ```
 
 2. **Preview secrets** via the import endpoint with `mode: 'merge'`:
@@ -137,7 +149,7 @@ Two API calls, in this order:
      -H "x-api-key: $AGENT_HUB_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"mode":"merge","env":"FOO=bar\nBAR=baz\n","defaultKind":"secret"}' \
-     "$AGENT_HUB_URL/api/projects/$PREVIEW_WIZARD_PROJECT_ID/preview/secrets/import"
+     "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/secrets/import"
    ```
 
 ### 6. Optional — verify boot
@@ -147,7 +159,7 @@ If the user opted in to a verification run, call:
 ```bash
 curl -s -X POST \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
-  "$AGENT_HUB_URL/api/projects/$PREVIEW_WIZARD_PROJECT_ID/preview/test"
+  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/test"
 ```
 
 Report the `ok` / `error` / `durationMs` to the user in your summary.
@@ -161,7 +173,7 @@ project:
 ```bash
 curl -s -X POST \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
-  "$AGENT_HUB_URL/api/projects/$PREVIEW_WIZARD_PROJECT_ID/preview/wizard-complete"
+  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/wizard-complete"
 ```
 
 The server broadcasts a `preview_wizard_complete` WebSocket event.
