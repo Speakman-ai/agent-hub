@@ -31,6 +31,7 @@ import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
   applyReviewerSpawnIsolation,
+  applyReviewerRoleLock,
   selectGithubSpawnToken,
 } from './spawn-github-credentials.js';
 import type { DelegationResult } from './delegation.js';
@@ -2320,6 +2321,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //      directory so `gh` cannot fall back to the host operator's
         //      `gh auth login` identity.
         applyReviewerSpawnIsolation(base, config);
+        // Reviewer-role-only structural lock (card 1cb9b461-…). Stacks
+        // on top of the universal AGENT_HUB_REVIEWER_LOCK to block a
+        // broader write surface (`gh pr create/merge/close/ready` and
+        // `gh api` writes outside the formal-review allowlist) when the
+        // agent role is `reviewer`. Defense-in-depth: even if a future
+        // change accidentally leaks a token into the reviewer spawn env,
+        // the credential cannot be used to forge commits or open PRs.
+        applyReviewerRoleLock(base, agent.role);
         applyGithubSpawnCredentials(base, tokenToInject);
         if (config.apiKey) {
           base.AGENT_HUB_API_KEY = config.apiKey;

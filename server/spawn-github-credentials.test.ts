@@ -6,6 +6,7 @@ import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
   applyReviewerSpawnIsolation,
+  applyReviewerRoleLock,
   ensureReviewerGhConfigDir,
   resolveReviewerGhConfigDir,
   selectGithubSpawnToken,
@@ -807,5 +808,84 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     applyGithubSpawnCredentials(env, tokenToInject);
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+});
+
+describe('applyReviewerRoleLock', () => {
+  // Distinct from applyReviewerSpawnIsolation (universal lock). The
+  // role lock is set ONLY for role=reviewer spawns and unlocks the
+  // broader denylist enforced by the github skill scripts. Tested
+  // end-to-end in default-skills-github-reviewer-role-lock.test.ts.
+
+  it('sets AGENT_HUB_REVIEWER_ROLE_LOCK=1 when role is "reviewer"', () => {
+    const env: NodeJS.ProcessEnv = {};
+    applyReviewerRoleLock(env, 'reviewer');
+    expect(env.AGENT_HUB_REVIEWER_ROLE_LOCK).toBe('1');
+  });
+
+  it.each([
+    'lead',
+    'author',
+    'dev',
+    'docs',
+    'intake',
+    'cli-expert',
+    undefined,
+    '',
+    'Reviewer', // case-sensitive: only the literal 'reviewer' engages the lock
+    'reviewer-bot',
+  ])('does NOT set AGENT_HUB_REVIEWER_ROLE_LOCK when role=%s', (role) => {
+    const env: NodeJS.ProcessEnv = {};
+    applyReviewerRoleLock(env, role as string | undefined);
+    expect(env.AGENT_HUB_REVIEWER_ROLE_LOCK).toBeUndefined();
+  });
+
+  it('layers on top of applyReviewerSpawnIsolation without clobbering its env mutations', () => {
+    // Real-world call order in chat.ts: isolation runs first (universal
+    // lock + scrub + GH_CONFIG_DIR), then the role lock layers a second
+    // marker on top. The role lock must not undo any earlier mutation.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = { GH_TOKEN: 'ghp_inherited' };
+    applyReviewerSpawnIsolation(env, cfg);
+    applyReviewerRoleLock(env, 'reviewer');
+
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.AGENT_HUB_REVIEWER_ROLE_LOCK).toBe('1');
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+
+  it('isolation + role lock + credential injection (reviewer + bot) end-to-end env shape', () => {
+    // Reviewer spawn with bot creds + role lock: token wired, universal
+    // lock set, role lock set. This is the exact env contract the
+    // reviewer-pipeline relies on — pin it.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {};
+    const tokenToInject = selectGithubSpawnToken({
+      role: 'reviewer',
+      botGithubToken: 'bot_installation_token',
+      userGhToken: null,
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyReviewerRoleLock(env, 'reviewer');
+    applyGithubSpawnCredentials(env, tokenToInject);
+
+    expect(env.GH_TOKEN).toBe('bot_installation_token');
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.AGENT_HUB_REVIEWER_ROLE_LOCK).toBe('1');
+  });
+
+  it('non-reviewer spawn does NOT carry the role lock even when isolation set the universal lock', () => {
+    // The two markers must remain decoupled. A non-reviewer (e.g.
+    // lead/author/dev) still gets the universal lock (gh pr review
+    // blocked) but NOT the role lock (gh pr create/merge/close remain
+    // available for normal dev workflows).
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {};
+    applyReviewerSpawnIsolation(env, cfg);
+    applyReviewerRoleLock(env, 'lead');
+
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.AGENT_HUB_REVIEWER_ROLE_LOCK).toBeUndefined();
   });
 });
