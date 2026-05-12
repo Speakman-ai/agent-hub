@@ -487,6 +487,119 @@ ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
   });
 });
 
+// ─── Preview Pane — Detached Window ───────────────────────────────
+//
+// Renderer can ask the main process to open the session preview URL in
+// a dedicated, sandboxed BrowserWindow so the running app can sit on a
+// second monitor while the user keeps chatting in the main window.
+//
+// Lifecycle:
+//   - Validate that `url` parses to http/https. Reject anything else
+//     (file://, javascript:, etc.) so a compromised renderer can't use
+//     this channel to read local files.
+//   - One window per sessionId. Re-invocation focuses the existing
+//     window and navigates it to the new URL — handy when the preview
+//     port rotates after a rebuild.
+//   - When the window closes (manually or programmatically), the entry
+//     is removed from the registry. The renderer's poll-loop notices
+//     and reattaches the inline iframe.
+//
+// Security:
+//   - `sandbox: true` + `contextIsolation: true` + `nodeIntegration:
+//     false` is the strictest preset Electron offers; the popped-out
+//     view runs with no Node integration whatsoever.
+//   - No preload is attached, so `window.electronAPI` is undefined in
+//     the popped window — the preview should never need IPC.
+//   - `setWindowOpenHandler` on the pop-out window's `webContents` (see
+//     below) routes any child window.open / target=_blank to
+//     `shell.openExternal`, preventing the preview from spawning further
+//     Electron windows. The main window has the same handler (~line 315).
+
+/** sessionId → BrowserWindow */
+const previewPopOutWindows = new Map();
+
+ipcMain.handle('preview:pop-out', async (event, payload) => {
+  const sessionId =
+    payload && typeof payload === 'object' && typeof payload.sessionId === 'string'
+      ? payload.sessionId.trim()
+      : '';
+  const rawUrl =
+    payload && typeof payload === 'object' && typeof payload.url === 'string'
+      ? payload.url.trim()
+      : '';
+  if (!sessionId || !rawUrl) {
+    return { ok: false, error: 'sessionId and url are required' };
+  }
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, error: 'invalid url' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: 'unsupported protocol' };
+  }
+
+  // Reuse existing window for this session.
+  const existing = previewPopOutWindows.get(sessionId);
+  if (existing && !existing.isDestroyed()) {
+    try {
+      existing.loadURL(parsed.href);
+      existing.focus();
+      return { ok: true };
+    } catch (err) {
+      console.warn('[preview:pop-out] failed to reuse window, recreating:', err?.message);
+      previewPopOutWindows.delete(sessionId);
+    }
+  }
+
+  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow || null;
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    parent: parent || undefined,
+    title: `Preview — ${sessionId.slice(0, 8)}`,
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      // No preload — the popped view is a plain web page, no IPC bridge.
+    },
+  });
+  // Block any window.open / target=_blank inside the previewed app from
+  // spawning further child windows (open externally in the OS browser
+  // instead, which is the standard Electron pattern).
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        shell.openExternal(u.href).catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
+    return { action: 'deny' };
+  });
+  win.on('closed', () => {
+    previewPopOutWindows.delete(sessionId);
+  });
+
+  previewPopOutWindows.set(sessionId, win);
+  try {
+    await win.loadURL(parsed.href);
+    return { ok: true };
+  } catch (err) {
+    previewPopOutWindows.delete(sessionId);
+    try {
+      win.close();
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: err?.message || 'load failed' };
+  }
+});
+
 /** Packaged app / electron-builder version (normalized DMG semver). */
 ipcMain.handle('get-app-version', () => app.getVersion());
 

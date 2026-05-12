@@ -82,4 +82,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{ ok?: true, filePath?: string, cancelled?: true, error?: string }>}
    */
   saveDesignPdf: (payload) => ipcRenderer.invoke('design-pdf:save', payload),
+
+  // ─── Preview Pane — Detached Window ─────────────────────────────
+
+  /**
+   * Open the session preview URL in a dedicated, sandboxed BrowserWindow
+   * owned by the main process. The renderer fires this when the user hits
+   * "Pop out" on a session's preview pane so the running app can sit
+   * side-by-side on a second monitor.
+   *
+   * Idempotent per sessionId — invoking twice for the same session
+   * focuses the existing window and navigates it to the new URL rather
+   * than spawning a duplicate.
+   *
+   * @param {{ sessionId: string, url: string }} payload
+   * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+   */
+  popOutPreview: (payload) => ipcRenderer.invoke('preview:pop-out', payload),
 });

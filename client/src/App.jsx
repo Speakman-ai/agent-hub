@@ -14,6 +14,8 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
+import SessionPreviewPane from './components/SessionPreviewPane.jsx';
+import { paneOpenStorageKey } from './utils/sessionPreviewState.js';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
@@ -194,6 +196,14 @@ export default function App() {
   const [reactLoopStepsBySession, setReactLoopStepsBySession] = useState({});
   /** Live browser screenshot previews: messageId → { actionId → data URL }. */
   const [browserScreensBySession, setBrowserScreensBySession] = useState({});
+  /**
+   * Per-session preview state. Updated whenever an `agenthub_preview` WS
+   * event arrives. The pane reads `previewEventBySession[activeSessionId]`
+   * and renders accordingly.
+   */
+  const [previewEventBySession, setPreviewEventBySession] = useState({});
+  /** Per-session preview pane open/closed flag (auto-opens on first event). */
+  const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -1748,6 +1758,29 @@ export default function App() {
           break;
         }
 
+        case 'agenthub_preview': {
+          // Per-session preview lifecycle event. Persist the latest event
+          // keyed by sessionId so the SessionPreviewPane can render the
+          // running app (or failure / unavailable state) inline. Auto-open
+          // the pane on first arrival; subsequent updates respect whatever
+          // the user explicitly closed.
+          const sid = data.sessionId;
+          if (!sid) break;
+          setPreviewEventBySession((prev) => ({ ...prev, [sid]: data }));
+          setPreviewPaneOpenBySession((prev) => {
+            if (Object.prototype.hasOwnProperty.call(prev, sid)) return prev;
+            try {
+              const key = paneOpenStorageKey(sid);
+              if (key && window.localStorage.getItem(key) === 'false') {
+                return { ...prev, [sid]: false };
+              }
+            } catch {
+              /* localStorage unavailable */
+            }
+            return { ...prev, [sid]: true };
+          });
+          break;
+        }
         case 'handoff_error': {
           // Surface the failure on the source session's handoff list so the
           // UI can render a "Failed — <reason>" chip on the card instead of
@@ -2382,6 +2415,52 @@ export default function App() {
   useEffect(() => {
     refreshDesigns();
   }, [refreshDesigns]);
+
+  // Stable preview-pane callbacks. Defined here (not inline in JSX) so that
+  // SessionPreviewPane's useMemo([..., onTouch]) never rebuilds the 30s
+  // activity-touch throttle on every WS-driven App re-render.
+  const handlePreviewClose = useCallback(() => {
+    setPreviewPaneOpenBySession((prev) => ({
+      ...prev,
+      [activeSessionId]: false,
+    }));
+    try {
+      const key = paneOpenStorageKey(activeSessionId);
+      if (key) window.localStorage.setItem(key, 'false');
+    } catch {
+      /* storage unavailable */
+    }
+  }, [activeSessionId, setPreviewPaneOpenBySession]);
+
+  const handlePreviewTouch = useCallback(async ({ previewId }) => {
+    if (!previewId) return;
+    // Best-effort runtime touch — silently tolerate 404 / network errors
+    // until the runtime HTTP surface lands. Throttled to 30 s by the pane.
+    try {
+      await fetch(`${getApiBase()}/preview/touch/${encodeURIComponent(previewId)}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
+
+  const handlePreviewStop = useCallback(async ({ previewId }) => {
+    if (!previewId) return;
+    try {
+      await fetch(`${getApiBase()}/preview/stop/${encodeURIComponent(previewId)}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
+
+  const handlePreviewConfigure = useCallback(() => {
+    setCurrentView('settings:preview');
+  }, [setCurrentView]);
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
@@ -3616,6 +3695,35 @@ export default function App() {
                       )}
                     </div>
 
+                    {/* Show-preview pill — visible only when there's a
+                        preview event for this session but the user has
+                        closed the pane. One-click reopen. */}
+                    {activeSessionId &&
+                      previewEventBySession[activeSessionId] &&
+                      previewPaneOpenBySession[activeSessionId] === false && (
+                        <div className="px-3 md:px-6 pb-1">
+                          <button
+                            type="button"
+                            data-testid="reopen-preview-pane"
+                            onClick={() => {
+                              setPreviewPaneOpenBySession((prev) => ({
+                                ...prev,
+                                [activeSessionId]: true,
+                              }));
+                              try {
+                                const key = paneOpenStorageKey(activeSessionId);
+                                if (key) window.localStorage.setItem(key, 'true');
+                              } catch {
+                                /* storage unavailable */
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-sky-800/60 hover:bg-sky-700/70 text-sky-100 border border-sky-700/60"
+                          >
+                            <ArrowLeftRight size={12} /> Show preview
+                          </button>
+                        </div>
+                      )}
+
                     {/* Input */}
                     <MessageInput
                       onSend={handleSend}
@@ -3636,6 +3744,18 @@ export default function App() {
                       isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                     />
                   )}
+                  {activeSessionId &&
+                    previewEventBySession[activeSessionId] &&
+                    previewPaneOpenBySession[activeSessionId] !== false && (
+                      <SessionPreviewPane
+                        sessionId={activeSessionId}
+                        event={previewEventBySession[activeSessionId]}
+                        onClose={handlePreviewClose}
+                        onTouch={handlePreviewTouch}
+                        onStop={handlePreviewStop}
+                        onConfigure={handlePreviewConfigure}
+                      />
+                    )}
                 </div>
               )}
             </>
