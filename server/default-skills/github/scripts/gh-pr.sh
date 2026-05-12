@@ -8,6 +8,7 @@
 #                     [--repo owner/repo]
 #   gh-pr.sh view     <number|URL>
 #   gh-pr.sh diff     <number>
+#   gh-pr.sh files    <number>
 #   gh-pr.sh checkout <number>
 #   gh-pr.sh review   <number> --approve
 #   gh-pr.sh review   <number> --request-changes [--body <text>]
@@ -122,12 +123,30 @@ cmd_list() {
 
 # ---------------------------------------------------------------------------
 # pr view
+#
+# Under reviewer lock with no GH token, route through the Agent Hub PR
+# proxy (`/api/pr/data`) instead of `gh pr view` — the spawn has no
+# credentials by design (`applyReviewerSpawnIsolation`).
 # ---------------------------------------------------------------------------
 cmd_view() {
   [[ $# -lt 1 ]] && gh_die "pr view <number|URL>"
-  require_gh_token
 
   local target="$1"
+
+  if _hub_pr_proxy_should_use; then
+    local number="$target"
+    # If the caller passed a full URL, extract the PR number for the proxy.
+    if [[ "$target" =~ /pull/([0-9]+) ]]; then
+      number="${BASH_REMATCH[1]}"
+    elif ! [[ "$target" =~ ^[0-9]+$ ]]; then
+      gh_die "pr view: under reviewer lock, pass a PR number or full PR URL"
+    fi
+    hub_pr_proxy_data "$number"
+    return $?
+  fi
+
+  require_gh_token
+
   if [[ "$target" =~ ^https?:// ]]; then
     gh pr view "$target"
   else
@@ -138,11 +157,54 @@ cmd_view() {
 
 # ---------------------------------------------------------------------------
 # pr diff
+#
+# Under reviewer lock with no GH token, route through the Agent Hub PR
+# proxy (`/api/pr/diff`).
 # ---------------------------------------------------------------------------
 cmd_diff() {
   [[ $# -lt 1 ]] && gh_die "pr diff <number>"
+
+  local target="$1"
+
+  if _hub_pr_proxy_should_use; then
+    local number="$target"
+    if [[ "$target" =~ /pull/([0-9]+) ]]; then
+      number="${BASH_REMATCH[1]}"
+    elif ! [[ "$target" =~ ^[0-9]+$ ]]; then
+      gh_die "pr diff: under reviewer lock, pass a PR number or full PR URL"
+    fi
+    hub_pr_proxy_diff "$number"
+    return $?
+  fi
+
   require_gh_token
   gh pr diff "$1"
+}
+
+# ---------------------------------------------------------------------------
+# pr files — list changed files for a PR
+#
+# New subcommand for the reviewer pipeline: returns the JSON file list from
+# `/api/pr/files` (paginated server-side, capped at 3000). Outside reviewer
+# lock, falls back to `gh pr view --json files`.
+# ---------------------------------------------------------------------------
+cmd_files() {
+  [[ $# -lt 1 ]] && gh_die "pr files <number>"
+  local target="$1"
+
+  if _hub_pr_proxy_should_use; then
+    local number="$target"
+    if [[ "$target" =~ /pull/([0-9]+) ]]; then
+      number="${BASH_REMATCH[1]}"
+    elif ! [[ "$target" =~ ^[0-9]+$ ]]; then
+      gh_die "pr files: under reviewer lock, pass a PR number or full PR URL"
+    fi
+    hub_pr_proxy_files "$number"
+    return $?
+  fi
+
+  require_gh_token
+  gh pr view "$target" --json files
 }
 
 # ---------------------------------------------------------------------------
@@ -306,6 +368,7 @@ case "$SUBCOMMAND" in
   list)     cmd_list     "$@" ;;
   view)     cmd_view     "$@" ;;
   diff)     cmd_diff     "$@" ;;
+  files)    cmd_files    "$@" ;;
   checkout) cmd_checkout "$@" ;;
   review)   cmd_review   "$@" ;;
   comment)  cmd_comment  "$@" ;;
@@ -324,6 +387,7 @@ Subcommands:
   list      [--state open|closed|merged|all] [--limit <n>] [--repo owner/repo]
   view      <number|URL>
   diff      <number>
+  files     <number>
   checkout  <number>
   review    <number> --approve | --request-changes --body <text> | --comment --body <text>
   comment   <number> --body <text>

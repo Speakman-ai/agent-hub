@@ -208,6 +208,130 @@ _require_arg() {
   [[ -z "$value" ]] && gh_die "$flag is required"
 }
 
+# ---------------------------------------------------------------------------
+# Agent Hub PR read-proxy
+#
+# When the spawn is under `AGENT_HUB_REVIEWER_LOCK=1` and has no GitHub
+# token, `gh pr view` / `gh pr diff` cannot authenticate. The server-side
+# `/api/pr/{data,diff,files}` endpoints proxy those reads through the
+# GitHub App's installation token without ever handing a token to the
+# spawn. These helpers route through that proxy.
+#
+# `_hub_pr_proxy_should_use` — true when:
+#   - AGENT_HUB_REVIEWER_LOCK=1 (reviewer spawn)
+#   - no GH token in env
+#   - AGENT_HUB_URL + AGENT_HUB_API_KEY are present
+#
+# `_hub_pr_proxy_resolve_repo` — sets HUB_PR_OWNER / HUB_PR_REPO from
+# `$GH_REPO`, then `git remote get-url origin`. Avoids `gh repo view`
+# because that itself needs auth.
+#
+# `_hub_pr_proxy_diff NUMBER` / `_hub_pr_proxy_data NUMBER`
+# / `_hub_pr_proxy_files NUMBER` — print the response body to stdout,
+# exit non-zero with a helpful error on failure.
+# ---------------------------------------------------------------------------
+_hub_pr_proxy_should_use() {
+  [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]] || return 1
+  [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]] || return 1
+  [[ -n "${AGENT_HUB_URL:-}" && -n "${AGENT_HUB_API_KEY:-}" ]] || return 1
+  return 0
+}
+
+_hub_pr_proxy_resolve_repo() {
+  HUB_PR_OWNER=""
+  HUB_PR_REPO=""
+
+  if [[ -n "${GH_REPO:-}" ]] && [[ "$GH_REPO" == */* ]]; then
+    HUB_PR_OWNER="${GH_REPO%/*}"
+    HUB_PR_REPO="${GH_REPO##*/}"
+    return 0
+  fi
+
+  local remote_url
+  remote_url=$(git remote get-url origin 2>/dev/null || true)
+  if [[ -n "$remote_url" ]]; then
+    local stripped
+    stripped=$(echo "$remote_url" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+    if [[ "$stripped" == */* ]]; then
+      HUB_PR_OWNER="${stripped%%/*}"
+      HUB_PR_REPO="${stripped#*/}"
+      # Tolerate sub-paths beyond owner/repo (shouldn't happen for github
+      # but be defensive about trailing slashes / paths).
+      HUB_PR_REPO="${HUB_PR_REPO%%/*}"
+      return 0
+    fi
+  fi
+
+  cat >&2 <<HELP
+error: cannot resolve owner/repo for PR proxy request.
+
+The reviewer spawn is isolated from host \`gh\` credentials and is falling
+back to the Agent Hub PR proxy at \$AGENT_HUB_URL/api/pr/*. The proxy needs
+to know which repo the PR belongs to. Set one of:
+
+  GH_REPO=owner/repo
+  # or run from inside a git worktree whose 'origin' is a github.com remote
+HELP
+  return 2
+}
+
+_hub_pr_proxy_request() {
+  # $1 = endpoint suffix (data | diff | files)
+  # $2 = pr number
+  local endpoint="$1" number="$2"
+  _hub_pr_proxy_resolve_repo || return $?
+
+  local url="${AGENT_HUB_URL%/}/api/pr/${endpoint}?owner=${HUB_PR_OWNER}&repo=${HUB_PR_REPO}&number=${number}"
+  local tmp_body tmp_status
+  tmp_body=$(mktemp)
+  tmp_status=$(mktemp)
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp_body' '$tmp_status'" RETURN
+
+  local http_code
+  http_code=$(curl -sS \
+    -o "$tmp_body" \
+    -w '%{http_code}' \
+    -H "X-API-Key: ${AGENT_HUB_API_KEY}" \
+    -H 'Accept: */*' \
+    --max-time 30 \
+    "$url" 2>"$tmp_status") || {
+    cat >&2 <<HELP
+error: PR proxy request to \$AGENT_HUB_URL/api/pr/${endpoint} failed.
+
+curl error output:
+$(cat "$tmp_status")
+
+URL: $url
+HELP
+    return 1
+  }
+
+  if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+    cat "$tmp_body"
+    return 0
+  fi
+
+  cat >&2 <<HELP
+error: PR proxy returned HTTP ${http_code} for /api/pr/${endpoint}.
+
+URL: $url
+Body (first 400 bytes):
+$(head -c 400 "$tmp_body")
+
+The server's response body is above. Common causes:
+  - GitHub App installation not present for repo owner "${HUB_PR_OWNER}"
+  - PR #${number} does not exist or is in a private repo without coverage
+  - Server-side App credentials misconfigured
+HELP
+  return 1
+}
+
+# Public helpers for the wrapper scripts.
+hub_pr_proxy_diff()  { _hub_pr_proxy_request diff  "$1"; }
+hub_pr_proxy_data()  { _hub_pr_proxy_request data  "$1"; }
+hub_pr_proxy_files() { _hub_pr_proxy_request files "$1"; }
+
 # Run prerequisite checks immediately when sourced so wrappers don't have to
 # repeat them.
 #

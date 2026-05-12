@@ -5,6 +5,16 @@
  * POST /api/pr/close   — Close a PR by URL
  * POST /api/pr/review  — Submit a formal GitHub review using the GitHub App identity
  * GET  /api/pr/status  — Get PR status (mergeable, CI, reviews)
+ * GET  /api/pr/data    — Get full PR detail (metadata, reviews, comments, checks)
+ * GET  /api/pr/diff    — Get the unified diff for a PR (text/plain)
+ * GET  /api/pr/files   — Get the changed-files list for a PR (JSON)
+ *
+ * The three GET endpoints below are the read-side proxy that lets
+ * reviewer-role spawns inspect a PR. The reviewer spawn env is deliberately
+ * stripped of `GH_TOKEN` and pointed at an empty `GH_CONFIG_DIR` by
+ * `applyReviewerSpawnIsolation`, so `gh pr view` / `gh pr diff` have no auth.
+ * Routing reads through here keeps the App / user-OAuth credentials
+ * server-side and never injects them into the spawn env.
  */
 
 import { Router, Request, Response } from 'express';
@@ -23,6 +33,8 @@ import type {
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
 import { githubUserApiRequest } from '../github-oauth.js';
 import { resolveUserToken } from './pr-list.js';
+import { fetchPrDetail } from '../pr-detail-fetch.js';
+import { fetchPrDiff, fetchPrFiles } from '../pr-read-fetch.js';
 import {
   DEFAULT_REVIEWER_PHASES,
   completeCheckRun,
@@ -619,6 +631,109 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: `Status check failed: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  // ─── Read-side proxies for reviewer-role spawns ─────────────────
+  //
+  // Reviewer spawns have NO local GitHub credentials (by design — see
+  // `applyReviewerSpawnIsolation`). These endpoints let them fetch PR
+  // contents using server-side App / user-OAuth credentials without ever
+  // exposing a token to the spawned process. Auth chain mirrors
+  // `pr-detail-fetch.ts`: User OAuth → GitHub App → gh CLI.
+  //
+  // Accepts either `?prUrl=https://github.com/owner/repo/pull/N` or the
+  // explicit triple `?owner=…&repo=…&number=N`. The PR-URL form is what
+  // skill scripts forward verbatim from kanban cards; the triple form is
+  // convenient when the caller already has the parts split.
+
+  function parsePrQuery(req: Request): ParsedPR | { error: string } {
+    const prUrlRaw = (req.query.prUrl ?? req.query.url) as string | undefined;
+    if (prUrlRaw) {
+      const parsed = parsePrUrl(prUrlRaw);
+      if (!parsed) return { error: 'Invalid PR URL (must be github.com/owner/repo/pull/N)' };
+      return parsed;
+    }
+    const owner = req.query.owner as string | undefined;
+    const repo = req.query.repo as string | undefined;
+    const number = (req.query.number ?? req.query.pr) as string | undefined;
+    if (!owner || !repo || !number) {
+      return { error: 'Pass ?prUrl=…, or ?owner=…&repo=…&number=…' };
+    }
+    if (!/^\d+$/.test(number)) return { error: 'number must be a positive integer' };
+    return { owner, repo, number };
+  }
+
+  // GET /api/pr/data — full PR detail (metadata + reviews + comments + checks)
+  router.get('/api/pr/data', async (req: Request, res: Response) => {
+    const parsed = parsePrQuery(req);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+
+    try {
+      const userAccessToken = await resolveUserToken(req, config);
+      const detail = await fetchPrDetail(
+        config,
+        { owner: parsed.owner, repo: parsed.repo },
+        Number(parsed.number),
+        { userAccessToken },
+      );
+      return res.json({
+        source: detail.source,
+        pr: detail.pr,
+        reviews: detail.reviews,
+        comments: detail.comments,
+        checks: detail.checks,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: `PR data fetch failed: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  // GET /api/pr/diff — unified diff (text/plain)
+  router.get('/api/pr/diff', async (req: Request, res: Response) => {
+    const parsed = parsePrQuery(req);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+
+    try {
+      const userAccessToken = await resolveUserToken(req, config);
+      const result = await fetchPrDiff(
+        config,
+        { owner: parsed.owner, repo: parsed.repo },
+        Number(parsed.number),
+        { userAccessToken },
+      );
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('X-PR-Source', result.source);
+      return res.send(result.diff);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: `PR diff fetch failed: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  // GET /api/pr/files — changed-files list (paginated, capped)
+  router.get('/api/pr/files', async (req: Request, res: Response) => {
+    const parsed = parsePrQuery(req);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+
+    try {
+      const userAccessToken = await resolveUserToken(req, config);
+      const result = await fetchPrFiles(
+        config,
+        { owner: parsed.owner, repo: parsed.repo },
+        Number(parsed.number),
+        { userAccessToken },
+      );
+      return res.json({
+        source: result.source,
+        truncated: result.truncated,
+        files: result.files,
+        count: result.files.length,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: `PR files fetch failed: ${msg.split('\n')[0]}` });
     }
   });
 
