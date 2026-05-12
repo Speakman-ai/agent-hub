@@ -68,6 +68,7 @@ interface SpawnHarness {
     args: readonly string[];
     cwd: string | undefined;
     port: string | undefined;
+    env: Record<string, string | undefined>;
   }>;
   /** Injected kill dep — records calls and forwards signals to matching FakeChild. */
   kill: (target: number, signal: NodeJS.Signals) => void;
@@ -82,11 +83,13 @@ function makeSpawn(): SpawnHarness {
   const spawn: SpawnFn = (command, args, options) => {
     const child = new FakeChild(nextPid++);
     spawned.push(child);
+    const env = (options.env as Record<string, string | undefined> | undefined) ?? {};
     calls.push({
       command,
       args,
       cwd: options.cwd as string | undefined,
-      port: (options.env as Record<string, string> | undefined)?.PORT,
+      port: env.PORT,
+      env: { ...env },
     });
     return child as unknown as ChildProcess;
   };
@@ -663,6 +666,102 @@ describe('preview-reaper', () => {
       config: { defaultIdleTtlSeconds: 1 },
     });
     expect(stale.reaped).toBe(1);
+  });
+});
+
+describe('PreviewRuntime — loadProjectEnv merge', () => {
+  it('merges resolver output into spawn env with PORT winning over a malicious entry', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const captured: Array<{ projectId: string; sessionId: string }> = [];
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000 },
+      loadProjectEnv: (projectId, ctx) => {
+        captured.push({ projectId, sessionId: ctx.sessionId });
+        return {
+          DATABASE_URL: 'postgres://test',
+          AWS_ACCESS_KEY_ID: 'AKIA-test',
+          // A project secret named PORT MUST NOT redirect the dev server
+          // off the runtime-allocated port — the runtime appends PORT
+          // last so it always wins. If this assertion ever fails, the
+          // health check would deadlock forever waiting on the wrong port.
+          PORT: 'BAD-9999',
+        };
+      },
+    });
+
+    const result = await runtime.startPreview('sess-merge', makeProject(), '/wt');
+
+    // The resolver was called with the correct projectId + sessionId.
+    expect(captured).toEqual([{ projectId: 'proj-1', sessionId: 'sess-merge' }]);
+
+    const env = harness.calls[0].env;
+    expect(env.DATABASE_URL).toBe('postgres://test');
+    expect(env.AWS_ACCESS_KEY_ID).toBe('AKIA-test');
+    // PORT precedence — the runtime's allocated port wins over the
+    // project's bogus value.
+    expect(env.PORT).toBe(String(result.port));
+    expect(env.PORT).not.toBe('BAD-9999');
+    // process.env keys are still present (the merge is additive on top
+    // of the parent env). PATH is reliably present in any test runner.
+    expect(typeof env.PATH).toBe('string');
+  });
+
+  it('continues spawning (without project env) when loadProjectEnv throws', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const warnings: string[] = [];
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock: makeClock(),
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000 },
+      logger: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      loadProjectEnv: () => {
+        throw new Error('store unavailable');
+      },
+    });
+
+    const result = await runtime.startPreview('sess-err', makeProject(), '/wt');
+
+    // Spawn still happened — historical behaviour is preserved.
+    expect(harness.spawned).toHaveLength(1);
+    expect(harness.calls[0].env.PORT).toBe(String(result.port));
+    // The failure was logged so operators can diagnose missing secrets.
+    expect(warnings.some((w) => w.includes('loadProjectEnv failed'))).toBe(true);
+  });
+
+  it('uses the historical merge (process.env + PORT) when loadProjectEnv is omitted', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock: makeClock(),
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000 },
+      // loadProjectEnv intentionally omitted.
+    });
+
+    const result = await runtime.startPreview('sess-bare', makeProject(), '/wt');
+    expect(harness.calls[0].env.PORT).toBe(String(result.port));
+    // No project keys leaked in — only inherited process.env + PORT.
+    expect(harness.calls[0].env.DATABASE_URL).toBeUndefined();
   });
 });
 
