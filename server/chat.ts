@@ -244,6 +244,7 @@ export interface ChatHandlerDeps {
     prBaseBranch?: string | null,
     repoUrl?: string | null,
     projectId?: string,
+    onBaseBranchAdvanced?: import('./worktree.js').OnBaseBranchAdvancedFn,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
@@ -1633,6 +1634,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         sessionPrBase = null;
       }
 
+      // Captured for the reuse-path drift case below — populated by the
+      // `onBaseBranchAdvanced` callback when origin/<pr_base_branch> moved
+      // since this session forked. We consume it after the worktree settles
+      // so we can post a card comment + augment the system prompt in one
+      // place, regardless of which engine eventually spawns.
+      let baseBranchAdvanced: import('./worktree.js').BaseBranchAdvancedInfo | null = null;
+
       let effectiveCwd: string = project.cwd;
       if (
         session!.use_worktree &&
@@ -1648,6 +1656,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionPrBase,
           (project as Project).repoUrl ?? null,
           project.id,
+          (info) => {
+            baseBranchAdvanced = info;
+          },
         );
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (session) {
@@ -1663,6 +1674,79 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         console.log(
           `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
         );
+      }
+
+      // Surface base-branch drift (umbrella moved while this card was
+      // iterating). We post a card comment for the human-visible audit
+      // trail and append a one-shot suffix to `enrichedPrompt` so the
+      // agent's next turn sees the "rebase first" notice. The detection
+      // runs once per turn — if the drift persists across turns (dirty /
+      // conflict cases), the callback fires again and the notice is
+      // re-injected each time, which is the correct behavior.
+      if (baseBranchAdvanced) {
+        const drift: import('./worktree.js').BaseBranchAdvancedInfo = baseBranchAdvanced;
+        const shortNew = drift.newTipSha.slice(0, 7);
+        let promptNote: string;
+        let commentBody: string;
+        if (drift.rebased) {
+          promptNote =
+            `\n\n[base-branch advanced] Your worktree's base branch \`${drift.baseBranch}\` ` +
+            `advanced by ${drift.commitsAdvanced} commit(s) (now at \`${shortNew}\`) since you ` +
+            `forked. The working tree was clean, so Agent Hub auto-rebased you onto the new tip. ` +
+            `Continue your work — no action required.`;
+          commentBody =
+            `Base branch \`${drift.baseBranch}\` advanced by ${drift.commitsAdvanced} ` +
+            `commit(s) on origin (now at \`${shortNew}\`). Working tree was clean — ` +
+            `auto-rebased onto the new tip.`;
+        } else if (drift.conflict) {
+          promptNote =
+            `\n\n[base-branch advanced — REBASE FIRST] Your worktree's base branch ` +
+            `\`${drift.baseBranch}\` advanced by ${drift.commitsAdvanced} commit(s) (now at ` +
+            `\`${shortNew}\`) since you forked. Agent Hub attempted an auto-rebase but hit ` +
+            `conflicts and aborted, restoring your prior tree. **Rebase manually before ` +
+            `continuing or pushing** — \`git fetch origin && git rebase origin/${drift.baseBranch}\` ` +
+            `and resolve conflicts. Otherwise your next push will be rejected.`;
+          commentBody =
+            `Base branch \`${drift.baseBranch}\` advanced by ${drift.commitsAdvanced} ` +
+            `commit(s) on origin (now at \`${shortNew}\`). Auto-rebase attempted but hit ` +
+            `conflicts; rebase aborted. Agent will be prompted to rebase manually.`;
+        } else {
+          // Dirty working tree — no rebase attempted.
+          promptNote =
+            `\n\n[base-branch advanced — REBASE FIRST] Your worktree's base branch ` +
+            `\`${drift.baseBranch}\` advanced by ${drift.commitsAdvanced} commit(s) (now at ` +
+            `\`${shortNew}\`) since you forked. Your working tree has uncommitted changes, ` +
+            `so Agent Hub did not auto-rebase. **Commit or stash your changes, then run ` +
+            `\`git fetch origin && git rebase origin/${drift.baseBranch}\` before continuing** — ` +
+            `your next push will otherwise be rejected.`;
+          commentBody =
+            `Base branch \`${drift.baseBranch}\` advanced by ${drift.commitsAdvanced} ` +
+            `commit(s) on origin (now at \`${shortNew}\`). Working tree was dirty — ` +
+            `auto-rebase skipped. Agent will be prompted to commit/stash and rebase manually.`;
+        }
+        enrichedPrompt += promptNote;
+
+        // Best-effort card comment + UI broadcast. Failure here must not
+        // block the chat turn — the prompt note still gets through.
+        try {
+          const cardForComment = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+            | KanbanCardRow
+            | undefined;
+          if (cardForComment) {
+            const author = drift.rebased ? 'Agent Hub (auto-rebase)' : 'Agent Hub';
+            stmts.createKanbanCardComment.run(uuidv4(), cardForComment.id, author, commentBody);
+            try {
+              broadcast({ type: 'kanban_update', projectId: project.id });
+            } catch {
+              /* broadcast failures are non-fatal */
+            }
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[chat] Failed to post base-branch-advanced comment for session ${sessionId}: ${message}`,
+          );
+        }
       }
 
       if (engine === 'cursor-agent' && !engineSessionId) {

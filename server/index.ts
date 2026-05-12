@@ -57,7 +57,7 @@ import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
-import { ensureSessionWorkspace } from './worktree.js';
+import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
 import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
@@ -335,6 +335,13 @@ function ensureWorktree(
   repoUrl?: string | null,
   /** Project id for error attribution; threaded into worktree errors. */
   projectId?: string,
+  /**
+   * Fired on the reuse path when origin/<prBaseBranch> has advanced past the
+   * worktree's merge-base. Plumbed through from chat.ts so it can post a card
+   * comment and augment the next-turn system prompt. Never fires for fresh
+   * clones or no-drift cases — see `BaseBranchAdvancedInfo`.
+   */
+  onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
 ): Promise<string> {
   return ensureSessionWorkspace(
     session,
@@ -375,6 +382,7 @@ function ensureWorktree(
     prBaseBranch ?? null,
     repoUrl ?? null,
     projectId,
+    onBaseBranchAdvanced,
   );
 }
 
