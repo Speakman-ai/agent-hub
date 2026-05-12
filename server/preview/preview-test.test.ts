@@ -175,7 +175,27 @@ describe('runPreviewTest — happy path', () => {
         project: makeProject(),
         uploadsDir: tmp,
         publicUrl: 'https://hub.example.com',
-        spawn: harness.spawn,
+        spawn: (cmd, args, options) => {
+          const child = harness.spawn(cmd, args, options);
+          // Emit a couple of boot lines so the happy-path assertion can
+          // verify `logTail` is plumbed into the success response too,
+          // not just failure paths. queueMicrotask (rather than
+          // setImmediate) because the test drives runPreviewTest by
+          // bouncing microtasks + a fake clock — control never returns
+          // to the event loop's check phase, so setImmediate would
+          // never fire within the test's lifetime.
+          queueMicrotask(() => {
+            (child as unknown as { stdout: EventEmitter }).stdout.emit(
+              'data',
+              Buffer.from('vite v5.0.0 dev server running\n'),
+            );
+            (child as unknown as { stderr: EventEmitter }).stderr.emit(
+              'data',
+              Buffer.from('  ➜  Local:   http://localhost:4200/\n'),
+            );
+          });
+          return child;
+        },
         fetch,
         clock,
         kill: harness.kill,
@@ -204,6 +224,12 @@ describe('runPreviewTest — happy path', () => {
       expect(result.ports.allocated).toBe(4200);
       expect(result.screenshotUrl).toBe(
         'https://hub.example.com/uploads/preview-tests/' + path.basename(screenshots[0].out),
+      );
+      expect(result.logTail).toEqual(
+        expect.arrayContaining([
+          'vite v5.0.0 dev server running',
+          '  ➜  Local:   http://localhost:4200/',
+        ]),
       );
       expect(harness.calls[0]?.port).toBe('4200');
       expect(harness.calls[0]?.args).toEqual(['-c', 'npm run dev']);
@@ -421,14 +447,110 @@ describe('runPreviewTest — failure modes', () => {
     expect(result.error).toMatch(/code=1/);
     expect(result.error).toMatch(/signal=/);
     expect(result.error).toMatch(/Log tail:/);
-    // The actual captured log content is surfaced in the tail.
+    // The actual captured log content is surfaced in the (inline)
+    // error-string tail AND in the structured `logTail` field so the
+    // UI can render the console verbatim regardless of which surface
+    // it consumes.
     expect(result.error).toContain('vite v5.0.0 dev server starting');
     expect(result.error).toContain('EADDRINUSE');
+    expect(result.logTail).toEqual(
+      expect.arrayContaining([
+        'vite v5.0.0 dev server starting',
+        'Error: listen EADDRINUSE: address already in use :::4400',
+      ]),
+    );
     // Port was allocated before spawn — surfaced for the user even on failure.
     expect(result.ports.allocated).toBe(4400);
     // Because we marked the FakeChild as already exited, the finally
     // block should not have issued a redundant kill.
     expect(harness.killSignals).not.toContain('SIGTERM');
+  });
+
+  it('defaults the health-check timeout to 120s (parity with PreviewRuntime)', async () => {
+    const harness = makeSpawn();
+    const clock = makeClock();
+    const { fetch } = makeFetch({ alwaysFail: true });
+
+    const promise = runPreviewTest({
+      project: makeProject(),
+      uploadsDir: '/tmp/uploads',
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      kill: harness.kill,
+      allocatePort: async () => 4360,
+      // Intentionally omit healthTimeoutMs — exercise the default.
+      healthIntervalMs: 1_000,
+    });
+
+    // Advance well past the legacy 30s ceiling but stop short of the
+    // new 120s default. If the default ever regresses to 30s the loop
+    // would have bailed and the assertion below would observe a
+    // truthy `done` here instead of still-pending.
+    for (let i = 0; i < 70; i++) {
+      await Promise.resolve();
+      clock.advance(1_000);
+    }
+    let done = false;
+    promise.then(() => {
+      done = true;
+    });
+    await Promise.resolve();
+    expect(done).toBe(false);
+
+    // Now push past 120s to let the loop finish naturally.
+    for (let i = 0; i < 70; i++) {
+      await Promise.resolve();
+      clock.advance(1_000);
+    }
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/timed out after 120000ms/);
+  });
+
+  it('bails immediately on async spawn error without waiting the full timeout', async () => {
+    const harness = makeSpawn();
+    const clock = makeClock();
+    const { fetch } = makeFetch({ alwaysFail: true });
+
+    const promise = runPreviewTest({
+      project: makeProject(),
+      uploadsDir: '/tmp/uploads',
+      spawn: (cmd, args, options) => {
+        const child = harness.spawn(cmd, args, options);
+        // Fire an async 'error' event right after the synchronous
+        // spawn returns — emulates Node's behaviour when `sh` itself
+        // can't be located or when `options.cwd` doesn't exist.
+        // queueMicrotask, not setImmediate (see happy-path comment).
+        queueMicrotask(() => {
+          (child as unknown as EventEmitter).emit('error', new Error('spawn sh ENOENT'));
+        });
+        return child;
+      },
+      fetch,
+      clock,
+      kill: harness.kill,
+      allocatePort: async () => 4370,
+      healthTimeoutMs: 120_000,
+      healthIntervalMs: 500,
+    });
+
+    // Only need a couple of ticks for the 'error' event + first poll
+    // iteration. If the bail-out is wired correctly the promise
+    // resolves long before the 120s deadline.
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+      clock.advance(600);
+    }
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Spawn error: spawn sh ENOENT/);
+    // We bailed via the async-error short-circuit, not via the 120s
+    // timeout — clock-elapsed should be measured in seconds, not minutes.
+    expect(result.durationMs).toBeLessThan(10_000);
+    // logTail is present (empty here because the spawn died before any
+    // stdout/stderr was emitted).
+    expect(result.logTail).toEqual([]);
   });
 
   it('returns ok:true with a non-fatal error when screenshot fails', async () => {

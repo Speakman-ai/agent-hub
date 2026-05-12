@@ -1113,13 +1113,14 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   //
   // Settings → Preview's "Test preview" button calls this endpoint. It
   // runs the configured startScript inside `project.cwd/client`,
-  // allocates a port, polls `healthPath` with a 30s timeout, captures a
-  // single screenshot on success, and tears down the spawned process in
-  // a `finally` so no orphaned dev server is left behind. Pure read of
-  // `projects.json` — no session, no worktree, no DB row written.
+  // allocates a port, polls `healthPath` with a 120s timeout (matches
+  // `PreviewRuntime`), captures a single screenshot on success, and
+  // tears down the spawned process in a `finally` so no orphaned dev
+  // server is left behind. Pure read of `projects.json` — no session,
+  // no worktree, no DB row written.
   //
   // Response shape:
-  //   { ok, ports: { allocated }, durationMs, screenshotUrl?, error? }
+  //   { ok, ports: { allocated }, durationMs, logTail, screenshotUrl?, error? }
   //
   // Errors are always `200 OK` with `ok:false` + `error` so the panel can
   // render them inline (this isn't a server fault, it's user config).
@@ -1146,7 +1147,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         // verbatim so we can debug rather than papering over the bug.
         res.status(500).json({
           ok: false,
+          ports: { allocated: null },
+          durationMs: 0,
           error: `Unexpected preview-test error: ${(err as Error).message}`,
+          logTail: [],
         });
       }
     },
