@@ -422,7 +422,26 @@ export class PreviewRuntime {
     // Between waves, we await every handle's donePromise; if any one
     // fails the rollup short-circuits the group and the remaining
     // waves are SIGTERMed in `markGroupFailed`.
-    void this.runWaves(groupId, worktreePath, projectEnv, validation.waves, handles, processes);
+    //
+    // The orchestrator must NOT silently swallow an unexpected throw
+    // (e.g. a DB write failing after a schema drift) — that would leave
+    // the group stuck in `starting` with no rollup. Catch and route it
+    // through the same failure path the per-process error handlers use.
+    this.runWaves(groupId, worktreePath, projectEnv, validation.waves, handles, processes).catch(
+      async (err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.error(`[preview] runWaves crashed for ${groupId}: ${reason}`);
+        try {
+          await this.markGroupFailed(groupId, handles, reason);
+        } catch (innerErr) {
+          this.logger.error(
+            `[preview] markGroupFailed also threw for ${groupId}: ${
+              innerErr instanceof Error ? innerErr.message : String(innerErr)
+            }`,
+          );
+        }
+      },
+    );
 
     // The "headline" URL surfaced to the caller is the default process's
     // url. For a single-process happy path, this is the only process so
@@ -1155,6 +1174,14 @@ function buildAdjacency(processes: PreviewProcess[]): Map<string, string[]> {
   return adj;
 }
 
+/**
+ * Exported so the path-traversal containment can be tested directly
+ * (and so anyone touching the rules can see what behaviour the tests
+ * pin). Internal callers continue to use the un-prefixed local binding.
+ */
+export const __test_resolveProcessCwd = (worktreePath: string, cwd: string | undefined): string =>
+  resolveProcessCwd(worktreePath, cwd);
+
 function resolveProcessCwd(worktreePath: string, cwd: string | undefined): string {
   if (!cwd) return worktreePath;
   if (cwd.startsWith('/')) {
@@ -1163,9 +1190,12 @@ function resolveProcessCwd(worktreePath: string, cwd: string | undefined): strin
     // rather than throwing inside spawn.
     return worktreePath;
   }
-  const resolved = path.posix.join(worktreePath, cwd);
-  // Reject relative traversal (e.g. "../escape") the same way we bound
-  // envFile paths — keep spawn cwd inside the worktree.
+  // Relative `..` traversal can still escape the worktree (e.g.
+  // `cwd: "../escape"` → `/wt/../escape`). Normalise then verify the
+  // result is contained — same containment rule we apply to envFile so
+  // a stray `..` segment doesn't silently spawn outside the worktree.
+  const joined = path.posix.join(worktreePath, cwd);
+  const resolved = path.posix.normalize(joined);
   if (resolved !== worktreePath && !resolved.startsWith(worktreePath + path.posix.sep)) {
     return worktreePath;
   }
@@ -1179,14 +1209,25 @@ function resolveProcessCwd(worktreePath: string, cwd: string | undefined): strin
  * trailing whitespace; no multi-line / expansion support (matches the
  * smaller surface preview-secrets-store uses internally).
  */
+/** Test-only re-export — see `__test_resolveProcessCwd` for rationale. */
+export const __test_defaultReadEnvFile = (
+  worktreePath: string,
+  relPath: string,
+): Record<string, string> => defaultReadEnvFile(worktreePath, relPath);
+
 function defaultReadEnvFile(worktreePath: string, relPath: string): Record<string, string> {
   // Defensive — refuse path traversal so an `envFile: "../../../etc/passwd"`
-  // can't escape the worktree. Require the resolved path to equal the
-  // worktree root OR start with "<worktreePath>/" — a bare startsWith check
-  // is defeated by prefix-extension siblings (e.g. /wt/../wt-secrets/.env
-  // resolves to /wt-secrets/.env which startsWith("/wt") is true).
+  // can't escape the worktree.
+  //
+  // Naive `startsWith(worktreePath)` is unsafe when the worktree name is
+  // a prefix of a sibling (`/wt` vs `/wt-secrets`): `..` traversal that
+  // lands on a sibling sharing the leading bytes would pass the check
+  // even though it's outside the worktree. Require equality OR a
+  // following path separator so only true descendants are accepted.
   const resolved = path.posix.normalize(path.posix.join(worktreePath, relPath));
-  if (resolved !== worktreePath && !resolved.startsWith(worktreePath + path.posix.sep)) return {};
+  if (resolved !== worktreePath && !resolved.startsWith(worktreePath + path.posix.sep)) {
+    return {};
+  }
   if (!existsSync(resolved)) return {};
   try {
     const raw = readFileSync(resolved, 'utf8');
