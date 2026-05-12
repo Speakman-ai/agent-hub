@@ -49,6 +49,36 @@ describe('SessionPreviewPane', () => {
     expect(screen.queryByTestId('session-preview-pane-iframe')).toBeNull();
   });
 
+  it('renders the live log tail during `starting` so users see boot progress', () => {
+    const event = {
+      kind: 'preview_starting',
+      previewId: 'p-3',
+      previewUrl: 'http://localhost:4102',
+      port: 4102,
+      logTail: ['vite v5.0.0 starting', 'optimizing deps…'],
+    };
+    render(<SessionPreviewPane sessionId="s-1" event={event} onClose={() => {}} />);
+    expect(screen.getByTestId('session-preview-pane-starting')).toBeInTheDocument();
+    const log = screen.getByTestId('session-preview-pane-starting-log');
+    expect(log).toHaveTextContent('vite v5.0.0 starting');
+    expect(log).toHaveTextContent('optimizing deps…');
+    // Port hint surfaces so the user can verify which port the runtime
+    // picked while it's still booting.
+    expect(screen.getByText(/port 4102/i)).toBeInTheDocument();
+  });
+
+  it('shows a placeholder line in `starting` when no log output has arrived yet', () => {
+    const event = {
+      kind: 'preview_starting',
+      previewId: 'p-3',
+      logTail: [],
+    };
+    render(<SessionPreviewPane sessionId="s-1" event={event} onClose={() => {}} />);
+    expect(screen.getByTestId('session-preview-pane-starting-log')).toHaveTextContent(
+      /waiting for first log line/i,
+    );
+  });
+
   it('renders failed state with the error message and log tail', () => {
     const event = {
       kind: 'preview_failed',

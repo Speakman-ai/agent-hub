@@ -181,7 +181,13 @@ export interface PreviewLogSink {
 export interface PreviewRuntimeConfig {
   /** Range to allocate ports from. Defaults to {@link DEFAULT_PREVIEW_PORT_RANGE}. */
   portRange?: PortRange;
-  /** Max ms to wait for the health check before flipping to `failed`. Default 30000. */
+  /**
+   * Max ms to wait for the health check before flipping to `failed`.
+   * Default 120000 (2 min) — sized so a cold worktree that runs
+   * `npm install` and a first Vite/webpack compile on boot still has
+   * room before we give up. Operators with faster fleets can tighten
+   * this via `prEnv.preview.healthTimeoutMs` (see types.ts).
+   */
   healthTimeoutMs?: number;
   /** Cadence for the health-check loop. Default 500. */
   healthIntervalMs?: number;
@@ -220,11 +226,29 @@ export interface PreviewRuntimeDeps {
    * to touch the filesystem.
    */
   readEnvFile?: (worktreePath: string, relPath: string) => Record<string, string>;
+  /**
+   * Optional sink invoked once per *line* of stdout/stderr from every
+   * spawned preview process. Production wires this to a debounced
+   * WebSocket broadcaster (see `preview-block.ts`'s `preview_log`
+   * event); tests inject an in-memory recorder.
+   *
+   * Failures inside the callback are caught + logged — a broken
+   * broadcaster must never crash the spawn or stall the health-check
+   * loop. The runtime has no way to recover the line if the callback
+   * throws, so unreliable transports should batch internally.
+   */
+  notifyLog?: (info: {
+    sessionId: string;
+    groupId: string;
+    processName: string;
+    line: string;
+    stream: 'stdout' | 'stderr';
+  }) => void;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
-const DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
+const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
 const DEFAULT_LOG_TAIL_LINES = 50;
 const DEFAULT_PREVIEW_CWD = 'client';
@@ -242,6 +266,8 @@ const SINGLE_PROCESS_NAME = 'app';
 interface ProcessHandle {
   rowId: string;
   groupId: string;
+  /** Session that owns the parent group — surfaced on `notifyLog` events. */
+  sessionId: string;
   name: string;
   port: number;
   healthPath: string;
@@ -279,6 +305,15 @@ export class PreviewRuntime {
     | ((projectId: string, ctx: { sessionId: string }) => Record<string, string>)
     | null;
   private readonly readEnvFile: (worktreePath: string, relPath: string) => Record<string, string>;
+  private readonly notifyLog:
+    | ((info: {
+        sessionId: string;
+        groupId: string;
+        processName: string;
+        line: string;
+        stream: 'stdout' | 'stderr';
+      }) => void)
+    | null;
 
   /**
    * Live process handles keyed by groupId. Each group owns 1..N
@@ -317,6 +352,7 @@ export class PreviewRuntime {
     this.kill = deps.kill ?? ((t, s) => process.kill(t, s));
     this.loadProjectEnv = deps.loadProjectEnv ?? null;
     this.readEnvFile = deps.readEnvFile ?? defaultReadEnvFile;
+    this.notifyLog = deps.notifyLog ?? null;
     if (this.portRange.min > this.portRange.max) {
       throw new Error(`Invalid preview port range: ${this.portRange.min}..${this.portRange.max}`);
     }
@@ -405,7 +441,7 @@ export class PreviewRuntime {
     const handles: ProcessHandle[] = [];
     try {
       for (const proc of processes) {
-        const handle = this.reserveProcessRow(groupId, proc);
+        const handle = this.reserveProcessRow(groupId, sessionId, proc);
         handles.push(handle);
       }
     } catch (err) {
@@ -641,8 +677,15 @@ export class PreviewRuntime {
    * Allocate a port, open a log sink, insert a `pending` row for
    * `proc` inside `groupId`. Retries up to 3 times on a UNIQUE(port)
    * race. Returns the in-memory `ProcessHandle`. Does NOT spawn.
+   *
+   * `sessionId` is stashed on the handle so `notifyLog` callbacks can
+   * scope log lines to the originating chat session without a join.
    */
-  private reserveProcessRow(groupId: string, proc: PreviewProcess): ProcessHandle {
+  private reserveProcessRow(
+    groupId: string,
+    sessionId: string,
+    proc: PreviewProcess,
+  ): ProcessHandle {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const port = this.allocatePort();
@@ -707,6 +750,7 @@ export class PreviewRuntime {
       const handle: ProcessHandle = {
         rowId,
         groupId,
+        sessionId,
         name: proc.name,
         port,
         healthPath: normaliseHealthPath(proc.healthPath),
@@ -720,17 +764,47 @@ export class PreviewRuntime {
       // Re-bind sink.append onto the new handle's tail buffer (the sink
       // itself is keyed in-memory by previewId in tests so we can read
       // it back; here we mirror its writes into `tail`).
-      const append = (chunk: string): void => {
+      //
+      // The append closure also fans each freshly-arrived *line* through
+      // the optional `notifyLog` callback so the UI can render boot
+      // output live during the `starting` window. The cap on the in-
+      // memory tail is preserved (it remains the source of truth for
+      // failure snapshots); `notifyLog` is fired regardless of cap so
+      // late lines still reach a streaming consumer.
+      const notifyLog = this.notifyLog;
+      const append = (chunk: string, stream: 'stdout' | 'stderr'): void => {
         const lines = chunk.split('\n').filter((l) => l.length > 0);
         for (const line of lines) {
-          if (tail.length >= this.logTailLines) break;
-          tail.push(line);
+          if (tail.length < this.logTailLines) {
+            tail.push(line);
+          }
+          if (notifyLog) {
+            try {
+              notifyLog({
+                sessionId,
+                groupId,
+                processName: proc.name,
+                line,
+                stream,
+              });
+            } catch (err) {
+              this.logger.warn(
+                `[preview ${groupId}/${proc.name}] notifyLog threw: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
         }
         sink.append(chunk);
       };
       // Attach the append to the handle so the spawn code path can find
       // it without re-opening the sink.
-      (handle as ProcessHandle & { append: (c: string) => void }).append = append;
+      (
+        handle as ProcessHandle & {
+          append: (c: string, s: 'stdout' | 'stderr') => void;
+        }
+      ).append = append;
       return handle;
     }
     throw new Error('unreachable: port retry loop exited without returning');
@@ -851,9 +925,13 @@ export class PreviewRuntime {
         .run(child.pid, handle.rowId);
     }
 
-    const append = (handle as ProcessHandle & { append?: (c: string) => void }).append;
-    child.stdout?.on('data', (b: Buffer) => append?.(b.toString('utf8')));
-    child.stderr?.on('data', (b: Buffer) => append?.(b.toString('utf8')));
+    const append = (
+      handle as ProcessHandle & {
+        append?: (c: string, s: 'stdout' | 'stderr') => void;
+      }
+    ).append;
+    child.stdout?.on('data', (b: Buffer) => append?.(b.toString('utf8'), 'stdout'));
+    child.stderr?.on('data', (b: Buffer) => append?.(b.toString('utf8'), 'stderr'));
     child.on('error', (err) => {
       this.logger.warn(`[preview ${handle.groupId}/${handle.name}] child error: ${err.message}`);
       void this.markProcessFailed(handle, `child error: ${err.message}`);
