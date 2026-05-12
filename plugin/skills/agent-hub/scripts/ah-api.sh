@@ -15,9 +15,15 @@
 #
 # Key resolution precedence (first non-empty wins):
 #   1. $AGENT_HUB_API_KEY env var
-#   2. apiKey in $AGENT_HUB_DATA_DIR/config.json (when AGENT_HUB_DATA_DIR is set)
-#   3. apiKey in ~/.agent-hub/data/config.json
-#   4. (none — request sent without x-api-key header)
+#   2. Spawn-creds file at $AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token
+#      (when both env vars set) — written by the server on /api/auth/setup
+#      and at spawn time. Lets long-running agents recover from mid-flight
+#      auth changes without a session restart.
+#   3. Spawn-creds file at ~/.agent-hub/data/spawn-creds/$AGENT_HUB_SESSION_ID.token
+#      (when AGENT_HUB_SESSION_ID set, AGENT_HUB_DATA_DIR unset/empty)
+#   4. apiKey in $AGENT_HUB_DATA_DIR/config.json (when AGENT_HUB_DATA_DIR is set)
+#   5. apiKey in ~/.agent-hub/data/config.json
+#   6. (none — request sent without x-api-key header)
 #
 # Base URL:
 #   $AGENT_HUB_URL (default http://localhost:3051)
@@ -35,6 +41,30 @@ ah_resolve_key() {
     return 0
   fi
 
+  # ── Spawn-creds file (per-session, written by the server) ──────
+  # Read fresh on every call so a credential rotation or a /api/auth/setup
+  # that minted a key for this session is picked up without a restart.
+  if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+    local creds_candidates=()
+    if [[ -n "${AGENT_HUB_DATA_DIR:-}" ]]; then
+      creds_candidates+=("$AGENT_HUB_DATA_DIR/spawn-creds/${AGENT_HUB_SESSION_ID}.token")
+    fi
+    creds_candidates+=("$HOME/.agent-hub/data/spawn-creds/${AGENT_HUB_SESSION_ID}.token")
+    local cfile
+    for cfile in "${creds_candidates[@]}"; do
+      [[ -r "$cfile" ]] || continue
+      # The file holds the raw token, written 0600 by the server.
+      # tr trims any stray newline a careless writer might leave.
+      local tok
+      tok="$(tr -d '\r\n' < "$cfile" || true)"
+      if [[ -n "$tok" ]]; then
+        printf '%s' "$tok"
+        return 0
+      fi
+    done
+  fi
+
+  # ── apiKey from config.json (legacy break-glass shared secret) ──
   local candidates=()
   if [[ -n "${AGENT_HUB_DATA_DIR:-}" ]]; then
     candidates+=("$AGENT_HUB_DATA_DIR/config.json")
@@ -94,13 +124,16 @@ usage: ah-api.sh <METHOD> <PATH> [curl args...]
 Proxies any HTTP call against the Agent Hub API with auth + JSON headers.
 Resolves the API key from (in order):
   1. $AGENT_HUB_API_KEY
-  2. $AGENT_HUB_DATA_DIR/config.json  (when AGENT_HUB_DATA_DIR is set)
-  3. ~/.agent-hub/data/config.json    (apiKey field)
+  2. $AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token
+  3. ~/.agent-hub/data/spawn-creds/$AGENT_HUB_SESSION_ID.token
+  4. $AGENT_HUB_DATA_DIR/config.json  (apiKey field)
+  5. ~/.agent-hub/data/config.json    (apiKey field)
 
 Environment:
-  AGENT_HUB_URL       (default http://localhost:3051)
-  AGENT_HUB_API_KEY   optional; overrides config.json
-  AGENT_HUB_DATA_DIR  optional alternate config location
+  AGENT_HUB_URL         (default http://localhost:3051)
+  AGENT_HUB_API_KEY     optional; overrides file fallbacks
+  AGENT_HUB_DATA_DIR    optional alternate data dir
+  AGENT_HUB_SESSION_ID  injected by server at spawn; enables spawn-creds lookup
 
 Examples:
   ah-api.sh GET  /api/health
