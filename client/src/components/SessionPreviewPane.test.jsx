@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import SessionPreviewPane from './SessionPreviewPane.jsx';
 
 const readyEvent = {
@@ -29,25 +29,16 @@ describe('SessionPreviewPane', () => {
   });
 
   it('clicking refresh bumps the iframe key (forcing a reload)', () => {
-    const { rerender } = render(
-      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
-    );
-    const before = screen.getByTestId('session-preview-pane-iframe').getAttribute('key');
+    render(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />);
+    const iframe = screen.getByTestId('session-preview-pane-iframe');
+    const before = Number(iframe.getAttribute('data-iframe-key'));
     fireEvent.click(screen.getByTestId('session-preview-pane-refresh'));
-    // React doesn't expose `key` as an attribute, so we re-render and
-    // assert the iframe element identity changed by checking the DOM
-    // node was replaced (its `data-key`/`outerHTML` differs in React's
-    // reconciler when the key changes — we use a sentinel via the
-    // src + reconciled node).
-    rerender(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />);
-    const after = screen.getByTestId('session-preview-pane-iframe').getAttribute('key');
-    // Both are null (React strips `key` from DOM), but the click flipped
-    // internal state; assert the iframe remains rendered and the src
-    // still matches the latest event.
-    expect(after).toBe(before);
-    expect(screen.getByTestId('session-preview-pane-iframe').getAttribute('src')).toBe(
-      'http://localhost:4101/board',
-    );
+    // After the click React re-renders; the same DOM element stays mounted
+    // (same React key prefix from previewId) but iframeKey increments,
+    // which is reflected in data-iframe-key and forces the browser to
+    // re-navigate the iframe's src.
+    const after = Number(screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'));
+    expect(after).toBe(before + 1);
   });
 
   it('renders idle placeholder when no event is supplied', () => {
@@ -133,6 +124,56 @@ describe('SessionPreviewPane', () => {
     // Browser fallback must NOT be invoked when Electron IPC handled it.
     expect(popOut).not.toHaveBeenCalled();
     expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+  });
+
+  it('Electron pop-out does not snap back to inline after 1s (no window handle to poll)', () => {
+    vi.useFakeTimers();
+    const electronApi = { popOutPreview: vi.fn(), isElectron: true };
+    render(
+      <SessionPreviewPane
+        sessionId="s-1"
+        event={readyEvent}
+        onClose={() => {}}
+        electronApi={electronApi}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
+    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+    // Advance past the 1s poll tick — the Electron path must NOT reset the
+    // pane back to inline mode because there is no JS window handle to check.
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    // Still in popped state, not reverted to iframe.
+    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-preview-pane-iframe')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('browser pop-out auto-reattaches when the window closes', () => {
+    vi.useFakeTimers();
+    const fakeWindow = { closed: false, close: vi.fn() };
+    const popOut = vi.fn(() => fakeWindow);
+    render(
+      <SessionPreviewPane
+        sessionId="s-1"
+        event={readyEvent}
+        onClose={() => {}}
+        popOut={popOut}
+        electronApi={null}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
+    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+    // Simulate the user closing the detached window.
+    fakeWindow.closed = true;
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    // Poll loop should have detected closed=true and auto-reattached.
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-preview-pane-popped')).toBeNull();
+    vi.useRealTimers();
   });
 
   it('reattach restores the iframe view', () => {

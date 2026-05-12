@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  ExternalLink,
+  Square,
   RefreshCw,
   Copy,
   X,
@@ -15,6 +15,7 @@ import {
   createActivityTouch,
   clampPaneWidth,
   paneWidthStorageKey,
+  DEFAULT_PANE_WIDTH,
 } from '../utils/sessionPreviewState.js';
 
 /**
@@ -62,18 +63,22 @@ export default function SessionPreviewPane({
   const state = useMemo(() => derivePaneState(event), [event]);
   const [iframeKey, setIframeKey] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [popped, setPopped] = useState(false);
+  // 'browser' — window.open pop-out, tracked via poppedWindowRef.
+  // 'electron' — IPC-owned BrowserWindow, no JS handle; we never get closed
+  //              events, so the user reattaches manually or via the button.
+  // null       — not popped out.
+  const [popMode, setPopMode] = useState(null);
   const [footerOpen, setFooterOpen] = useState(defaultFooterOpen);
   const poppedWindowRef = useRef(null);
 
   // Resizable width — persisted per session in localStorage.
   const widthKey = paneWidthStorageKey(sessionId);
   const [width, setWidth] = useState(() => {
-    if (!widthKey) return 560;
+    if (!widthKey) return DEFAULT_PANE_WIDTH;
     try {
       return clampPaneWidth(window.localStorage.getItem(widthKey));
     } catch {
-      return 560;
+      return DEFAULT_PANE_WIDTH;
     }
   });
   useEffect(() => {
@@ -122,18 +127,21 @@ export default function SessionPreviewPane({
     // URL. The poll-loop below picks up `window.closed` and clears.
   }, [previewId]);
 
-  // Poll the popped-out window for closure so we reattach automatically.
+  // Poll the browser pop-out window for closure so we reattach automatically.
+  // Only runs for the 'browser' path — the Electron path has no JS window
+  // handle to poll, and checking poppedWindowRef.current === null would
+  // immediately snap the pane back to inline mode.
   useEffect(() => {
-    if (!popped) return undefined;
+    if (popMode !== 'browser') return undefined;
     const id = setInterval(() => {
       const w = poppedWindowRef.current;
       if (!w || w.closed) {
         poppedWindowRef.current = null;
-        setPopped(false);
+        setPopMode(null);
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [popped]);
+  }, [popMode]);
 
   // Build a throttled activity-touch caller. Recreate the throttle when
   // the previewId rotates so a fresh boot starts with a clean 30 s window.
@@ -172,11 +180,12 @@ export default function SessionPreviewPane({
     const api = electronApi ?? (typeof window !== 'undefined' ? window.electronAPI : null);
     if (api && typeof api.popOutPreview === 'function') {
       api.popOutPreview({ sessionId, url: state.url });
-      setPopped(true);
-      // We don't track an electron-side window handle here — the main
-      // process owns it. The pane simply remembers we're popped; the
-      // reattach button below brings the user back inline.
+      // The Electron main process owns the BrowserWindow lifecycle; there is
+      // no JS window handle to poll. Set popMode to 'electron' so the poll
+      // loop (which would immediately see poppedWindowRef.current === null
+      // and snap back) never starts. The user reattaches via the button.
       poppedWindowRef.current = null;
+      setPopMode('electron');
       return;
     }
     const open = popOut ?? ((u, n, f) => window.open(u, n, f));
@@ -185,7 +194,7 @@ export default function SessionPreviewPane({
     const win = open(state.url, name, features);
     if (win) {
       poppedWindowRef.current = win;
-      setPopped(true);
+      setPopMode('browser');
     }
   }, [state, sessionId, popOut, electronApi, onPopOut]);
 
@@ -201,7 +210,7 @@ export default function SessionPreviewPane({
       }
     }
     poppedWindowRef.current = null;
-    setPopped(false);
+    setPopMode(null);
   }, []);
 
   const handleStop = useCallback(() => {
@@ -285,7 +294,7 @@ export default function SessionPreviewPane({
         <button
           type="button"
           onClick={handlePopOut}
-          disabled={state.status !== 'ready' || popped}
+          disabled={state.status !== 'ready' || popMode !== null}
           title="Open in detached window"
           aria-label="Pop out preview"
           data-testid="session-preview-pane-popout"
@@ -302,7 +311,7 @@ export default function SessionPreviewPane({
           data-testid="session-preview-pane-stop"
           className="text-gray-400 hover:text-red-400 disabled:opacity-40"
         >
-          <ExternalLink size={14} className="rotate-180" />
+          <Square size={14} />
         </button>
         <button
           type="button"
@@ -318,7 +327,7 @@ export default function SessionPreviewPane({
 
       {/* Body — iframe / placeholder / failure / unavailable */}
       <div className="flex-1 min-h-0 relative">
-        {state.status === 'ready' && !popped && (
+        {state.status === 'ready' && popMode === null && (
           <iframe
             key={`${state.previewId}:${iframeKey}`}
             src={state.url}
@@ -326,12 +335,13 @@ export default function SessionPreviewPane({
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
             className="w-full h-full bg-white"
             data-testid="session-preview-pane-iframe"
+            data-iframe-key={iframeKey}
             onFocus={() => touchFn()}
             onBlur={() => touchFn()}
             onMouseMove={() => touchFn()}
           />
         )}
-        {state.status === 'ready' && popped && (
+        {state.status === 'ready' && popMode !== null && (
           <div
             className="flex flex-col items-center justify-center h-full p-6 text-center text-gray-300"
             data-testid="session-preview-pane-popped"

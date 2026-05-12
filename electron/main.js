@@ -510,9 +510,10 @@ ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
 //     view runs with no Node integration whatsoever.
 //   - No preload is attached, so `window.electronAPI` is undefined in
 //     the popped window — the preview should never need IPC.
-//   - The `web-contents-created` listener at the top of this file
-//     gates new-window targets; we still set `setWindowOpenHandler` to
-//     `deny` so the iframe inside can't spawn further popups.
+//   - `setWindowOpenHandler` on the pop-out window's `webContents` (see
+//     below) routes any child window.open / target=_blank to
+//     `shell.openExternal`, preventing the preview from spawning further
+//     Electron windows. The main window has the same handler (~line 315).
 
 /** sessionId → BrowserWindow */
 const previewPopOutWindows = new Map();

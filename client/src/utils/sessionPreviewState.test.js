@@ -22,7 +22,6 @@ describe('derivePaneState', () => {
     });
     expect(state.status).toBe('ready');
     expect(state.url).toBe('http://localhost:4101/board');
-    expect(state.previewUrl).toBe('http://localhost:4101');
     expect(state.port).toBe(4101);
     expect(state.route).toBe('/board');
     expect(state.target).toBe('web');

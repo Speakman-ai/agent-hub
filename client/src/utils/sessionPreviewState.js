@@ -17,6 +17,7 @@
  *   { status: 'idle' }                                  — no event yet
  *   { status: 'starting',       previewId, target, route, agentReason } — block dispatched, runtime spawning
  *   { status: 'ready',  url, port, route, target, previewId, screenshotPath, agentReason }
+ *     (`url` = fullUrl || previewUrl — the canonical URL to load in the iframe)
  *   { status: 'failed', error, logTail, previewId, target, route, agentReason }
  *   { status: 'unavailable', reason, wizard, wizardUrl, target, route, agentReason }
  *
@@ -31,7 +32,6 @@ export function derivePaneState(event) {
     return {
       status: 'ready',
       url,
-      previewUrl: event.previewUrl || '',
       port: typeof event.port === 'number' ? event.port : null,
       route: route || '/',
       target: target || null,
@@ -122,10 +122,17 @@ export function paneWidthStorageKey(sessionId) {
 }
 
 /**
+ * Default pane width in pixels. Used as the `useState` initial value in
+ * SessionPreviewPane and as the `fallback` in `clampPaneWidth`, so the two
+ * stay in sync from a single source of truth.
+ */
+export const DEFAULT_PANE_WIDTH = 560;
+
+/**
  * Validate a pane width pulled from localStorage. Returns the clamped
  * number on success, or `null` if the input is unusable.
  */
-export function clampPaneWidth(value, { min = 320, max = 1400, fallback = 560 } = {}) {
+export function clampPaneWidth(value, { min = 320, max = 1400, fallback = DEFAULT_PANE_WIDTH } = {}) {
   // null / undefined / empty-string read out of localStorage means
   // "never persisted" — return the fallback rather than coercing to 0
   // and then clamping up to `min`.

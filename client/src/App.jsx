@@ -2416,6 +2416,52 @@ export default function App() {
     refreshDesigns();
   }, [refreshDesigns]);
 
+  // Stable preview-pane callbacks. Defined here (not inline in JSX) so that
+  // SessionPreviewPane's useMemo([..., onTouch]) never rebuilds the 30s
+  // activity-touch throttle on every WS-driven App re-render.
+  const handlePreviewClose = useCallback(() => {
+    setPreviewPaneOpenBySession((prev) => ({
+      ...prev,
+      [activeSessionId]: false,
+    }));
+    try {
+      const key = paneOpenStorageKey(activeSessionId);
+      if (key) window.localStorage.setItem(key, 'false');
+    } catch {
+      /* storage unavailable */
+    }
+  }, [activeSessionId, setPreviewPaneOpenBySession]);
+
+  const handlePreviewTouch = useCallback(async ({ previewId }) => {
+    if (!previewId) return;
+    // Best-effort runtime touch — silently tolerate 404 / network errors
+    // until the runtime HTTP surface lands. Throttled to 30 s by the pane.
+    try {
+      await fetch(`${getApiBase()}/preview/touch/${encodeURIComponent(previewId)}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
+
+  const handlePreviewStop = useCallback(async ({ previewId }) => {
+    if (!previewId) return;
+    try {
+      await fetch(`${getApiBase()}/preview/stop/${encodeURIComponent(previewId)}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
+
+  const handlePreviewConfigure = useCallback(() => {
+    setCurrentView('settings:preview');
+  }, [setCurrentView]);
+
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
     if (!activeDesignId) {
@@ -3704,44 +3750,10 @@ export default function App() {
                       <SessionPreviewPane
                         sessionId={activeSessionId}
                         event={previewEventBySession[activeSessionId]}
-                        onClose={() => {
-                          setPreviewPaneOpenBySession((prev) => ({
-                            ...prev,
-                            [activeSessionId]: false,
-                          }));
-                          try {
-                            const key = paneOpenStorageKey(activeSessionId);
-                            if (key) window.localStorage.setItem(key, 'false');
-                          } catch {
-                            /* storage unavailable */
-                          }
-                        }}
-                        onTouch={async ({ previewId }) => {
-                          if (!previewId) return;
-                          // Best-effort runtime touch — silently tolerate
-                          // 404 / network errors until the runtime HTTP
-                          // surface lands. Throttled to 30 s by the pane.
-                          try {
-                            await fetch(`${getApiBase()}/preview/touch/${previewId}`, {
-                              method: 'POST',
-                              headers: getAuthHeaders(),
-                            });
-                          } catch {
-                            /* ignore */
-                          }
-                        }}
-                        onStop={async ({ previewId }) => {
-                          if (!previewId) return;
-                          try {
-                            await fetch(`${getApiBase()}/preview/stop/${previewId}`, {
-                              method: 'POST',
-                              headers: getAuthHeaders(),
-                            });
-                          } catch {
-                            /* ignore */
-                          }
-                        }}
-                        onConfigure={() => setCurrentView('settings:preview')}
+                        onClose={handlePreviewClose}
+                        onTouch={handlePreviewTouch}
+                        onStop={handlePreviewStop}
+                        onConfigure={handlePreviewConfigure}
                       />
                     )}
                 </div>
