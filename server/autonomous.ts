@@ -530,6 +530,17 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     assignableAgents = roleFiltered;
   }
 
+  // ── Integration-branch serialization override ──────────────────────────
+  // When an epic targets an operator-set integration branch
+  // (`epic.pr_base_branch`), parallel dispatch defeats the whole point of
+  // the integration: cards N and N+1 would both branch off `umbrella@SHA1`,
+  // and once N merges the umbrella advances to SHA2, guaranteeing a stale
+  // conflict on N+1. Force the effective cap to 1 in that case so cards
+  // land serially onto the umbrella. The stored `epic.autonomous_max_concurrent`
+  // is NOT overwritten — this is a runtime cap only, surfaced in the editor UI.
+  const isIntegrationBranch = !!epic.pr_base_branch && epic.pr_base_branch.trim().length > 0;
+  const effectiveMaxConcurrent = isIntegrationBranch ? 1 : epic.autonomous_max_concurrent;
+
   const agentCount = assignableAgents.length;
   if (agentCount === 0) {
     const msg = `No assignable agents for project "${project.name}" — check subAgents config or agent roles`;
@@ -551,12 +562,14 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     return;
   }
   // Per-agent cap = epic-wide cap. Any single agent may absorb up to the
-  // epic's `autonomous_max_concurrent` cards in flight at once — there is no
+  // epic's effective max-concurrent cards in flight at once — there is no
   // implicit `ceil(max_concurrent / agentCount)` partition that previously
   // forced each agent to ~1 card when agentCount > max_concurrent. The
   // epic-wide ceiling (`slotsAvailable`, computed below from In Progress +
   // Review card counts) remains the only global gate on dispatch volume.
-  const perAgentLimit = epic.autonomous_max_concurrent;
+  // Integration-branch epics force `effectiveMaxConcurrent = 1` (see above)
+  // so all caps collapse to serial dispatch.
+  const perAgentLimit = effectiveMaxConcurrent;
 
   interface AgentSlot {
     agent: Agent;
@@ -582,10 +595,13 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
   const activeCardCount = epicCards.filter(
     (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
   ).length;
-  const slotsAvailable = Math.max(0, epic.autonomous_max_concurrent - activeCardCount);
+  const slotsAvailable = Math.max(0, effectiveMaxConcurrent - activeCardCount);
   if (slotsAvailable === 0) {
+    const capLabel = isIntegrationBranch
+      ? `${effectiveMaxConcurrent} (integration branch — serial)`
+      : `${effectiveMaxConcurrent}`;
     console.log(
-      `[Autonomous] No slots for epic "${epic.name}" — ${activeCardCount}/${epic.autonomous_max_concurrent} active (in-progress + in-review)`,
+      `[Autonomous] No slots for epic "${epic.name}" — ${activeCardCount}/${capLabel} active (in-progress + in-review)`,
     );
     return;
   }
@@ -685,7 +701,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
         const activeNow = epicCardsNow.filter(
           (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
         ).length;
-        if (activeNow >= epic.autonomous_max_concurrent) return false;
+        if (activeNow >= effectiveMaxConcurrent) return false;
         d.stmts.incrementCardIterations.run(cardId);
         d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, cardId);
         return true;
@@ -693,7 +709,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const claimed = claimSlot.immediate(card.id);
       if (!claimed) {
         console.log(
-          `[Autonomous] Slot claim aborted for "${card.title}" — cap reached during dispatch (${epic.autonomous_max_concurrent} active)`,
+          `[Autonomous] Slot claim aborted for "${card.title}" — cap reached during dispatch (${effectiveMaxConcurrent} active${isIntegrationBranch ? ', integration branch serial cap' : ''})`,
         );
         break;
       }
