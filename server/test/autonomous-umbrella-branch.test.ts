@@ -202,8 +202,11 @@ describe('createUmbrellaBranch', () => {
     const src = readFileSync(path.resolve(here, '..', 'autonomous.ts'), 'utf8');
 
     // Locate the runAutonomousLoop function body.
-    const startMatch = src.match(/export async function runAutonomousLoop\b/);
-    expect(startMatch, 'runAutonomousLoop export not found in autonomous.ts').toBeTruthy();
+    // `runAutonomousLoop` is now a thin per-epic single-flight gate; the
+    // dispatch body lives in `runAutonomousLoopInner`. Scan that function's
+    // body for the source-shape assertions below.
+    const startMatch = src.match(/async function runAutonomousLoopInner\b/);
+    expect(startMatch, 'runAutonomousLoopInner definition not found in autonomous.ts').toBeTruthy();
     const start = startMatch!.index!;
 
     // Walk braces to find the end of the function body.
@@ -404,8 +407,11 @@ describe('runAutonomousLoop — operator base branch contract', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(path.resolve(here, '..', 'autonomous.ts'), 'utf8');
 
-    const startMatch = src.match(/export async function runAutonomousLoop\b/);
-    expect(startMatch, 'runAutonomousLoop export not found in autonomous.ts').toBeTruthy();
+    // `runAutonomousLoop` is now a thin per-epic single-flight gate; the
+    // dispatch body lives in `runAutonomousLoopInner`. Scan that function's
+    // body for the source-shape assertions below.
+    const startMatch = src.match(/async function runAutonomousLoopInner\b/);
+    expect(startMatch, 'runAutonomousLoopInner definition not found in autonomous.ts').toBeTruthy();
     const start = startMatch!.index!;
     const openBrace = src.indexOf('{', start);
     let depth = 0;

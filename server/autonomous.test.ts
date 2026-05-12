@@ -119,6 +119,26 @@ interface MockDeps {
   getGhBotUser: Mock;
   getGhAppSlug: Mock;
   getWebhookHandlerDeps: Mock;
+  getDb: Mock;
+}
+
+/**
+ * Build a minimal stand-in for better-sqlite3's `db.transaction()` API. The
+ * production code calls `db.transaction(fn).immediate(...args)` to wrap the
+ * slot-claim under `BEGIN IMMEDIATE`. In-process tests don't have a real
+ * connection — we just invoke `fn` synchronously so the call sites exercise
+ * the same code path without needing a sqlite instance.
+ */
+function makeFakeDb(): { transaction: (fn: (...args: unknown[]) => unknown) => unknown } {
+  return {
+    transaction: (fn: (...args: unknown[]) => unknown) => {
+      const wrap = ((...args: unknown[]) => fn(...args)) as unknown as Record<string, unknown>;
+      wrap.immediate = (...args: unknown[]) => fn(...args);
+      wrap.deferred = (...args: unknown[]) => fn(...args);
+      wrap.exclusive = (...args: unknown[]) => fn(...args);
+      return wrap;
+    },
+  };
 }
 
 function makeDeps(stmts: MockStmts = makeStmts()): MockDeps {
@@ -141,6 +161,7 @@ function makeDeps(stmts: MockStmts = makeStmts()): MockDeps {
       handleChat: vi.fn(),
       broadcast: vi.fn(),
     })),
+    getDb: vi.fn(() => makeFakeDb()),
   };
 }
 
@@ -688,6 +709,98 @@ describe('runAutonomousLoop — concurrency', () => {
     await runAutonomousLoop('proj-1');
 
     expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent invocations to a single dispatch (per-epic single-flight gate)', async () => {
+    // Three eligible cards, max_concurrent=2 → exactly 2 should dispatch even
+    // when `runAutonomousLoop` is fired three times in the same tick. Without
+    // the per-epic single-flight gate, each invocation would observe an empty
+    // active-card list and dispatch up to its own slot cap (=2), producing 6
+    // `createSession.run` calls instead of 2 — the live "picks up 2 cards
+    // before one is done" bug the gate fixes.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 2,
+    } as unknown as KanbanEpicRow;
+    const c1 = makeCard({ id: 'card-a', position: 0, title: 'A' });
+    const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
+    const c3 = makeCard({ id: 'card-c', position: 2, title: 'C' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2, c3]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      // All three start in To Do — stateless mock means subsequent reads
+      // (including the in-loop re-read inside the transactional claim) keep
+      // returning the same array; without the gate, three invocations would
+      // each see `activeNow=0` and burst through their caps in parallel.
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2, c3]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await Promise.all([
+      runAutonomousLoop('proj-1'),
+      runAutonomousLoop('proj-1'),
+      runAutonomousLoop('proj-1'),
+    ]);
+
+    // Exactly `slotsAvailable` (=2) cards dispatched in total — not 6.
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(2);
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(2);
+    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(2);
+    expect(deps.handleChat).toHaveBeenCalledTimes(2);
+    // Both moves target the In Progress column id from BOARD_COLS.
+    for (const call of stmts.moveKanbanCard.run.mock.calls) {
+      expect(call[0]).toBe('col-progress');
+    }
+  });
+
+  it('aborts the transactional slot claim mid-loop when active count reaches the cap', async () => {
+    // Two eligible cards, max_concurrent=2. After the first claim succeeds,
+    // simulate another writer racing a card into In Progress: the second
+    // call to `getKanbanCardsByEpic` returns two active rows. The in-loop
+    // re-read inside `BEGIN IMMEDIATE` must abort the second claim instead
+    // of moving a third card and breaching the cap.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 2,
+    } as unknown as KanbanEpicRow;
+    const c1 = makeCard({ id: 'card-a', position: 0, title: 'A' });
+    const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
+    const racer = makeCard({ id: 'card-racer', column_id: 'col-progress', title: 'Raced in' });
+
+    // First call (outer activeCardCount read): [c1, c2] — 0 active, 2 slots.
+    // Subsequent calls (in-loop re-read inside the claim transaction): a
+    // racing writer has moved `racer` into In Progress, so activeNow=1 then
+    // activeNow=2. Iteration 1 claims (1 < 2). Iteration 2 must abort (2 >= 2).
+    const epicCardsCalls = [
+      [c1, c2], // outer read
+      [c1, c2, racer], // first claim re-read — racer now active
+      [c1, c2, racer], // second claim re-read — still at cap
+    ];
+    let callIdx = 0;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: {
+        all: vi.fn(() => epicCardsCalls[Math.min(callIdx++, epicCardsCalls.length - 1)]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Outer check let both cards through (slotsAvailable=2). The transactional
+    // re-read aborted the second claim, so only one card dispatched.
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(1);
+    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
   });
 });
 

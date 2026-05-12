@@ -101,6 +101,23 @@ function makeDeps(overrides: {
           broadcast: vi.fn(),
         }) as never,
     ),
+    // `pollForMissedReviews` doesn't exercise the slot-claim transaction, but
+    // the dep is required by the interface — provide a minimal stand-in.
+    getDb: vi.fn(
+      () =>
+        ({
+          transaction: (fn: (...args: unknown[]) => unknown) => {
+            const wrap = ((...args: unknown[]) => fn(...args)) as unknown as Record<
+              string,
+              unknown
+            >;
+            wrap.immediate = (...args: unknown[]) => fn(...args);
+            wrap.deferred = (...args: unknown[]) => fn(...args);
+            wrap.exclusive = (...args: unknown[]) => fn(...args);
+            return wrap;
+          },
+        }) as never,
+    ),
   };
 }
 
