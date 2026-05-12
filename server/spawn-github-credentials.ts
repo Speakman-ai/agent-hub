@@ -253,6 +253,50 @@ export function applyReviewerSpawnIsolation(
 }
 
 /**
+ * Apply the reviewer-role-only "full lock" marker. Distinct from the
+ * universal `AGENT_HUB_REVIEWER_LOCK` (which is set on EVERY spawn and
+ * only blocks the `gh pr review` write subcommand because that is the
+ * sole identity-attribution surface for formal PR reviews).
+ *
+ * `AGENT_HUB_REVIEWER_ROLE_LOCK=1` is set ONLY when `agent.role ===
+ * 'reviewer'`. It instructs the GitHub skill scripts to refuse a much
+ * broader write surface:
+ *
+ *   - `gh pr create` / `merge` / `close` / `ready` / `edit` — blocked
+ *     unconditionally (these create commits or mutate PR state under
+ *     the spawn's GitHub identity).
+ *   - `gh api … --method POST|PUT|PATCH|DELETE` — denied for any path
+ *     outside the allowlist:
+ *         POST /repos/<owner>/<repo>/pulls/<n>/reviews
+ *         POST /repos/<owner>/<repo>/issues/<n>/comments
+ *     These two surfaces are the legitimate review-write paths that a
+ *     reviewer agent legitimately needs (formal review submission + PR
+ *     conversation comments).
+ *   - `gh api graphql` — denied wholesale (graphql mutations have
+ *     free-form bodies and can't be allowlisted by path).
+ *
+ * Why this exists (defense-in-depth):
+ *   The reviewer-spawn env is already scrubbed of GitHub tokens by
+ *   `applyReviewerSpawnIsolation`, and `selectGithubSpawnToken`
+ *   deliberately returns `null` for reviewer role when no bot token is
+ *   configured. The role-lock assumes a *future* change accidentally
+ *   reintroduces a token into the spawn env (e.g. someone adds a new
+ *   fallback path in `selectGithubSpawnToken`, or a future helper
+ *   forwards a user token to reviewers) and makes sure the spawn still
+ *   cannot use it to forge commits or open PRs — the failure mode
+ *   documented in mcsteen/surveytracker PR #622 where
+ *   `agent-hub-reviewer-main[bot]` opened a PR with bot-authored commits.
+ *
+ * Pure env mutation; no filesystem effect. Call AFTER
+ * `applyReviewerSpawnIsolation` (which sets the universal lock).
+ */
+export function applyReviewerRoleLock(env: NodeJS.ProcessEnv, role: string | undefined): void {
+  if (role === 'reviewer') {
+    env.AGENT_HUB_REVIEWER_ROLE_LOCK = '1';
+  }
+}
+
+/**
  * Append a single `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` entry
  * to the env. Defensive numeric parse on `GIT_CONFIG_COUNT` so a
  * malformed inherited value doesn't clobber prior entries; idempotent

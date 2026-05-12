@@ -41,6 +41,18 @@ source "$DIR/_common.sh"
 #
 # Read-only subcommands (view, diff, list, status, checks, checkout) are
 # also unguarded — inspecting a PR carries no identity attribution risk.
+#
+# Defense-in-depth: a SECOND env marker, AGENT_HUB_REVIEWER_ROLE_LOCK=1,
+# is set ONLY for role=reviewer spawns (see applyReviewerRoleLock in
+# server/spawn-github-credentials.ts). The role lock is stricter — it
+# blocks create / merge / close / ready (in addition to review) so that
+# a future change accidentally leaking a token into the reviewer spawn
+# env still cannot forge commits or open PRs. The lock is enforced by
+# `_reviewer_role_locked` (sourced from _common.sh) called at the top
+# of each blocked subcommand, plus the gh_api allowlist in _common.sh.
+# Comment / view / diff / list / status / checks / checkout remain
+# available under the role lock because PR conversation comments are a
+# legitimate review activity and reads carry no attribution risk.
 # ---------------------------------------------------------------------------
 _reviewer_locked() {
   if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
@@ -65,6 +77,7 @@ LOCKED
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
+  _reviewer_role_locked "gh-pr.sh create"
   local title="" base="" body="" draft=false reviewer="" label=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -219,6 +232,7 @@ cmd_comment() {
 # pr merge
 # ---------------------------------------------------------------------------
 cmd_merge() {
+  _reviewer_role_locked "gh-pr.sh merge"
   [[ $# -lt 1 ]] && gh_die "pr merge <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]"
   local number="$1"; shift
 
@@ -262,6 +276,7 @@ cmd_merge() {
 # pr ready — mark draft as ready for review
 # ---------------------------------------------------------------------------
 cmd_ready() {
+  _reviewer_role_locked "gh-pr.sh ready"
   [[ $# -lt 1 ]] && gh_die "pr ready <number>"
   require_gh_token
   gh pr ready "$1"
@@ -272,6 +287,7 @@ cmd_ready() {
 # pr close
 # ---------------------------------------------------------------------------
 cmd_close() {
+  _reviewer_role_locked "gh-pr.sh close"
   [[ $# -lt 1 ]] && gh_die "pr close <number>"
   require_gh_token
   gh pr close "$1"

@@ -160,12 +160,167 @@ resolve_repo() {
 }
 
 # ---------------------------------------------------------------------------
+# Reviewer-role lock — defense-in-depth write denylist for role=reviewer spawns
+#
+# Two distinct env markers govern the github skill's write surface:
+#
+#   AGENT_HUB_REVIEWER_LOCK=1
+#     Universal (set on every spawn by applyReviewerSpawnIsolation). Blocks
+#     ONLY `gh pr review` because that is the sole identity-attribution
+#     surface for formal PR reviews. Read in gh-pr.sh::_reviewer_locked and
+#     in require_gh_token above.
+#
+#   AGENT_HUB_REVIEWER_ROLE_LOCK=1
+#     Set ONLY when agent.role === 'reviewer' (applyReviewerRoleLock). The
+#     broader structural backstop: assumes a future change accidentally
+#     leaks a GitHub token into the reviewer spawn env, and makes sure the
+#     spawn still cannot use it to forge commits or open PRs (the failure
+#     mode documented in surveytracker PR #622, where the App's installation
+#     token was held off-box and opened a PR with bot-authored commits).
+#
+# This file owns the role-lock enforcement helpers; gh-pr.sh calls
+# `_reviewer_role_locked` directly for subcommand-level denials, and
+# `gh_api` below applies the allowlist on REST writes.
+#
+# Allowed write surfaces under AGENT_HUB_REVIEWER_ROLE_LOCK=1:
+#
+#   POST /repos/<owner>/<repo>/pulls/<n>/reviews    (formal review submit)
+#   POST /repos/<owner>/<repo>/issues/<n>/comments  (PR/issue conversation)
+#
+# Everything else with a write method (POST/PUT/PATCH/DELETE) is denied.
+# `gh api graphql` is denied wholesale (mutation bodies are free-form and
+# cannot be allowlisted by path).
+# ---------------------------------------------------------------------------
+_reviewer_role_locked() {
+  local what="${1:-write}"
+  if [[ "${AGENT_HUB_REVIEWER_ROLE_LOCK:-}" == "1" ]]; then
+    cat >&2 <<LOCKED
+error: '$what' is forbidden in reviewer-role spawns.
+
+AGENT_HUB_REVIEWER_ROLE_LOCK=1 blocks direct GitHub write operations from
+this spawn as defense-in-depth. Reviewer agents may only post formal
+reviews via the server-mediated endpoint:
+
+  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
+    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
+    -H "Content-Type: application/json" \\
+    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
+
+That endpoint uses the GitHub App / bot identity. Direct invocations of
+\`gh pr create / merge / close / ready / edit\` and arbitrary write
+\`gh api\` calls are blocked structurally — even if a token is reachable
+in this spawn — to prevent reviewer identity leaks of the kind
+documented in mcsteen/surveytracker PR #622.
+
+If you legitimately need to create commits or open PRs, your agent must
+not be configured with role=reviewer.
+LOCKED
+    exit 2
+  fi
+}
+
+# Enforce the role-lock write allowlist on a `gh api` invocation. Parses
+# the args for `--method` / `-X` (default GET when absent) and the target
+# path (first positional). Allowed under the role lock:
+#
+#   GET / HEAD  (any path)         — reads are unconstrained
+#   POST repos/<owner>/<repo>/pulls/<n>/reviews
+#   POST repos/<owner>/<repo>/issues/<n>/comments
+#
+# Everything else exits 2 with a loud message. `graphql` paths exit
+# unconditionally when the method is not GET (graphql writes have
+# free-form bodies and can't be path-allowlisted).
+_check_gh_api_reviewer_role_lock() {
+  if [[ "${AGENT_HUB_REVIEWER_ROLE_LOCK:-}" != "1" ]]; then
+    return 0
+  fi
+
+  local method="GET"
+  local path=""
+  local expect_method_value=0
+  local arg
+  for arg in "$@"; do
+    if (( expect_method_value == 1 )); then
+      method="${arg^^}"
+      expect_method_value=0
+      continue
+    fi
+    case "$arg" in
+      --method=*)
+        method="${arg#--method=}"
+        method="${method^^}"
+        ;;
+      -X=*)
+        method="${arg#-X=}"
+        method="${method^^}"
+        ;;
+      --method|-X)
+        expect_method_value=1
+        ;;
+      -*)
+        # Other flag — ignore.
+        ;;
+      *)
+        if [[ -z "$path" ]]; then
+          path="$arg"
+        fi
+        ;;
+    esac
+  done
+
+  # graphql endpoint: refused wholesale under the role lock. `gh api
+  # graphql` defaults the HTTP method to POST regardless of whether the
+  # query body is a read query or a mutation, and the JSON body is
+  # free-form — we cannot allowlist mutations by URL path. Reviewer
+  # agents that need GitHub data should call the REST endpoints
+  # (`gh api /repos/...`) which the path allowlist below can constrain.
+  if [[ "$path" == "graphql" ]]; then
+    _reviewer_role_locked "gh api graphql"
+    return 0
+  fi
+
+  case "$method" in
+    GET|HEAD|"") return 0 ;;
+  esac
+
+  local norm="${path#/}"
+  if [[ "$norm" =~ ^repos/[^/]+/[^/]+/pulls/[^/]+/reviews/?$ ]]; then
+    return 0
+  fi
+  if [[ "$norm" =~ ^repos/[^/]+/[^/]+/issues/[^/]+/comments/?$ ]]; then
+    return 0
+  fi
+
+  cat >&2 <<DENIED
+error: write \`gh api $method '$path'\` is forbidden in reviewer-role spawns.
+
+AGENT_HUB_REVIEWER_ROLE_LOCK=1 restricts write methods (POST/PUT/PATCH/DELETE)
+to the formal-review surfaces only:
+
+  POST /repos/<owner>/<repo>/pulls/<n>/reviews
+  POST /repos/<owner>/<repo>/issues/<n>/comments
+
+For other writes (creating commits, opening or editing PRs, mutating labels,
+graphql mutations, etc.) the agent must not be configured with role=reviewer.
+Use a dev/lead/author spawn instead, or post the review via
+\`POST \$AGENT_HUB_URL/api/pr/review\`.
+
+This guard is structural defense-in-depth: even if a future change leaks a
+GitHub token into the reviewer spawn env, the credential cannot be used to
+forge commits or open PRs (mcsteen/surveytracker PR #622 reference case).
+DENIED
+  exit 2
+}
+
+# ---------------------------------------------------------------------------
 # gh_api PATH [EXTRA_ARGS…]
 #
 # Thin wrapper around `gh api` that:
 # - Prepends the REST v3 base path if the path starts with /
 # - Passes --paginate when the caller passes --paginate
 # - Forwards all extra flags to gh api
+# - Enforces the reviewer-role-lock write allowlist when
+#   AGENT_HUB_REVIEWER_ROLE_LOCK=1 (no-op for non-reviewer spawns).
 #
 # Examples:
 #   gh_api /repos/owner/repo/issues
@@ -175,6 +330,7 @@ resolve_repo() {
 gh_api() {
   require_gh_cli
   require_gh_token
+  _check_gh_api_reviewer_role_lock "$@"
   gh api "$@"
 }
 
