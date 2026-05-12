@@ -28,6 +28,7 @@ import { normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { getProjects } from '../project-model.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
+import { syncWikiPageFts } from '../wiki.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -1250,36 +1251,64 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     if (Array.isArray(data.wiki)) {
       const wiki = data.wiki;
       runSection('wiki', () => {
-        let imported = 0,
-          updated = 0;
-        for (const page of wiki) {
-          const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
-            | Record<string, unknown>
+        let imported = 0;
+        let updated = 0;
+        let skipped = 0;
+        for (let i = 0; i < wiki.length; i++) {
+          const page = wiki[i];
+          // Defensive coercion + validation. Earlier versions of this loop
+          // passed `page.title` / `page.slug` straight to better-sqlite3 with
+          // no fallback, so a single malformed export row (missing or
+          // undefined title/slug) blew up the whole import with
+          // `RangeError: Too few parameter values were provided` — the user
+          // lost crons, rooms, kanban, and webhooks too. Now: validate up
+          // front, skip the bad row with a console.warn, keep the rest of
+          // the section running. See card
+          // `project-import-500-wiki-section-throws-rangeerror`.
+          const slug = typeof page?.slug === 'string' ? page.slug.trim() : '';
+          const title = typeof page?.title === 'string' ? page.title.trim() : '';
+          if (!slug || !title) {
+            console.warn(
+              `[wiki] import: skipping malformed page at index ${i} (slug=${JSON.stringify(
+                page?.slug,
+              )}, title=${JSON.stringify(page?.title)})`,
+            );
+            skipped++;
+            continue;
+          }
+          const content = typeof page.content === 'string' ? page.content : '';
+          const category =
+            typeof page.category === 'string' && page.category ? page.category : 'general';
+          const updatedBy =
+            typeof page.updated_by === 'string' && page.updated_by ? page.updated_by : 'import';
+
+          const existing = stmts.getWikiPage.get(targetProjectId, slug) as
+            | { id?: string }
             | undefined;
           if (existing) {
-            stmts.updateWikiPage.run(
-              page.title,
-              page.content,
-              page.category || 'general',
-              page.updated_by || 'import',
-              targetProjectId,
-              page.slug,
-            );
+            stmts.updateWikiPage.run(title, content, category, updatedBy, targetProjectId, slug);
+            if (typeof existing.id === 'string') {
+              syncWikiPageFts(existing.id, title, content, slug, targetProjectId);
+            }
             updated++;
           } else {
+            const id = uuidv4();
             stmts.createWikiPage.run(
-              uuidv4(),
+              id,
               targetProjectId,
-              page.title,
-              page.slug,
-              page.content || '',
-              page.category || 'general',
-              page.updated_by || 'import',
+              title,
+              slug,
+              content,
+              category,
+              updatedBy,
             );
+            syncWikiPageFts(id, title, content, slug, targetProjectId);
             imported++;
           }
         }
-        results.wiki = `${imported} new, ${updated} updated`;
+        results.wiki = skipped
+          ? `${imported} new, ${updated} updated, ${skipped} skipped`
+          : `${imported} new, ${updated} updated`;
       });
     }
 
