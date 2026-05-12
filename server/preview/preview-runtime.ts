@@ -146,6 +146,21 @@ export interface PreviewRuntimeDeps {
    * Injected so tests can record calls without touching real OS process groups.
    */
   kill?: (target: number, signal: NodeJS.Signals) => void;
+  /**
+   * Resolve a project's preview-env additions at spawn time. Returns a
+   * key/value map merged into `child.env` *after* `process.env` but
+   * *before* the runtime's own `PORT` injection (so PORT always wins).
+   *
+   * Wired in production to `loadProjectEnvForSpawn` from
+   * `preview-secrets-store.ts` — that path also appends an audit row
+   * recording which keys were read. Tests inject a deterministic fake
+   * to assert the merge order without hitting the secrets store.
+   *
+   * When omitted, the runtime preserves the historical behaviour:
+   * `{ ...process.env, PORT }` only. This keeps existing tests that
+   * construct a `PreviewRuntime` without the dep green.
+   */
+  loadProjectEnv?: (projectId: string, ctx: { sessionId: string }) => Record<string, string>;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -178,6 +193,9 @@ export class PreviewRuntime {
   private readonly urlBase: (port: number) => string;
   private readonly logger: NonNullable<PreviewRuntimeDeps['logger']>;
   private readonly kill: (target: number, signal: NodeJS.Signals) => void;
+  private readonly loadProjectEnv:
+    | ((projectId: string, ctx: { sessionId: string }) => Record<string, string>)
+    | null;
 
   /**
    * Live `ChildProcess` handles keyed by previewId. Kept off the DB
@@ -214,6 +232,7 @@ export class PreviewRuntime {
       error: (m) => console.error(m),
     };
     this.kill = deps.kill ?? ((t, s) => process.kill(t, s));
+    this.loadProjectEnv = deps.loadProjectEnv ?? null;
     if (this.portRange.min > this.portRange.max) {
       throw new Error(`Invalid preview port range: ${this.portRange.min}..${this.portRange.max}`);
     }
@@ -286,11 +305,35 @@ export class PreviewRuntime {
       sink.append(chunk);
     };
 
+    // Merge order: process.env → project preview secrets → { PORT }.
+    // PORT is appended last so a malicious / accidental PORT entry in
+    // the project secrets cannot redirect the dev server off the port
+    // the runtime allocated (which would deadlock the health check
+    // forever waiting on the wrong port).
+    let projectEnv: Record<string, string> = {};
+    if (this.loadProjectEnv) {
+      try {
+        projectEnv = this.loadProjectEnv(project.id, { sessionId });
+      } catch (err) {
+        // Secrets fetch failing must not block preview boot — log and
+        // fall through with an empty merge. The runtime is still
+        // useful without per-project env (the historical behaviour).
+        this.logger.warn(
+          `[preview ${previewId}] loadProjectEnv failed: ${(err as Error).message} (continuing without project env)`,
+        );
+      }
+    }
+    const spawnEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...projectEnv,
+      PORT: String(port),
+    };
+
     let child: ChildProcess;
     try {
       child = this.spawn('sh', ['-c', startScript], {
         cwd: previewCwd,
-        env: { ...process.env, PORT: String(port) },
+        env: spawnEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
         // detached: true puts the child in its own process group (pgid ==
         // child.pid). killGroup() then sends signals to the whole group,

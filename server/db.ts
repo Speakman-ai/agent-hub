@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import { WORKTREE_PREVIEWS_SCHEMA } from './preview/preview-schema.js';
+import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -1480,6 +1481,10 @@ function initDb(dataDir: string): void {
   // runtime so the test suite can spin up an in-memory DB without
   // pulling in the full bootstrap path here.
   db.exec(WORKTREE_PREVIEWS_SCHEMA);
+
+  // Worktree-preview secrets: per-project encrypted env merged into
+  // preview spawns. Schema is co-located with `preview-secrets-store.ts`.
+  db.exec(WORKTREE_PREVIEW_SECRETS_SCHEMA);
 
   {
     const wfCols = (db.pragma('table_info(workflows)') as { name: string }[]).map((c) => c.name);
