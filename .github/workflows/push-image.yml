@@ -215,17 +215,43 @@ jobs:
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 
-          # Give the wrapper a moment to pull + start before inspecting.
-          sleep 8
-
-          # Pulled-image digest on the host. \`docker image inspect ... RepoDigests\`
-          # returns entries like \`public.ecr.aws/h9t4v7h0/agent-hub@sha256:...\`.
-          LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
-            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
-          # Image-id the container was instantiated with (what is ACTUALLY running).
-          CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' || true)
-          LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' || true)
+          # systemd Type=simple returns from \`restart\` the instant ExecStart
+          # spawns — the wrapper's \`docker pull\` (3.81 GB image, multi-attempt
+          # back-off when ECR Public throttles us-east-2 -> us-east-1) runs
+          # asynchronously after that. The previous static \`sleep 8\` raced
+          # the pull and observed the prior :main tag, producing false-negative
+          # "host did not pull the new image" failures on every push since
+          # PR #888 even when the deploy succeeded. Verified on the dev sandbox:
+          # each "failing" digest still landed on the host and the container
+          # was running the just-pushed image — only the assertion was wrong.
+          #
+          # Poll up to 180s for the host's :main digest AND the running
+          # container's image-id to converge with EXPECTED_DIGEST. 180s gives
+          # enough headroom for a worst-case pull (cold layer cache, ECR Public
+          # throttling back-off retries) while still failing fast on a real
+          # stale-image regression (which would never converge).
+          DEADLINE=\$(( \$(date +%s) + 180 ))
+          LOCAL_DIGEST=""
+          LOCAL_IMAGE_ID=""
+          CONTAINER_IMAGE_ID=""
+          while [ "\$(date +%s)" -lt "\$DEADLINE" ]; do
+            # Pulled-image digest on the host. \`docker image inspect ... RepoDigests\`
+            # returns entries like \`public.ecr.aws/h9t4v7h0/agent-hub@sha256:...\`.
+            LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+              | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+            # Image-id the container was instantiated with (what is ACTUALLY running).
+            CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' 2>/dev/null || true)
+            if [ -n "\$EXPECTED_DIGEST" ] \
+               && [ "\$LOCAL_DIGEST" = "\$EXPECTED_DIGEST" ] \
+               && [ -n "\$CONTAINER_IMAGE_ID" ] \
+               && [ -n "\$LOCAL_IMAGE_ID" ] \
+               && [ "\$CONTAINER_IMAGE_ID" = "\$LOCAL_IMAGE_ID" ]; then
+              break
+            fi
+            sleep 5
+          done
 
           echo "EXPECTED_DIGEST=\$EXPECTED_DIGEST"
           echo "LOCAL_REPO_DIGEST=\$LOCAL_DIGEST"
@@ -236,7 +262,7 @@ jobs:
             echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
           elif [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
             echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
-            echo "       The host did not actually pull the new image. Check disk space and ECR connectivity." >&2
+            echo "       The host did not actually pull the new image within 180s. Check disk space and ECR connectivity." >&2
             exit 1
           fi
 

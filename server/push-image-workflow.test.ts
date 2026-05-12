@@ -72,4 +72,40 @@ describe('push-image.yml deploy contract', () => {
     expect(yml).toContain('host :main digest');
     expect(yml).toMatch(/!=\s+just-pushed digest/);
   });
+
+  // Regression guard for kanban 14af4660-b8d1-4faa-b97b-4d3c4cab5303.
+  // The original verification (`sleep 8` + single `docker image inspect`)
+  // raced the wrapper's async docker pull and produced false-negative
+  // "host did not pull the new image" failures on every push to main after
+  // PR #888 — even though the host DID land the new digest and the running
+  // container DID swap to it. Fix is a bounded poll loop that waits for the
+  // host's :main digest AND the running container's image-id to converge
+  // with EXPECTED_DIGEST before asserting. This test pins that contract so
+  // we never silently regress back to a static sleep.
+  it('polls for host digest + container image-id convergence (no static sleep race)', () => {
+    const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'push-image.yml');
+    const yml = readFileSync(workflowPath, 'utf8');
+    // No bare `sleep 8` (or any small static sleep) between systemctl
+    // restart and the digest inspect — the convergence must be observed
+    // via the loop, not by guessing how long the host pull will take.
+    expect(yml, 'must not gate verification on a single static sleep').not.toMatch(
+      /Give the wrapper a moment to pull \+ start before inspecting\.\s*\n\s*sleep \d+/,
+    );
+    // Bounded deadline-driven poll loop with a `date +%s` floor.
+    expect(yml, 'must compute a deadline timestamp for the poll loop').toMatch(
+      /DEADLINE=\\?\$\(\(\s*\\?\$\(date \+%s\)\s*\+\s*\d+\s*\)\)/,
+    );
+    expect(yml, 'must loop until the deadline is reached').toMatch(
+      /while\s*\[\s*"\\?\$\(date \+%s\)"\s*-lt\s*"\\?\$DEADLINE"\s*\]/,
+    );
+    // The loop body must compare EXPECTED_DIGEST against the host's :main
+    // digest AND the running container's image-id BEFORE breaking, so the
+    // post-loop assertion only fires once convergence fails the deadline.
+    expect(
+      yml,
+      'loop must early-exit on full convergence (digest + container image-id match)',
+    ).toMatch(
+      /\[\s*"\\\$LOCAL_DIGEST"\s*=\s*"\\\$EXPECTED_DIGEST"\s*\][\s\S]*?\[\s*"\\\$CONTAINER_IMAGE_ID"\s*=\s*"\\\$LOCAL_IMAGE_ID"\s*\][\s\S]*?break/,
+    );
+  });
 });
