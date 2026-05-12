@@ -23,7 +23,9 @@
  *
  * Trigger points (W1):
  *   - `/api/auth/setup` writes a freshly-minted `ahub_*` token for every
- *     session whose owner_user_id is null or matches the new Owner.
+ *     session active in the last 24 h (the full set — no owner filter,
+ *     because setup runs only when the server has zero auth and any
+ *     recent session needs recovery regardless of owner_user_id).
  *   - Future spawns should also write here (W2 follow-up).
  *
  * ## Security

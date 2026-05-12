@@ -96,11 +96,13 @@ export function recoverActiveSessionsAfterSetup(deps: RecoveryDeps): RecoveryRes
     try {
       const minted = createApiKey(
         deps.ownerUserId,
-        `spawn-recovery (${row.id.slice(0, 8)})`,
-        // 30-day TTL: prevents unbounded key accumulation if setup is
-        // re-run (e.g. re-bootstrap). Future session-cleanup will revoke
-        // + unlink in pairs before expiry, but the TTL self-cleans even
-        // if that follow-up never lands.
+        `spawn-recovery (${row.id.slice(0, 12)})`,
+        // 30-day TTL: self-cleaning safety net. /api/auth/setup is
+        // effectively one-shot today (gated by `!apiKey && !authRecord`)
+        // so re-runs are rare, but if re-bootstrap ever becomes a
+        // recurring path the TTL prevents unbounded key accumulation.
+        // Future session-cleanup will revoke + unlink in pairs before
+        // expiry; the TTL makes the safety net unconditional.
         30,
       );
       writeSpawnCredsFile(row.id, minted.token, deps.dataDir);
