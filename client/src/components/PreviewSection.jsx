@@ -337,8 +337,12 @@ export default function PreviewSection({
       const res = await api.startPreviewWizard(project.id);
       if (typeof onOpenSession === 'function' && res?.sessionId) {
         onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
-      } else if (!res?.sessionId) {
-        setWizardError('Server did not return a wizard session id');
+      } else {
+        setWizardError(
+          res?.sessionId
+            ? 'Wizard session started but no session handler is available'
+            : 'Server did not return a wizard session id',
+        );
       }
     } catch (err) {
       setWizardError(err?.message || 'Failed to start preview wizard');

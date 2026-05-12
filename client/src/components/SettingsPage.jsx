@@ -7895,6 +7895,7 @@ export default function SettingsPage({
   /** When opening Settings → GitHub from Workflows, expand this project's card. */
   initialGithubExpandedProjectId = null,
   onNavigate,
+  onOpenSession,
   showToast,
   wsRef,
 }) {
@@ -8056,6 +8057,7 @@ export default function SettingsPage({
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   registerGuard={registerTabChangeGuard}
+                  onOpenSession={onOpenSession}
                 />
               )}
               {tab === 'heartbeats' && (

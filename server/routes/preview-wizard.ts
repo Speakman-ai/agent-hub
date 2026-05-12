@@ -22,18 +22,21 @@
  * - `use_worktree=0` because the wizard reads the project checkout but
  *   never mutates code. `ask_mode=0` so the agent can run the scanner
  *   helpers and call the local API to persist config.
- * - The completion endpoint is intentionally permissive on auth (it
- *   only emits a WS broadcast and reveals nothing) so the skill can
- *   reach it even if the active spawn's API key was scoped down.
+ * - The completion endpoint requires User-level auth to prevent existence
+ *   oracles and broadcast spam from unauthenticated callers.
  */
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
 import { defaultModelForEngine } from '../config.js';
-import { defaultSessionUseWorktreeFlag, getProjectMode } from '../project-mode.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PREVIEW_SETUP_SKILL_DIR = path.join(__dirname, '..', 'default-skills', 'preview-setup');
 
 /**
  * Choose the agent the wizard session should attach to. Prefer the
@@ -90,7 +93,7 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         res.status(404).json({ error: 'Project not found' });
         return;
       }
-      const cwd = (project as { cwd?: string }).cwd;
+      const cwd = project.cwd;
       if (!cwd || typeof cwd !== 'string') {
         res.status(400).json({ error: 'Project has no cwd configured' });
         return;
@@ -111,12 +114,8 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       const engine = agentLookup.agent.engine || 'claude-code';
       const model = agentLookup.agent.model || defaultModelForEngine(engine);
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
-      // The wizard explicitly never mutates code, so we opt out of
-      // worktree isolation. Workflow-mode projects already default to
-      // 0 — `defaultSessionUseWorktreeFlag` honours that.
-      let useWorktree = defaultSessionUseWorktreeFlag(project);
-      if (getProjectMode(project) === 'workflow') useWorktree = 0;
-      useWorktree = 0; // Override: wizards never need a worktree.
+      // Wizards read the project checkout but never mutate code — no worktree needed.
+      const useWorktree = 0;
       const askMode = 0;
       stmts.createSession.run(
         sessionId,
@@ -139,6 +138,11 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         agentId,
         sessionId,
         content: prompt,
+        extraEnv: {
+          PREVIEW_WIZARD_PROJECT_ID: project.id,
+          PREVIEW_WIZARD_CWD: cwd,
+          AGENT_HUB_SKILL_DIR: PREVIEW_SETUP_SKILL_DIR,
+        },
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
@@ -157,18 +161,22 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
   // The skill calls this after PUT-ing `prEnv.preview` + secrets so
   // the open Settings panel knows to refetch. No body — the broadcast
   // payload identifies the project.
-  router.post('/api/projects/:projectId/preview/wizard-complete', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) {
-      res.status(404).json({ error: 'Project not found' });
-      return;
-    }
-    broadcast({
-      type: 'preview_wizard_complete',
-      projectId: project.id,
-    });
-    res.json({ ok: true });
-  });
+  router.post(
+    '/api/projects/:projectId/preview/wizard-complete',
+    requireRole('User'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      broadcast({
+        type: 'preview_wizard_complete',
+        projectId: project.id,
+      });
+      res.json({ ok: true });
+    },
+  );
 
   return router;
 }
