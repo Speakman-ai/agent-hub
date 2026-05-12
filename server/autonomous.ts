@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
+import type { Database } from 'better-sqlite3';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
@@ -237,6 +238,15 @@ interface AutonomousDeps {
   getGhBotUser: () => string | null;
   getGhAppSlug: () => string | null;
   getWebhookHandlerDeps: () => WebhookHandlerDeps;
+  /**
+   * Access to the underlying SQLite handle. Used by the transactional
+   * slot-claim path inside `runAutonomousLoop` to wrap the re-read of
+   * `activeCardCount` and the move-to-In-Progress in a single
+   * `BEGIN IMMEDIATE` so two callers can't race a card into a breached cap.
+   * Tests inject a fake whose `transaction()` wrapper just calls the body
+   * synchronously.
+   */
+  getDb: () => Database;
 }
 
 interface WebhookHandlerDeps {
@@ -298,7 +308,48 @@ export { autonomousCrons, autonomousProjects, lastDispatchedReviewId, lastBlocke
 
 // ─── Core Dispatch ─────────────────────────────────────────────────────────
 
+/**
+ * Per-epic single-flight gate. The autonomous loop is fan-in from FIVE
+ * concurrent triggers (60s safety-net cron, end-of-session timer, PR-merged
+ * webhook, scheduling kickoff, manual `POST /dispatch`), each of which calls
+ * `runAutonomousLoop` without a mutex. Between the read of `activeCardCount`
+ * and the move-to-In-Progress there are multiple `await` points — each yields
+ * the event loop — so two invocations could both observe `activeCardCount=0`,
+ * both pass the slot check, and both dispatch, producing 2 in-flight cards
+ * under a `max_concurrent=1` epic.
+ *
+ * Fix: coalesce, don't queue. When a loop is already running for a given
+ * epic, return the existing promise instead of starting a second body. The
+ * caller still sees a resolved promise once dispatch settles, but no second
+ * body runs. The map key is the epic id (not project id) because
+ * `autonomous_max_concurrent` is an epic-level setting and a project may
+ * legitimately have multiple epics in flight (today only one is autonomous,
+ * but the gate is forward-compatible).
+ */
+const inflightLoops = new Map<string, Promise<void>>();
+
 export async function runAutonomousLoop(projectId: string): Promise<void> {
+  const d = getDeps();
+  const project = d.findProject(projectId);
+  if (!project) return Promise.resolve();
+
+  const boardData = getOrCreateBoard(d.stmts, projectId);
+  if (!boardData?.board) return Promise.resolve();
+
+  const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
+  if (!epic) return Promise.resolve();
+
+  const existing = inflightLoops.get(epic.id);
+  if (existing) return existing;
+
+  const p = runAutonomousLoopInner(projectId).finally(() => {
+    inflightLoops.delete(epic.id);
+  });
+  inflightLoops.set(epic.id, p);
+  return p;
+}
+
+async function runAutonomousLoopInner(projectId: string): Promise<void> {
   const d = getDeps();
   const project = d.findProject(projectId);
   if (!project) return;
@@ -616,8 +667,37 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     };
 
     try {
+      // ── Transactional slot claim (defense-in-depth) ────────────────────
+      // The per-epic mutex above already prevents two `runAutonomousLoop`
+      // invocations from interleaving, but the move-to-In-Progress can
+      // still race with manual user moves, the webhook handler, or future
+      // callers we don't yet have. Wrap the re-read of `activeCardCount`
+      // and the move in a `BEGIN IMMEDIATE` so SQLite refuses concurrent
+      // writers: either we observe the latest state and proceed, or we
+      // observe `>= max_concurrent` and bail.
+      //
+      // We also re-read the count here (not just at the top of the loop)
+      // because the previous iteration of this `while` block may have just
+      // claimed a slot — that's the in-loop check the description calls out.
+      const db = d.getDb();
+      const claimSlot = db.transaction((cardId: string): boolean => {
+        const epicCardsNow = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
+        const activeNow = epicCardsNow.filter(
+          (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
+        ).length;
+        if (activeNow >= epic.autonomous_max_concurrent) return false;
+        d.stmts.incrementCardIterations.run(cardId);
+        d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, cardId);
+        return true;
+      });
+      const claimed = claimSlot.immediate(card.id);
+      if (!claimed) {
+        console.log(
+          `[Autonomous] Slot claim aborted for "${card.title}" — cap reached during dispatch (${epic.autonomous_max_concurrent} active)`,
+        );
+        break;
+      }
       console.log(`[Autonomous] Assigning "${card.title}" to ${agent.name}`);
-      d.stmts.incrementCardIterations.run(card.id);
 
       const sessionId = crypto.randomUUID();
       const engine = agent.engine || 'claude-code';
@@ -647,6 +727,9 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         }
       }
 
+      // `moveKanbanCard` already ran inside the transactional slot claim
+      // above. We still need to stamp `session_id` (and the agent name as
+      // assignee) onto the card now that the session exists.
       d.stmts.updateKanbanCard.run(
         card.title,
         card.description,
@@ -661,7 +744,6 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         card.pr_base_branch ?? null,
         card.id,
       );
-      d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, card.id);
 
       const iteration = (card.autonomous_iterations || 0) + 1;
       const contextLines: string[] = [`# Task: ${card.title}`];

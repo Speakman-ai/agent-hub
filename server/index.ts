@@ -14,7 +14,7 @@ import { existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
-import { stmts, initDb } from './db.js';
+import { stmts, initDb, getDb } from './db.js';
 import {
   initProjects,
   migrateAhwDirectories,
@@ -523,6 +523,7 @@ initAutonomous({
     ghAppSlug = v;
   },
   getWebhookHandlerDeps: () => webhookHandlerDeps,
+  getDb,
 } as Parameters<typeof initAutonomous>[0]);
 
 app.use(
