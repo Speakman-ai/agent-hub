@@ -301,7 +301,7 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
 
 // ─── Handler ────────────────────────────────────────────────────────────
 
-const DEFAULT_READY_TIMEOUT_MS = 120_000;
+export const DEFAULT_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_POLL_INTERVAL_MS = 500;
 const DEFAULT_STARTING_REBROADCAST_INTERVAL_MS = 2_000;
 

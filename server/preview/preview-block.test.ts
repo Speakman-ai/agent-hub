@@ -22,6 +22,7 @@ import {
   parsePreviewBlock,
   describePreviewReason,
   handlePreviewBlock,
+  DEFAULT_READY_TIMEOUT_MS,
   type PreviewBroadcastEvent,
   type PreviewHandlerDeps,
 } from './preview-block.js';
@@ -590,14 +591,14 @@ describe('handlePreviewBlock — preview_starting', () => {
     expect(deps.events[0].kind).toBe('preview_unavailable');
   });
 
-  it('uses 120s as the default readyTimeoutMs', async () => {
-    // We don't time anything here — just sanity-check the exported default
-    // by inspecting a handler call that relies on the default and never
-    // calls runtime.getById (so the loop never enters). Project gating
-    // short-circuits before the timeout matters, but the new default
-    // matters for the *next* failing case the runtime hits. Smoke test:
-    // run a gating path with no readyTimeoutMs override and confirm it
-    // still resolves promptly.
+  it('gating short-circuit resolves promptly regardless of the default timeout', async () => {
+    // Assert the exported default is the expected value so a revert to 30 s
+    // fails CI immediately, rather than silently regressing.
+    expect(DEFAULT_READY_TIMEOUT_MS).toBe(120_000);
+
+    // The gating path (runtime: null → preview_unavailable) short-circuits
+    // before the deadline loop enters, so the call resolves in well under
+    // DEFAULT_READY_TIMEOUT_MS even when no override is supplied.
     const deps = makeDeps({ runtime: null, readyTimeoutMs: undefined });
     const before = Date.now();
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);

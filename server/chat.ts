@@ -3558,6 +3558,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             broadcast,
             project,
             worktreePath: effectiveCwd,
+            // Honour per-project override when set; falls back to the
+            // handler's 120 s default. The runtime's internal health-check
+            // timeout is fixed at construction time (singleton) — wiring
+            // that per-project is a tracked follow-up.
+            readyTimeoutMs: project.prEnv?.preview?.healthTimeoutMs,
           }).catch((err: unknown) => {
             const message = err instanceof Error ? err.message : String(err);
             console.error('[Preview] Unexpected handler error:', message);
