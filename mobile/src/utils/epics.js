@@ -25,7 +25,6 @@ export const DEFAULT_EPIC_FORM = {
   autonomous: 0,
   autonomous_interval: 5,
   autonomous_max_concurrent: 2,
-  autonomous_max_iterations: 3,
   autonomous_model: '',
 };
 
@@ -42,7 +41,6 @@ export function epicFormFromRow(epic) {
     autonomous: epic.autonomous ? 1 : 0,
     autonomous_interval: epic.autonomous_interval || 5,
     autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
-    autonomous_max_iterations: epic.autonomous_max_iterations || 3,
     autonomous_model: epic.autonomous_model || '',
     pr_base_branch: epic.pr_base_branch || '',
   };
@@ -66,7 +64,6 @@ export function epicFormToUpdateBody(form) {
     autonomous: autonomousOn,
     autonomousInterval: form.autonomous_interval || 5,
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
-    autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
     prBaseBranch: prTrim || null,
     ...(form.orchestrationBudgets !== undefined

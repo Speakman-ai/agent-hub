@@ -366,8 +366,7 @@ export interface KanbanCardRow {
   position: number;
   epic_id: string | null;
   documented: number;
-  autonomous_iterations: number;
-  /** Set when autonomous dispatch increments iterations — controls auto-PR at session end vs Create PR banner. */
+  /** Set when autonomous dispatch claims a card — controls auto-PR at session end vs Create PR banner. */
   dispatched_by_autonomous: number;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
@@ -467,7 +466,6 @@ export interface KanbanEpicRow {
   autonomous: number;
   autonomous_interval: number;
   autonomous_max_concurrent: number;
-  autonomous_max_iterations: number;
   /** When set and valid for the assignee agent's engine, autonomous dispatch uses this instead of the agent's configured model. */
   autonomous_model: string | null;
   /** JSON object: optional overrides merged on top of the project's `orchestrationBudgets`. */
@@ -1029,8 +1027,7 @@ export interface Stmts {
   updateKanbanCardEpic: Stmt;
   getAutonomousEpic: Stmt;
   getEligibleAutonomousCards: Stmt;
-  incrementCardIterations: Stmt;
-  resetCardIterations: Stmt;
+  markCardDispatchedByAutonomous: Stmt;
 
   // Webhook configs
   getWebhookConfigs: Stmt;

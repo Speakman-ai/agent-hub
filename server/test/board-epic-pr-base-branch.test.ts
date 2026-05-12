@@ -39,7 +39,6 @@ describe('Epic PR base-branch (integration branch default)', () => {
         autonomous: 0,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
-        autonomousMaxIterations: 3,
         prBaseBranch: 'feature/updated',
       })
       .expect(200);
@@ -59,7 +58,6 @@ describe('Epic PR base-branch (integration branch default)', () => {
         autonomous: 0,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
-        autonomousMaxIterations: 3,
         prBaseBranch: 'bad branch',
       })
       .expect(400);

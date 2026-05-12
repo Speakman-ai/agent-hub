@@ -5,9 +5,8 @@ describe('epicFormToUpdateBody', () => {
   it('emits the camelCase keys the server PUT endpoint expects', () => {
     // Regression: the form uses snake_case keys (mirroring DB columns) but
     // PUT /board/epics/:id destructures camelCase. Without this translation,
-    // the autonomous_max_concurrent / autonomous_max_iterations values
-    // silently fell through to the old DB values — the "max agents / max
-    // iterations settings have no effect" bug.
+    // the autonomous_max_concurrent value silently fell through to the old
+    // DB value — the "max agents setting has no effect" bug.
     const form = {
       name: '  Trim me  ',
       description: 'desc',
@@ -15,7 +14,6 @@ describe('epicFormToUpdateBody', () => {
       autonomous: 1,
       autonomous_interval: 7,
       autonomous_max_concurrent: 3,
-      autonomous_max_iterations: 5,
     };
     expect(epicFormToUpdateBody(form)).toEqual({
       name: 'Trim me',
@@ -24,23 +22,20 @@ describe('epicFormToUpdateBody', () => {
       autonomous: 1,
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
-      autonomousMaxIterations: 5,
       autonomousModel: null,
       prBaseBranch: null,
     });
   });
 
-  it('preserves user-supplied max_concurrent and max_iterations (not defaults)', () => {
+  it('preserves user-supplied max_concurrent (not defaults)', () => {
     // If we accidentally re-applied defaults here, the bug would remain — so
     // assert that the exact user values round-trip into the request body.
     const body = epicFormToUpdateBody({
       name: 'x',
       autonomous: 1,
       autonomous_max_concurrent: 4,
-      autonomous_max_iterations: 9,
     });
     expect(body.autonomousMaxConcurrent).toBe(4);
-    expect(body.autonomousMaxIterations).toBe(9);
     expect(body.autonomousModel).toBe(null);
   });
 
@@ -73,7 +68,6 @@ describe('epicFormToUpdateBody', () => {
     const body = epicFormToUpdateBody({ name: 'x', autonomous: 1 });
     expect(body.autonomousInterval).toBe(5);
     expect(body.autonomousMaxConcurrent).toBe(2);
-    expect(body.autonomousMaxIterations).toBe(3);
     expect(body.autonomousModel).toBe(null);
   });
 

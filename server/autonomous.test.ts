@@ -77,7 +77,7 @@ interface MockStmts {
   createSession: { run: Mock };
   updateKanbanCard: { run: Mock };
   moveKanbanCard: { run: Mock };
-  incrementCardIterations: { run: Mock };
+  markCardDispatchedByAutonomous: { run: Mock };
   createKanbanCardComment: { run: Mock };
   // Blocker enrichment (loadBoardBlockers → getBlockersForBoard; default
   // empty so existing tests don't have to know about this edge).
@@ -97,7 +97,7 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     createSession: { run: vi.fn() },
     updateKanbanCard: { run: vi.fn() },
     moveKanbanCard: { run: vi.fn() },
-    incrementCardIterations: { run: vi.fn() },
+    markCardDispatchedByAutonomous: { run: vi.fn() },
     createKanbanCardComment: { run: vi.fn() },
     getBlockersForBoard: { all: vi.fn(() => []) },
     getBlockersForCard: { all: vi.fn(() => []) },
@@ -190,7 +190,6 @@ function makeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
     pr_url: null,
     epic_id: 'epic-1',
     session_id: null,
-    autonomous_iterations: 0,
     dispatched_by_autonomous: 0,
     priority: 'medium',
     labels: '',
@@ -215,7 +214,6 @@ const ACTIVE_EPIC: KanbanEpicRow = {
   name: 'Sprint 1',
   autonomous: 1,
   autonomous_max_concurrent: 3,
-  autonomous_max_iterations: 5,
   autonomous_model: null,
 } as unknown as KanbanEpicRow;
 
@@ -305,8 +303,8 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.updateKanbanEpic.run).toHaveBeenCalledTimes(1);
     const args = stmts.updateKanbanEpic.run.mock.calls[0] as unknown[];
     expect(args[3]).toBe(0);
-    expect(args[9]).toBe('feature/merge');
-    expect(args[10]).toBe(epic.id);
+    expect(args[8]).toBe('feature/merge');
+    expect(args[9]).toBe(epic.id);
     expect(deps.broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
     expect(stmts.getEligibleAutonomousCards.all).not.toHaveBeenCalled();
   });
@@ -350,7 +348,7 @@ describe('runAutonomousLoop — dispatch', () => {
 
     await runAutonomousLoop('proj-1');
 
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('card-1');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('card-1');
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'card-1');
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
@@ -749,7 +747,7 @@ describe('runAutonomousLoop — concurrency', () => {
     // Exactly `slotsAvailable` (=2) cards dispatched in total — not 6.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(2);
     expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(2);
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(2);
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledTimes(2);
     expect(deps.handleChat).toHaveBeenCalledTimes(2);
     // Both moves target the In Progress column id from BOARD_COLS.
     for (const call of stmts.moveKanbanCard.run.mock.calls) {
@@ -815,7 +813,7 @@ describe('runAutonomousLoop — concurrency', () => {
       // re-read aborted the second claim, so only one card dispatched.
       expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
       expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(1);
-      expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
+      expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledTimes(1);
       // The abort log is the observable proof that the defense-in-depth branch ran.
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('[Autonomous] Slot claim aborted'),
@@ -1031,7 +1029,7 @@ describe('runAutonomousLoop — blocker filter', () => {
     // No session created, no chat dispatched, no iteration increment.
     expect(stmts.createSession.run).not.toHaveBeenCalled();
     expect(deps.handleChat).not.toHaveBeenCalled();
-    expect(stmts.incrementCardIterations.run).not.toHaveBeenCalled();
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
   });
 
   it('dispatches a card whose blocker is in a Done column', async () => {
@@ -1059,7 +1057,7 @@ describe('runAutonomousLoop — blocker filter', () => {
 
     await runAutonomousLoop('proj-1');
 
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('ready-card');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('ready-card');
     expect(deps.handleChat).toHaveBeenCalled();
   });
 
@@ -1091,8 +1089,8 @@ describe('runAutonomousLoop — blocker filter', () => {
     await runAutonomousLoop('proj-1');
 
     // Only the ready card gets its iteration counter bumped.
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('r-card');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledTimes(1);
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('r-card');
   });
 
   // ─── Visible-signal contract ────────────────────────────────────────────

@@ -52,7 +52,6 @@ describe('merge + resolve', () => {
       autonomous: 0,
       autonomous_interval: 0,
       autonomous_max_concurrent: 0,
-      autonomous_max_iterations: 0,
       autonomous_model: null,
       orchestration_budgets_json: JSON.stringify({ maxReactWallClockMs: 1000 }),
       position: 0,

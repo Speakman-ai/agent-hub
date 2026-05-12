@@ -384,7 +384,6 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       0,
       epic.autonomous_interval,
       epic.autonomous_max_concurrent,
-      epic.autonomous_max_iterations,
       epic.autonomous_model ?? null,
       epic.orchestration_budgets_json ?? null,
       // Preserve whatever the operator set (or null). We never auto-clear or
@@ -399,10 +398,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     return;
   }
 
-  const rawEligible = d.stmts.getEligibleAutonomousCards.all(
-    epic.id,
-    epic.autonomous_max_iterations,
-  ) as KanbanCardRow[];
+  const rawEligible = d.stmts.getEligibleAutonomousCards.all(epic.id) as KanbanCardRow[];
 
   // Filter out cards whose blockers aren't all Done. Re-loaded on every
   // tick so newly-cleared blockers (the blocking card landed in Done since
@@ -465,7 +461,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
 
   if (eligible.length === 0) {
     console.log(
-      `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, blocked, or at max iterations)`,
+      `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, or blocked)`,
     );
     return;
   }
@@ -702,7 +698,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
           (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
         ).length;
         if (activeNow >= effectiveMaxConcurrent) return false;
-        d.stmts.incrementCardIterations.run(cardId);
+        d.stmts.markCardDispatchedByAutonomous.run(cardId);
         d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, cardId);
         return true;
       });
@@ -761,15 +757,10 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
         card.id,
       );
 
-      const iteration = (card.autonomous_iterations || 0) + 1;
       const contextLines: string[] = [`# Task: ${card.title}`];
       if (card.description) contextLines.push(`\n## Description\n${card.description}`);
       if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
       if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
-      if (iteration > 1)
-        contextLines.push(
-          `\n**Iteration:** ${iteration}/${epic.autonomous_max_iterations} — This task was previously attempted. Check git log and PR comments for prior work and feedback.`,
-        );
       contextLines.push(
         `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it. When done, commit your changes — a PR will be created automatically.`,
       );
@@ -812,7 +803,6 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
         cardTitle: card.title,
         agentId: agent.id,
         agentName: agent.name,
-        iteration,
       });
       assigned++;
     } catch (err: unknown) {

@@ -3,12 +3,12 @@
 // request shape to the server's /board/epics endpoints.
 //
 // Why this exists: the form state uses snake_case keys for parity with the
-// database columns (autonomous_max_concurrent, autonomous_max_iterations,
-// autonomous_interval), but the server's PUT route destructures camelCase
-// keys (autonomousMaxConcurrent, autonomousMaxIterations, autonomousInterval).
-// Without this translation the values arrive as `undefined` on the server and
-// the `?? epic.autonomous_max_concurrent` fallback silently preserves the old
-// value — i.e. changes made in the UI have no effect.
+// database columns (autonomous_max_concurrent, autonomous_interval), but the
+// server's PUT route destructures camelCase keys (autonomousMaxConcurrent,
+// autonomousInterval). Without this translation the values arrive as
+// `undefined` on the server and the `?? epic.autonomous_max_concurrent`
+// fallback silently preserves the old value — i.e. changes made in the UI
+// have no effect.
 
 export const DEFAULT_EPIC_COLOR = '#6366F1';
 
@@ -28,7 +28,6 @@ export function epicFormToUpdateBody(form) {
     autonomous: autonomousOn,
     autonomousInterval: form.autonomous_interval || 5,
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
-    autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
     prBaseBranch: prTrim || null,
     ...(form.orchestrationBudgets !== undefined

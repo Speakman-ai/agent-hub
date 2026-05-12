@@ -74,7 +74,7 @@ describe('getEligibleAutonomousCards — ordering contract', () => {
     await makeCardInEpic(projectId, epicId, inProgressCol, 'in-progress-urgent', 'urgent');
     await makeCardInEpic(projectId, epicId, todoCol, 'todo-low', 'low');
 
-    const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
+    const rows = getStmts().getEligibleAutonomousCards.all(epicId) as KanbanCardRow[];
     const titles = rows.map((r) => r.title);
 
     expect(titles).toEqual(['todo-low']);
@@ -90,7 +90,7 @@ describe('getEligibleAutonomousCards — ordering contract', () => {
     await makeCardInEpic(projectId, epicId, todoCol, 'todo-low', 'low'); // pos 2
     await makeCardInEpic(projectId, epicId, todoCol, 'todo-high', 'high'); // pos 3
 
-    const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
+    const rows = getStmts().getEligibleAutonomousCards.all(epicId) as KanbanCardRow[];
     expect(rows.map((r) => r.title)).toEqual([
       'todo-urgent',
       'todo-high',
@@ -107,7 +107,7 @@ describe('getEligibleAutonomousCards — ordering contract', () => {
     await makeCardInEpic(projectId, epicId, todoCol, 'high-second', 'high');
     await makeCardInEpic(projectId, epicId, todoCol, 'high-third', 'high');
 
-    const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
+    const rows = getStmts().getEligibleAutonomousCards.all(epicId) as KanbanCardRow[];
     expect(rows.map((r) => r.title)).toEqual(['high-first', 'high-second', 'high-third']);
   });
 });
