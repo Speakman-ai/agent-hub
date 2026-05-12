@@ -215,17 +215,52 @@ jobs:
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 
-          # Give the wrapper a moment to pull + start before inspecting.
-          sleep 8
+          # \`systemctl restart\` returns as soon as the wrapper unit forks; the
+          # wrapper then runs \`docker pull\` + \`docker run\` asynchronously. With
+          # a ~3.8 GB image and ECR Public back-off, that can take well over a
+          # minute. The previous single-shot \`sleep 8\` inspected too early and
+          # produced false-positive FATALs (host :main was still the *previous*
+          # digest, container did not exist yet). Poll instead: wait up to
+          # POLL_TIMEOUT seconds for both the pulled :main repo-digest and the
+          # running container image-id to converge on the just-pushed image.
+          POLL_TIMEOUT=240
+          POLL_INTERVAL=5
+          POLL_DEADLINE=\$(( \$(date +%s) + POLL_TIMEOUT ))
+          LOCAL_DIGEST=""
+          CONTAINER_IMAGE_ID=""
+          LOCAL_IMAGE_ID=""
+          attempts=0
+          while :; do
+            attempts=\$(( attempts + 1 ))
+            # Pulled-image digest on the host. \`docker image inspect ... RepoDigests\`
+            # returns entries like \`public.ecr.aws/h9t4v7h0/agent-hub@sha256:...\`.
+            LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+              | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+            # Image-id the container was instantiated with (what is ACTUALLY running).
+            CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' 2>/dev/null || true)
 
-          # Pulled-image digest on the host. \`docker image inspect ... RepoDigests\`
-          # returns entries like \`public.ecr.aws/h9t4v7h0/agent-hub@sha256:...\`.
-          LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
-            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
-          # Image-id the container was instantiated with (what is ACTUALLY running).
-          CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' || true)
-          LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' || true)
+            digest_ok="false"
+            container_ok="false"
+            if [ -z "\$EXPECTED_DIGEST" ] || [ "\$LOCAL_DIGEST" = "\$EXPECTED_DIGEST" ]; then
+              digest_ok="true"
+            fi
+            if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" = "\$LOCAL_IMAGE_ID" ]; then
+              container_ok="true"
+            fi
+
+            echo "wait_for_deploy attempt=\$attempts digest_ok=\$digest_ok container_ok=\$container_ok local_digest=\$LOCAL_DIGEST"
+
+            if [ "\$digest_ok" = "true" ] && [ "\$container_ok" = "true" ]; then
+              break
+            fi
+            if [ \$(date +%s) -ge \$POLL_DEADLINE ]; then
+              echo "wait_for_deploy: timed out after \${POLL_TIMEOUT}s (\$attempts attempts)" >&2
+              break
+            fi
+            sleep "\$POLL_INTERVAL"
+          done
 
           echo "EXPECTED_DIGEST=\$EXPECTED_DIGEST"
           echo "LOCAL_REPO_DIGEST=\$LOCAL_DIGEST"
@@ -234,7 +269,11 @@ jobs:
 
           if [ -z "\$EXPECTED_DIGEST" ]; then
             echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
-          elif [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+            echo "OK: agenthub-server restarted (digest assertion skipped)."
+            exit 0
+          fi
+
+          if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
             echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
             echo "       The host did not actually pull the new image. Check disk space and ECR connectivity." >&2
             exit 1
@@ -243,6 +282,12 @@ jobs:
           if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
             echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :main image-id (\$LOCAL_IMAGE_ID)" >&2
             echo "       systemctl restart did not actually swap the container." >&2
+            exit 1
+          fi
+
+          if [ -z "\$CONTAINER_IMAGE_ID" ] || [ -z "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: agenthub-server container not running after \${POLL_TIMEOUT}s" >&2
+            echo "       (CONTAINER_IMAGE_ID=\$CONTAINER_IMAGE_ID LOCAL_IMAGE_ID=\$LOCAL_IMAGE_ID)" >&2
             exit 1
           fi
 
