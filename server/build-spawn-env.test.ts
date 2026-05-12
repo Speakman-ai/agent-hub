@@ -191,3 +191,69 @@ describe('mergeAllowlistedExtraEnv — spawn env integration', () => {
     expect(spawnEnv.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR injection — every spawn site
+// (heartbeat, cron, delegation, room-chat, slack, design-chat, one-shot, …)
+// goes through `buildSpawnEnv`, so config rotations propagate uniformly
+// instead of only through the chat.ts spawn path. See server/spawn-creds-file.ts
+// for the long-running-chat recovery path that complements this.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildSpawnEnv — AGENT_HUB_API_KEY injection', () => {
+  it('injects AGENT_HUB_API_KEY from cfg.apiKey when present', () => {
+    const env = buildSpawnEnv({ ...config, apiKey: 'cfg-key-after-setup' });
+    expect(env.AGENT_HUB_API_KEY).toBe('cfg-key-after-setup');
+  });
+
+  it('deletes AGENT_HUB_API_KEY when cfg.apiKey is null (avoids stale process.env leak)', () => {
+    const prev = process.env.AGENT_HUB_API_KEY;
+    process.env.AGENT_HUB_API_KEY = 'stale-from-server-start';
+    try {
+      const env = buildSpawnEnv({ ...config, apiKey: null });
+      expect(env.AGENT_HUB_API_KEY).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HUB_API_KEY;
+      else process.env.AGENT_HUB_API_KEY = prev;
+    }
+  });
+
+  it('cfg.apiKey wins over a stale process.env.AGENT_HUB_API_KEY', () => {
+    // Simulates: server started with one key in the env, operator rotated the
+    // key in config.json and called the wrappers fresh. The fresh value must
+    // win — otherwise heartbeats/crons would keep using the original.
+    const prev = process.env.AGENT_HUB_API_KEY;
+    process.env.AGENT_HUB_API_KEY = 'old-key-at-server-start';
+    try {
+      const env = buildSpawnEnv({ ...config, apiKey: 'new-rotated-key' });
+      expect(env.AGENT_HUB_API_KEY).toBe('new-rotated-key');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HUB_API_KEY;
+      else process.env.AGENT_HUB_API_KEY = prev;
+    }
+  });
+});
+
+describe('buildSpawnEnv — AGENT_HUB_DATA_DIR injection', () => {
+  it('exports AGENT_HUB_DATA_DIR from cfg.dataDir', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: '/tmp/test-data-dir' });
+    expect(env.AGENT_HUB_DATA_DIR).toBe('/tmp/test-data-dir');
+  });
+
+  it('cfg.dataDir wins over process.env.AGENT_HUB_DATA_DIR', () => {
+    // The spawn-creds file fallback in `ah-api.sh` reads
+    // `$AGENT_HUB_DATA_DIR/spawn-creds/<sessionId>.token`. If the spawned
+    // process inherited a different value from the server's start-time env,
+    // the wrappers would look in the wrong directory and miss the recovery
+    // file written by /api/auth/setup.
+    const prev = process.env.AGENT_HUB_DATA_DIR;
+    process.env.AGENT_HUB_DATA_DIR = '/tmp/stale-dir';
+    try {
+      const env = buildSpawnEnv({ ...config, dataDir: '/tmp/fresh-dir' });
+      expect(env.AGENT_HUB_DATA_DIR).toBe('/tmp/fresh-dir');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HUB_DATA_DIR;
+      else process.env.AGENT_HUB_DATA_DIR = prev;
+    }
+  });
+});

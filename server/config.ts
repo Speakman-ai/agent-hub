@@ -457,6 +457,29 @@ export function buildSpawnEnv(
     env.CODEX_API_KEY = cfg.codexApiKey;
   }
 
+  // Hub API access for shell wrappers under the agent-hub skill (scripts/*.sh).
+  // Reads `cfg.apiKey` at every call so a config rotation propagates to every
+  // *new* spawn (heartbeat, cron, delegation, room-chat, slack, design-chat,
+  // one-shot, …) without a server restart. Long-running chat sessions whose
+  // env was frozen pre-rotation recover via the per-session spawn-creds file
+  // (see `server/spawn-creds-file.ts`); this var is the env-first path that
+  // `ah-api.sh:ah_resolve_key` consults before the file fallback.
+  //
+  // We explicitly delete when `cfg.apiKey` is empty so a stale value inherited
+  // from `process.env` (set at server start, then cleared in Settings) can't
+  // shadow the current config.
+  if (cfg.apiKey) {
+    env.AGENT_HUB_API_KEY = cfg.apiKey;
+  } else {
+    delete env.AGENT_HUB_API_KEY;
+  }
+  // Pin the data dir so the spawn-creds file fallback in `ah-api.sh` reads
+  // the same directory the server writes to. Without this, deploys that
+  // override `dataDir` (vs the default `~/.agent-hub/data`) silently fall
+  // back to the home-dir path and miss the per-session creds file written by
+  // `/api/auth/setup` recovery.
+  env.AGENT_HUB_DATA_DIR = cfg.dataDir;
+
   return env;
 }
 
