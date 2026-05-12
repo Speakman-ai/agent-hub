@@ -771,14 +771,27 @@ describe('runAutonomousLoop — concurrency', () => {
     const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
     const racer = makeCard({ id: 'card-racer', column_id: 'col-progress', title: 'Raced in' });
 
-    // First call (outer activeCardCount read): [c1, c2] — 0 active, 2 slots.
-    // Subsequent calls (in-loop re-read inside the claim transaction): a
-    // racing writer has moved `racer` into In Progress, so activeNow=1 then
-    // activeNow=2. Iteration 1 claims (1 < 2). Iteration 2 must abort (2 >= 2).
+    // getKanbanCardsByEpic.all is called three times inside runAutonomousLoopInner:
+    //   call 0 — allEpicCardsForDone (done-check)
+    //   call 1 — outer activeCardCount
+    //   call 2 — in-transaction re-read (first while-loop iteration)
+    //   call 3 — in-transaction re-read (second while-loop iteration)
+    //
+    // call 0: [c1, c2] — no done cards → epicWorkComplete=false, continue
+    // call 1: [c1, c2] — 0 active → slotsAvailable=2, while-loop runs twice
+    // call 2: [c1, c2, racer] — racer just raced in → activeNow=1<2, claim succeeds
+    // call 3: [c1InProgress, c2, racer] — c1 now in-progress too → activeNow=2>=2, abort
+    const c1InProgress = makeCard({
+      id: 'card-a',
+      position: 0,
+      title: 'A',
+      column_id: 'col-progress',
+    });
     const epicCardsCalls = [
-      [c1, c2], // outer read
-      [c1, c2, racer], // first claim re-read — racer now active
-      [c1, c2, racer], // second claim re-read — still at cap
+      [c1, c2], // call 0: done-check
+      [c1, c2], // call 1: outer activeCardCount — 0 active, slotsAvailable=2
+      [c1, c2, racer], // call 2: first in-tx re-read — activeNow=1<2, claim succeeds
+      [c1InProgress, c2, racer], // call 3: second in-tx re-read — activeNow=2>=2, abort
     ];
     let callIdx = 0;
     const stmts = makeStmts({
@@ -794,13 +807,22 @@ describe('runAutonomousLoop — concurrency', () => {
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
 
-    await runAutonomousLoop('proj-1');
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runAutonomousLoop('proj-1');
 
-    // Outer check let both cards through (slotsAvailable=2). The transactional
-    // re-read aborted the second claim, so only one card dispatched.
-    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(1);
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
+      // Outer check let both cards through (slotsAvailable=2). The transactional
+      // re-read aborted the second claim, so only one card dispatched.
+      expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+      expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(1);
+      expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
+      // The abort log is the observable proof that the defense-in-depth branch ran.
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[Autonomous] Slot claim aborted'),
+      );
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });
 

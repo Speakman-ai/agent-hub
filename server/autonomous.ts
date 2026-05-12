@@ -328,7 +328,7 @@ export { autonomousCrons, autonomousProjects, lastDispatchedReviewId, lastBlocke
  */
 const inflightLoops = new Map<string, Promise<void>>();
 
-export function runAutonomousLoop(projectId: string): Promise<void> {
+export async function runAutonomousLoop(projectId: string): Promise<void> {
   const d = getDeps();
   const project = d.findProject(projectId);
   if (!project) return Promise.resolve();
