@@ -269,11 +269,7 @@ jobs:
 
           if [ -z "\$EXPECTED_DIGEST" ]; then
             echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
-            echo "OK: agenthub-server restarted (digest assertion skipped)."
-            exit 0
-          fi
-
-          if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+          elif [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
             echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
             echo "       The host did not actually pull the new image. Check disk space and ECR connectivity." >&2
             exit 1

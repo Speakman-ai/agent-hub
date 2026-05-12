@@ -88,8 +88,8 @@ describe('push-image.yml deploy contract', () => {
     expect(yml, 'must declare a POLL_TIMEOUT for the wait loop').toMatch(/POLL_TIMEOUT=\d+/);
     expect(yml, 'must declare a POLL_DEADLINE driven by date +%s').toMatch(/POLL_DEADLINE=/);
     expect(yml, 'must emit wait_for_deploy progress lines').toContain('wait_for_deploy');
-    // The old single-shot `sleep 8` must be gone. Any future fixed-duration
+    // The old single-shot `sleep N` must be gone. Any future fixed-duration
     // sleep before the inspect block is the regression we are guarding against.
-    expect(yml, 'fixed `sleep 8` before inspect must not return').not.toMatch(/^\s*sleep 8\s*$/m);
+    expect(yml, 'fixed-duration sleep before inspect must not return').not.toMatch(/^\s*sleep \d+\s*(#.*)?$/m);
   });
 });
