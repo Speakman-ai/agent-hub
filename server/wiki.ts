@@ -59,6 +59,47 @@ export function getPage(projectId: string, slug: string): WikiPageRow | null {
   return ((stmts as Stmts).getWikiPage.get(projectId, slug) as WikiPageRow | undefined) || null;
 }
 
+/**
+ * Re-sync the `wiki_pages_fts` FTS5 index for a single wiki page. Idempotent:
+ * deletes any prior FTS row for the page's rowid and inserts a fresh one.
+ *
+ * The FTS index is maintained out-of-band (no triggers — see `db.ts` where
+ * the table is created with `content_rowid='rowid'` but no `INSERT/UPDATE`
+ * triggers on `wiki_pages`). `createPage` / `updatePage` keep it in sync
+ * inline, but the project-import path writes directly to `stmts.createWikiPage`
+ * for batching reasons. That import path calls this helper to keep imported
+ * pages searchable from the moment they land — otherwise FTS search returns
+ * zero hits until the page is edited through the normal CRUD path.
+ *
+ * Failures are swallowed (logged via console.warn) so a malformed FTS table
+ * on an older deploy never aborts the calling write — the row is already in
+ * `wiki_pages` either way, and re-syncing on any subsequent edit recovers it.
+ */
+export function syncWikiPageFts(
+  pageId: string,
+  title: string,
+  content: string,
+  slug: string,
+  projectId: string,
+): void {
+  try {
+    const rowResult = (db as Database.Database)
+      .prepare('SELECT rowid FROM wiki_pages WHERE id = ?')
+      .get(pageId) as { rowid: number } | undefined;
+    if (!rowResult?.rowid) return;
+    (db as Database.Database)
+      .prepare('DELETE FROM wiki_pages_fts WHERE rowid = ?')
+      .run(rowResult.rowid);
+    (db as Database.Database)
+      .prepare(
+        'INSERT INTO wiki_pages_fts (rowid, title, content, slug, project_id) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(rowResult.rowid, title, content, slug, projectId);
+  } catch (e: unknown) {
+    console.warn(`[wiki] FTS sync for page ${pageId} failed:`, (e as Error).message);
+  }
+}
+
 export function createPage(
   projectId: string,
   { title, content = '', category = 'general', updatedBy = 'user' }: CreatePageOptions,
