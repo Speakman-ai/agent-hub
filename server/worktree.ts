@@ -697,6 +697,12 @@ export async function getOrCreateProcessWorktree(
   // existsSync fallback. Public-repo / no-token cases are tolerated.
   if (repoUrl) {
     try {
+      // No requestingUserId here: getOrCreateProcessWorktree has no session
+      // owner identity (it's called for heartbeats / cron jobs, not for a
+      // specific user session). The user-PAT fallback path in
+      // ensureProjectRepoCloned is therefore intentionally absent — if the
+      // GitHub App installation token isn't available this path uses only
+      // unauthenticated access (public repos) or fails gracefully.
       await ensureProjectRepoCloned(projectCwd, repoUrl, { projectId });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1002,12 +1008,14 @@ export async function ensureSessionWorkspace(
     return session.worktree_path;
   }
 
-  // Per-session GitHub PAT resolution. Pulled once at the top so every
-  // git network call below — auto-clone of the project, fresh shallow
-  // clone of the session worktree, reuse-path fetches against
-  // origin/<base> — uses the same credential. Empty when the session has
-  // no owner_user_id (legacy rows, system-owned sessions) or when the
-  // owner hasn't stored a PAT.
+  // Per-session GitHub PAT resolution. Pulled once at the top (before any
+  // branch) so every git network call below — the reuse-path fetches
+  // (origin/--quiet, origin/<base>), the auto-clone of the project, and
+  // the fresh shallow clone of the session worktree — all use the same
+  // credential. Deferring to after remote classification is not possible
+  // because the reuse-path fetches run before we ever read the remote URL.
+  // Empty when the session has no owner_user_id (legacy rows, system-owned
+  // sessions) or when the owner hasn't stored a PAT.
   const sessionOwnerId = session.owner_user_id ?? null;
   const userPat: string | null = getGithubPatForUser(sessionOwnerId);
   const authArgs: string[] = userPat ? gitAuthArgsForGithubPat(userPat) : [];
@@ -1135,9 +1143,40 @@ export async function ensureSessionWorkspace(
   // isn't permanently trapped by a transient earlier failure.
   removeZombieCloneDir(cloneDir);
 
+  // Track any token embedded in the project remote URL (e.g. a legacy
+  // `x-access-token:…@github.com` install clone) for double-pass error
+  // redaction in the catch below. Declared outside the try so the catch
+  // can reference it even when the error fires before we reach the strip.
+  let embeddedToken: string | null = null;
+
   try {
     const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
+      // Strip any userinfo from the URL before calling `classifyCloneUrl`.
+      // The `classifyCloneUrl` regex matches only the bare github.com host;
+      // a URL of the form `https://x-access-token:<TOKEN>@github.com/…`
+      // does NOT match and falls to `kind: 'other'`, which would pass the
+      // token-bearing URL verbatim to `git clone` and persist it in the
+      // session clone's `.git/config`. Stripping via `new URL()` is safe
+      // for any valid HTTP(S) URL and is a no-op for the already-clean case.
+      let canonRemoteUrl = remoteUrl;
+      try {
+        const u = new URL(remoteUrl);
+        if (u.password) {
+          embeddedToken = u.password;
+          u.username = '';
+          u.password = '';
+          canonRemoteUrl = u.toString();
+        } else if (u.username && u.username !== 'git') {
+          // Rare: token encoded as username-only (no password segment).
+          embeddedToken = u.username;
+          u.username = '';
+          canonRemoteUrl = u.toString();
+        }
+      } catch {
+        // Not a valid hierarchical URL (e.g. `git@github.com:…` SCP form).
+        // Leave canonRemoteUrl as-is; classifyCloneUrl handles SCP correctly.
+      }
       // Canonicalize the source URL so a token previously embedded in the
       // project repo's `remote.origin.url` (legacy installs that cloned
       // with `https://x-access-token:…@github.com/…`) does NOT end up in
@@ -1145,11 +1184,11 @@ export async function ensureSessionWorkspace(
       // the clean `https://github.com/<owner>/<repo>.git` form and pair
       // it with `authArgs` (per-invocation header injection) so the
       // resulting clone has no token persisted anywhere on disk.
-      const parsedRemote = classifyCloneUrl(remoteUrl);
+      const parsedRemote = classifyCloneUrl(canonRemoteUrl);
       const cloneSourceUrl =
         parsedRemote.kind === 'github-https' && parsedRemote.owner && parsedRemote.repo
           ? `https://github.com/${parsedRemote.owner}/${parsedRemote.repo}.git`
-          : remoteUrl;
+          : canonRemoteUrl;
       // Only forward auth args for github.com remotes — other hosts
       // (bitbucket, internal mirrors) should pass through unauthenticated.
       const cloneAuthArgs = parsedRemote.kind === 'github-https' ? authArgs : [];
@@ -1198,7 +1237,11 @@ export async function ensureSessionWorkspace(
     return cloneDir;
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
-    const message = redactToken(raw, userPat);
+    // Double-pass redaction: strip the user PAT and any installation token
+    // that was embedded in the project repo's remote.origin.url so neither
+    // secret reaches the WebSocket log or the onFailure callback.
+    const once = redactToken(raw, userPat);
+    const message = redactToken(once, embeddedToken);
     console.error(`[Workspace] Failed to create session clone:`, message);
     onFailure?.(session.id, message);
     return projectCwd;

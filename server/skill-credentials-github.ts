@@ -60,7 +60,15 @@ export function getGithubPatForUser(userId: string | null | undefined): string |
     if (!token) return null;
     maybeTouchLastUsed(row.id);
     return token;
-  } catch {
+  } catch (err: unknown) {
+    // Log DB-level failures separately from "user has no row" (which is
+    // silent) so operators can distinguish credential-store outages from
+    // normal no-PAT cases. The token is never present in this catch
+    // branch (we haven't decrypted it yet), so no redaction needed.
+    console.warn(
+      '[skill-credentials-github] PAT lookup failed:',
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
 }
