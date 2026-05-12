@@ -245,8 +245,9 @@ describe('PreviewSection — render & save', () => {
     api.testProjectPreview.mockResolvedValueOnce({
       ok: false,
       ports: { allocated: 4201 },
-      durationMs: 31000,
-      error: 'health check timed out after 30000ms (no response on /healthz).',
+      durationMs: 121000,
+      error: 'health check timed out after 120000ms (no response on /healthz).',
+      logTail: [],
     });
     const { getByTestId, findByTestId } = render(
       <PreviewSection projects={[projectWithPreview]} />,
@@ -255,6 +256,47 @@ describe('PreviewSection — render & save', () => {
     const failed = await findByTestId('preview-test-status-failed');
     expect(failed.textContent).toMatch(/Failed/);
     expect(getByTestId('preview-test-error').textContent).toMatch(/timed out/);
+  });
+
+  it('Test preview failure renders the captured boot log when present', async () => {
+    api.testProjectPreview.mockResolvedValueOnce({
+      ok: false,
+      ports: { allocated: 4202 },
+      durationMs: 121000,
+      error: 'health check timed out after 120000ms (no response on /).',
+      logTail: [
+        'vite v5.0.0 dev server starting',
+        'Error: listen EADDRINUSE: address already in use :::4202',
+      ],
+    });
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-test-button'));
+    await findByTestId('preview-test-status-failed');
+    const log = getByTestId('preview-test-log');
+    expect(log.textContent).toMatch(/Console \(2 lines\)/);
+    const content = getByTestId('preview-test-log-content');
+    expect(content.textContent).toContain('vite v5.0.0 dev server starting');
+    expect(content.textContent).toContain('EADDRINUSE');
+  });
+
+  it('Test preview success surfaces the captured boot log alongside the screenshot', async () => {
+    api.testProjectPreview.mockResolvedValueOnce({
+      ok: true,
+      ports: { allocated: 4203 },
+      durationMs: 1500,
+      screenshotUrl: '/uploads/preview-tests/ok.png',
+      logTail: ['vite v5.0.0 dev server running', '  ➜  Local:   http://localhost:4203/'],
+    });
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-test-button'));
+    await findByTestId('preview-test-status-ready');
+    const content = getByTestId('preview-test-log-content');
+    expect(content.textContent).toContain('vite v5.0.0 dev server running');
+    expect(content.textContent).toContain('http://localhost:4203/');
   });
 
   it('Test panel can be dismissed via the X button', async () => {

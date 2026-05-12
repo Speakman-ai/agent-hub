@@ -120,6 +120,29 @@ function shallowEqualForm(a, b) {
   return true;
 }
 
+/**
+ * Renders the captured stdout/stderr tail (up to ~50 lines, earliest-
+ * first) from a one-shot preview test. Surfaces inside the Test panel
+ * for both ready and failed states so the user can see what the spawned
+ * dev server actually printed — a parity feature with the per-session
+ * preview's live boot log. Read-only console; no streaming for now.
+ */
+function PreviewTestLog({ logTail }) {
+  return (
+    <details className="mt-2" data-testid="preview-test-log">
+      <summary className="text-xs text-gray-400 cursor-pointer select-none hover:text-gray-200">
+        Console ({logTail.length} {logTail.length === 1 ? 'line' : 'lines'})
+      </summary>
+      <pre
+        className="mt-1 text-[11px] leading-snug font-mono bg-gray-900/80 border border-gray-800 rounded-lg p-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-gray-300"
+        data-testid="preview-test-log-content"
+      >
+        {logTail.join('\n')}
+      </pre>
+    </details>
+  );
+}
+
 export default function PreviewSection({
   projects = [],
   onProjectsChange,
@@ -727,6 +750,9 @@ export default function PreviewSection({
                       {testResult.error && (
                         <p className="text-xs text-amber-400">Note: {testResult.error}</p>
                       )}
+                      {Array.isArray(testResult.logTail) && testResult.logTail.length > 0 && (
+                        <PreviewTestLog logTail={testResult.logTail} />
+                      )}
                     </div>
                   )}
                   {testPhase === 'failed' && testResult && (
@@ -744,6 +770,9 @@ export default function PreviewSection({
                         <p className="text-xs text-gray-500">
                           Allocated port: {testResult.ports.allocated}
                         </p>
+                      )}
+                      {Array.isArray(testResult.logTail) && testResult.logTail.length > 0 && (
+                        <PreviewTestLog logTail={testResult.logTail} />
                       )}
                     </div>
                   )}

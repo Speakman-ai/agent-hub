@@ -16,7 +16,10 @@
  *      `project.cwd/client` (matching `DEFAULT_PREVIEW_CWD` in
  *      `preview-runtime.ts`), in its own process group (`detached: true`).
  *   4. Poll `http://localhost:<port><healthPath>` every 500 ms for a 2xx
- *      response. Default deadline 30 s (mirrors `PreviewRuntime`).
+ *      response. Default deadline 120 s (mirrors `PreviewRuntime`).
+ *      ENOENT / EACCES (async spawn errors) and premature child exits
+ *      short-circuit the loop so misconfigured projects fail fast instead
+ *      of waiting the full window.
  *   5. On the first 2xx, screenshot the root URL via Playwright into
  *      `uploads/preview-tests/<id>.png` and return its public URL.
  *   6. **Always** teardown the spawned process group (SIGTERM, then
@@ -26,7 +29,13 @@
  * Return shape:
  *
  *   { ok: boolean, ports: { allocated: number | null },
- *     durationMs: number, screenshotUrl?: string, error?: string }
+ *     durationMs: number, logTail: string[],
+ *     screenshotUrl?: string, error?: string }
+ *
+ *   `logTail` always carries the captured stdout/stderr (up to 50 lines,
+ *   earliest-first) so the Test panel can render the dev-server console
+ *   inline regardless of pass/fail. Matches the per-session preview
+ *   runtime's tail size for consistency.
  *
  * Errors are surfaced verbatim — the panel renders them inline so the
  * user can fix the misconfiguration (spawn ENOENT, port allocation
@@ -55,6 +64,14 @@ export interface PreviewTestResult {
   durationMs: number;
   screenshotUrl?: string;
   error?: string;
+  /**
+   * Captured stdout/stderr from the spawned start-script (max 50 lines,
+   * earliest-first — matches the per-session preview runtime's tail
+   * size). Always present so the UI can render the boot log in the Test
+   * panel for both success and failure states; empty array when the
+   * spawn produced no output before bailing.
+   */
+  logTail: string[];
 }
 
 export type PreviewTestSpawnFn = (
@@ -95,7 +112,7 @@ export interface PreviewTestDeps {
   allocatePort?: (min: number, max: number) => Promise<number>;
   /** Override the kill seam — production uses `process.kill`. */
   kill?: (target: number, signal: NodeJS.Signals) => void;
-  /** Override the timeout in ms. Defaults to 30s (matches `PreviewRuntime`). */
+  /** Override the timeout in ms. Defaults to 120s (matches `PreviewRuntime`). */
   healthTimeoutMs?: number;
   /** Override the polling cadence. Defaults to 500ms. */
   healthIntervalMs?: number;
@@ -103,7 +120,13 @@ export interface PreviewTestDeps {
 
 // ─── Defaults ──────────────────────────────────────────────────────
 
-const DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
+// Matches `DEFAULT_HEALTH_TIMEOUT_MS` in `preview-runtime.ts` — bumped
+// from 30s → 120s so the Test panel doesn't time out on the same
+// long-boot dev servers (Vite + heavy plugin chain, Next.js cold builds,
+// Expo Metro warmups) that the real per-session preview tolerates. The
+// async-spawn-error short-circuit below means ENOENT / EACCES still fail
+// fast, so the bump only affects genuinely-slow boots, not config errors.
+const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
 /** `<cwd>/client` matches `DEFAULT_PREVIEW_CWD` in preview-runtime.ts. */
 const DEFAULT_PREVIEW_CWD = 'client';
@@ -132,6 +155,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
       ports,
       durationMs: clock.nowMs() - start,
       error: 'Preview is not enabled in project settings — save the config with enable on first.',
+      logTail: [],
     };
   }
   const cwd = deps.project.cwd;
@@ -141,6 +165,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
       ports,
       durationMs: clock.nowMs() - start,
       error: 'Project has no cwd configured.',
+      logTail: [],
     };
   }
 
@@ -164,6 +189,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
       ports,
       durationMs: clock.nowMs() - start,
       error: `Port allocation failed: ${errorMessage(err)}`,
+      logTail: [],
     };
   }
   ports.allocated = port;
@@ -195,6 +221,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
       ports,
       durationMs: clock.nowMs() - start,
       error: `spawn failed: ${spawnError ? errorMessage(spawnError) : 'unknown spawn error'}`,
+      logTail: [],
     };
   }
 
@@ -232,7 +259,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
     while (clock.nowMs() < deadline) {
       // If the child has already exited, polling further will never
       // succeed — short-circuit so the user sees a clear "spawn died"
-      // message instead of waiting the full 30 s.
+      // message instead of waiting the full 120s.
       if (prematureExit && !healthOk) {
         const { code, signal } = prematureExit;
         return {
@@ -243,6 +270,21 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
             `startScript exited during startup (code=${code} signal=${signal ?? ''}). ` +
             (asyncSpawnError ? `Spawn error: ${asyncSpawnError}. ` : '') +
             (tail.length > 0 ? `Log tail: ${tail.slice(0, 10).join(' | ')}` : ''),
+          logTail: [...tail],
+        };
+      }
+      // Async spawn errors (e.g. ENOENT when `sh` can't be located, or
+      // EACCES on the cwd) typically fire 'error' without a matching
+      // 'exit'. Bail immediately on the first observed async error so
+      // misconfigured cwds and missing binaries fail in milliseconds
+      // instead of after the 120s health-check window.
+      if (asyncSpawnError && !healthOk) {
+        return {
+          ok: false,
+          ports,
+          durationMs: clock.nowMs() - start,
+          error: `Spawn error: ${asyncSpawnError}.`,
+          logTail: [...tail],
         };
       }
       try {
@@ -269,6 +311,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
         ports,
         durationMs: clock.nowMs() - start,
         error: `${reason}.${detail}${tailHint}`,
+        logTail: [...tail],
       };
     }
 
@@ -289,6 +332,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
         ports,
         durationMs: clock.nowMs() - start,
         error: `Health check passed but screenshot failed: ${errorMessage(err)}`,
+        logTail: [...tail],
       };
     }
 
@@ -298,6 +342,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
       ports,
       durationMs: clock.nowMs() - start,
       screenshotUrl,
+      logTail: [...tail],
     };
   } finally {
     // Teardown — always. Send SIGTERM to the process group, wait up to

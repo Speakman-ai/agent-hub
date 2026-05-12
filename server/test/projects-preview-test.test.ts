@@ -38,7 +38,7 @@ describe('POST /api/projects/:projectId/preview/test', () => {
     expect(body.ports.allocated).toBeNull();
   });
 
-  it('returns the documented shape: { ok, ports, durationMs, error? }', async () => {
+  it('returns the documented shape: { ok, ports, durationMs, logTail, error? }', async () => {
     const project = await createProject({ cwd: '/tmp' });
     const projectId = project.id as string;
 
@@ -47,7 +47,13 @@ describe('POST /api/projects/:projectId/preview/test', () => {
     expect(body).toHaveProperty('ok');
     expect(body).toHaveProperty('ports');
     expect(body).toHaveProperty('durationMs');
+    expect(body).toHaveProperty('logTail');
     expect(typeof body.durationMs).toBe('number');
     expect(body.ports).toEqual({ allocated: null });
+    // Always an array — empty for the not-enabled validation branch
+    // (no spawn happened) but present so the UI can render without an
+    // existence check.
+    expect(Array.isArray(body.logTail)).toBe(true);
+    expect(body.logTail).toEqual([]);
   });
 });
