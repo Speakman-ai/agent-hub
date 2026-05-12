@@ -827,6 +827,101 @@ describe('runAutonomousLoop — concurrency', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  runAutonomousLoop — integration branch serialization
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('runAutonomousLoop — integration branch serialization', () => {
+  it('forces serial dispatch (effective max=1) when epic has non-default pr_base_branch', async () => {
+    // Three eligible cards, configured max_concurrent=3, but the epic targets
+    // an operator-set integration branch — the override must collapse the
+    // effective cap to 1 so cards land serially onto the umbrella.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 3,
+      pr_base_branch: 'feature/integration',
+    } as unknown as KanbanEpicRow;
+    const c1 = makeCard({ id: 'card-a', position: 0, title: 'A' });
+    const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
+    const c3 = makeCard({ id: 'card-c', position: 2, title: 'C' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2, c3]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      // No cards active yet — without the override, three cards would dispatch.
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2, c3]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(1);
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    // Stored configured cap should remain untouched (override is runtime-only).
+    expect(epic.autonomous_max_concurrent).toBe(3);
+  });
+
+  it('respects configured max_concurrent=3 when pr_base_branch is null', async () => {
+    // Identical setup minus the integration-branch flag — all three cards
+    // dispatch as normal, proving the override doesn't leak to other epics.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 3,
+      pr_base_branch: null,
+    } as unknown as KanbanEpicRow;
+    const c1 = makeCard({ id: 'card-a', position: 0, title: 'A' });
+    const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
+    const c3 = makeCard({ id: 'card-c', position: 2, title: 'C' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2, c3]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2, c3]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledTimes(3);
+    expect(deps.handleChat).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats empty/whitespace pr_base_branch as not-an-integration-branch', async () => {
+    // Defense-in-depth: whitespace-only `pr_base_branch` should not trip the
+    // override and collapse a configured cap of 3 down to 1.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 3,
+      pr_base_branch: '   ',
+    } as unknown as KanbanEpicRow;
+    const c1 = makeCard({ id: 'card-a', position: 0, title: 'A' });
+    const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
+    const c3 = makeCard({ id: 'card-c', position: 2, title: 'C' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2, c3]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2, c3]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  scheduleAutonomousEpic + tryAutonomousDispatch
 // ═══════════════════════════════════════════════════════════════════════════
 

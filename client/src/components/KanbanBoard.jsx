@@ -1067,8 +1067,20 @@ export default function KanbanBoard({
                           }
                           min={1}
                           max={5}
-                          className="w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
+                          disabled={!!epicForm.pr_base_branch?.trim()}
+                          className={`w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50 ${
+                            epicForm.pr_base_branch?.trim() ? 'opacity-50 cursor-not-allowed' : ''
+                          }`}
                         />
+                        {epicForm.pr_base_branch?.trim() ? (
+                          <p
+                            className="text-[10px] text-amber-400 mt-1 max-w-xs leading-snug"
+                            title="Integration branches require serial card landing — concurrent dispatch off a shared umbrella branch produces pairwise merge conflicts."
+                          >
+                            Effective max concurrent: <span className="font-mono">1</span>{' '}
+                            (integration branch enforces serial dispatch)
+                          </p>
+                        ) : null}
                       </div>
                       <div>
                         <label className="block text-xs text-gray-500 mb-0.5">Max iterations</label>
