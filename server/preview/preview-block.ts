@@ -72,7 +72,27 @@ export interface PreviewDetectionResult {
  * `agenthub_attachment` channel naming so the client's WS dispatch only
  * needs one new branch.
  */
-export type PreviewEventKind = 'preview' | 'preview_unavailable' | 'preview_failed';
+export type PreviewEventKind =
+  | 'preview'
+  | 'preview_unavailable'
+  | 'preview_failed'
+  /**
+   * Emitted (a) once immediately after `runtime.startPreview` returns
+   * with an empty `logTail`, then (b) periodically while the runtime is
+   * still polling its health check, each time carrying the latest
+   * captured stdout/stderr tail. Lets the UI render boot output live
+   * instead of waiting for `preview` / `preview_failed`.
+   */
+  | 'preview_starting'
+  /**
+   * Per-line log forwarding for a still-running preview process. Emitted
+   * by `PreviewRuntime` via its `notifyLog` seam when production wires it
+   * to the broadcast bus. Each event carries exactly one line so the
+   * client can append without de-duping. Producers must coalesce or
+   * drop on backpressure — the runtime fires once per stdout/stderr
+   * line and has no built-in throttling.
+   */
+  | 'preview_log';
 
 export interface PreviewBroadcastEvent {
   type: 'agenthub_preview';
@@ -113,11 +133,24 @@ export interface PreviewBroadcastEvent {
    */
   wizardUrl?: string;
 
-  // — `kind === 'preview_failed'` payload ——————
+  // — `kind === 'preview_failed' | 'preview_starting'` payload ——
   /** Short error message — surfaced in the failure card header. */
   error?: string;
-  /** First N stdout/stderr lines from the spawn — surfaced in <pre> for debugging. */
+  /**
+   * First N stdout/stderr lines from the spawn — surfaced in `<pre>`
+   * for debugging. Populated on both `preview_starting` (so the user
+   * can watch boot output in real time) and `preview_failed` (the
+   * snapshot at the moment the runtime gave up).
+   */
   logTail?: string[];
+
+  // — `kind === 'preview_log'` payload ————————————
+  /** Single stdout/stderr line from a running preview process. */
+  line?: string;
+  /** Which process inside the group emitted the line. */
+  processName?: string;
+  /** Which stream the line came from. */
+  stream?: 'stdout' | 'stderr';
 }
 
 /** Dependencies required to handle a parsed `<agenthub:preview>` block. */
@@ -158,14 +191,25 @@ export interface PreviewHandlerDeps {
   buildWizard?: (projectId: string) => { view: string; projectId: string };
   /**
    * How long to wait for the preview to flip to `ready` before giving
-   * up and surfacing `preview_failed`. Defaults to 30s — matches the
-   * runtime's own health-check budget.
+   * up and surfacing `preview_failed`. Defaults to 120s — matches the
+   * runtime's bumped health-check budget for cold worktrees that
+   * `npm install` on first boot.
    */
   readyTimeoutMs?: number;
   /** Polling cadence for the ready check. Defaults to 500ms. */
   readyPollIntervalMs?: number;
+  /**
+   * Minimum gap between successive `preview_starting` re-broadcasts
+   * during the ready-poll loop. Defaults to 2000ms so the pane gets a
+   * fresh `logTail` snapshot every couple of seconds without flooding
+   * the WS bus when the poll cadence is much tighter. Set to 0 (in
+   * tests) to fire on every poll.
+   */
+  startingRebroadcastIntervalMs?: number;
   /** Test seam — milliseconds → resolved Promise. Defaults to setTimeout. */
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam — clock used to gate the rebroadcast interval. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 // ─── Parser ─────────────────────────────────────────────────────────────
@@ -257,8 +301,9 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
 
 // ─── Handler ────────────────────────────────────────────────────────────
 
-const DEFAULT_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_POLL_INTERVAL_MS = 500;
+const DEFAULT_STARTING_REBROADCAST_INTERVAL_MS = 2_000;
 
 /**
  * Default wizard URL builder. Emitted as the legacy `wizardUrl` field on
@@ -315,7 +360,9 @@ export async function handlePreviewBlock(
     buildWizard = defaultBuildWizard,
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
     readyPollIntervalMs = DEFAULT_READY_POLL_INTERVAL_MS,
+    startingRebroadcastIntervalMs = DEFAULT_STARTING_REBROADCAST_INTERVAL_MS,
     sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    now = () => Date.now(),
   } = deps;
 
   // ── Gate 1: project has a preview config? ───────────────────────────
@@ -377,11 +424,41 @@ export async function handlePreviewBlock(
     return;
   }
 
+  // ── Broadcast initial `starting` so the pane swaps from the empty
+  //    placeholder to the boot-log surface immediately. The runtime is
+  //    already polling its health-check budget; this event tells the
+  //    UI "we're alive, here's an (empty) log to start filling in".
+  const emitStarting = (): void => {
+    broadcast({
+      type: 'agenthub_preview',
+      kind: 'preview_starting',
+      sessionId,
+      previewId,
+      target: task.target,
+      route: task.route,
+      agentReason: task.reason,
+      previewUrl: url,
+      port,
+      logTail: runtime.getLogTail(previewId),
+    } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
+  };
+  emitStarting();
+
   // ── Wait for ready ──────────────────────────────────────────────────
-  const deadline = Date.now() + readyTimeoutMs;
+  // While we wait, periodically rebroadcast `preview_starting` with the
+  // current logTail so the user sees boot output as it arrives — not
+  // just on terminal success/failure. Throttled by
+  // `startingRebroadcastIntervalMs` so a 500ms poll cadence doesn't
+  // saturate the socket.
+  const deadline = now() + readyTimeoutMs;
+  let lastRebroadcastAt = now();
   let row = runtime.getById(previewId);
-  while (row && row.status === 'starting' && Date.now() < deadline) {
+  while (row && row.status === 'starting' && now() < deadline) {
     await sleep(readyPollIntervalMs);
+    if (now() - lastRebroadcastAt >= startingRebroadcastIntervalMs) {
+      lastRebroadcastAt = now();
+      emitStarting();
+    }
     row = runtime.getById(previewId);
   }
 

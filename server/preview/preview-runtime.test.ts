@@ -261,6 +261,111 @@ describe('PreviewRuntime — startPreview', () => {
     expect(row!.status).toBe('ready');
   });
 
+  it('fans stdout/stderr lines through `notifyLog` so the UI can stream boot output live', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const logged: Array<{
+      sessionId: string;
+      groupId: string;
+      processName: string;
+      line: string;
+      stream: 'stdout' | 'stderr';
+    }> = [];
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000, logTailLines: 5 },
+      notifyLog: (info) => logged.push(info),
+    });
+
+    const { previewId } = await runtime.startPreview('sess-stream', makeProject(), '/wt');
+    const child = harness.spawned[0];
+    // Emit multiple newline-separated chunks across both streams.
+    child.emitData('stdout', 'vite starting…\nlocal:  http://localhost:5173\n');
+    child.emitData('stderr', 'warning: dep optimised\n');
+
+    // Synchronous handler — by the next microtask the callback should have
+    // observed every line.
+    await flushMicrotasks();
+
+    expect(logged.map((l) => l.line)).toEqual([
+      'vite starting…',
+      'local:  http://localhost:5173',
+      'warning: dep optimised',
+    ]);
+    expect(logged[0].stream).toBe('stdout');
+    expect(logged[2].stream).toBe('stderr');
+    expect(logged[0].sessionId).toBe('sess-stream');
+    expect(logged[0].groupId).toBe(previewId);
+    expect(logged[0].processName).toBe('app');
+  });
+
+  it('still fires `notifyLog` for late lines after the in-memory tail cap is hit', async () => {
+    // logTailLines is intentionally small (3). Lines beyond the cap stop
+    // accumulating in `tail` (used for failure snapshots) but must still
+    // flow through `notifyLog` so a streaming UI consumer doesn't go dark.
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const logged: string[] = [];
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000, logTailLines: 3 },
+      notifyLog: (info) => logged.push(info.line),
+    });
+
+    const { previewId } = await runtime.startPreview('sess-cap', makeProject(), '/wt');
+    const child = harness.spawned[0];
+    for (let i = 0; i < 6; i++) child.emitData('stdout', `line ${i}\n`);
+    await flushMicrotasks();
+
+    // notifyLog saw every line; tail (capped) saw only the first three.
+    expect(logged).toEqual(['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5']);
+    expect(runtime.getLogTail(previewId)).toEqual(['line 0', 'line 1', 'line 2']);
+  });
+
+  it('catches a throwing notifyLog so a broken broadcaster cannot crash the spawn', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const warnings: string[] = [];
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000 },
+      logger: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      notifyLog: () => {
+        throw new Error('broadcaster offline');
+      },
+    });
+
+    await runtime.startPreview('sess-throw', makeProject(), '/wt');
+    const child = harness.spawned[0];
+    child.emitData('stdout', 'a line\n');
+    await flushMicrotasks();
+
+    // Spawn survived; the failure was logged so operators can diagnose it.
+    expect(harness.spawned[0].killed).toBe(false);
+    expect(warnings.some((w) => w.includes('notifyLog threw'))).toBe(true);
+  });
+
   it('flips status to `failed` and surfaces ≤50 log lines when health check times out', async () => {
     const db = freshDb();
     const harness = makeSpawn();

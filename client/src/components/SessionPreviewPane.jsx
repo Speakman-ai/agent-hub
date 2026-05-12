@@ -380,14 +380,30 @@ export default function SessionPreviewPane({
         )}
         {state.status === 'starting' && (
           <div
-            className="flex flex-col items-center justify-center h-full p-6 text-center text-sky-200"
+            className="flex flex-col h-full text-sky-200"
             data-testid="session-preview-pane-starting"
           >
-            <Loader2 size={24} className="animate-spin mb-2" />
-            <p className="text-sm">Booting preview…</p>
-            {state.agentReason && (
-              <p className="mt-2 text-xs italic text-gray-400">{state.agentReason}</p>
-            )}
+            <div className="flex flex-col items-center justify-center p-4 border-b border-gray-800">
+              <Loader2 size={20} className="animate-spin mb-1.5" />
+              <p className="text-sm">Booting preview…</p>
+              {state.agentReason && (
+                <p className="mt-1 text-xs italic text-gray-400 text-center">{state.agentReason}</p>
+              )}
+              {typeof state.port === 'number' && (
+                <p className="mt-1 text-[10px] text-gray-500 font-mono">port {state.port}</p>
+              )}
+            </div>
+            {/* Live boot log — streams stdout/stderr from the dev server so
+                the user can see *where* the boot is stalling instead of
+                waiting for a terminal preview/preview_failed event. */}
+            <pre
+              data-testid="session-preview-pane-starting-log"
+              className="flex-1 min-h-0 overflow-auto bg-black/40 px-3 py-2 font-mono text-[11px] text-gray-300 whitespace-pre-wrap"
+            >
+              {Array.isArray(state.logTail) && state.logTail.length > 0
+                ? state.logTail.join('\n')
+                : '(waiting for first log line…)'}
+            </pre>
           </div>
         )}
         {state.status === 'failed' && (

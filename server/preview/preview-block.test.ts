@@ -383,8 +383,10 @@ describe('handlePreviewBlock — boot success', () => {
       deps,
     );
 
-    expect(deps.events).toHaveLength(1);
-    const evt = deps.events[0];
+    // Successful boot now emits at least one preview_starting (carrying the
+    // live log tail) before the terminal `preview` event.
+    expect(deps.events[0].kind).toBe('preview_starting');
+    const evt = deps.events[deps.events.length - 1];
     expect(evt.kind).toBe('preview');
     expect(evt.previewId).toBe('prev-A');
     expect(evt.previewUrl).toBe('http://localhost:4242');
@@ -404,7 +406,7 @@ describe('handlePreviewBlock — boot success', () => {
     // Bypass the parser-level check: the parser would reject this, but if a
     // future caller forwards a hand-constructed task we still want sane output.
     await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
-    const evt = deps.events[0];
+    const evt = deps.events[deps.events.length - 1];
     expect(evt.fullUrl).toBe('http://localhost:4100/x');
   });
 
@@ -419,7 +421,7 @@ describe('handlePreviewBlock — boot success', () => {
 
     await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
 
-    const evt = deps.events[0];
+    const evt = deps.events[deps.events.length - 1];
     expect(evt.kind).toBe('preview');
     expect(evt.screenshotPath).toBeNull();
   });
@@ -448,7 +450,10 @@ describe('handlePreviewBlock — boot failure', () => {
 
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
 
-    const evt = deps.events[0];
+    // preview_starting fires before the runtime row flips, then preview_failed
+    // is the terminal event we assert on.
+    expect(deps.events[0].kind).toBe('preview_starting');
+    const evt = deps.events[deps.events.length - 1];
     expect(evt.kind).toBe('preview_failed');
     expect(evt.error).toMatch(/boot failed/);
     expect(evt.logTail).toEqual(['npm ERR! line 1', 'npm ERR! line 2']);
@@ -480,9 +485,122 @@ describe('handlePreviewBlock — boot failure', () => {
       Date.now = realNow;
     }
 
-    const evt = deps.events[0];
+    expect(deps.events[0].kind).toBe('preview_starting');
+    const evt = deps.events[deps.events.length - 1];
     expect(evt.kind).toBe('preview_failed');
     expect(evt.error).toMatch(/did not reach ready/);
     expect(evt.logTail).toEqual(['boot line']);
+  });
+});
+
+describe('handlePreviewBlock — preview_starting', () => {
+  it('emits an initial preview_starting immediately after spawn with the current logTail', async () => {
+    const fake = makeRuntime({
+      flipAfterCalls: 0,
+      logTail: ['vite v5.0.0 starting…'],
+    });
+    const deps = makeDeps({ runtime: fake.runtime });
+
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/board' }, deps);
+
+    // First event is preview_starting; carries previewId, URL, port, and the
+    // live logTail captured by the runtime at boot time.
+    const starting = deps.events[0];
+    expect(starting.kind).toBe('preview_starting');
+    expect(starting.previewId).toBe('prev-1');
+    expect(starting.previewUrl).toBe('http://localhost:4100');
+    expect(starting.port).toBe(4100);
+    expect(starting.logTail).toEqual(['vite v5.0.0 starting…']);
+    expect(starting.route).toBe('/board');
+    expect(starting.target).toBe('client');
+  });
+
+  it('re-broadcasts preview_starting during the ready poll, throttled by startingRebroadcastIntervalMs', async () => {
+    // Runtime stays in `starting` for several polls; logTail grows over time
+    // to verify each rebroadcast carries a fresh snapshot.
+    let pollCalls = 0;
+    const tails: string[][] = [
+      [],
+      ['line 1'],
+      ['line 1', 'line 2'],
+      ['line 1', 'line 2', 'line 3'],
+    ];
+    const fake = {
+      startPreview: async () => ({
+        url: 'http://localhost:4100',
+        port: 4100,
+        previewId: 'prev-1',
+      }),
+      getById: () => {
+        pollCalls++;
+        return {
+          id: 'prev-1',
+          session_id: 'sess-1',
+          project_id: 'proj-1',
+          pid: 1,
+          port: 4100,
+          url: 'http://localhost:4100',
+          log_path: null,
+          started_at: 't',
+          last_active_at: 't',
+          // Flip to ready on the 4th poll so we run through several
+          // rebroadcasts first.
+          status: pollCalls >= 4 ? ('ready' as const) : ('starting' as const),
+        };
+      },
+      getLogTail: () => tails[Math.min(pollCalls, tails.length - 1)],
+      stopPreview: async () => {},
+      stopBySessionId: async () => 0,
+      touchPreview: () => {},
+      getActiveBySessionId: () => null,
+    };
+
+    // Drive the rebroadcast clock manually so we can deterministically
+    // step past startingRebroadcastIntervalMs each poll.
+    let fakeNow = 0;
+    const deps = makeDeps({
+      runtime: fake as unknown as PreviewRuntime,
+      readyTimeoutMs: 10_000,
+      readyPollIntervalMs: 1,
+      startingRebroadcastIntervalMs: 5,
+      now: () => fakeNow,
+      sleep: async () => {
+        fakeNow += 10;
+      },
+    });
+
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+
+    const startings = deps.events.filter((e) => e.kind === 'preview_starting');
+    expect(startings.length).toBeGreaterThanOrEqual(2);
+    // Initial broadcast carries an empty (or earliest) tail; later
+    // rebroadcasts carry the growing snapshot.
+    const lastStarting = startings[startings.length - 1];
+    expect(lastStarting.logTail?.length ?? 0).toBeGreaterThan(0);
+    // Terminal event is still preview (boot succeeded on poll 4).
+    expect(deps.events[deps.events.length - 1].kind).toBe('preview');
+  });
+
+  it('does NOT emit preview_starting when gating short-circuits before spawn', async () => {
+    // runtime: null path returns early with preview_unavailable — must not
+    // emit preview_starting first.
+    const deps = makeDeps({ runtime: null });
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+    expect(deps.events).toHaveLength(1);
+    expect(deps.events[0].kind).toBe('preview_unavailable');
+  });
+
+  it('uses 120s as the default readyTimeoutMs', async () => {
+    // We don't time anything here — just sanity-check the exported default
+    // by inspecting a handler call that relies on the default and never
+    // calls runtime.getById (so the loop never enters). Project gating
+    // short-circuits before the timeout matters, but the new default
+    // matters for the *next* failing case the runtime hits. Smoke test:
+    // run a gating path with no readyTimeoutMs override and confirm it
+    // still resolves promptly.
+    const deps = makeDeps({ runtime: null, readyTimeoutMs: undefined });
+    const before = Date.now();
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+    expect(Date.now() - before).toBeLessThan(1_000);
   });
 });

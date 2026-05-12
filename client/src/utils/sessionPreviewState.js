@@ -62,8 +62,10 @@ export function derivePaneState(event) {
       agentReason: agentReason || '',
     };
   }
-  // Optional `starting` shape — handy if a future broadcast adds a
-  // pre-ready event; not currently emitted by the server.
+  // `preview_starting` — emitted by handlePreviewBlock once after spawn
+  // and then periodically while the runtime is still booting, each time
+  // carrying the current stdout/stderr tail so the pane can render boot
+  // output in real time instead of only on success/failure.
   if (kind === 'preview_starting') {
     return {
       status: 'starting',
@@ -71,6 +73,9 @@ export function derivePaneState(event) {
       target: target || null,
       route: route || '/',
       agentReason: agentReason || '',
+      logTail: Array.isArray(event.logTail) ? event.logTail : [],
+      previewUrl: event.previewUrl || '',
+      port: typeof event.port === 'number' ? event.port : null,
     };
   }
   return { status: 'idle' };

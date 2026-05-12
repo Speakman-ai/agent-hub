@@ -1449,6 +1449,16 @@ export interface PrEnvPreviewConfig {
    */
   idleTTL?: number;
   /**
+   * Max ms the runtime should wait for a process's `healthPath` to
+   * return 2xx before flipping the process to `failed`. Defaults to
+   * 120000 (2 min) so a cold worktree that runs `npm install` on its
+   * first boot has room. Bounded 5000–600000 (5 s – 10 min) at config
+   * save time. Currently a documented hook — the runtime accepts the
+   * value via its construction `config`; per-project plumbing into the
+   * production wiring is a follow-up.
+   */
+  healthTimeoutMs?: number;
+  /**
    * Optional multi-process preview graph. When non-empty, `startScript`
    * (above) is ignored and the runtime spawns each entry in topological
    * order based on `dependsOn`. Used for "fullstack" repos that need a
