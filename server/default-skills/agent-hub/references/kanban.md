@@ -25,13 +25,28 @@ Always pass `session_id: $AGENT_HUB_SESSION_ID` when the card belongs to
 your current work — the sidebar auto-renames to the card title and
 `<agenthub:close-card>` becomes available.
 
+**Do NOT self-stamp `assignee` on create.** Leave it `null` (omit the
+field) and let one of the two legitimate auto-assign paths write the
+correct display name:
+
+- `POST /board/cards/:cardId/assign` — used by the UI's Assignee
+  dropdown; writes `agent.name`.
+- `runAutonomousLoop` (autonomous dispatch) — only picks up cards
+  where `assignee IS NULL OR assignee = ''`; writes `agent.name`.
+
+Pre-stamping `assignee` reserves the card out of the autonomous pool,
+which is almost certainly not what you want for a card you just filed.
+The server now normalizes any value matching a known `agent.id` →
+`agent.name` on write (so a stray `"assignee": "agent-hub"` becomes
+`"Hub Lead Dev"`), but it cannot reverse the pickup-blocking side
+effect — leave the field empty and let the dispatcher take over.
+
 ```bash
 scripts/board.sh create '{
   "title": "Short descriptive title",
   "description": "Details about the task",
   "columnId": "<column-uuid>",
   "priority": "high",
-  "assignee": "your-agent-name",
   "labels": "bug,backend",
   "session_id": "'"$AGENT_HUB_SESSION_ID"'"
 }'
