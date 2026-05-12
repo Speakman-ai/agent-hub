@@ -1850,6 +1850,21 @@ export interface ChatMessage {
    * `server/bug-report-reroute.ts`.
    */
   _fromBoardAssign?: boolean;
+  /**
+   * Set to true when this message was dispatched by the autonomous-mode
+   * loop in `server/autonomous.ts`. Used in `chat.ts` to inform the
+   * GitHub spawn-credential policy (see `selectGithubSpawnToken`):
+   * autonomous-dispatch sessions are created by the system (no human
+   * caller in scope) and attributed to the org owner, so injecting the
+   * org owner's per-user OAuth token would let the spawned agent post
+   * formal PR reviews via `gh api .../reviews -X POST` under the
+   * human's identity — bypassing the `AGENT_HUB_REVIEWER_LOCK` wrapper
+   * gate. This sentinel forces the per-user fallback path to return
+   * `null` so autonomous-dispatch spawns land with no `GH_TOKEN`. The
+   * server-side auto-PR push (`auto-git.ts`) is unaffected because it
+   * runs in the Hub process, not in the spawned agent's env.
+   */
+  _fromAutonomousDispatch?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
   /**
    * Additional environment variables to inject into the spawned CLI process.

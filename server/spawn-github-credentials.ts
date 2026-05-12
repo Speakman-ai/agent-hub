@@ -238,9 +238,24 @@ export function applyReviewerSpawnIsolation(
  *     credential at all — `POST /api/pr/review` (App-mediated, handled
  *     entirely server-side) is the correct submission path.
  *
- *   - **Non-reviewer role**: prefer the per-user OAuth/PAT token so
- *     `gh push` / `git push` authenticate as the human at the keyboard.
- *     Reviewer-specific isolation does not apply here.
+ *   - **Non-reviewer role, interactive origin**: prefer the per-user
+ *     OAuth/PAT token so `gh push` / `git push` authenticate as the
+ *     human at the keyboard. Reviewer-specific isolation does not
+ *     apply here.
+ *
+ *   - **Non-reviewer role, autonomous-dispatch origin
+ *     (`autonomousOrigin: true`)**: return `null` regardless of the
+ *     resolved per-user token. Autonomous-dispatch sessions are
+ *     created by the system with no human caller in scope and are
+ *     attributed to the org owner; injecting the owner's OAuth token
+ *     would let the spawned agent post formal PR reviews via
+ *     `gh api repos/.../pulls/<n>/reviews -X POST` under the human's
+ *     identity — bypassing the `gh-pr.sh` wrapper guard
+ *     (`AGENT_HUB_REVIEWER_LOCK`) that only catches `gh pr review`.
+ *     Stripping the token entirely is the closure for that bypass.
+ *     The server-side auto-PR push runs in `auto-git.ts` (in the Hub
+ *     process), not in the spawned agent's env, so PR creation is
+ *     unaffected.
  *
  * Returns the resolved token string (to feed into
  * `applyGithubSpawnCredentials`) or `null` if the spawn should remain
@@ -250,9 +265,23 @@ export function selectGithubSpawnToken(opts: {
   role: string | undefined;
   botGithubToken: string | null | undefined;
   userGhToken: string | null | undefined;
+  /**
+   * True when the spawn was triggered by the autonomous-mode dispatcher
+   * (see `server/autonomous.ts` → `_fromAutonomousDispatch` sentinel on
+   * `ChatMessage`). Defaults to `false` for interactive callers. Has no
+   * effect on the reviewer branch — reviewer spawns are already gated
+   * to the bot token and never see the per-user fallback.
+   */
+  autonomousOrigin?: boolean;
 }): string | null {
   if (opts.role === 'reviewer') {
     return opts.botGithubToken ? opts.botGithubToken : null;
+  }
+  // Autonomous-dispatch sessions: strip the per-user fallback so the
+  // session-owning org-owner's OAuth token never lands in the spawn env.
+  // See doc comment above for the wrapper-bypass rationale.
+  if (opts.autonomousOrigin === true) {
+    return null;
   }
   return opts.userGhToken ? opts.userGhToken : null;
 }

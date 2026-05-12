@@ -2193,12 +2193,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //   - reviewer role → bot installation token only (no per-user
         //     fallback, which historically mis-attributed reviews to the
         //     org owner's human GitHub account).
-        //   - non-reviewer → per-user OAuth token so `gh`/`git push`
-        //     authenticate as the human at the keyboard.
+        //   - non-reviewer, interactive → per-user OAuth token so
+        //     `gh`/`git push` authenticate as the human at the keyboard.
+        //   - non-reviewer, autonomous-dispatch origin → no token at
+        //     all. Autonomous sessions are system-spawned and attributed
+        //     to the org owner; if we injected the owner's OAuth the
+        //     agent could call `gh api repos/.../reviews -X POST`
+        //     directly and post formal PR reviews under the human's
+        //     identity, bypassing the `gh-pr.sh` wrapper guard
+        //     (`AGENT_HUB_REVIEWER_LOCK`). The server-side auto-PR push
+        //     (`auto-git.ts`) runs out-of-process so PR creation is
+        //     unaffected. See card 395e044c-… for the wrapper-bypass
+        //     rationale.
         const tokenToInject = selectGithubSpawnToken({
           role: agent.role,
           botGithubToken: config.botGithubToken,
           userGhToken,
+          autonomousOrigin: msg._fromAutonomousDispatch === true,
         });
         // Universal reviewer-spawn isolation (option A in card
         // 1f9c8215-…). `applyReviewerSpawnIsolation` runs on every spawn

@@ -1496,3 +1496,76 @@ describe('runAutonomousLoop — DEV_HUB_API_KEY label gate', () => {
     expect(chatMsg.extraEnv?.DEV_HUB_API_KEY).toBeUndefined();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  runAutonomousLoop — _fromAutonomousDispatch sentinel
+//
+//  Card 395e044c-… (Identity leak: block direct `gh api /reviews` calls):
+//  every autonomous-dispatch chat message must carry
+//  `_fromAutonomousDispatch: true` so `chat.ts` can route through the
+//  token-stripping branch of `selectGithubSpawnToken`. Without the
+//  sentinel, the org-owner OAuth token leaks into the spawn env and the
+//  agent can post formal PR reviews via `gh api repos/.../reviews -X POST`
+//  under the human's identity.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('runAutonomousLoop — _fromAutonomousDispatch sentinel', () => {
+  function makeMinimalSetup(card: KanbanCardRow) {
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [{ id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' }],
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+    return deps;
+  }
+
+  it('handleChat called with _fromAutonomousDispatch=true', async () => {
+    const card = makeCard({ id: 'c-1', labels: 'infra' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg._fromAutonomousDispatch).toBe(true);
+  });
+
+  it('sentinel is present even when no opt-in label triggers DEV_HUB_API_KEY (the two paths are orthogonal)', async () => {
+    // Regression guard: the dev-hub label gate uses the `extraEnv`
+    // spread; the autonomous sentinel must NOT live inside `extraEnv`
+    // (the allowlist filter in `extra-env-allowlist.ts` would drop it).
+    // It belongs at the top level of the ChatMessage so chat.ts can
+    // read `msg._fromAutonomousDispatch` directly.
+    const card = makeCard({ id: 'c-plain', labels: 'infra,backend' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg._fromAutonomousDispatch).toBe(true);
+    expect(chatMsg.extraEnv).toBeUndefined();
+  });
+
+  it('sentinel coexists with extraEnv for opt-in cross-hub:dev cards', async () => {
+    mockGetDevHubApiKeyFn.mockResolvedValue('ahub_mock_dev_key');
+    const card = makeCard({ id: 'c-xhub', labels: 'cross-hub:dev,infra' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg._fromAutonomousDispatch).toBe(true);
+    expect(chatMsg.extraEnv?.DEV_HUB_API_KEY).toBe('ahub_mock_dev_key');
+  });
+});

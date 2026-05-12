@@ -366,6 +366,94 @@ describe('selectGithubSpawnToken — reviewer vs. non-reviewer policy', () => {
       }),
     ).toBe('gho_owner_oauth');
   });
+
+  // ── Autonomous-dispatch origin branch ─────────────────────────────
+  //
+  // Card 395e044c-… (Identity leak: block direct `gh api /reviews`
+  // calls): the `gh-pr.sh _reviewer_locked` wrapper guard catches
+  // `gh pr review`, but an agent can still post a formal PR review by
+  // calling `gh api repos/.../pulls/<n>/reviews -X POST` — `gh api`
+  // bypasses the wrapper entirely. Autonomous-dispatch sessions are
+  // attributed to the org owner, so under the old policy the owner's
+  // per-user OAuth landed in the spawn env and that direct-API call
+  // would succeed under the human's identity.
+  //
+  // The fix strips the per-user fallback when `autonomousOrigin` is
+  // true. Interactive (human-driven) sessions are unaffected.
+
+  it('non-reviewer + autonomousOrigin=true + owner has OAuth → returns NULL (strips token)', () => {
+    expect(
+      selectGithubSpawnToken({
+        role: 'lead',
+        botGithubToken: 'bot_xxx',
+        userGhToken: 'gho_owner_oauth',
+        autonomousOrigin: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('non-reviewer + autonomousOrigin=true + owner has PAT → returns NULL', () => {
+    expect(
+      selectGithubSpawnToken({
+        role: 'author',
+        botGithubToken: null,
+        userGhToken: 'ghp_owner_pat',
+        autonomousOrigin: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('non-reviewer + autonomousOrigin=false → falls through to per-user OAuth (interactive path unchanged)', () => {
+    expect(
+      selectGithubSpawnToken({
+        role: 'lead',
+        botGithubToken: 'bot_xxx',
+        userGhToken: 'gho_owner_oauth',
+        autonomousOrigin: false,
+      }),
+    ).toBe('gho_owner_oauth');
+  });
+
+  it('non-reviewer + autonomousOrigin omitted → defaults to interactive (per-user OAuth)', () => {
+    // Explicit guard against a future refactor that flips the default
+    // to "autonomous". Omitting the flag MUST behave like an
+    // interactive caller; only autonomous.ts opts in.
+    expect(
+      selectGithubSpawnToken({
+        role: 'lead',
+        botGithubToken: 'bot_xxx',
+        userGhToken: 'gho_owner_oauth',
+      }),
+    ).toBe('gho_owner_oauth');
+  });
+
+  it('reviewer + autonomousOrigin=true + bot token configured → STILL returns bot token (reviewer branch unaffected)', () => {
+    // The autonomous-origin branch is positioned AFTER the reviewer
+    // check, so a reviewer spawn dispatched from autonomous mode still
+    // gets the bot token. Reviewer role already excludes the per-user
+    // fallback, so the autonomous-origin gate is irrelevant here — but
+    // this test pins the ordering so a future reshuffle can't strip
+    // bot creds from reviewer-role autonomous spawns.
+    expect(
+      selectGithubSpawnToken({
+        role: 'reviewer',
+        botGithubToken: 'bot_xxx',
+        userGhToken: 'gho_owner_oauth',
+        autonomousOrigin: true,
+      }),
+    ).toBe('bot_xxx');
+  });
+
+  it('reviewer + autonomousOrigin=true + NO bot token → returns NULL (no fallback through autonomous branch)', () => {
+    expect(
+      selectGithubSpawnToken({
+        role: 'reviewer',
+        botGithubToken: null,
+        userGhToken: 'gho_owner_oauth',
+        autonomousOrigin: true,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('reviewer spawn env contract (end-to-end composition)', () => {
@@ -548,6 +636,64 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GIT_CONFIG_COUNT).toBeUndefined();
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+
+  it('non-reviewer + autonomousOrigin=true + owner OAuth + inherited GH_TOKEN → spawn env has NO GitHub credential (autonomous dispatch lockdown)', () => {
+    // Card 395e044c-… end-to-end composition: an autonomous-dispatch
+    // session must not carry the org owner's OAuth token into the
+    // spawn, even when both (a) the owner has stored credentials and
+    // (b) the host process has an inherited GH_TOKEN. The combined
+    // effect of `applyReviewerSpawnIsolation` (scrub inherited) +
+    // `selectGithubSpawnToken({autonomousOrigin: true})` returning
+    // null + `applyGithubSpawnCredentials(null)` being a no-op leaves
+    // the spawn env with NO GH_TOKEN, NO GITHUB_TOKEN, and NO git
+    // credential helper. The lock sentinel and GH_CONFIG_DIR are
+    // still set so the wrapper guard still fires for `gh pr review`.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {
+      GH_TOKEN: 'ghp_inherited_operator_token',
+      GITHUB_TOKEN: 'ghp_inherited_operator_token',
+    };
+    const tokenToInject = selectGithubSpawnToken({
+      role: 'lead',
+      botGithubToken: 'bot_installation_token',
+      userGhToken: 'gho_owner_oauth',
+      autonomousOrigin: true,
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyGithubSpawnCredentials(env, tokenToInject);
+
+    expect(tokenToInject).toBeNull();
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+
+  it('non-reviewer + autonomousOrigin=false + owner OAuth → user token still wired (interactive path unchanged)', () => {
+    // Regression guard: the autonomous-dispatch lockdown must not
+    // affect interactive (human-driven) sessions. The same role +
+    // owner-OAuth combination with autonomousOrigin=false must inject
+    // the user token exactly as before option-A's universal isolation
+    // contract demands.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {};
+    const tokenToInject = selectGithubSpawnToken({
+      role: 'lead',
+      botGithubToken: 'bot_installation_token',
+      userGhToken: 'gho_owner_oauth',
+      autonomousOrigin: false,
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyGithubSpawnCredentials(env, tokenToInject);
+
+    expect(tokenToInject).toBe('gho_owner_oauth');
+    expect(env.GH_TOKEN).toBe('gho_owner_oauth');
+    expect(env.GITHUB_TOKEN).toBe('gho_owner_oauth');
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
   });
 
   it.each([

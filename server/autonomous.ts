@@ -777,6 +777,14 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
         sessionId,
         content: contextLines.join('\n'),
         hookSpecificOutput: { sessionTitle: card.title },
+        // Mark this chat as an autonomous-dispatch origin so the spawn
+        // credential policy in `chat.ts` (`selectGithubSpawnToken`)
+        // strips the org owner's per-user OAuth token from the env.
+        // Without this, an agent in an autonomous-dispatch session can
+        // bypass the `gh-pr.sh` wrapper guard by calling
+        // `gh api repos/.../reviews -X POST` directly and posting a
+        // formal PR review under the human-owner identity.
+        _fromAutonomousDispatch: true,
         ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch(rollbackCard);
 
