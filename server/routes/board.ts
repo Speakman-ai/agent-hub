@@ -66,6 +66,42 @@ function isIntakeOwnedSession(
   return lookup?.agent.role === 'intake';
 }
 
+/**
+ * Normalize an incoming `assignee` value so the column always stores the
+ * agent's **display name** (`agent.name`), never its id slug.
+ *
+ * Background: the `assignee` column is free-text. Both legitimate
+ * auto-assign paths write `agent.name` ("Hub Lead Dev"):
+ *
+ *   - `POST /board/cards/:cardId/assign` (this file)
+ *   - `runAutonomousLoop` (server/autonomous.ts)
+ *
+ * But the create/update endpoints used to accept whatever string the
+ * caller sent. Agents using `scripts/board.sh create` often pasted their
+ * own id slug ("agent-hub") into `assignee`, which (a) reads inconsistent
+ * in the UI and (b) reserves the card out of the autonomous-dispatch
+ * pool because the loop filters on `assignee IS NULL OR assignee = ''`.
+ *
+ * Behavior:
+ *   - `null` / `undefined` / empty / whitespace → `null` (auto-clear).
+ *   - Value matches a known `agent.id` → returns that agent's `name`.
+ *   - Anything else (human name, "system", an unknown agent's display
+ *     name) → passes through trimmed, unchanged. We do not 400 on
+ *     unknown strings because the column historically held human-typed
+ *     values too; only the id-as-display-name shape is wrong.
+ */
+function normalizeAssignee(
+  raw: string | null | undefined,
+  findAgent: (agentId: string) => AgentLookup | null,
+): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  const found = findAgent(trimmed);
+  if (found) return found.agent.name;
+  return trimmed;
+}
+
 export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
   let board = stmts.getKanbanBoard.get(projectId) as KanbanBoardRow | undefined;
   if (board) {
@@ -242,7 +278,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // dropdown and the autonomous dispatcher both rely on these being null
     // for a freshly-filed ticket.
     let effectiveSessionId: string | null = sessionId || null;
-    let effectiveAssignee: string | null = assignee || null;
+    // Normalize agent.id → agent.name; pass through human-typed names; null
+    // when empty/whitespace. See `normalizeAssignee` for the full rationale.
+    let effectiveAssignee: string | null = normalizeAssignee(assignee, findAgent);
     if (effectiveSessionId && isIntakeOwnedSession(stmts, findAgent, effectiveSessionId)) {
       console.log(
         `[Board] Stripping session_id/assignee on card create — session ${effectiveSessionId} belongs to an intake-role agent`,
@@ -337,7 +375,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // Only fires when the new value is non-null — explicit clears are
     // honored verbatim.
     let effectiveSessionId: string | null | undefined = sessionId;
-    let effectiveAssignee: string | null | undefined = assignee;
+    // Normalize agent.id → agent.name on update too, but only when the
+    // caller is explicitly setting `assignee`. If the key isn't present in
+    // the payload we leave the value untouched (no normalization sweep).
+    let effectiveAssignee: string | null | undefined = hasAssignee
+      ? normalizeAssignee(assignee, findAgent)
+      : assignee;
     if (hasSessionId && sessionId && isIntakeOwnedSession(stmts, findAgent, sessionId)) {
       console.log(
         `[Board] Stripping session_id/assignee on card update — session ${sessionId} belongs to an intake-role agent`,
