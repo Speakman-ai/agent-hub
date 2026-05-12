@@ -6,14 +6,7 @@
  * See `ChatMessage.extraEnv` in `server/types.ts`.
  */
 
-export const EXTRA_ENV_ALLOWLIST = new Set<string>([
-  'DEV_HUB_API_KEY',
-  // Preview setup wizard — injected by server/routes/preview-wizard.ts, never
-  // supplied by untrusted WebSocket callers.
-  'PREVIEW_WIZARD_PROJECT_ID',
-  'PREVIEW_WIZARD_CWD',
-  'AGENT_HUB_SKILL_DIR',
-]);
+export const EXTRA_ENV_ALLOWLIST = new Set<string>(['DEV_HUB_API_KEY']);
 
 /**
  * Merges allowlisted keys from `extraEnv` into `spawnEnv` in place.

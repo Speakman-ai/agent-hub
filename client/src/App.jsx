@@ -1665,18 +1665,6 @@ export default function App() {
           break;
         }
 
-        case 'preview_wizard_complete':
-          window.dispatchEvent(
-            new CustomEvent('agenthub:preview_wizard_complete', { detail: data }),
-          );
-          break;
-
-        case 'preview_wizard_started':
-          window.dispatchEvent(
-            new CustomEvent('agenthub:preview_wizard_started', { detail: data }),
-          );
-          break;
-
         case 'wiki_update':
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
           break;

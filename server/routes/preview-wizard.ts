@@ -165,11 +165,9 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         // Intentionally no `extraEnv`: the kickoff prompt surfaces
         // PROJECT_ID / PROJECT_CWD / SKILL_SCRIPTS_DIR as literal
         // "bound values" and SKILL.md references them via
-        // `<PROJECT_ID>` placeholders. The legacy
-        // `PREVIEW_WIZARD_*` env-var path was removed when the
-        // reviewer flagged that empty-string expansion was breaking
-        // every scanner invocation; see `extra-env-allowlist.ts` for
-        // the orphaned allowlist entries kept for backwards-compat.
+        // `<PROJECT_ID>` placeholders. The `EXTRA_ENV_ALLOWLIST` is
+        // also locked to `DEV_HUB_API_KEY` only, so spawning any
+        // other keys here would be dropped at merge time anyway.
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
