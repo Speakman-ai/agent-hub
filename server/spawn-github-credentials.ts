@@ -118,21 +118,15 @@ export function applyGithubSpawnCredentials(
   env.GH_TOKEN = token;
   env.GITHUB_TOKEN = token;
 
-  // Append a credential helper entry to whatever GIT_CONFIG_* may
-  // already be set in the env (rare in practice, but cheap to support
-  // and avoids future surprises if another caller starts using this
-  // mechanism). Numeric parse is defensive: a malformed pre-existing
-  // count string is treated as 0 so we still install our helper.
-  const prevCountRaw = env.GIT_CONFIG_COUNT;
-  const prevCount = (() => {
-    if (typeof prevCountRaw !== 'string') return 0;
-    const n = Number.parseInt(prevCountRaw, 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  })();
-  const idx = prevCount;
-  env.GIT_CONFIG_COUNT = String(prevCount + 1);
-  env[`GIT_CONFIG_KEY_${idx}`] = 'credential.https://github.com.helper';
-  env[`GIT_CONFIG_VALUE_${idx}`] = GIT_CREDENTIAL_HELPER_SNIPPET;
+  // Append a credential helper entry. When `applyReviewerSpawnIsolation`
+  // ran first (the standard spawn flow in `chat.ts`), an empty-value
+  // helper entry is already at index 0, which clears any helper inherited
+  // from the host's `~/.gitconfig` — so this entry is the ONLY helper
+  // git tries on the next push. When this function is called standalone
+  // (e.g. tests, or future non-spawn callers), the empty-helper protection
+  // is absent; callers that need it must invoke `applyReviewerSpawnIsolation`
+  // first, exactly as `chat.ts` does.
+  appendGitConfigEntry(env, 'credential.https://github.com.helper', GIT_CREDENTIAL_HELPER_SNIPPET);
 }
 
 /**
@@ -176,7 +170,7 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  * lead agents could post formal PR reviews under the session owner's
  * OAuth token.
  *
- * Three effects:
+ * Four effects:
  *
  *   1. `GH_CONFIG_DIR` → an empty Hub-managed directory under
  *      `config.dataDir`. This severs `gh`'s fallback to
@@ -192,7 +186,9 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  *      is the only correct identity path for formal reviews
  *      (server-side App installation token). Applied universally so
  *      non-reviewer spawns also cannot post `gh pr review` under the
- *      session owner's account.
+ *      session owner's account. The same sentinel is also read by
+ *      `default-skills/github/scripts/_common.sh` to disable its
+ *      `gh auth status` host-auth fallback (PR #612 leak).
  *
  *   3. Scrubs `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and
  *      `GITHUB_ENTERPRISE_TOKEN` from the env. `buildSpawnEnv` clones
@@ -208,6 +204,26 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  *      scrub. Net effect for non-reviewer spawns: `git push` / `gh pr
  *      create` continue to authenticate as the human, while the
  *      `gh pr review` write path is blocked by the lock sentinel.
+ *
+ *   4. Installs a process-scoped empty git credential helper for
+ *      `https://github.com` via `GIT_CONFIG_*` (process-scoped config
+ *      with the highest precedence in git's config-merge order). Git
+ *      accumulates `credential.<url>.helper` entries from every config
+ *      source — system, global (`~/.gitconfig`), local, and env — and
+ *      tries each helper in order until one returns credentials. An
+ *      empty-string entry **clears the accumulated list** so any
+ *      helpers inherited from the host operator's `~/.gitconfig`
+ *      (notably `!gh auth git-credential`, written by
+ *      `gh auth setup-git`) are dropped before our own helper runs.
+ *      Without this, even a fully-scrubbed env can still authenticate
+ *      via the host's gh credential chain. Order matters:
+ *      `applyReviewerSpawnIsolation` writes the empty entry at index 0;
+ *      `applyGithubSpawnCredentials` appends the working bot/user
+ *      helper at index 1 (or higher). Net: with no token injected,
+ *      `git push` to github.com fails with "could not read Username";
+ *      with a token, only the injected helper runs. Closed PR #612
+ *      leak (reviewer pushed `review/pr-609` + opened #612 as
+ *      `speakmanra` because host gh credential helper was reachable).
  *
  * Caller should pre-create the directory at startup via
  * `ensureReviewerGhConfigDir(config)`. Idempotent on env mutation.
@@ -225,6 +241,38 @@ export function applyReviewerSpawnIsolation(
   delete env.GITHUB_TOKEN;
   delete env.GH_ENTERPRISE_TOKEN;
   delete env.GITHUB_ENTERPRISE_TOKEN;
+  // Install a process-scoped empty `credential.https://github.com.helper`
+  // BEFORE any working helper. Per git's credential-helper merge rules,
+  // an empty value clears the list of helpers accumulated from all
+  // earlier config sources (system / global / local). This neutralises
+  // the host operator's `gh auth setup-git` helper so a spawn with no
+  // token cannot piggy-back on host gh auth. `applyGithubSpawnCredentials`
+  // appends its working helper after this entry; git then tries that
+  // helper (and only that helper) on the next push.
+  appendGitConfigEntry(env, 'credential.https://github.com.helper', '');
+}
+
+/**
+ * Append a single `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` entry
+ * to the env. Defensive numeric parse on `GIT_CONFIG_COUNT` so a
+ * malformed inherited value doesn't clobber prior entries; idempotent
+ * on the index bookkeeping.
+ *
+ * Exposed-as-private (no export) to keep both isolation and credential
+ * helpers using the same append semantics — preserves the precedence
+ * ordering described in `applyReviewerSpawnIsolation` effect (4).
+ */
+function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string): void {
+  const prevCountRaw = env.GIT_CONFIG_COUNT;
+  const prevCount = (() => {
+    if (typeof prevCountRaw !== 'string') return 0;
+    const n = Number.parseInt(prevCountRaw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  })();
+  const idx = prevCount;
+  env.GIT_CONFIG_COUNT = String(prevCount + 1);
+  env[`GIT_CONFIG_KEY_${idx}`] = key;
+  env[`GIT_CONFIG_VALUE_${idx}`] = value;
 }
 
 /**
