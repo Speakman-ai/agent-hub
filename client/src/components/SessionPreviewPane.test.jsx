@@ -37,7 +37,9 @@ describe('SessionPreviewPane', () => {
     // (same React key prefix from previewId) but iframeKey increments,
     // which is reflected in data-iframe-key and forces the browser to
     // re-navigate the iframe's src.
-    const after = Number(screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'));
+    const after = Number(
+      screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'),
+    );
     expect(after).toBe(before + 1);
   });
 

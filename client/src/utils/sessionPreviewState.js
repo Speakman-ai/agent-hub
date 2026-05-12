@@ -132,7 +132,10 @@ export const DEFAULT_PANE_WIDTH = 560;
  * Validate a pane width pulled from localStorage. Returns the clamped
  * number on success, or `null` if the input is unusable.
  */
-export function clampPaneWidth(value, { min = 320, max = 1400, fallback = DEFAULT_PANE_WIDTH } = {}) {
+export function clampPaneWidth(
+  value,
+  { min = 320, max = 1400, fallback = DEFAULT_PANE_WIDTH } = {},
+) {
   // null / undefined / empty-string read out of localStorage means
   // "never persisted" — return the fallback rather than coercing to 0
   // and then clamping up to `min`.
