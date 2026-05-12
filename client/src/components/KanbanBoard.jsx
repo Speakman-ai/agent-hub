@@ -618,9 +618,8 @@ export default function KanbanBoard({
     try {
       // The server's PUT /board/epics/:id destructures camelCase keys. Our
       // form state uses snake_case (mirroring DB columns), so translate
-      // before sending — otherwise autonomous_max_concurrent /
-      // autonomous_max_iterations silently fall through to undefined on the
-      // server and the old DB values are preserved.
+      // before sending — otherwise autonomous_max_concurrent silently falls
+      // through to undefined on the server and the old DB value is preserved.
       await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
       setEditingEpic(null);
       setEpicForm({
@@ -668,7 +667,6 @@ export default function KanbanBoard({
       autonomous: epic.autonomous || 0,
       autonomous_interval: epic.autonomous_interval || 5,
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
-      autonomous_max_iterations: epic.autonomous_max_iterations || 3,
       autonomous_model: epic.autonomous_model || '',
     });
     setShowEpicForm(false);
@@ -1081,22 +1079,6 @@ export default function KanbanBoard({
                             (integration branch enforces serial dispatch)
                           </p>
                         ) : null}
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-500 mb-0.5">Max iterations</label>
-                        <input
-                          type="number"
-                          value={epicForm.autonomous_max_iterations || 3}
-                          onChange={(e) =>
-                            setEpicForm((f) => ({
-                              ...f,
-                              autonomous_max_iterations: parseInt(e.target.value, 10) || 3,
-                            }))
-                          }
-                          min={1}
-                          max={10}
-                          className="w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
-                        />
                       </div>
                     </div>
                     <div>

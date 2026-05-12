@@ -1330,7 +1330,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               autonomous: number;
               autonomous_interval: number;
               autonomous_max_concurrent: number;
-              autonomous_max_iterations: number;
               autonomous_model: string | null;
               orchestration_budgets_json?: string | null;
             };
@@ -1341,7 +1340,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               row.autonomous,
               row.autonomous_interval,
               row.autonomous_max_concurrent,
-              row.autonomous_max_iterations,
               row.autonomous_model ?? null,
               row.orchestration_budgets_json ?? null,
               br.value,

@@ -39,7 +39,6 @@ describe('DEFAULT_EPIC_FORM', () => {
       autonomous: 0,
       autonomous_interval: 5,
       autonomous_max_concurrent: 2,
-      autonomous_max_iterations: 3,
       autonomous_model: '',
     });
   });
@@ -60,7 +59,6 @@ describe('epicFormFromRow', () => {
       autonomous: 1,
       autonomous_interval: 10,
       autonomous_max_concurrent: 4,
-      autonomous_max_iterations: 8,
     };
     expect(epicFormFromRow(row)).toEqual({
       name: 'Ship the app',
@@ -69,7 +67,6 @@ describe('epicFormFromRow', () => {
       autonomous: 1,
       autonomous_interval: 10,
       autonomous_max_concurrent: 4,
-      autonomous_max_iterations: 8,
       autonomous_model: '',
       pr_base_branch: '',
     });
@@ -101,7 +98,6 @@ describe('epicFormToUpdateBody', () => {
       autonomous: 1,
       autonomous_interval: 7,
       autonomous_max_concurrent: 3,
-      autonomous_max_iterations: 5,
     };
     expect(epicFormToUpdateBody(form)).toEqual({
       name: 'Trim me',
@@ -110,7 +106,6 @@ describe('epicFormToUpdateBody', () => {
       autonomous: 1,
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
-      autonomousMaxIterations: 5,
       autonomousModel: null,
       prBaseBranch: null,
     });

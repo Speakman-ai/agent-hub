@@ -414,7 +414,6 @@ function initDb(dataDir: string): void {
       autonomous INTEGER NOT NULL DEFAULT 0,
       autonomous_interval INTEGER NOT NULL DEFAULT 5,
       autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
-      autonomous_max_iterations INTEGER NOT NULL DEFAULT 3,
       autonomous_model TEXT DEFAULT NULL,
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2468,7 +2467,7 @@ function initDb(dataDir: string): void {
       `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanEpic: db.prepare(
-      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
     getKanbanCardsByEpic: db.prepare(
@@ -2485,12 +2484,14 @@ function initDb(dataDir: string): void {
       // dropped in May 2026). Within the column we sort by `priority`
       // (urgent → high → medium → low → unset) and then by `position` ASC
       // (the visual top of the column) as the tiebreaker — higher-priority
-      // work drains first.
+      // work drains first. A card is dispatchable when it sits in To Do
+      // and has no assignee; the autonomous loop no longer caps how many
+      // times the same card may be re-dispatched (operators are expected
+      // to move stuck cards out of To Do manually).
       `SELECT c.* FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
        WHERE c.epic_id = ? AND col.name = 'To Do'
        AND (c.assignee IS NULL OR c.assignee = '')
-       AND c.autonomous_iterations < ?
        ORDER BY
          CASE c.priority
            WHEN 'urgent' THEN 0
@@ -2501,11 +2502,8 @@ function initDb(dataDir: string): void {
          END,
          c.position ASC`,
     ),
-    incrementCardIterations: db.prepare(
-      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, dispatched_by_autonomous = 1, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    resetCardIterations: db.prepare(
-      `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`,
+    markCardDispatchedByAutonomous: db.prepare(
+      `UPDATE kanban_cards SET dispatched_by_autonomous = 1, updated_at = datetime('now') WHERE id = ?`,
     ),
 
     // NOTE: The legacy triage gate (setCardTriage / clearCardTriage /

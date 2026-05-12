@@ -329,7 +329,6 @@ export function kanbanCardTriggerPayload(card: KanbanCardRow): Record<string, un
     board_id: card.board_id,
     position: card.position,
     documented: card.documented,
-    autonomous_iterations: card.autonomous_iterations,
     dispatched_by_autonomous: card.dispatched_by_autonomous,
     created_at: card.created_at,
     updated_at: card.updated_at,

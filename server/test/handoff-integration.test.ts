@@ -441,7 +441,7 @@ describe('handleHandoff — end-to-end', () => {
     if (epicId) {
       stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0);
       // Flip autonomous on
-      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, 3, null, null, null, epicId);
+      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, null, null, null, epicId);
     }
     stmts.createKanbanCard.run(
       cardId,
@@ -624,7 +624,6 @@ describe('buildHandoffSeedingContent', () => {
     position: 0,
     epic_id: null,
     documented: 0,
-    autonomous_iterations: 0,
     dispatched_by_autonomous: 0,
     created_at: '',
     updated_at: '',
@@ -653,7 +652,6 @@ describe('buildHandoffSeedingContent', () => {
       autonomous: 0,
       autonomous_interval: 0,
       autonomous_max_concurrent: 0,
-      autonomous_max_iterations: 0,
       position: 0,
       created_at: '',
       updated_at: '',
@@ -674,7 +672,6 @@ describe('buildHandoffSeedingContent', () => {
       autonomous: 1,
       autonomous_interval: 60,
       autonomous_max_concurrent: 5,
-      autonomous_max_iterations: 3,
       position: 0,
       created_at: '',
       updated_at: '',

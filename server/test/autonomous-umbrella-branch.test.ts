@@ -57,7 +57,6 @@ function makeEpic(overrides: Partial<KanbanEpicRow> = {}): KanbanEpicRow {
     autonomous: 1,
     autonomous_interval: 60,
     autonomous_max_concurrent: 2,
-    autonomous_max_iterations: 3,
     autonomous_model: null,
     orchestration_budgets_json: null,
     pr_base_branch: null,

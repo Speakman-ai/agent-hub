@@ -1336,20 +1336,6 @@ export default function KanbanScreen({ route, navigation }) {
                           keyboardType="number-pad"
                         />
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.autonomousSettingLabel}>Max iterations</Text>
-                        <TextInput
-                          style={styles.fieldInput}
-                          value={String(epicForm.autonomous_max_iterations)}
-                          onChangeText={(v) =>
-                            setEpicForm((f) => ({
-                              ...f,
-                              autonomous_max_iterations: parseInt(v, 10) || 3,
-                            }))
-                          }
-                          keyboardType="number-pad"
-                        />
-                      </View>
                     </View>
                   )}
                   {epicForm.autonomous === 1 && (

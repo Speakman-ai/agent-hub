@@ -17,7 +17,7 @@ scripts/board.sh list    # flat list of cards
 Cards carry: `id`, `column_id`, `title`, `description`, `priority`
 (`urgent|high|medium|low`), `assignee`, `labels` (comma-separated string),
 `session_id`, `epic_id`, `pr_url`, `review_status`, `github_issue_url`,
-`autonomous_iterations`, `position`, timestamps.
+`position`, timestamps.
 
 ## Create a card
 

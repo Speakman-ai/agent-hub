@@ -1687,8 +1687,9 @@ export async function autoCommitAndPR(
     // autonomous auto-PR path. Users/agents may manually link a card to a
     // session mid-stream for UI cross-reference or to attach a PR URL later.
     // Only rows dispatched from `autonomous.ts` set `dispatched_by_autonomous`
-    // (via `incrementCardIterations`). Legacy DBs are backfilled from
-    // `autonomous_iterations` and autonomous epics — not raw `epic_id`.
+    // (via `markCardDispatchedByAutonomous`). Legacy DBs are backfilled from
+    // the historical `autonomous_iterations` counter and autonomous epics —
+    // not raw `epic_id`.
     const isAutonomousCard = !!card && Number(card.dispatched_by_autonomous) === 1;
 
     // Ad-hoc sessions (no card, OR a card not dispatched by the autonomous

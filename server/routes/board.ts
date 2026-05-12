@@ -828,7 +828,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           row.autonomous,
           row.autonomous_interval,
           row.autonomous_max_concurrent,
-          row.autonomous_max_iterations,
           row.autonomous_model ?? null,
           row.orchestration_budgets_json ?? null,
           p.value,
@@ -850,7 +849,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomous,
       autonomousInterval,
       autonomousMaxConcurrent,
-      autonomousMaxIterations,
       autonomousModel,
       orchestrationBudgets,
     } = req.body as {
@@ -860,7 +858,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomous?: number;
       autonomousInterval?: number;
       autonomousMaxConcurrent?: number;
-      autonomousMaxIterations?: number;
       autonomousModel?: string | null;
       orchestrationBudgets?: Record<string, unknown> | null;
     };
@@ -906,7 +903,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           0,
           currentAutonomous.autonomous_interval,
           currentAutonomous.autonomous_max_concurrent,
-          currentAutonomous.autonomous_max_iterations,
           currentAutonomous.autonomous_model ?? null,
           (currentAutonomous as { orchestration_budgets_json?: string | null })
             .orchestration_budgets_json ?? null,
@@ -935,7 +931,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomous ?? epic.autonomous,
       autonomousInterval ?? epic.autonomous_interval,
       autonomousMaxConcurrent ?? epic.autonomous_max_concurrent,
-      autonomousMaxIterations ?? epic.autonomous_max_iterations,
       nextAutonomousModel,
       nextOrchestrationJson,
       hasEpicPrBasePut ? (nextEpicPrBaseField ?? null) : (epic.pr_base_branch ?? null),
@@ -977,10 +972,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const epic = stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
     if (!epic) return res.json({ active: false });
 
-    const eligible = stmts.getEligibleAutonomousCards.all(
-      epic.id,
-      epic.autonomous_max_iterations,
-    ) as KanbanCardRow[];
+    const eligible = stmts.getEligibleAutonomousCards.all(epic.id) as KanbanCardRow[];
     const allEpicCards = stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
     const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
     const colNameMap = Object.fromEntries(cols.map((c) => [c.id, c.name]));
@@ -996,7 +988,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       model: epic.autonomous_model,
       interval: epic.autonomous_interval,
       maxConcurrent: epic.autonomous_max_concurrent,
-      maxIterations: epic.autonomous_max_iterations,
       eligibleCards: eligible.length,
       inProgressCards: inProgress.length,
       inReviewCards: inReview.length,

@@ -56,7 +56,6 @@ describe('workflow-triggers', () => {
       position: 0,
       epic_id: null,
       documented: 0,
-      autonomous_iterations: 0,
       dispatched_by_autonomous: 0,
       assign_model: 'opus',
       created_at: 'x',
