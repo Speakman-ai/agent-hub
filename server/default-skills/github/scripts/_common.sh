@@ -34,6 +34,38 @@ require_gh_token() {
     return 0
   fi
 
+  # AGENT_HUB_REVIEWER_LOCK=1: the spawn env was deliberately scrubbed of
+  # token vars (`applyReviewerSpawnIsolation` in
+  # server/spawn-github-credentials.ts). Falling back to `gh auth status`
+  # here would normally read GH_CONFIG_DIR (already rerouted to a Hub
+  # empty dir) and return non-zero — but if any host-level path bypasses
+  # that override (a different `gh` on PATH, a future gh that reads a
+  # fallback config, etc.), the fallback can silently authenticate as
+  # the host operator. That is exactly the leak that produced
+  # surveytracker PR #612 (head `review/pr-609`, opened as the host
+  # user `speakmanra`). Hard-fail under the lock so there is no third
+  # path: env token → ok; lock set → fail; otherwise → fall back to host gh.
+  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
+    cat >&2 <<'HELP'
+error: AGENT_HUB_REVIEWER_LOCK=1 and no GitHub token was injected.
+
+This spawn was isolated from host GitHub credentials by Agent Hub. Reviewer
+agents must post formal PR reviews via:
+
+    POST /api/pr/review
+
+(server-mediated; uses the GitHub App / bot identity). Other write actions
+(`gh pr create`, `gh pr comment`, `git push`) require a per-user OAuth/PAT
+token, which Agent Hub injects automatically when one is configured. If you
+expected a token here, sign in via Settings → GitHub or check the operator's
+`config.json` (`botGithubToken` for reviewer-role agents).
+
+This script will not fall back to host `gh auth status` while the lock is set.
+See server/default-skills/github/scripts/_common.sh.
+HELP
+    exit 2
+  fi
+
   # Fall back to a live gh auth check (slow, but only runs once per script).
   if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     return 0

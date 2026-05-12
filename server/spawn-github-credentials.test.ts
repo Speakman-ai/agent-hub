@@ -276,19 +276,60 @@ describe('reviewer spawn isolation', () => {
       expect(env.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
     });
 
-    it('does not touch GIT_CONFIG_* (orthogonal to token scrubbing)', () => {
-      // GIT_CONFIG_* is managed by `applyGithubSpawnCredentials`, not
-      // by isolation. The two concerns must not clobber each other.
+    it('installs an empty `credential.https://github.com.helper` at GIT_CONFIG index 0 (clears inherited helper chain)', () => {
+      // Closes the PR #612 leak path. Without this empty entry, a host
+      // operator's `gh auth setup-git` helper (`!gh auth git-credential`,
+      // written to `~/.gitconfig`) survives into the spawn and lets `git
+      // push` authenticate as the host operator even when the spawn env
+      // has no token. Per git's credential-helper merge rules, an empty
+      // value clears the accumulated helper list — so any working helper
+      // appended later (by `applyGithubSpawnCredentials`) is the ONLY
+      // helper git tries.
+      const cfg = { dataDir: '/var/data/agent-hub' };
+      const env: NodeJS.ProcessEnv = {};
+      applyReviewerSpawnIsolation(env, cfg);
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    });
+
+    it('appends the empty helper after pre-existing GIT_CONFIG_* entries (preserves caller config)', () => {
+      // Pre-existing entries (e.g. user.name / user.email written by the
+      // spawn caller) must be preserved. The empty helper lands at the
+      // next free index; the count is bumped accordingly. This guarantees
+      // isolation never clobbers config the caller deliberately staged.
       const cfg = { dataDir: '/var/data/agent-hub' };
       const env: NodeJS.ProcessEnv = {
         GIT_CONFIG_COUNT: '1',
-        GIT_CONFIG_KEY_0: 'pre.key',
-        GIT_CONFIG_VALUE_0: 'pre.value',
+        GIT_CONFIG_KEY_0: 'user.name',
+        GIT_CONFIG_VALUE_0: 'Pre-Existing User',
       };
       applyReviewerSpawnIsolation(env, cfg);
+      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      // Caller's entry untouched.
+      expect(env.GIT_CONFIG_KEY_0).toBe('user.name');
+      expect(env.GIT_CONFIG_VALUE_0).toBe('Pre-Existing User');
+      // Empty helper appended at index 1.
+      expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_1).toBe('');
+    });
+
+    it('treats a malformed pre-existing GIT_CONFIG_COUNT as 0 (defensive parse)', () => {
+      const cfg = { dataDir: '/var/data/agent-hub' };
+      const env: NodeJS.ProcessEnv = { GIT_CONFIG_COUNT: 'not-a-number' };
+      applyReviewerSpawnIsolation(env, cfg);
       expect(env.GIT_CONFIG_COUNT).toBe('1');
-      expect(env.GIT_CONFIG_KEY_0).toBe('pre.key');
-      expect(env.GIT_CONFIG_VALUE_0).toBe('pre.value');
+      expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    });
+
+    it('treats a negative pre-existing GIT_CONFIG_COUNT as 0 (defensive parse)', () => {
+      const cfg = { dataDir: '/var/data/agent-hub' };
+      const env: NodeJS.ProcessEnv = { GIT_CONFIG_COUNT: '-3' };
+      applyReviewerSpawnIsolation(env, cfg);
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+      expect(env.GIT_CONFIG_VALUE_0).toBe('');
     });
   });
 });
@@ -478,7 +519,7 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
   //     re-injected user token lets `git push` / `gh pr create` still
   //     attribute commits to the human.
 
-  it('reviewer + no botGithubToken + owner has OAuth token → spawn env has no GitHub credential', () => {
+  it('reviewer + no botGithubToken + owner has OAuth token → spawn env has no GitHub credential, only empty helper at index 0', () => {
     const cfg = { dataDir: '/var/data/agent-hub' };
     const env: NodeJS.ProcessEnv = {};
     const tokenToInject = selectGithubSpawnToken({
@@ -491,7 +532,11 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
 
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
-    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    // Empty helper present (clears inherited host helper chain) but no
+    // working helper appended — `git push` to github.com fails closed.
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
   });
@@ -516,6 +561,11 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GITHUB_TOKEN).toBeUndefined();
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    // Even with no token re-injected, the empty helper still clears
+    // the host operator's gh-auth-setup-git helper chain.
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
   });
 
   it('reviewer + botGithubToken set → bot token survives isolation and is wired into spawn env', () => {
@@ -535,6 +585,14 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GITHUB_TOKEN).toBe('bot_installation_token');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    // Two-entry helper layout: empty at 0 clears host helper chain,
+    // working bot helper at 1 is the only credential source git will
+    // try on push.
+    expect(env.GIT_CONFIG_COUNT).toBe('2');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('$GH_TOKEN');
   });
 
   it('reviewer + botGithubToken set + inherited GH_TOKEN → inherited token overwritten by bot token', () => {
@@ -554,6 +612,10 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GITHUB_TOKEN).toBe('bot_installation_token');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    // Same two-entry layout as the no-inherited case — defense-in-depth.
+    expect(env.GIT_CONFIG_COUNT).toBe('2');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('$GH_TOKEN');
   });
 
   it('non-reviewer + owner has OAuth token → user token wired AND lock sentinel set (universal isolation)', () => {
@@ -580,10 +642,15 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     // session owner's account.
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
-    // The credential helper still installs so git pushes authenticate
-    // as the per-user OAuth identity.
-    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    // Two-entry helper layout: empty at 0 (clears host helper chain),
+    // working user-OAuth helper at 1 (so git pushes authenticate as
+    // the human at the keyboard).
+    expect(env.GIT_CONFIG_COUNT).toBe('2');
     expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    expect(env.GIT_CONFIG_KEY_1).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('$GH_TOKEN');
+    expect(env.GIT_CONFIG_VALUE_1).not.toContain('gho_owner_oauth');
   });
 
   it('non-reviewer + inherited GH_TOKEN + user token → inherited token scrubbed, user token re-injected', () => {
@@ -611,6 +678,12 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GITHUB_TOKEN).toBe('gho_owner_oauth');
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+    // Empty helper at 0 still installed even when the inherited env
+    // had no GIT_CONFIG_* — the host helper chain is neutralised so
+    // only the appended user-OAuth helper is reachable.
+    expect(env.GIT_CONFIG_COUNT).toBe('2');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('$GH_TOKEN');
   });
 
   it('non-reviewer + no user token → spawn env carries lock but no GitHub credential', () => {
@@ -633,7 +706,11 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
 
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
-    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    // Empty helper at 0 still installed (closes host helper chain);
+    // no working helper appended because no token was selected.
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
   });
@@ -666,7 +743,13 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(tokenToInject).toBeNull();
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
-    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    // Autonomous-dispatch lockdown: empty helper at 0 (closes host
+    // helper chain), no working helper appended → `git push` to
+    // github.com fails with "could not read Username", which is the
+    // exact closed-fail behavior the lockdown wants.
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
   });
@@ -693,7 +776,10 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.GITHUB_TOKEN).toBe('gho_owner_oauth');
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
     expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
-    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    // Two-entry layout: empty at 0, working user-OAuth helper at 1.
+    expect(env.GIT_CONFIG_COUNT).toBe('2');
+    expect(env.GIT_CONFIG_VALUE_0).toBe('');
+    expect(env.GIT_CONFIG_VALUE_1).toContain('$GH_TOKEN');
   });
 
   it.each([
