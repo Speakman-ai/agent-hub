@@ -626,6 +626,472 @@ describe('cleanupStaleWorkspaces — omitted isSessionRecoverable callback', () 
   });
 });
 
+describe('ensureSessionWorkspace — base-branch drift on reuse', () => {
+  let tmpRoot: string;
+  let originBare: string;
+  let sourceRepo: string;
+  let sessionId: string;
+  let createdWorkspace: string | null = null;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  function makeSession(workspacePath: string | null = null): SessionRow {
+    return {
+      id: sessionId,
+      agent_id: 'test-agent',
+      name: 'test',
+      engine: 'claude',
+      model: 'claude-sonnet-4-20250514',
+      engine_session_id: null,
+      use_worktree: 1,
+      worktree_path: workspacePath,
+      worktree_branch: null,
+      git_worktree_detected: 0,
+      changes_ready: null,
+      stale_pr_notified_at: null,
+      ask_mode: 0,
+      cron_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      deleted_at: null,
+    };
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(
+      os.tmpdir(),
+      `worktree-drift-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpRoot, { recursive: true });
+
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    sourceRepo = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${sourceRepo}"`, { stdio: 'pipe' });
+    git(sourceRepo, 'config user.email "test@example.com"');
+    git(sourceRepo, 'config user.name "Test"');
+    git(sourceRepo, 'checkout -b main');
+    writeFileSync(path.join(sourceRepo, 'README.md'), 'v1\n');
+    git(sourceRepo, 'add README.md');
+    git(sourceRepo, 'commit -m "initial"');
+    git(sourceRepo, 'push -u origin main');
+
+    // Umbrella branch (the pr_base_branch we'll track for drift).
+    git(sourceRepo, 'checkout -b feature/umbrella');
+    writeFileSync(path.join(sourceRepo, 'umbrella.txt'), 'umbrella round 1\n');
+    git(sourceRepo, 'add umbrella.txt');
+    git(sourceRepo, 'commit -m "umbrella initial"');
+    git(sourceRepo, 'push -u origin feature/umbrella');
+    git(sourceRepo, 'checkout main');
+
+    sessionId = `sess${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    createdWorkspace = null;
+  });
+
+  afterEach(() => {
+    if (createdWorkspace) {
+      removeWorkspace(createdWorkspace);
+    }
+    try {
+      const wsParent = path.join(homedir(), '.agent-hub', 'workspaces', path.basename(sourceRepo));
+      if (existsSync(wsParent)) {
+        rmSync(wsParent, { recursive: true, force: true });
+      }
+    } catch {
+      /* best-effort */
+    }
+    if (existsSync(tmpRoot)) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-rebases a clean session worktree onto an advanced umbrella tip', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    // First call — clone forked from feature/umbrella tip (SHA1).
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+    );
+    createdWorkspace = clonePath;
+
+    const forkTip = git(clonePath, 'rev-parse HEAD');
+    expect(forkTip).toBe(git(sourceRepo, 'rev-parse origin/feature/umbrella'));
+
+    // Sibling lands on umbrella → origin tip advances to SHA2.
+    git(sourceRepo, 'checkout feature/umbrella');
+    writeFileSync(path.join(sourceRepo, 'sibling.txt'), 'sibling merge\n');
+    git(sourceRepo, 'add sibling.txt');
+    git(sourceRepo, 'commit -m "sibling merged into umbrella"');
+    git(sourceRepo, 'push origin feature/umbrella');
+    const newUmbrellaTip = git(sourceRepo, 'rev-parse HEAD');
+    expect(newUmbrellaTip).not.toBe(forkTip);
+    git(sourceRepo, 'checkout main');
+
+    // Reuse — clean tree → should auto-rebase silently.
+    const reused = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+      null,
+      undefined,
+      onAdvanced,
+    );
+    expect(reused).toBe(clonePath);
+
+    // Rebase landed: HEAD now equals the new umbrella tip (no WIP commits).
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(newUmbrellaTip);
+    expect(existsSync(path.join(clonePath, 'sibling.txt'))).toBe(true);
+
+    expect(onAdvanced).toHaveBeenCalledTimes(1);
+    const info = onAdvanced.mock.calls[0][0];
+    expect(info.sessionId).toBe(sessionId);
+    expect(info.baseBranch).toBe('feature/umbrella');
+    expect(info.rebased).toBe(true);
+    expect(info.conflict).toBe(false);
+    expect(info.cleanWorkingTree).toBe(true);
+    expect(info.commitsAdvanced).toBe(1);
+    expect(info.newTipSha).toBe(newUmbrellaTip);
+  });
+
+  it('replays a session WIP commit onto the advanced umbrella tip on clean rebase', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+    );
+    createdWorkspace = clonePath;
+
+    // Session does some work and commits on its feature branch.
+    git(clonePath, 'config user.email "session@example.com"');
+    git(clonePath, 'config user.name "Session"');
+    writeFileSync(path.join(clonePath, 'session-work.txt'), 'wip from session\n');
+    git(clonePath, 'add session-work.txt');
+    git(clonePath, 'commit -m "session wip"');
+    const sessionTipBeforeRebase = git(clonePath, 'rev-parse HEAD');
+
+    // Umbrella advances with a non-conflicting commit.
+    git(sourceRepo, 'checkout feature/umbrella');
+    writeFileSync(path.join(sourceRepo, 'sibling.txt'), 'sibling merge\n');
+    git(sourceRepo, 'add sibling.txt');
+    git(sourceRepo, 'commit -m "sibling merged"');
+    git(sourceRepo, 'push origin feature/umbrella');
+    const newUmbrellaTip = git(sourceRepo, 'rev-parse HEAD');
+    git(sourceRepo, 'checkout main');
+
+    await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+      null,
+      undefined,
+      onAdvanced,
+    );
+
+    // The WIP commit should be replayed on top of the new umbrella tip.
+    expect(git(clonePath, 'rev-parse HEAD')).not.toBe(sessionTipBeforeRebase);
+    expect(existsSync(path.join(clonePath, 'session-work.txt'))).toBe(true);
+    expect(existsSync(path.join(clonePath, 'sibling.txt'))).toBe(true);
+    // New HEAD's parent chain should pass through newUmbrellaTip.
+    const parentSha = git(clonePath, 'rev-parse HEAD^');
+    expect(parentSha).toBe(newUmbrellaTip);
+
+    expect(onAdvanced).toHaveBeenCalledTimes(1);
+    expect(onAdvanced.mock.calls[0][0].rebased).toBe(true);
+  });
+
+  it('does NOT rebase when the working tree is dirty; emits drift notice instead', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+    );
+    createdWorkspace = clonePath;
+
+    const tipBefore = git(clonePath, 'rev-parse HEAD');
+
+    // Leave an uncommitted, unstaged modification.
+    writeFileSync(path.join(clonePath, 'umbrella.txt'), 'agent edited this — not committed\n');
+    // Sanity: git status sees it as dirty.
+    const porcelain = execSync('git status --porcelain', { cwd: clonePath }).toString().trim();
+    expect(porcelain.length).toBeGreaterThan(0);
+
+    // Umbrella advances on origin.
+    git(sourceRepo, 'checkout feature/umbrella');
+    writeFileSync(path.join(sourceRepo, 'sibling.txt'), 'sibling merge\n');
+    git(sourceRepo, 'add sibling.txt');
+    git(sourceRepo, 'commit -m "sibling merged"');
+    git(sourceRepo, 'push origin feature/umbrella');
+    const newUmbrellaTip = git(sourceRepo, 'rev-parse HEAD');
+    git(sourceRepo, 'checkout main');
+
+    await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+      null,
+      undefined,
+      onAdvanced,
+    );
+
+    // HEAD must NOT move — dirty tree is preserved.
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(tipBefore);
+    // Uncommitted edit must still be present untouched.
+    const stillDirty = execSync('git status --porcelain', { cwd: clonePath }).toString();
+    expect(stillDirty).toMatch(/umbrella\.txt/);
+
+    expect(onAdvanced).toHaveBeenCalledTimes(1);
+    const info = onAdvanced.mock.calls[0][0];
+    expect(info.rebased).toBe(false);
+    expect(info.conflict).toBe(false);
+    expect(info.cleanWorkingTree).toBe(false);
+    expect(info.commitsAdvanced).toBe(1);
+    expect(info.newTipSha).toBe(newUmbrellaTip);
+  });
+
+  it('aborts a conflicting rebase and reports conflict via the callback', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+    );
+    createdWorkspace = clonePath;
+
+    // Session commits a change to umbrella.txt …
+    git(clonePath, 'config user.email "session@example.com"');
+    git(clonePath, 'config user.name "Session"');
+    writeFileSync(path.join(clonePath, 'umbrella.txt'), 'session-side edit\n');
+    git(clonePath, 'add umbrella.txt');
+    git(clonePath, 'commit -m "session edited umbrella.txt"');
+    const sessionTipBefore = git(clonePath, 'rev-parse HEAD');
+
+    // … and umbrella on origin edits the SAME file with conflicting content.
+    git(sourceRepo, 'checkout feature/umbrella');
+    writeFileSync(path.join(sourceRepo, 'umbrella.txt'), 'sibling-side edit\n');
+    git(sourceRepo, 'add umbrella.txt');
+    git(sourceRepo, 'commit -m "sibling edited umbrella.txt"');
+    git(sourceRepo, 'push origin feature/umbrella');
+    git(sourceRepo, 'checkout main');
+
+    await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+      null,
+      undefined,
+      onAdvanced,
+    );
+
+    // Rebase must have aborted — session HEAD must be restored.
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(sessionTipBefore);
+    // No rebase-in-progress sentinel left behind.
+    expect(existsSync(path.join(clonePath, '.git', 'rebase-merge'))).toBe(false);
+    expect(existsSync(path.join(clonePath, '.git', 'rebase-apply'))).toBe(false);
+
+    expect(onAdvanced).toHaveBeenCalledTimes(1);
+    const info = onAdvanced.mock.calls[0][0];
+    expect(info.rebased).toBe(false);
+    expect(info.conflict).toBe(true);
+    expect(info.cleanWorkingTree).toBe(true);
+  });
+
+  it('does NOT fire the callback when origin/<base> has not advanced', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+    );
+    createdWorkspace = clonePath;
+
+    // No upstream changes. Reuse.
+    await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/umbrella',
+      null,
+      undefined,
+      onAdvanced,
+    );
+
+    expect(onAdvanced).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the callback when prBaseBranch is not set (no umbrella tracked)', async () => {
+    const persist = vi.fn();
+    const onAdvanced = vi.fn();
+
+    // Create a clone without a base branch.
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = clonePath;
+
+    // Advance origin/main (the default), so a careless implementation might
+    // think it should diff against that.
+    writeFileSync(path.join(sourceRepo, 'NEW.md'), 'upstream\n');
+    git(sourceRepo, 'add NEW.md');
+    git(sourceRepo, 'commit -m "upstream"');
+    git(sourceRepo, 'push origin main');
+
+    // Reuse without prBaseBranch — drift detection must be skipped entirely.
+    await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      undefined, // no prBaseBranch
+      null,
+      undefined,
+      onAdvanced,
+    );
+
+    expect(onAdvanced).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectAndHandleBaseBranchDrift — unit (direct invocation)', () => {
+  const { detectAndHandleBaseBranchDrift } = __test;
+
+  let tmpRoot: string;
+  let originBare: string;
+  let sourceRepo: string;
+  let cloneDir: string;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(
+      os.tmpdir(),
+      `drift-unit-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpRoot, { recursive: true });
+
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    sourceRepo = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${sourceRepo}"`, { stdio: 'pipe' });
+    git(sourceRepo, 'config user.email "test@example.com"');
+    git(sourceRepo, 'config user.name "Test"');
+    git(sourceRepo, 'checkout -b main');
+    writeFileSync(path.join(sourceRepo, 'README.md'), 'v1\n');
+    git(sourceRepo, 'add README.md');
+    git(sourceRepo, 'commit -m "initial"');
+    git(sourceRepo, 'push -u origin main');
+
+    git(sourceRepo, 'checkout -b feature/base');
+    writeFileSync(path.join(sourceRepo, 'base.txt'), 'base\n');
+    git(sourceRepo, 'add base.txt');
+    git(sourceRepo, 'commit -m "base"');
+    git(sourceRepo, 'push -u origin feature/base');
+
+    cloneDir = path.join(tmpRoot, 'work');
+    execSync(`git clone --quiet "${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "clone@example.com"');
+    git(cloneDir, 'config user.name "Clone"');
+    git(cloneDir, 'fetch origin feature/base:refs/remotes/origin/feature/base');
+    git(cloneDir, 'checkout -b session-branch origin/feature/base');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when origin/<base> equals merge-base (no drift)', async () => {
+    const result = await detectAndHandleBaseBranchDrift(cloneDir, 'session-id-1', 'feature/base');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when origin/<base> ref does not exist (missing remote ref)', async () => {
+    const result = await detectAndHandleBaseBranchDrift(cloneDir, 'session-id-2', 'no-such-branch');
+    expect(result).toBeNull();
+  });
+
+  it('reports commitsAdvanced correctly when origin moves multiple commits', async () => {
+    git(sourceRepo, 'checkout feature/base');
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(path.join(sourceRepo, `extra-${i}.txt`), `e${i}\n`);
+      git(sourceRepo, `add extra-${i}.txt`);
+      git(sourceRepo, `commit -m "extra ${i}"`);
+    }
+    git(sourceRepo, 'push origin feature/base');
+    git(cloneDir, 'fetch origin feature/base:refs/remotes/origin/feature/base');
+
+    const result = await detectAndHandleBaseBranchDrift(cloneDir, 'session-id-3', 'feature/base');
+    expect(result).not.toBeNull();
+    expect(result!.commitsAdvanced).toBe(3);
+    expect(result!.rebased).toBe(true); // clean tree → auto-rebase succeeds
+  });
+});
+
 describe('fetchWithRetry — retry policy on the reuse path', () => {
   const { fetchWithRetry, MAX_CLONE_ATTEMPTS } = __test;
   const noopSleep = async () => {};

@@ -771,6 +771,183 @@ export async function getOrCreateProcessWorktree(
 type PersistFn = (workspacePath: string, branchName: string, sessionId: string) => void;
 type OnFailureFn = (sessionId: string, errorMessage: string) => void;
 
+/**
+ * Structured info reported when a reused session worktree's `pr_base_branch`
+ * has advanced on origin since the worktree was first positioned. Emitted via
+ * the optional `onBaseBranchAdvanced` callback to `ensureSessionWorkspace` so
+ * callers can post a card comment and inject a "rebase first" notice into the
+ * agent's next-turn system prompt.
+ *
+ * `rebased: true` means we auto-rebased a clean working tree on top of the
+ * new origin tip and the agent can continue against the up-to-date base.
+ * `rebased: false` means the working tree was either dirty (uncommitted
+ * changes — we did not touch it) or the rebase produced conflicts and was
+ * aborted; in both cases the agent must rebase manually before continuing.
+ */
+export interface BaseBranchAdvancedInfo {
+  /** Session whose worktree drifted. */
+  sessionId: string;
+  /** Branch name (the `pr_base_branch` we were tracking). */
+  baseBranch: string;
+  /** Merge-base of session HEAD with origin/<baseBranch> before any action. */
+  mergeBaseSha: string;
+  /** Tip of origin/<baseBranch> at detection time. */
+  newTipSha: string;
+  /** Number of commits the base advanced (output of `git rev-list --count`). */
+  commitsAdvanced: number;
+  /** Was the working tree clean when drift was detected? */
+  cleanWorkingTree: boolean;
+  /** Did we successfully auto-rebase onto the new tip? */
+  rebased: boolean;
+  /** Did an auto-rebase attempt fail with conflicts (and was aborted)? */
+  conflict: boolean;
+}
+
+export type OnBaseBranchAdvancedFn = (info: BaseBranchAdvancedInfo) => void;
+
+/**
+ * Detect whether the session's `pr_base_branch` on origin has advanced past
+ * the worktree's current merge-base. When it has, attempt a two-tier auto-fix:
+ *
+ *   1. Clean working tree → run `git rebase origin/<base>` auto-pilot. If it
+ *      succeeds the agent continues silently on the new tip. If it conflicts,
+ *      `git rebase --abort` restores the prior tree and the caller is told to
+ *      surface the conflict (card comment + system-prompt note).
+ *   2. Dirty working tree (uncommitted changes) → do NOT rebase. We have no
+ *      safe way to stash agent-in-progress edits. Caller is told to surface
+ *      the drift so the agent can decide.
+ *
+ * Returns `null` when there's no drift (the common case) so the hot reuse
+ * path stays cheap. Returns a populated {@link BaseBranchAdvancedInfo} when
+ * either branch of the two-tier response above fires.
+ *
+ * All git invocations route through `runGit` so they share the fail-fast env
+ * (`GIT_TERMINAL_PROMPT=0`) and short timeout — a wedged remote will not
+ * stall the reuse path.
+ */
+async function detectAndHandleBaseBranchDrift(
+  cloneDir: string,
+  sessionId: string,
+  baseBranch: string,
+): Promise<BaseBranchAdvancedInfo | null> {
+  let mergeBaseSha: string;
+  let newTipSha: string;
+  try {
+    [mergeBaseSha, newTipSha] = await Promise.all([
+      runGit(['merge-base', 'HEAD', `origin/${baseBranch}`], { cwd: cloneDir }),
+      runGit(['rev-parse', `origin/${baseBranch}`], { cwd: cloneDir }),
+    ]);
+  } catch (err: unknown) {
+    // origin/<base> may not exist (deleted, renamed, never fetched). Bail
+    // quietly — the reuse path tolerated this before drift detection, and we
+    // shouldn't make a missing ref harder than it already is.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[Workspace] Drift check skipped for session ${sessionId.slice(0, 8)} (origin/${baseBranch}): ${message}`,
+    );
+    return null;
+  }
+
+  if (mergeBaseSha === newTipSha) {
+    return null; // no drift — the common case
+  }
+
+  let commitsAdvanced = 0;
+  try {
+    const count = await runGit(['rev-list', '--count', `${mergeBaseSha}..${newTipSha}`], {
+      cwd: cloneDir,
+    });
+    commitsAdvanced = Number.parseInt(count, 10) || 0;
+  } catch {
+    /* best-effort — count is informational only */
+  }
+
+  // Cleanliness check — `git status --porcelain` prints one line per modified
+  // / staged / untracked entry. Empty stdout means a clean tree (including
+  // no untracked files, which we treat as dirty too because a rebase that
+  // would touch them is dangerous).
+  let cleanWorkingTree = false;
+  try {
+    const porcelain = await runGit(['status', '--porcelain'], { cwd: cloneDir });
+    cleanWorkingTree = porcelain.length === 0;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[Workspace] git status failed for session ${sessionId.slice(0, 8)}, assuming dirty: ${message}`,
+    );
+    cleanWorkingTree = false;
+  }
+
+  if (!cleanWorkingTree) {
+    console.log(
+      `[Workspace] Base branch advanced for session ${sessionId.slice(0, 8)} (origin/${baseBranch} ${commitsAdvanced} ahead) — working tree dirty, skipping auto-rebase`,
+    );
+    return {
+      sessionId,
+      baseBranch,
+      mergeBaseSha,
+      newTipSha,
+      commitsAdvanced,
+      cleanWorkingTree: false,
+      rebased: false,
+      conflict: false,
+    };
+  }
+
+  // Clean tree → try auto-rebase. A successful rebase leaves the working
+  // tree at the new tip and there's nothing for the agent to do. A failed
+  // rebase ALWAYS gets `git rebase --abort` so the worktree returns to its
+  // prior state — never leave the tree in a half-rebased "rebase in progress"
+  // limbo where the agent's next git command will produce confusing errors.
+  try {
+    await runGit(['rebase', `origin/${baseBranch}`], {
+      cwd: cloneDir,
+      // Rebase can take several seconds on a large stack; give it the
+      // fetch budget rather than the 5s short-op budget.
+      timeoutMs: FETCH_TIMEOUT_MS,
+    });
+    console.log(
+      `[Workspace] Auto-rebased session ${sessionId.slice(0, 8)} onto origin/${baseBranch} (${commitsAdvanced} commits)`,
+    );
+    return {
+      sessionId,
+      baseBranch,
+      mergeBaseSha,
+      newTipSha,
+      commitsAdvanced,
+      cleanWorkingTree: true,
+      rebased: true,
+      conflict: false,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[Workspace] Auto-rebase failed for session ${sessionId.slice(0, 8)} on origin/${baseBranch}: ${message} — aborting`,
+    );
+    try {
+      await runGit(['rebase', '--abort'], { cwd: cloneDir });
+    } catch (abortErr: unknown) {
+      const abortMsg = abortErr instanceof Error ? abortErr.message : String(abortErr);
+      // `git rebase --abort` exits non-zero when there's no rebase in
+      // progress (e.g. the rebase failed before touching anything). Not
+      // fatal — log and move on.
+      console.warn(
+        `[Workspace] git rebase --abort for session ${sessionId.slice(0, 8)} reported: ${abortMsg}`,
+      );
+    }
+    return {
+      sessionId,
+      baseBranch,
+      mergeBaseSha,
+      newTipSha,
+      commitsAdvanced,
+      cleanWorkingTree: true,
+      rebased: false,
+      conflict: true,
+    };
+  }
+}
+
 export async function ensureSessionWorkspace(
   session: SessionRow,
   projectCwd: string,
@@ -784,6 +961,14 @@ export async function ensureSessionWorkspace(
   repoUrl?: string | null,
   /** Project id for error attribution; opaque to the worktree code. */
   projectId?: string,
+  /**
+   * Fires on the **reuse** path when origin/<prBaseBranch> has advanced past
+   * the session worktree's merge-base. Either a clean auto-rebase happened
+   * (`rebased: true`) or the caller is responsible for surfacing the drift
+   * (card comment + system-prompt note). Never fires for fresh-clone or
+   * no-drift cases. See {@link BaseBranchAdvancedInfo}.
+   */
+  onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
@@ -823,15 +1008,76 @@ export async function ensureSessionWorkspace(
     // Do NOT reset the checked-out feature branch — it may carry in-progress
     // work. Agents that want to see merged PRs can `git log origin/<default>`
     // or rebase explicitly.
+    let fetchSucceeded = false;
     try {
       await fetchWithRetry(['fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
+      fetchSucceeded = true;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
+
+    // Umbrella-branch drift detection. Only meaningful when:
+    //   (a) we have a `pr_base_branch` to compare against (epic / stacked PR),
+    //   (b) the fetch above actually landed (otherwise origin/<base> is stale
+    //       and any comparison would be against the old tip — false negative).
+    // For long-running cards under an epic, siblings merging into the umbrella
+    // between feedback rounds means the iterating card's branch is N commits
+    // behind base on resume → guaranteed conflict on next push. Two-tier fix:
+    // clean tree gets auto-rebased; dirty tree gets a notice via the callback.
+    //
+    // The generic `fetch origin --quiet` above only updates branches in the
+    // clone's `remote.origin.fetch` refspec. `git clone --depth 1` implies
+    // `--single-branch`, so the clone's fetch refspec lists ONLY the default
+    // branch. We must therefore explicitly refresh `origin/<base>` before
+    // comparing — otherwise a stale remote-tracking ref produces a false
+    // "no drift" result and the rebase opportunity is missed.
+    const trimmedBase = prBaseBranch?.trim();
+    if (fetchSucceeded && trimmedBase && onBaseBranchAdvanced) {
+      let baseRefRefreshed = true;
+      try {
+        await fetchWithRetry(
+          ['fetch', 'origin', `${trimmedBase}:refs/remotes/origin/${trimmedBase}`],
+          { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[Workspace] Could not refresh origin/${trimmedBase} for drift check on session "${safeName}":`,
+          message,
+        );
+        baseRefRefreshed = false;
+      }
+
+      if (baseRefRefreshed) {
+        try {
+          const drift = await detectAndHandleBaseBranchDrift(cloneDir, session.id, trimmedBase);
+          if (drift) {
+            try {
+              onBaseBranchAdvanced(drift);
+            } catch (cbErr: unknown) {
+              // A callback failure must not poison the reuse path — the
+              // worktree is still healthy, we just couldn't surface the notice.
+              const message = cbErr instanceof Error ? cbErr.message : String(cbErr);
+              console.warn(
+                `[Workspace] onBaseBranchAdvanced callback threw for session "${safeName}":`,
+                message,
+              );
+            }
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[Workspace] Drift detection failed for session "${safeName}", continuing:`,
+            message,
+          );
+        }
+      }
+    }
+
     await enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
@@ -1036,4 +1282,5 @@ export const __test = {
   isTransientCloneError,
   cleanupPartialClone,
   defaultResolveInstallationToken,
+  detectAndHandleBaseBranchDrift,
 };
