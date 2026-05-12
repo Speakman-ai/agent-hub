@@ -18,15 +18,20 @@
  */
 
 import Database from 'better-sqlite3';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import {
   PreviewRuntime,
+  __test_resolveProcessCwd,
+  __test_defaultReadEnvFile,
   type Clock,
   type HealthFetchFn,
   type PreviewLogSink,
   type SpawnFn,
 } from './preview-runtime.js';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { runPreviewReaper } from './preview-reaper.js';
 import type { Project } from '../types.js';
 import type { ChildProcess } from 'child_process';
@@ -1157,6 +1162,111 @@ describe('PreviewRuntime — legacy migration', () => {
       .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = 'legacy-2'`)
       .get() as { n: number };
     expect(procs.n).toBe(1);
+  });
+});
+
+// ─── Path-traversal containment (regression for PR #908 review) ───────
+
+describe('resolveProcessCwd — path traversal containment', () => {
+  it('returns the worktree root when cwd is undefined', () => {
+    expect(__test_resolveProcessCwd('/wt', undefined)).toBe('/wt');
+  });
+
+  it('accepts a normal sub-directory under the worktree', () => {
+    expect(__test_resolveProcessCwd('/wt', 'backend')).toBe('/wt/backend');
+  });
+
+  it('accepts a nested sub-directory', () => {
+    expect(__test_resolveProcessCwd('/wt', 'apps/api')).toBe('/wt/apps/api');
+  });
+
+  it('rejects absolute paths by degrading to the worktree root', () => {
+    expect(__test_resolveProcessCwd('/wt', '/etc/passwd')).toBe('/wt');
+  });
+
+  it('rejects `..` traversal that would escape the worktree', () => {
+    expect(__test_resolveProcessCwd('/wt', '../escape')).toBe('/wt');
+  });
+
+  it('rejects deep `..` traversal that lands on a different root', () => {
+    expect(__test_resolveProcessCwd('/wt', '../../etc')).toBe('/wt');
+  });
+
+  it('allows `..` that resolves back into the worktree (no-op)', () => {
+    // `/wt/sub/../sub` normalises to `/wt/sub` — still contained.
+    expect(__test_resolveProcessCwd('/wt', 'sub/../sub')).toBe('/wt/sub');
+  });
+
+  it('rejects a prefix-extension sibling (`/wt` vs `/wt-secrets`)', () => {
+    // Naive startsWith would have accepted this; the trailing-sep check
+    // requires a path separator between the worktree and the rest.
+    expect(__test_resolveProcessCwd('/wt', '../wt-secrets')).toBe('/wt');
+  });
+});
+
+describe('defaultReadEnvFile — path traversal containment', () => {
+  let tmpDir: string;
+  let siblingDir: string;
+
+  beforeEach(() => {
+    // Make a dir whose name shares the prefix of our "worktree" so the
+    // sibling escape test has a real on-disk target to point at.
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'preview-envfile-'));
+    siblingDir = `${tmpDir}-secrets`;
+    mkdirSync(siblingDir, { recursive: true });
+    writeFileSync(path.join(siblingDir, '.env'), 'STOLEN=should-not-leak\n');
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      rmSync(siblingDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('reads a normal .env relative to the worktree', () => {
+    mkdirSync(path.join(tmpDir, 'backend'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'backend', '.env'), 'PG_DSN=postgres://local\nDEBUG=1\n');
+    const env = __test_defaultReadEnvFile(tmpDir, 'backend/.env');
+    expect(env).toEqual({ PG_DSN: 'postgres://local', DEBUG: '1' });
+  });
+
+  it('returns empty for `../../../etc/passwd`-style traversal', () => {
+    const env = __test_defaultReadEnvFile(tmpDir, '../../../etc/passwd');
+    expect(env).toEqual({});
+  });
+
+  it('returns empty for the prefix-extension sibling escape', () => {
+    // The original startsWith check accepted this and would have leaked
+    // the sibling's secrets into the spawn env. The trailing-sep check
+    // closes that path.
+    const sibBase = path.basename(siblingDir); // e.g. preview-envfile-XXXX-secrets
+    const escape = `../${sibBase}/.env`;
+    const env = __test_defaultReadEnvFile(tmpDir, escape);
+    expect(env).toEqual({});
+  });
+
+  it('returns empty for a missing file (envFile is a hint, never required)', () => {
+    const env = __test_defaultReadEnvFile(tmpDir, 'does-not-exist.env');
+    expect(env).toEqual({});
+  });
+
+  it('parses comments, quoted values, and trims whitespace', () => {
+    writeFileSync(
+      path.join(tmpDir, '.env'),
+      '# comment\n  KEY1=value1\nKEY2="quoted"\nKEY3=\'single\'\n',
+    );
+    expect(__test_defaultReadEnvFile(tmpDir, '.env')).toEqual({
+      KEY1: 'value1',
+      KEY2: 'quoted',
+      KEY3: 'single',
+    });
   });
 });
 

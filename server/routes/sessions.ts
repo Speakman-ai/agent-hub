@@ -851,6 +851,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.get('/api/sessions/:sessionId/preview/processes', (req: Request, res: Response) => {
     try {
       const sessionId = req.params.sessionId as string;
+      // Two-layer 404: the session row must exist AND the caller must
+      // own it. Both produce the same "Session not found" body so an
+      // unauth'd probe can't tell "session exists but you don't own it"
+      // from "session doesn't exist".
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
       if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
         return res.status(404).json({ error: 'Session not found' });
       }

@@ -142,6 +142,20 @@ export const MIGRATE_LEGACY_PREVIEWS_SQL = `
    WHERE NOT EXISTS (
      SELECT 1 FROM worktree_preview_processes WHERE group_id = worktree_previews.id
    );
+
+  -- Sanity cleanup: a legacy row whose port collides with an already-
+  -- migrated process row would skip the process INSERT (UNIQUE(port)
+  -- conflict + INSERT OR IGNORE) but still leave the group row in
+  -- place. Drop any orphan groups so callers never see a group with
+  -- zero processes. Restricted to groups whose id matches a legacy
+  -- row so we never touch live, runtime-managed groups that are
+  -- mid-reservation (those don't go through this migration path).
+  DELETE FROM worktree_preview_groups
+   WHERE id IN (SELECT id FROM worktree_previews)
+     AND NOT EXISTS (
+       SELECT 1 FROM worktree_preview_processes
+        WHERE group_id = worktree_preview_groups.id
+     );
 `;
 
 /**
