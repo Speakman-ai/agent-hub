@@ -189,7 +189,7 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
     }
   });
 
-  it('honors defaultKind=plain (imported config returned in clear)', async () => {
+  it('honors defaultKind=plain (imported config rows land plain-kind, returned in clear)', async () => {
     const projectId = await freshProject();
     await request
       .post(`/api/projects/${projectId}/preview/secrets/import`)
@@ -197,11 +197,39 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
       .expect(200);
     const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
     const rows = list.body.secrets as Array<{ key: string; value: string; kind: string }>;
-    for (const r of rows) expect(r.kind).toBe('secret'); // parser hardcodes secret
-    // (defaultKind only applies when parser yielded no explicit kind; the
-    // parser already tags every row as `secret`, so defaultKind=plain
-    // does not override. The route-level test for this lives in the
-    // store unit test; here we just verify the route accepts the field.)
+    expect(rows).toHaveLength(2);
+    // defaultKind=plain reaches the store because parseDotEnv now emits
+    // kind: undefined and the route overlays the default. Rows land as
+    // plain-kind and are returned in clear.
+    for (const r of rows) {
+      expect(r.kind).toBe('plain');
+      expect(r.value).not.toBe(MASK);
+    }
+    expect(rows.find((r) => r.key === 'FEATURE_X')!.value).toBe('on');
+    expect(rows.find((r) => r.key === 'FEATURE_Y')!.value).toBe('off');
+  });
+
+  it('400s on an invalid defaultKind value', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/secrets/import`)
+      .send({ env: 'FOO=bar', defaultKind: 'bogus' })
+      .expect(400);
+    expect(res.body.error).toMatch(/defaultKind/i);
+  });
+
+  it('defaults defaultKind to secret when omitted', async () => {
+    const projectId = await freshProject();
+    await request
+      .post(`/api/projects/${projectId}/preview/secrets/import`)
+      .send({ env: 'A=1\nB=2' })
+      .expect(200);
+    const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
+    const rows = list.body.secrets as Array<{ kind: string; value: string }>;
+    for (const r of rows) {
+      expect(r.kind).toBe('secret');
+      expect(r.value).toBe(MASK);
+    }
   });
 
   it('replaces existing on `mode: replace` (default)', async () => {
@@ -247,6 +275,49 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
     // Parsed entries land as secret-kind (masked on GET), overwriting FOO.
     expect(map.FOO).toMatchObject({ value: MASK, kind: 'secret' });
     expect(map.NEWKEY).toMatchObject({ value: MASK, kind: 'secret' });
+  });
+
+  it('preserves a pre-existing secret-kind row on merge (BLOCKER #1 regression — PR #904)', async () => {
+    // Regression for PR #904 review: importing in merge mode used to
+    // silently delete every secret-kind row whose key wasn't in the
+    // imported blob, because the route only re-encrypted plain-kind
+    // rows. The fix routes merge through replacePreviewSecretsMixed +
+    // listRawPreviewSecretRows so secret-kind ciphertext round-trips
+    // without ever being decrypted-then-re-encrypted.
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/preview/secrets`)
+      .send({
+        secrets: [
+          { key: 'STRIPE_KEY', value: 'sk_live_REAL', kind: 'secret' },
+          { key: 'DATABASE_URL', value: 'postgres://prod', kind: 'secret' },
+          { key: 'FEATURE_X', value: 'on', kind: 'plain' },
+        ],
+      })
+      .expect(200);
+
+    // Import a NEW flag in merge mode — none of the existing keys are
+    // in the blob.
+    await request
+      .post(`/api/projects/${projectId}/preview/secrets/import`)
+      .send({ env: 'NEW_FLAG=1', mode: 'merge' })
+      .expect(200);
+
+    const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
+    const rows = list.body.secrets as Array<{ key: string; value: string; kind: string }>;
+    // All three pre-existing rows must survive — under the broken code,
+    // STRIPE_KEY and DATABASE_URL were silently dropped.
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+    expect(Object.keys(byKey).sort()).toEqual([
+      'DATABASE_URL',
+      'FEATURE_X',
+      'NEW_FLAG',
+      'STRIPE_KEY',
+    ]);
+    expect(byKey.STRIPE_KEY).toMatchObject({ kind: 'secret', value: MASK });
+    expect(byKey.DATABASE_URL).toMatchObject({ kind: 'secret', value: MASK });
+    expect(byKey.FEATURE_X).toMatchObject({ kind: 'plain', value: 'on' });
+    expect(byKey.NEW_FLAG).toMatchObject({ kind: 'secret', value: MASK });
   });
 
   it('rejects an .env that contains a reserved key', async () => {

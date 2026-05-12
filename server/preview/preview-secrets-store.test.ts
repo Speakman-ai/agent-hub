@@ -17,7 +17,9 @@ import '../test/setup.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   listPreviewSecrets,
+  listRawPreviewSecretRows,
   replacePreviewSecrets,
+  replacePreviewSecretsMixed,
   deletePreviewSecret,
   loadProjectEnvForSpawn,
   parseDotEnv,
@@ -279,25 +281,30 @@ describe('audit on upsert', () => {
 });
 
 describe('parseDotEnv', () => {
-  it('parses simple KEY=value pairs', () => {
+  // parseDotEnv intentionally returns entries with kind: undefined so
+  // the route-level `defaultKind` override is reachable (PR #904
+  // review). The store's `validateKindOrThrow` defaults undefined to
+  // 'secret' when these are passed through to `replacePreviewSecrets`.
+  it('parses simple KEY=value pairs with undefined kind', () => {
     const out = parseDotEnv('FOO=bar\nBAZ=qux');
     expect(out).toEqual([
-      { key: 'FOO', value: 'bar', kind: 'secret' },
-      { key: 'BAZ', value: 'qux', kind: 'secret' },
+      { key: 'FOO', value: 'bar' },
+      { key: 'BAZ', value: 'qux' },
     ]);
+    expect(out.every((e) => e.kind === undefined)).toBe(true);
   });
 
   it('strips a leading `export `', () => {
     const out = parseDotEnv('export FOO=bar');
-    expect(out).toEqual([{ key: 'FOO', value: 'bar', kind: 'secret' }]);
+    expect(out).toEqual([{ key: 'FOO', value: 'bar' }]);
   });
 
   it('strips matching double / single quote wrappers but preserves inner content', () => {
     const out = parseDotEnv(`A="hello world"\nB='single quoted'\nC="has=inner=eq"`);
     expect(out).toEqual([
-      { key: 'A', value: 'hello world', kind: 'secret' },
-      { key: 'B', value: 'single quoted', kind: 'secret' },
-      { key: 'C', value: 'has=inner=eq', kind: 'secret' },
+      { key: 'A', value: 'hello world' },
+      { key: 'B', value: 'single quoted' },
+      { key: 'C', value: 'has=inner=eq' },
     ]);
   });
 
@@ -308,7 +315,7 @@ describe('parseDotEnv', () => {
 
   it('keeps the LAST occurrence on duplicate keys', () => {
     const out = parseDotEnv('FOO=first\nFOO=second\nFOO=third');
-    expect(out).toEqual([{ key: 'FOO', value: 'third', kind: 'secret' }]);
+    expect(out).toEqual([{ key: 'FOO', value: 'third' }]);
   });
 
   it('skips lines with invalid identifiers', () => {
@@ -325,5 +332,124 @@ describe('parseDotEnv', () => {
   it('handles an empty / whitespace-only blob', () => {
     expect(parseDotEnv('')).toEqual([]);
     expect(parseDotEnv('   \n\n  \t')).toEqual([]);
+  });
+});
+
+describe('listRawPreviewSecretRows', () => {
+  it('returns the stored ciphertext, IV, tag, and kind for every row', () => {
+    replacePreviewSecrets(PROJECT_A, [
+      { key: 'STRIPE_KEY', value: 'sk_live', kind: 'secret' },
+      { key: 'FEATURE_X', value: 'on', kind: 'plain' },
+    ]);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    expect(raw).toHaveLength(2);
+    const byKey = Object.fromEntries(raw.map((r) => [r.key, r]));
+    expect(byKey.STRIPE_KEY.kind).toBe('secret');
+    expect(byKey.FEATURE_X.kind).toBe('plain');
+    // ciphertext is the iv:tag:cipher triple — non-empty, contains
+    // colons, never equals the plaintext.
+    expect(byKey.STRIPE_KEY.value_ciphertext).toMatch(/^[^:]+:[^:]+:.+$/);
+    expect(byKey.STRIPE_KEY.value_ciphertext).not.toContain('sk_live');
+  });
+
+  it('returns an empty array for a project with no secrets', () => {
+    expect(listRawPreviewSecretRows(PROJECT_A)).toEqual([]);
+  });
+});
+
+describe('replacePreviewSecretsMixed — merge-mode preservation', () => {
+  it('round-trips a secret-kind passthrough row without decrypting (BLOCKER #1 regression)', () => {
+    // Seed a secret-kind row and capture its raw form.
+    replacePreviewSecrets(PROJECT_A, [
+      { key: 'STRIPE_KEY', value: 'sk_live_REAL', kind: 'secret' },
+    ]);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    expect(raw).toHaveLength(1);
+
+    // Caller imports a new key. The existing STRIPE_KEY row MUST survive
+    // the merge — under the old route logic this row was silently
+    // dropped because listPreviewSecrets returned MASK and the route
+    // skipped non-plain rows.
+    replacePreviewSecretsMixed(PROJECT_A, [{ key: 'NEW_FLAG', value: '1', kind: 'plain' }], raw);
+
+    // Both keys must be present.
+    const after = listPreviewSecrets(PROJECT_A);
+    expect(after.map((r) => r.key).sort()).toEqual(['NEW_FLAG', 'STRIPE_KEY']);
+
+    // And the secret-kind value must still decrypt to the original
+    // plaintext on the spawn-merge path (the only path that reveals it).
+    const env = loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' });
+    expect(env.STRIPE_KEY).toBe('sk_live_REAL');
+    expect(env.NEW_FLAG).toBe('1');
+  });
+
+  it('overwrites a passthrough row when the same key appears in inputs ("inputs win")', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'API_KEY', value: 'old', kind: 'secret' }]);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    replacePreviewSecretsMixed(PROJECT_A, [{ key: 'API_KEY', value: 'new', kind: 'secret' }], raw);
+    const env = loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' });
+    expect(env.API_KEY).toBe('new');
+  });
+
+  it('preserves plain-kind passthrough rows verbatim', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'FEATURE_X', value: 'on', kind: 'plain' }]);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    replacePreviewSecretsMixed(PROJECT_A, [{ key: 'OTHER', value: 'y', kind: 'plain' }], raw);
+    const env = loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' });
+    expect(env.FEATURE_X).toBe('on');
+    expect(env.OTHER).toBe('y');
+  });
+
+  it('rejects an input with a reserved key (no write, validation atomic)', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'KEEP', value: 'me', kind: 'plain' }]);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    expect(() =>
+      replacePreviewSecretsMixed(PROJECT_A, [{ key: 'AGENT_HUB_URL', value: 'evil' }], raw),
+    ).toThrow(PreviewSecretValidationError);
+    // The original row is still there — nothing was deleted.
+    const after = listPreviewSecrets(PROJECT_A);
+    expect(after.map((r) => r.key)).toEqual(['KEEP']);
+  });
+
+  it('appends an upsert audit row covering the union of input + passthrough keys', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'OLD_SECRET', value: 'x', kind: 'secret' }]);
+    // Clear the audit trail for a clean assertion (the seed call wrote one).
+    getDb()
+      .prepare(`DELETE FROM worktree_preview_secret_audit WHERE project_id = ?`)
+      .run(PROJECT_A);
+    const raw = listRawPreviewSecretRows(PROJECT_A);
+    replacePreviewSecretsMixed(
+      PROJECT_A,
+      [{ key: 'NEW_FLAG', value: '1', kind: 'plain' }],
+      raw,
+      'user-merge',
+    );
+    const audit = listPreviewSecretAudit(PROJECT_A);
+    const upsert = audit.find((r) => r.action === 'upsert');
+    expect(upsert).toBeDefined();
+    expect(upsert!.keys.split('|').sort()).toEqual(['NEW_FLAG', 'OLD_SECRET']);
+    expect(upsert!.actor_user_id).toBe('user-merge');
+  });
+});
+
+describe('defaultKind override (via route → store)', () => {
+  it('replacePreviewSecrets defaults kind to secret when undefined', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'NO_KIND', value: 'v' }]);
+    const rows = listPreviewSecrets(PROJECT_A);
+    expect(rows[0].kind).toBe('secret');
+    expect(rows[0].value).toBe(MASK);
+  });
+
+  it('parseDotEnv + caller-supplied plain default lands as plain-kind rows', () => {
+    // This is the path the route uses for defaultKind: 'plain'. The
+    // parser yields kind: undefined; the route overlays defaultKind;
+    // the store accepts the explicit 'plain' and returns it in clear.
+    const parsed = parseDotEnv('CFG_A=on\nCFG_B=off');
+    const withPlainDefault = parsed.map((p) => ({ ...p, kind: 'plain' as const }));
+    replacePreviewSecrets(PROJECT_A, withPlainDefault);
+    const rows = listPreviewSecrets(PROJECT_A);
+    expect(rows.every((r) => r.kind === 'plain')).toBe(true);
+    expect(rows.find((r) => r.key === 'CFG_A')!.value).toBe('on');
+    expect(rows.find((r) => r.key === 'CFG_B')!.value).toBe('off');
   });
 });

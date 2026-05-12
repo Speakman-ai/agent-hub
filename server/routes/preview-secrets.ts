@@ -21,7 +21,9 @@ import type { RouteDeps } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import {
   listPreviewSecrets,
+  listRawPreviewSecretRows,
   replacePreviewSecrets,
+  replacePreviewSecretsMixed,
   parseDotEnv,
   PreviewSecretValidationError,
   type PreviewSecretInput,
@@ -106,12 +108,19 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
   //
   // Two contracts:
   //   - `mode: 'replace'` (default) → behaves like PUT after parsing.
-  //   - `mode: 'merge'`             → reads the current list, overlays
-  //                                    parsed entries (later wins),
-  //                                    and replaces the project's
-  //                                    secrets with the combined set.
-  // We keep the underlying store API as bulk-replace-only; merge is
-  // implemented here at the route layer so the store stays simple.
+  //   - `mode: 'merge'`             → reads the current raw rows,
+  //                                    keeps every existing row whose
+  //                                    key is NOT in the parsed blob
+  //                                    (carrying secret-kind ciphertext
+  //                                    through without decrypting), and
+  //                                    upserts the parsed entries on
+  //                                    top. "Later wins" only when the
+  //                                    same key appears in the blob.
+  //
+  // The merge path uses `replacePreviewSecretsMixed` so secret-kind
+  // rows survive a merge even though their value is masked on GET —
+  // the store round-trips their ciphertext rather than re-encrypting
+  // MASK as plaintext.
   router.post(
     '/api/projects/:projectId/preview/secrets/import',
     requireRole('Owner'),
@@ -128,41 +137,38 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
           throw new PreviewSecretValidationError('env must be a string');
         }
         const mode = body.mode === 'merge' ? 'merge' : 'replace';
-        const parsed = parseDotEnv(blob);
         // Optional default kind for newly-imported keys; rarely set,
         // but lets callers import a curated config block as `plain`.
-        const defaultKind = body.defaultKind === 'plain' ? 'plain' : 'secret';
+        // `parseDotEnv` returns entries with `kind` undefined so this
+        // override is the only thing that classifies them.
+        const defaultKind: SecretKind = body.defaultKind === 'plain' ? 'plain' : 'secret';
+        if (
+          body.defaultKind !== undefined &&
+          body.defaultKind !== 'plain' &&
+          body.defaultKind !== 'secret'
+        ) {
+          throw new PreviewSecretValidationError(
+            'defaultKind must be "plain" or "secret" if provided',
+          );
+        }
+        const parsed = parseDotEnv(blob);
         const inputs: PreviewSecretInput[] = parsed.map((p) => ({
           ...p,
           kind: p.kind ?? defaultKind,
         }));
 
-        let finalInputs = inputs;
-        if (mode === 'merge') {
-          const existing = listPreviewSecrets(project.id);
-          const merged = new Map<string, PreviewSecretInput>();
-          for (const row of existing) {
-            // existing.value is MASK for secret-kind rows; we can't
-            // re-encrypt MASK as the live value. Skip secret-kind
-            // rows on merge — the import only ever adds/overwrites.
-            // plain-kind rows can round-trip safely since their value
-            // is the real plaintext.
-            if (row.kind === 'plain') {
-              merged.set(row.key, { key: row.key, value: row.value, kind: 'plain' });
-            } else {
-              // Preserve the existing secret-kind row by skipping it
-              // here — the parsed entry below will overwrite if the
-              // user re-supplied the same key; otherwise we have to
-              // drop secret-kind preserves on merge (limitation
-              // documented in the route's JSDoc above).
-            }
-          }
-          for (const p of inputs) merged.set(p.key, p);
-          finalInputs = [...merged.values()];
-        }
-
         const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
-        const result = replacePreviewSecrets(project.id, finalInputs, actorUserId);
+        let result;
+        if (mode === 'merge') {
+          // Pull raw rows so secret-kind ciphertext can round-trip
+          // through the merge without ever decrypting it. Rows whose
+          // key is also in the parsed blob will be overwritten by the
+          // freshly-encrypted input inside `replacePreviewSecretsMixed`.
+          const existingRaw = listRawPreviewSecretRows(project.id);
+          result = replacePreviewSecretsMixed(project.id, inputs, existingRaw, actorUserId);
+        } else {
+          result = replacePreviewSecrets(project.id, inputs, actorUserId);
+        }
         res.json({
           imported: inputs.length,
           mode,

@@ -81,6 +81,24 @@ export interface PreviewSecretInput {
   kind?: SecretKind;
 }
 
+/**
+ * Raw row shape used by merge-mode imports to round-trip secret-kind
+ * rows without decrypting them. Callers obtain these via
+ * `listRawPreviewSecretRows` and feed them back through
+ * `replacePreviewSecretsMixed` so existing ciphertext is preserved
+ * across a bulk-replace without ever needing the plaintext.
+ *
+ * Not exposed via REST — only the route layer's merge implementation
+ * uses it, and only on data that just came out of the same DB.
+ */
+export interface PreviewSecretRawRow {
+  key: string;
+  value_ciphertext: string;
+  value_iv: string;
+  value_tag: string;
+  kind: SecretKind;
+}
+
 export class PreviewSecretValidationError extends Error {
   readonly statusCode = 400;
   constructor(message: string) {
@@ -262,6 +280,110 @@ export function replacePreviewSecrets(
   return listPreviewSecrets(projectId);
 }
 
+/**
+ * Internal helper: list raw rows (ciphertext intact) for a project.
+ * Used by the route's merge-mode import path to round-trip secret-kind
+ * rows without decrypting them. The returned shape exposes the stored
+ * ciphertext + IV + tag — never call this from a code path that ships
+ * data to a non-admin caller.
+ */
+export function listRawPreviewSecretRows(projectId: string): PreviewSecretRawRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT key, value_ciphertext, value_iv, value_tag, kind
+         FROM worktree_preview_secrets
+        WHERE project_id = ?
+        ORDER BY key ASC`,
+    )
+    .all(projectId) as PreviewSecretRawRow[];
+  return rows;
+}
+
+/**
+ * Bulk-replace combining freshly-encrypted `inputs` with pre-encrypted
+ * `rawPassthrough` rows. Validation + encryption runs on `inputs`; the
+ * passthrough rows are inserted with their existing ciphertext intact.
+ *
+ * If a key appears in BOTH `inputs` and `rawPassthrough`, the input
+ * (freshly-encrypted) wins — this matches merge-mode semantics ("later
+ * wins" with the parsed blob being the later side).
+ *
+ * The whole write runs in a single transaction so a half-written merge
+ * can never leave the project visible to a concurrent reader. The audit
+ * log records the union of keys actually persisted.
+ */
+export function replacePreviewSecretsMixed(
+  projectId: string,
+  inputs: readonly PreviewSecretInput[],
+  rawPassthrough: readonly PreviewSecretRawRow[],
+  actorUserId?: string | null,
+): PreviewSecretRow[] {
+  // Validate inputs up front so a single bad key aborts before write.
+  const normalized: Array<{ key: string; value: string; kind: SecretKind }> = [];
+  const seen = new Set<string>();
+  for (const raw of inputs) {
+    validateKeyOrThrow(raw.key);
+    validateValueOrThrow(raw.value, raw.key);
+    const kind = validateKindOrThrow(raw.kind, raw.key);
+    if (seen.has(raw.key)) {
+      throw new PreviewSecretValidationError(
+        `duplicate key "${raw.key}" in batch — bulk replace requires unique keys`,
+      );
+    }
+    seen.add(raw.key);
+    normalized.push({ key: raw.key, value: raw.value, kind });
+  }
+
+  // Drop passthrough rows that overlap with new inputs ("inputs win").
+  const inputKeys = new Set(normalized.map((n) => n.key));
+  const passthroughFinal = rawPassthrough.filter((r) => !inputKeys.has(r.key));
+
+  // Validate passthrough keys defensively. If a raw row's key is now in
+  // the reserved namespace (config changed after the row was written),
+  // refuse the entire merge — the caller can either delete the offending
+  // key explicitly or re-PUT a clean set.
+  for (const r of passthroughFinal) {
+    validateKeyOrThrow(r.key);
+  }
+
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
+    const insert = db.prepare(
+      `INSERT INTO worktree_preview_secrets
+         (id, project_id, key, value_ciphertext, value_iv, value_tag, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of normalized) {
+      const ciphertext = encryptSecret(row.value);
+      const { iv, tag } = splitIvTag(ciphertext);
+      insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+    }
+    for (const row of passthroughFinal) {
+      insert.run(
+        uuidv4(),
+        projectId,
+        row.key,
+        row.value_ciphertext,
+        row.value_iv,
+        row.value_tag,
+        row.kind,
+      );
+    }
+  });
+  tx();
+
+  appendAudit({
+    projectId,
+    keys: [...normalized.map((n) => n.key), ...passthroughFinal.map((p) => p.key)],
+    action: 'upsert',
+    actorUserId,
+  });
+
+  return listPreviewSecrets(projectId);
+}
+
 /** Delete a single (project, key) entry. Returns `true` if a row was deleted. */
 export function deletePreviewSecret(
   projectId: string,
@@ -279,10 +401,18 @@ export function deletePreviewSecret(
 }
 
 /**
- * Parse a `.env`-style blob into `PreviewSecretInput` entries. The
- * default kind is `secret`. Unparseable / blank lines are skipped.
- * Duplicate keys keep the **last** occurrence — mirroring how shell
- * env-loaders treat repeated assignments.
+ * Parse a `.env`-style blob into `PreviewSecretInput` entries.
+ *
+ * `kind` is left **undefined** on each entry so callers (the import
+ * route) can apply their own default — typically `secret`, but a
+ * `defaultKind=plain` request lets an operator pull a curated config
+ * block in clear-text. The store's own `replacePreviewSecrets` falls
+ * back to `secret` when kind is undefined, matching the historical
+ * default.
+ *
+ * Unparseable / blank lines are skipped. Duplicate keys keep the
+ * **last** occurrence — mirroring how shell env-loaders treat repeated
+ * assignments.
  *
  * Recognised line shapes:
  *   - `KEY=value`
@@ -315,7 +445,8 @@ export function parseDotEnv(blob: string): PreviewSecretInput[] {
       }
     }
     if (!VALID_KEY_RE.test(key)) continue; // skip syntactic garbage
-    out.set(key, { key, value, kind: 'secret' });
+    // kind left undefined here — caller decides via defaultKind.
+    out.set(key, { key, value });
   }
   return [...out.values()];
 }
