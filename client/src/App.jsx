@@ -1395,6 +1395,21 @@ export default function App() {
         case 'preview-defaults-detected':
           window.dispatchEvent(new CustomEvent('preview-defaults-ws', { detail: data }));
           break;
+        // AI-assisted preview setup wizard broadcasts. The route spawns
+        // a session (`preview_wizard_started`) and the skill pings the
+        // completion endpoint after persisting config + secrets
+        // (`preview_wizard_complete`). PreviewSection listens for the
+        // completion event to refetch the project record.
+        case 'preview_wizard_started':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:preview_wizard_started', { detail: data }),
+          );
+          break;
+        case 'preview_wizard_complete':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:preview_wizard_complete', { detail: data }),
+          );
+          break;
         case 'workflow_run':
         case 'workflow_run_status':
         case 'workflow_update':
@@ -3257,7 +3272,16 @@ export default function App() {
                         setActiveThread(null);
                       }
                     }
+                    // Direct-jump into a chat session (e.g. from the
+                    // Settings → Preview "AI Setup" wizard, which spawns
+                    // a wizard session and needs the user to land on it
+                    // immediately to see the streaming response).
+                    if (view === 'chat' && extra) {
+                      if (extra.agentId) setActiveAgentId(extra.agentId);
+                      if (extra.sessionId) setActiveSessionId(extra.sessionId);
+                    }
                   }}
+                  onOpenSession={({ sessionId, agentId }) => focusAgentSession(agentId, sessionId)}
                   showToast={showToast}
                   wsRef={wsRef}
                 />

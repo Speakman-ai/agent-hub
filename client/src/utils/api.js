@@ -65,6 +65,15 @@ export const api = {
       body: JSON.stringify({}),
       timeout: 60_000,
     }),
+  // Spawn the AI-assisted preview setup wizard. Server returns
+  // `{ sessionId, agentId, session }` — the client attaches to the
+  // standard chat panel (`useSessionStream(sessionId)`) so the UX is
+  // identical to any other agent session. Admin+.
+  startPreviewWizard: (projectId) =>
+    fetchJSON(`/projects/${projectId}/preview/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {
       method: 'DELETE',
