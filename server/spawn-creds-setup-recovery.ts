@@ -97,9 +97,11 @@ export function recoverActiveSessionsAfterSetup(deps: RecoveryDeps): RecoveryRes
       const minted = createApiKey(
         deps.ownerUserId,
         `spawn-recovery (${row.id.slice(0, 8)})`,
-        // No TTL — the file lives as long as the session does. Future
-        // session-cleanup will revoke + unlink in pairs.
-        null,
+        // 30-day TTL: prevents unbounded key accumulation if setup is
+        // re-run (e.g. re-bootstrap). Future session-cleanup will revoke
+        // + unlink in pairs before expiry, but the TTL self-cleans even
+        // if that follow-up never lands.
+        30,
       );
       writeSpawnCredsFile(row.id, minted.token, deps.dataDir);
       recovered += 1;

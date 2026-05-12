@@ -39,19 +39,55 @@ first, then demote yourself.
 
 ## API key resolution for scripts
 
-Every wrapper under `scripts/` resolves the key through
-`scripts/_common.sh` in this order:
+Every wrapper under `scripts/` resolves the key through `ah-api.sh`
+(sourced by `_common.sh`) **on every invocation** — there is no
+source-time freeze. Resolution order:
 
-1. `AGENT_HUB_API_KEY` environment variable (injected into sessions by
-   the server — this is the normal path).
-2. `x-api-key` value pulled from `~/.agent-hub/data/config.json`
-   (`apiKey` field) if the env var is unset.
-3. Empty — requests fall through to whatever JWT cookie the caller may
-   carry. Most agent-side calls will `401` in this state; re-source the
-   environment.
+1. `AGENT_HUB_API_KEY` environment variable (the normal path; injected
+   by `buildSpawnEnv` from `cfg.apiKey` at every spawn, so a config
+   rotation reaches every new heartbeat/cron/delegation/room-chat/
+   slack/design-chat process without a server restart).
+2. **Per-session spawn-creds file** at
+   `$AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token`
+   (mode `0600`, dir `0700`). Written by `/api/auth/setup` for every
+   session updated within the last 24h so long-running chat sessions
+   whose env was frozen pre-setup can recover without restarting. See
+   "Mid-flight recovery" below.
+3. **Home-dir fallback** at
+   `$HOME/.agent-hub/data/spawn-creds/$AGENT_HUB_SESSION_ID.token` for
+   deploys that override `dataDir` but the spawn somehow lost the env
+   pin.
+4. `x-api-key` value pulled from `~/.agent-hub/data/config.json`
+   (`apiKey` field) — legacy fallback for sessions predating the
+   spawn-creds file.
+5. Empty — requests fall through to whatever JWT cookie the caller may
+   carry. Most agent-side calls will `401` in this state.
 
 All wrappers send the resolved key as `x-api-key: <key>` and treat a
 missing key as a recoverable error, not a fatal one.
+
+### Mid-flight recovery (`/api/auth/setup` flips the gate)
+
+When `/api/auth/setup` succeeds on a previously-open instance, every
+in-flight session was spawned with an empty `AGENT_HUB_API_KEY`. The
+child env was captured once at `spawn()` and never refreshed, so the
+next tool call would `401` with no recovery short of restarting the
+session. The setup endpoint now:
+
+1. Iterates `sessions` with `updated_at >= now − 24h`.
+2. For each, mints a fresh `ahub_*` key (30-day TTL, name
+   `spawn-recovery (<sessionId8>)`) owned by the newly-created Owner.
+3. Atomically writes the plaintext to
+   `<dataDir>/spawn-creds/<sessionId>.token` (mode `0600`).
+4. Logs `event=spawn_creds_recovery candidates=… recovered=… failed=…`.
+
+Per-session failures are best-effort: they're logged but never abort
+the setup endpoint. Sessions older than 24h are intentionally skipped
+to avoid minting thousands of unused tokens for ancient rows.
+
+The wrappers then pick up the file on the very next call (step 2
+above), so an agent that was stranded mid-turn keeps working without
+manual intervention.
 
 ## Per-user API keys (`ahub_*`)
 

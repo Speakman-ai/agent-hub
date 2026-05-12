@@ -2330,18 +2330,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // the credential cannot be used to forge commits or open PRs.
         applyReviewerRoleLock(base, agent.role);
         applyGithubSpawnCredentials(base, tokenToInject);
-        if (config.apiKey) {
-          base.AGENT_HUB_API_KEY = config.apiKey;
-        }
+        // AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR are now injected by
+        // `buildSpawnEnv` (server/config.ts) so every spawn site —
+        // heartbeat, cron, delegation, room-chat, etc. — picks them up
+        // uniformly. Only AGENT_HUB_SESSION_ID is per-session and stays
+        // here.
         base.AGENT_HUB_SESSION_ID = sessionId;
-        // Pin the data dir so the shell wrappers' spawn-creds file
-        // fallback (`ah-api.sh:ah_resolve_key`) reads the same
-        // directory the server writes to. Without this, a deploy that
-        // overrides `dataDir` in config.json (vs the default
-        // `~/.agent-hub/data`) silently falls back to the home-dir
-        // path and misses the spawn-creds file. See
-        // `server/spawn-creds-file.ts`.
-        base.AGENT_HUB_DATA_DIR = config.dataDir;
         // Inject the Hub API base and project ID so spawned CLIs reach `/api`.
         // Defaults to loopback with the bound port (`getActualPort` inside the
         // resolver); deployments with remote tool hosts set AGENT_HUB_AGENT_URL /

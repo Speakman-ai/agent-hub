@@ -38,6 +38,10 @@ describe('recoverActiveSessionsAfterSetup', () => {
   beforeEach(() => {
     tmp = mkdtempSync(path.join(os.tmpdir(), 'spawn-recovery-test-'));
     db = new Database(':memory:');
+    // Minimal schema: recovery code only reads id/updated_at, so we omit
+    // owner_user_id and other real columns intentionally. If the recovery
+    // filter ever tightens to "WHERE owner_user_id IS NULL OR owner_user_id = ?"
+    // (hinted at in routes/auth.ts), expand this fixture to include that column.
     db.exec(`
       CREATE TABLE sessions (
         id TEXT PRIMARY KEY,
