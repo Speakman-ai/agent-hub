@@ -165,3 +165,113 @@ describe('ensureProjectRepoCloned — auto-clone behaviour', () => {
     ).rejects.toThrow(/not a supported GitHub HTTPS URL/);
   });
 });
+
+describe('ensureProjectRepoCloned — user PAT fallback', () => {
+  let tmpRoot: string;
+  let projectCwd: string;
+
+  beforeEach(() => {
+    tmpRoot = path.join(
+      os.tmpdir(),
+      `auto-clone-pat-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpRoot, { recursive: true });
+    projectCwd = path.join(tmpRoot, 'project-cwd');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not consult the user PAT resolver when no requestingUserId is provided', async () => {
+    const resolveToken = vi.fn(async () => null);
+    const resolveUserPat = vi.fn(() => 'should-not-be-read');
+
+    await expect(
+      ensureProjectRepoCloned(projectCwd, 'https://github.com/agenthub-test/missing.git', {
+        projectId: 'proj-no-user',
+        resolveToken,
+        resolveUserPat,
+      }),
+    ).rejects.toThrow(/Auto-clone failed/);
+
+    expect(resolveToken).toHaveBeenCalledOnce();
+    // No requestingUserId → PAT lookup is skipped entirely.
+    expect(resolveUserPat).not.toHaveBeenCalled();
+  });
+
+  it('consults the user PAT only after the installation-token resolver returns null', async () => {
+    const resolveToken = vi.fn(async () => null);
+    const resolveUserPat = vi.fn(() => null); // user has no stored PAT either
+
+    await expect(
+      ensureProjectRepoCloned(projectCwd, 'https://github.com/agenthub-test/missing.git', {
+        projectId: 'proj-pat-null',
+        resolveToken,
+        requestingUserId: 'user-1',
+        resolveUserPat,
+      }),
+    ).rejects.toThrow(/Auto-clone failed/);
+
+    expect(resolveToken).toHaveBeenCalledOnce();
+    expect(resolveUserPat).toHaveBeenCalledExactlyOnceWith('user-1');
+  });
+
+  it('prefers the installation token over the user PAT — App identity wins for bot attribution', async () => {
+    const INSTALL_TOK = 'ghs_install_xxxxxxxxxxxxxxxxxxx';
+    const USER_PAT = 'ghp_user_yyyyyyyyyyyyyyyyyyyy';
+    const resolveToken = vi.fn(async () => INSTALL_TOK);
+    const resolveUserPat = vi.fn(() => USER_PAT);
+
+    let captured: Error | null = null;
+    try {
+      await ensureProjectRepoCloned(
+        projectCwd,
+        'https://github.com/agenthub-test/missing-priv.git',
+        {
+          projectId: 'proj-prefer-install',
+          resolveToken,
+          requestingUserId: 'user-1',
+          resolveUserPat,
+        },
+      );
+    } catch (err) {
+      captured = err as Error;
+    }
+    expect(captured).not.toBeNull();
+    expect(resolveToken).toHaveBeenCalledOnce();
+    // Installation token short-circuits the PAT lookup — no fallback consulted.
+    expect(resolveUserPat).not.toHaveBeenCalled();
+  });
+
+  it('redacts the user PAT from error messages when the PAT path is taken', async () => {
+    const USER_PAT = 'ghp_userToken_REDACT_ME_zzzzzzzzzzzzzzzz';
+    const resolveToken = vi.fn(async () => null);
+    const resolveUserPat = vi.fn(() => USER_PAT);
+
+    let captured: Error | null = null;
+    try {
+      await ensureProjectRepoCloned(
+        projectCwd,
+        'https://github.com/agenthub-test/missing-with-pat.git',
+        {
+          projectId: 'proj-redact-pat',
+          resolveToken,
+          requestingUserId: 'user-1',
+          resolveUserPat,
+        },
+      );
+    } catch (err) {
+      captured = err as Error;
+    }
+    expect(captured).not.toBeNull();
+    // The raw PAT must NEVER appear in the surfaced error — redactToken
+    // substitutes `***`. The unauthenticated URL and project id should still
+    // be present so operators can diagnose without the secret leaking.
+    expect(captured!.message).not.toContain(USER_PAT);
+    expect(captured!.message).toContain('https://github.com/agenthub-test/missing-with-pat.git');
+    expect(captured!.message).toContain('proj-redact-pat');
+  });
+});

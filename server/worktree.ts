@@ -7,6 +7,7 @@ import config from './config.js';
 import type { SessionRow } from './types.js';
 import { classifyCloneUrl, buildAuthenticatedUrl, redactToken } from './clone-url-auth.js';
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
+import { getGithubPatForUser, gitAuthArgsForGithubPat } from './skill-credentials-github.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -577,6 +578,18 @@ export async function ensureProjectRepoCloned(
   options: {
     projectId?: string;
     resolveToken?: InstallationTokenResolver;
+    /**
+     * When set, and the GitHub App installation token resolver returns
+     * `null`, the user's stored `GH_TOKEN` skill credential is used as a
+     * fallback so private repos still clone for self-hosters without the
+     * Agent installed. Auth is injected via a per-invocation `-c
+     * http.<host>.extraheader=…` arg (the GH Actions pattern), so the PAT
+     * never lands in the resulting repo's on-disk `.git/config`.
+     * Installation token wins when both exist — preserves bot attribution.
+     */
+    requestingUserId?: string | null;
+    /** Test seam — defaults to `getGithubPatForUser`. */
+    resolveUserPat?: (userId: string) => string | null;
   } = {},
 ): Promise<boolean> {
   if (!repoUrl) return false;
@@ -612,7 +625,19 @@ export async function ensureProjectRepoCloned(
     );
   }
 
+  // User-PAT fallback. Only consulted when the App installation token is
+  // unavailable: the bot identity is preferred when present so PR
+  // attribution / API rate buckets stay with the App. The PAT is injected
+  // via `-c http.…extraheader=…` and never embedded into the clone URL,
+  // so it cannot land in the on-disk `.git/config` of the resulting repo.
+  let userPat: string | null = null;
+  if (!token && options.requestingUserId) {
+    const resolvePat = options.resolveUserPat ?? getGithubPatForUser;
+    userPat = resolvePat(options.requestingUserId);
+  }
+
   const cloneUrl = token ? buildAuthenticatedUrl(parsed, token) : repoUrl;
+  const authArgs = userPat ? gitAuthArgsForGithubPat(userPat) : [];
 
   // Existing zombie (path exists but not a git repo) → wipe before clone.
   if (existsSync(projectCwd)) {
@@ -633,22 +658,25 @@ export async function ensureProjectRepoCloned(
 
   try {
     await cloneWithRetry(
-      ['clone', '--quiet', cloneUrl, projectCwd],
+      [...authArgs, 'clone', '--quiet', cloneUrl, projectCwd],
       { timeoutMs: CLONE_TIMEOUT_MS },
       projectCwd,
     );
   } catch (err: unknown) {
-    // Strip the token from the error message before re-throwing so the
-    // caller / log pipeline never sees the auth-injected URL.
+    // Strip both auth secrets from the error message before re-throwing
+    // so the caller / log pipeline never sees the installation token or
+    // the user PAT. `redactToken` is a no-op when its second argument is
+    // falsy, so the chain is safe even when only one of the two is set.
     const raw = err instanceof Error ? err.message : String(err);
-    const safe = redactToken(raw, token);
+    const safeOnce = redactToken(raw, token);
+    const safe = redactToken(safeOnce, userPat);
     throw new Error(
       `Auto-clone failed for project ${options.projectId ?? '<unknown>'} (${repoUrl}): ${safe}`,
     );
   }
 
   console.log(
-    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from ${repoUrl} → ${projectCwd}`,
+    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from ${repoUrl} → ${projectCwd}${userPat && !token ? ' (user PAT)' : ''}`,
   );
   return true;
 }
@@ -974,14 +1002,29 @@ export async function ensureSessionWorkspace(
     return session.worktree_path;
   }
 
+  // Per-session GitHub PAT resolution. Pulled once at the top so every
+  // git network call below — auto-clone of the project, fresh shallow
+  // clone of the session worktree, reuse-path fetches against
+  // origin/<base> — uses the same credential. Empty when the session has
+  // no owner_user_id (legacy rows, system-owned sessions) or when the
+  // owner hasn't stored a PAT.
+  const sessionOwnerId = session.owner_user_id ?? null;
+  const userPat: string | null = getGithubPatForUser(sessionOwnerId);
+  const authArgs: string[] = userPat ? gitAuthArgsForGithubPat(userPat) : [];
+
   // Self-heal: when a `repoUrl` is set and `projectCwd` is missing or not a
   // git repo, auto-clone the project before continuing. Errors here are
   // surfaced via `onFailure` (the same channel used by other worktree
   // failures) so downstream behaviour — falling back to the project cwd
-  // — is unchanged when auto-clone fails.
+  // — is unchanged when auto-clone fails. The session owner's PAT is
+  // threaded through as a fallback so private-repo first-time clones
+  // succeed for self-hosters without the GitHub App installed.
   if (repoUrl) {
     try {
-      await ensureProjectRepoCloned(projectCwd, repoUrl, { projectId });
+      await ensureProjectRepoCloned(projectCwd, repoUrl, {
+        projectId,
+        requestingUserId: sessionOwnerId,
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Workspace] ${message}`);
@@ -1010,13 +1053,14 @@ export async function ensureSessionWorkspace(
     // or rebase explicitly.
     let fetchSucceeded = false;
     try {
-      await fetchWithRetry(['fetch', 'origin', '--quiet'], {
+      await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
       fetchSucceeded = true;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = redactToken(raw, userPat);
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
 
@@ -1040,11 +1084,12 @@ export async function ensureSessionWorkspace(
       let baseRefRefreshed = true;
       try {
         await fetchWithRetry(
-          ['fetch', 'origin', `${trimmedBase}:refs/remotes/origin/${trimmedBase}`],
+          [...authArgs, 'fetch', 'origin', `${trimmedBase}:refs/remotes/origin/${trimmedBase}`],
           { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
         );
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
+        const message = redactToken(raw, userPat);
         console.warn(
           `[Workspace] Could not refresh origin/${trimmedBase} for drift check on session "${safeName}":`,
           message,
@@ -1093,8 +1138,23 @@ export async function ensureSessionWorkspace(
   try {
     const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
+      // Canonicalize the source URL so a token previously embedded in the
+      // project repo's `remote.origin.url` (legacy installs that cloned
+      // with `https://x-access-token:…@github.com/…`) does NOT end up in
+      // the session clone's `.git/config`. For github-https we rebuild
+      // the clean `https://github.com/<owner>/<repo>.git` form and pair
+      // it with `authArgs` (per-invocation header injection) so the
+      // resulting clone has no token persisted anywhere on disk.
+      const parsedRemote = classifyCloneUrl(remoteUrl);
+      const cloneSourceUrl =
+        parsedRemote.kind === 'github-https' && parsedRemote.owner && parsedRemote.repo
+          ? `https://github.com/${parsedRemote.owner}/${parsedRemote.repo}.git`
+          : remoteUrl;
+      // Only forward auth args for github.com remotes — other hosts
+      // (bitbucket, internal mirrors) should pass through unauthenticated.
+      const cloneAuthArgs = parsedRemote.kind === 'github-https' ? authArgs : [];
       await cloneWithRetry(
-        ['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir],
+        [...cloneAuthArgs, 'clone', '--depth', '1', '--quiet', cloneSourceUrl, cloneDir],
         { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
         cloneDir,
       );
@@ -1110,7 +1170,7 @@ export async function ensureSessionWorkspace(
     if (base) {
       try {
         await fetchWithRetry(
-          ['fetch', 'origin', `${base}:refs/remotes/origin/${base}`, '--depth', '1'],
+          [...authArgs, 'fetch', 'origin', `${base}:refs/remotes/origin/${base}`, '--depth', '1'],
           {
             cwd: cloneDir,
             timeoutMs: FETCH_TIMEOUT_MS,
@@ -1118,7 +1178,8 @@ export async function ensureSessionWorkspace(
         );
         await runGit(['reset', '--hard', `origin/${base}`], { cwd: cloneDir });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
+        const message = redactToken(raw, userPat);
         console.error(`[Workspace] Failed to position session clone on origin/${base}:`, message);
         onFailure?.(session.id, message);
         return projectCwd;
@@ -1131,10 +1192,13 @@ export async function ensureSessionWorkspace(
 
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
-    console.log(`[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})`);
+    console.log(
+      `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userPat ? ' (PAT)' : ''}`,
+    );
     return cloneDir;
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const raw = err instanceof Error ? err.message : String(err);
+    const message = redactToken(raw, userPat);
     console.error(`[Workspace] Failed to create session clone:`, message);
     onFailure?.(session.id, message);
     return projectCwd;
