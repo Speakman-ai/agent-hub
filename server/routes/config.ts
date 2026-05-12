@@ -1107,6 +1107,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   // project (existing-by-id for the per-project endpoint, freshly created for
   // the no-id endpoint) and for sending the HTTP response — keeping IO out of
   // here means the helper is easy to unit-test in isolation.
+  //
+  // Each section is wrapped in a `runSection(...)` boundary so the route-level
+  // catch can report **which** section / row triggered a 500. Without this,
+  // better-sqlite3's generic "Too few parameter values were provided" surfaces
+  // as a bare 500 with no hint at the offending statement or input shape —
+  // making large imports (hundreds of cards, comments, etc.) effectively
+  // un-debuggable from the UI. See card `import-too-few-parameter-values`.
   function runProjectImport(
     targetProject: Project,
     data: ProjectExportData,
@@ -1121,147 +1128,203 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       kanban: false,
     };
 
+    // Diagnostic boundary: wraps a section so a stray throw from
+    // better-sqlite3 / JSON / etc. is re-raised as a typed error tagged with
+    // the section name and an optional row context. The route handlers
+    // unwrap this back into `{ error, section, detail }` on the 500.
+    const runSection = <T>(section: string, fn: () => T): T => {
+      try {
+        return fn();
+      } catch (e: unknown) {
+        const err = e as Error & { __projectImportSection?: string };
+        if (!err.__projectImportSection) {
+          err.__projectImportSection = section;
+          // Preserve the original better-sqlite3 message verbatim so the
+          // root-cause string ("Too few parameter values were provided",
+          // "NOT NULL constraint failed", etc.) stays mineable.
+          err.message = `[${section}] ${err.message}`;
+        }
+        throw err;
+      }
+    };
+
     if (data.project) {
-      (targetProject as Record<string, unknown>).agents =
-        data.project.agents || (targetProject as Record<string, unknown>).agents;
-      targetProject.color = data.project.color || targetProject.color;
-      (targetProject as Record<string, unknown>).leadAgent =
-        data.project.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
-      (targetProject as Record<string, unknown>).subAgents =
-        data.project.subAgents || (targetProject as Record<string, unknown>).subAgents;
-      if (data.project.commands)
-        (targetProject as Record<string, unknown>).commands = data.project.commands;
-      saveProjects();
-      results.project = true;
+      runSection('project', () => {
+        (targetProject as Record<string, unknown>).agents =
+          data.project!.agents || (targetProject as Record<string, unknown>).agents;
+        targetProject.color = data.project!.color || targetProject.color;
+        (targetProject as Record<string, unknown>).leadAgent =
+          data.project!.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
+        (targetProject as Record<string, unknown>).subAgents =
+          data.project!.subAgents || (targetProject as Record<string, unknown>).subAgents;
+        if (data.project!.commands)
+          (targetProject as Record<string, unknown>).commands = data.project!.commands;
+        saveProjects();
+        results.project = true;
+      });
     }
 
     if (Array.isArray(data.crons)) {
-      const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
-      const existingNames = new Set(existingCrons.map((c) => c.name));
-      let imported = 0;
-      for (const c of data.crons) {
-        if (existingNames.has(c.name)) continue;
-        // Validate `model` against the cron API allowlist so a stale or
-        // hand-crafted export can't smuggle an unknown id into the DB
-        // and crash the CLI at run time. An invalid id falls back to
-        // null (engine default) instead of failing the whole import.
-        let importedModel: string | null = null;
-        try {
-          importedModel = normalizeCronModel(c.model);
-        } catch {
-          importedModel = null;
-        }
-        stmts.createCron.run(
-          c.name,
-          c.schedule,
-          c.prompt,
-          targetProject.cwd,
-          c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
-          targetProject.id || null,
-          typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
-          c.notify_on_run ? 1 : 0,
-          importedModel,
-          cronImportSkillPrincipal(c.skill_principal_agent_id, targetProject),
-        );
-        imported++;
-      }
-      results.crons = `${imported} new, ${data.crons.length - imported} skipped`;
-    }
-
-    if (Array.isArray(data.rooms)) {
-      const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
-      const existingNames = new Set(existingRooms.map((r) => r.name));
-      let imported = 0;
-      for (const r of data.rooms) {
-        if (existingNames.has(r.name)) continue;
-        const roomId = uuidv4();
-        stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
-        if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
-        if (Array.isArray(r.agents)) {
-          for (const ra of r.agents) {
-            stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
+      const crons = data.crons;
+      runSection('crons', () => {
+        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingCrons.map((c) => c.name));
+        let imported = 0;
+        for (const c of crons) {
+          if (existingNames.has(c.name)) continue;
+          // Validate `model` against the cron API allowlist so a stale or
+          // hand-crafted export can't smuggle an unknown id into the DB
+          // and crash the CLI at run time. An invalid id falls back to
+          // null (engine default) instead of failing the whole import.
+          let importedModel: string | null = null;
+          try {
+            importedModel = normalizeCronModel(c.model);
+          } catch {
+            importedModel = null;
           }
-        }
-        imported++;
-      }
-      results.rooms = `${imported} new, ${data.rooms.length - imported} skipped`;
-    }
-
-    if (Array.isArray(data.webhooks)) {
-      const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
-        repo_url: string;
-      }>;
-      const existingRepos = new Set(existing.map((w) => w.repo_url));
-      let imported = 0;
-      for (const w of data.webhooks) {
-        if (existingRepos.has(w.repo_url)) continue;
-        const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
-        stmts.createWebhookConfig.run(
-          targetProjectId,
-          w.repo_url,
-          secret,
-          w.events || '{}',
-          w.enabled ? 1 : 0,
-          typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
-        );
-        imported++;
-      }
-      results.webhooks = `${imported} new, ${data.webhooks.length - imported} skipped`;
-    }
-
-    if (Array.isArray(data.wiki)) {
-      let imported = 0,
-        updated = 0;
-      for (const page of data.wiki) {
-        const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
-          | Record<string, unknown>
-          | undefined;
-        if (existing) {
-          stmts.updateWikiPage.run(
-            page.title,
-            page.content,
-            page.category || 'general',
-            page.updated_by || 'import',
-            targetProjectId,
-            page.slug,
-          );
-          updated++;
-        } else {
-          stmts.createWikiPage.run(
-            uuidv4(),
-            targetProjectId,
-            page.title,
-            page.slug,
-            page.content || '',
-            page.category || 'general',
-            page.updated_by || 'import',
+          stmts.createCron.run(
+            c.name,
+            c.schedule,
+            c.prompt,
+            targetProject.cwd,
+            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+            targetProject.id || null,
+            typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
+            c.notify_on_run ? 1 : 0,
+            importedModel,
+            cronImportSkillPrincipal(c.skill_principal_agent_id, targetProject),
           );
           imported++;
         }
-      }
-      results.wiki = `${imported} new, ${updated} updated`;
+        results.crons = `${imported} new, ${crons.length - imported} skipped`;
+      });
+    }
+
+    if (Array.isArray(data.rooms)) {
+      const rooms = data.rooms;
+      runSection('rooms', () => {
+        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingRooms.map((r) => r.name));
+        let imported = 0;
+        for (const r of rooms) {
+          if (existingNames.has(r.name)) continue;
+          const roomId = uuidv4();
+          stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
+          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
+          if (Array.isArray(r.agents)) {
+            for (const ra of r.agents) {
+              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
+            }
+          }
+          imported++;
+        }
+        results.rooms = `${imported} new, ${rooms.length - imported} skipped`;
+      });
+    }
+
+    if (Array.isArray(data.webhooks)) {
+      const webhooks = data.webhooks;
+      runSection('webhooks', () => {
+        const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
+          repo_url: string;
+        }>;
+        const existingRepos = new Set(existing.map((w) => w.repo_url));
+        let imported = 0;
+        for (const w of webhooks) {
+          if (existingRepos.has(w.repo_url)) continue;
+          const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
+          stmts.createWebhookConfig.run(
+            targetProjectId,
+            w.repo_url,
+            secret,
+            w.events || '{}',
+            w.enabled ? 1 : 0,
+            typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
+          );
+          imported++;
+        }
+        results.webhooks = `${imported} new, ${webhooks.length - imported} skipped`;
+      });
+    }
+
+    if (Array.isArray(data.wiki)) {
+      const wiki = data.wiki;
+      runSection('wiki', () => {
+        let imported = 0,
+          updated = 0;
+        for (const page of wiki) {
+          const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
+            | Record<string, unknown>
+            | undefined;
+          if (existing) {
+            stmts.updateWikiPage.run(
+              page.title,
+              page.content,
+              page.category || 'general',
+              page.updated_by || 'import',
+              targetProjectId,
+              page.slug,
+            );
+            updated++;
+          } else {
+            stmts.createWikiPage.run(
+              uuidv4(),
+              targetProjectId,
+              page.title,
+              page.slug,
+              page.content || '',
+              page.category || 'general',
+              page.updated_by || 'import',
+            );
+            imported++;
+          }
+        }
+        results.wiki = `${imported} new, ${updated} updated`;
+      });
     }
 
     if (data.kanban) {
-      let existingBoard = stmts.getKanbanBoard.get(targetProjectId) as { id: string } | undefined;
-      let boardId: string;
-      let boardCreated = false;
-      const colIdMap: Record<string, string> = {};
+      const kanban = data.kanban;
+      runSection('kanban', () => {
+        let existingBoard = stmts.getKanbanBoard.get(targetProjectId) as { id: string } | undefined;
+        let boardId: string;
+        let boardCreated = false;
+        const colIdMap: Record<string, string> = {};
 
-      if (existingBoard) {
-        boardId = existingBoard.id;
-        const existingCols = stmts.getKanbanColumns.all(boardId) as Array<{
-          id: string;
-          name: string;
-        }>;
-        for (const col of existingCols) {
-          const matchingImported = (data.kanban.columns || []).find(
-            (c) => c.name.toLowerCase() === col.name.toLowerCase(),
+        if (existingBoard) {
+          boardId = existingBoard.id;
+          const existingCols = stmts.getKanbanColumns.all(boardId) as Array<{
+            id: string;
+            name: string;
+          }>;
+          for (const col of existingCols) {
+            const matchingImported = (kanban.columns || []).find(
+              (c) => c.name.toLowerCase() === col.name.toLowerCase(),
+            );
+            if (matchingImported) colIdMap[matchingImported.id] = col.id;
+          }
+          for (const col of kanban.columns || []) {
+            if (!colIdMap[col.id]) {
+              const newColId = uuidv4();
+              colIdMap[col.id] = newColId;
+              stmts.createKanbanColumn.run(
+                newColId,
+                boardId,
+                col.name,
+                col.position,
+                col.color || null,
+              );
+            }
+          }
+        } else {
+          boardId = uuidv4();
+          stmts.createKanbanBoard.run(
+            boardId,
+            targetProjectId,
+            kanban.board?.name || `${targetProject.name} Board`,
           );
-          if (matchingImported) colIdMap[matchingImported.id] = col.id;
-        }
-        for (const col of data.kanban.columns || []) {
-          if (!colIdMap[col.id]) {
+          boardCreated = true;
+          for (const col of kanban.columns || []) {
             const newColId = uuidv4();
             colIdMap[col.id] = newColId;
             stmts.createKanbanColumn.run(
@@ -1273,162 +1336,156 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             );
           }
         }
-      } else {
-        boardId = uuidv4();
-        stmts.createKanbanBoard.run(
-          boardId,
-          targetProjectId,
-          data.kanban.board?.name || `${targetProject.name} Board`,
-        );
-        boardCreated = true;
-        for (const col of data.kanban.columns || []) {
-          const newColId = uuidv4();
-          colIdMap[col.id] = newColId;
-          stmts.createKanbanColumn.run(
+
+        const epicIdMap: Record<string, string> = {};
+        const existingEpics = stmts.getKanbanEpics.all(boardId) as Array<{
+          id: string;
+          name: string;
+        }>;
+        const existingEpicNames = new Set(existingEpics.map((e) => e.name.toLowerCase()));
+        let epicsImported = 0;
+        for (const epic of kanban.epics || []) {
+          if (existingEpicNames.has(epic.name.toLowerCase())) {
+            const existing = existingEpics.find(
+              (e) => e.name.toLowerCase() === epic.name.toLowerCase(),
+            );
+            if (existing) epicIdMap[epic.id] = existing.id;
+            continue;
+          }
+          const newEpicId = uuidv4();
+          epicIdMap[epic.id] = newEpicId;
+          stmts.createKanbanEpic.run(
+            newEpicId,
+            boardId,
+            epic.name,
+            epic.description || '',
+            epic.color || '#6b7280',
+            epic.position || 0,
+          );
+          const importedEpicPrBase = (epic as { pr_base_branch?: string | null }).pr_base_branch;
+          if (importedEpicPrBase != null && String(importedEpicPrBase).trim() !== '') {
+            const br = parsePrBaseBranchInput(importedEpicPrBase);
+            if (br.ok && br.value) {
+              const row = stmts.getKanbanEpic.get(newEpicId) as {
+                name: string;
+                description: string | null;
+                color: string;
+                autonomous: number;
+                autonomous_interval: number;
+                autonomous_max_concurrent: number;
+                autonomous_model: string | null;
+                orchestration_budgets_json?: string | null;
+              };
+              stmts.updateKanbanEpic.run(
+                row.name,
+                row.description,
+                row.color,
+                row.autonomous,
+                row.autonomous_interval,
+                row.autonomous_max_concurrent,
+                row.autonomous_model ?? null,
+                row.orchestration_budgets_json ?? null,
+                br.value,
+                newEpicId,
+              );
+            }
+          }
+          epicsImported++;
+        }
+
+        const existingCards = stmts.getKanbanCards.all(boardId) as Array<{ title: string }>;
+        const existingCardTitles = new Set(existingCards.map((c) => c.title.toLowerCase()));
+        let cardsImported = 0,
+          cardsSkipped = 0;
+        for (const card of kanban.cards || []) {
+          if (existingCardTitles.has(card.title.toLowerCase())) {
+            cardsSkipped++;
+            continue;
+          }
+          const newCardId = uuidv4();
+          const newColId = colIdMap[card.column_id];
+          if (!newColId) continue;
+          const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
+          const importAssignModelRaw = (card as { assign_model?: string | null }).assign_model;
+          let importAssignModel =
+            typeof importAssignModelRaw === 'string' && importAssignModelRaw.trim()
+              ? importAssignModelRaw.trim()
+              : null;
+          if (importAssignModel) {
+            const assigneeForModel =
+              typeof card.assignee === 'string' && card.assignee.trim()
+                ? card.assignee.trim()
+                : null;
+            const v = validateKanbanAssignModel(
+              importAssignModel,
+              targetProject,
+              assigneeForModel,
+              config,
+            );
+            if (!v.ok) importAssignModel = null;
+          }
+          stmts.createKanbanCard.run(
+            newCardId,
             newColId,
             boardId,
-            col.name,
-            col.position,
-            col.color || null,
-          );
-        }
-      }
-
-      const epicIdMap: Record<string, string> = {};
-      const existingEpics = stmts.getKanbanEpics.all(boardId) as Array<{
-        id: string;
-        name: string;
-      }>;
-      const existingEpicNames = new Set(existingEpics.map((e) => e.name.toLowerCase()));
-      let epicsImported = 0;
-      for (const epic of data.kanban.epics || []) {
-        if (existingEpicNames.has(epic.name.toLowerCase())) {
-          const existing = existingEpics.find(
-            (e) => e.name.toLowerCase() === epic.name.toLowerCase(),
-          );
-          if (existing) epicIdMap[epic.id] = existing.id;
-          continue;
-        }
-        const newEpicId = uuidv4();
-        epicIdMap[epic.id] = newEpicId;
-        stmts.createKanbanEpic.run(
-          newEpicId,
-          boardId,
-          epic.name,
-          epic.description || '',
-          epic.color || '#6b7280',
-          epic.position || 0,
-        );
-        const importedEpicPrBase = (epic as { pr_base_branch?: string | null }).pr_base_branch;
-        if (importedEpicPrBase != null && String(importedEpicPrBase).trim() !== '') {
-          const br = parsePrBaseBranchInput(importedEpicPrBase);
-          if (br.ok && br.value) {
-            const row = stmts.getKanbanEpic.get(newEpicId) as {
-              name: string;
-              description: string | null;
-              color: string;
-              autonomous: number;
-              autonomous_interval: number;
-              autonomous_max_concurrent: number;
-              autonomous_model: string | null;
-              orchestration_budgets_json?: string | null;
-            };
-            stmts.updateKanbanEpic.run(
-              row.name,
-              row.description,
-              row.color,
-              row.autonomous,
-              row.autonomous_interval,
-              row.autonomous_max_concurrent,
-              row.autonomous_model ?? null,
-              row.orchestration_budgets_json ?? null,
-              br.value,
-              newEpicId,
-            );
-          }
-        }
-        epicsImported++;
-      }
-
-      const existingCards = stmts.getKanbanCards.all(boardId) as Array<{ title: string }>;
-      const existingCardTitles = new Set(existingCards.map((c) => c.title.toLowerCase()));
-      let cardsImported = 0,
-        cardsSkipped = 0;
-      for (const card of data.kanban.cards || []) {
-        if (existingCardTitles.has(card.title.toLowerCase())) {
-          cardsSkipped++;
-          continue;
-        }
-        const newCardId = uuidv4();
-        const newColId = colIdMap[card.column_id];
-        if (!newColId) continue;
-        const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
-        const importAssignModelRaw = (card as { assign_model?: string | null }).assign_model;
-        let importAssignModel =
-          typeof importAssignModelRaw === 'string' && importAssignModelRaw.trim()
-            ? importAssignModelRaw.trim()
-            : null;
-        if (importAssignModel) {
-          const assigneeForModel =
-            typeof card.assignee === 'string' && card.assignee.trim() ? card.assignee.trim() : null;
-          const v = validateKanbanAssignModel(
-            importAssignModel,
-            targetProject,
-            assigneeForModel,
-            config,
-          );
-          if (!v.ok) importAssignModel = null;
-        }
-        stmts.createKanbanCard.run(
-          newCardId,
-          newColId,
-          boardId,
-          card.title,
-          card.description || '',
-          card.priority || 'medium',
-          card.assignee || '',
-          card.labels || '',
-          null,
-          card.github_issue_url || null,
-          card.created_by || 'import',
-          importAssignModel,
-          card.position || 0,
-        );
-        if (newEpicId) {
-          stmts.updateKanbanCard.run(
             card.title,
             card.description || '',
             card.priority || 'medium',
-            card.assignee || null,
-            card.labels || null,
+            card.assignee || '',
+            card.labels || '',
             null,
             card.github_issue_url || null,
-            card.pr_url || null,
-            newEpicId,
+            card.created_by || 'import',
             importAssignModel,
-            card.pr_base_branch ?? null,
-            newCardId,
+            card.position || 0,
           );
-        }
-        const cardComments = data.kanban.comments?.[card.id];
-        if (cardComments?.length) {
-          for (const comment of cardComments) {
-            stmts.createKanbanCardComment.run(
-              uuidv4(),
+          if (newEpicId) {
+            stmts.updateKanbanCard.run(
+              card.title,
+              card.description || '',
+              card.priority || 'medium',
+              card.assignee || null,
+              card.labels || null,
+              null,
+              card.github_issue_url || null,
+              card.pr_url || null,
+              newEpicId,
+              importAssignModel,
+              card.pr_base_branch ?? null,
               newCardId,
-              comment.author || 'import',
-              comment.content,
             );
           }
+          const cardComments = kanban.comments?.[card.id];
+          if (cardComments?.length) {
+            for (const comment of cardComments) {
+              stmts.createKanbanCardComment.run(
+                uuidv4(),
+                newCardId,
+                comment.author || 'import',
+                comment.content,
+              );
+            }
+          }
+          cardsImported++;
         }
-        cardsImported++;
-      }
-      results.kanban = boardCreated
-        ? `Board created with ${data.kanban.columns?.length || 0} columns, ${cardsImported} cards, ${epicsImported} epics`
-        : `Merged: ${cardsImported} new cards, ${cardsSkipped} skipped, ${epicsImported} new epics`;
+        results.kanban = boardCreated
+          ? `Board created with ${kanban.columns?.length || 0} columns, ${cardsImported} cards, ${epicsImported} epics`
+          : `Merged: ${cardsImported} new cards, ${cardsSkipped} skipped, ${epicsImported} new epics`;
+      });
     }
 
     return results;
+  }
+
+  // Surfaces the section tag attached by `runSection(...)`. Falls back to a
+  // null section when an error originated outside a tagged block (e.g. body
+  // validation, target-project resolution) — the 500 response still includes
+  // the original message so the legacy contract is preserved.
+  function projectImportSection(err: unknown): string | null {
+    const tagged = err as { __projectImportSection?: unknown };
+    return typeof tagged?.__projectImportSection === 'string'
+      ? tagged.__projectImportSection
+      : null;
   }
 
   router.post('/api/projects/:projectId/import', (req: Request, res: Response) => {
@@ -1448,8 +1505,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const results = runProjectImport(targetProject, data);
       res.json({ message: 'Project import complete.', results });
     } catch (err: unknown) {
-      console.error('Project import failed:', (err as Error).message);
-      res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
+      const e = err as Error;
+      const section = projectImportSection(err);
+      console.error(
+        'Project import failed:',
+        section ? `[${section}] ${e.message}` : e.message,
+        e.stack,
+      );
+      const body: Record<string, unknown> = { error: 'Import failed: ' + e.message };
+      if (section) body.section = section;
+      res.status(500).json(body);
     }
   });
 
@@ -1534,8 +1599,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         .status(201)
         .json({ message: 'Project created from export.', project: newProject, results });
     } catch (err: unknown) {
-      console.error('Project create-from-import failed:', (err as Error).message);
-      res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
+      const e = err as Error;
+      const section = projectImportSection(err);
+      console.error(
+        'Project create-from-import failed:',
+        section ? `[${section}] ${e.message}` : e.message,
+        e.stack,
+      );
+      const body: Record<string, unknown> = { error: 'Import failed: ' + e.message };
+      if (section) body.section = section;
+      res.status(500).json(body);
     }
   });
 
