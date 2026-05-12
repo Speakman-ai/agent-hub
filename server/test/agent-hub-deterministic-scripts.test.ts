@@ -1,5 +1,13 @@
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, statSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import os from 'os';
@@ -576,4 +584,177 @@ describe('agent-hub deterministic script wrappers — shape', () => {
       15_000,
     );
   });
+
+  // ─── ah-api.sh spawn-creds file fallback (mid-flight auth recovery) ──────
+  // When AGENT_HUB_API_KEY is empty (the state every pre-auth-setup session
+  // is in), ah_resolve_key must consult the per-session spawn-creds file at
+  // $AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token. This is the
+  // file the server writes during /api/auth/setup so in-flight agents can
+  // recover without a restart. See `server/spawn-creds-file.ts`.
+  describe('ah-api.sh spawn-creds file fallback', () => {
+    let tmpDir: string;
+    let dataDir: string;
+    beforeAll(() => {
+      tmpDir = mkdtempSync(path.join(os.tmpdir(), 'ah-api-creds-test-'));
+      dataDir = path.join(tmpDir, 'data');
+      fsMkdir(path.join(dataDir, 'spawn-creds'));
+    });
+    afterAll(() => {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    });
+
+    it('reads the per-session spawn-creds file when env is empty', async () => {
+      const sessionId = 'sess-recovery-1';
+      const credsPath = path.join(dataDir, 'spawn-creds', `${sessionId}.token`);
+      writeFileSync(credsPath, 'ahub_from_file_token', { mode: 0o600 });
+
+      const received: Array<string | undefined> = [];
+      const handle = await new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+        const server = http.createServer((req, res) => {
+          received.push(req.headers['x-api-key'] as string | undefined);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ ok: true }));
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as AddressInfo;
+          resolve({
+            url: `http://127.0.0.1:${port}`,
+            close: () => new Promise<void>((r) => server.close(() => r())),
+          });
+        });
+      });
+      try {
+        const result = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'ah-api.sh'),
+          ['GET', '/api/health'],
+          {
+            ...process.env,
+            HOME: tmpDir, // isolate from host's ~/.agent-hub/data/config.json legacy apiKey
+            AGENT_HUB_URL: handle.url,
+            AGENT_HUB_API_KEY: '',
+            AGENT_HUB_DATA_DIR: dataDir,
+            AGENT_HUB_SESSION_ID: sessionId,
+          },
+        );
+        expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+        expect(received[0]).toBe('ahub_from_file_token');
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('env wins over spawn-creds file (precedence sanity)', async () => {
+      const sessionId = 'sess-recovery-2';
+      const credsPath = path.join(dataDir, 'spawn-creds', `${sessionId}.token`);
+      writeFileSync(credsPath, 'from_file', { mode: 0o600 });
+
+      const received: Array<string | undefined> = [];
+      const handle = await new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+        const server = http.createServer((req, res) => {
+          received.push(req.headers['x-api-key'] as string | undefined);
+          res.setHeader('content-type', 'application/json');
+          res.end('{}');
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as AddressInfo;
+          resolve({
+            url: `http://127.0.0.1:${port}`,
+            close: () => new Promise<void>((r) => server.close(() => r())),
+          });
+        });
+      });
+      try {
+        const result = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'ah-api.sh'),
+          ['GET', '/api/health'],
+          {
+            ...process.env,
+            AGENT_HUB_URL: handle.url,
+            AGENT_HUB_API_KEY: 'from_env',
+            AGENT_HUB_DATA_DIR: dataDir,
+            AGENT_HUB_SESSION_ID: sessionId,
+          },
+        );
+        expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+        expect(received[0]).toBe('from_env');
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('picks up a creds file written AFTER the first call (runtime recovery)', async () => {
+      // Simulates the real recovery flow: an agent makes a call when
+      // no creds exist (pre-setup), then the server writes the creds
+      // file during /api/auth/setup, then the agent's next call must
+      // pick it up. Each ah-api.sh invocation is a fresh process, so
+      // this also documents that the lookup is genuinely per-call.
+      const sessionId = 'sess-recovery-3';
+      const credsPath = path.join(dataDir, 'spawn-creds', `${sessionId}.token`);
+      try {
+        rmSync(credsPath);
+      } catch {
+        /* not present */
+      }
+
+      const calls: Array<string | undefined> = [];
+      const handle = await new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+        const server = http.createServer((req, res) => {
+          calls.push(req.headers['x-api-key'] as string | undefined);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ ok: true }));
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as AddressInfo;
+          resolve({
+            url: `http://127.0.0.1:${port}`,
+            close: () => new Promise<void>((r) => server.close(() => r())),
+          });
+        });
+      });
+      try {
+        const before = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'ah-api.sh'),
+          ['GET', '/api/health'],
+          {
+            ...process.env,
+            HOME: tmpDir, // isolate from host's legacy ~/.agent-hub/data/config.json apiKey
+            AGENT_HUB_URL: handle.url,
+            AGENT_HUB_API_KEY: '',
+            AGENT_HUB_DATA_DIR: dataDir,
+            AGENT_HUB_SESSION_ID: sessionId,
+          },
+        );
+        expect(before.status, `stderr: ${before.stderr}`).toBe(0);
+        expect(calls[0]).toBeUndefined();
+
+        // Server-side recovery writes the creds file mid-flight.
+        writeFileSync(credsPath, 'recovered_token', { mode: 0o600 });
+
+        const after = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'ah-api.sh'),
+          ['GET', '/api/health'],
+          {
+            ...process.env,
+            HOME: tmpDir,
+            AGENT_HUB_URL: handle.url,
+            AGENT_HUB_API_KEY: '',
+            AGENT_HUB_DATA_DIR: dataDir,
+            AGENT_HUB_SESSION_ID: sessionId,
+          },
+        );
+        expect(after.status, `stderr: ${after.stderr}`).toBe(0);
+        expect(calls[1]).toBe('recovered_token');
+      } finally {
+        await handle.close();
+      }
+    });
+  });
 });
+
+function fsMkdir(p: string): void {
+  mkdirSync(p, { recursive: true, mode: 0o700 });
+}

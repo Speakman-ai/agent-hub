@@ -75,6 +75,7 @@ import {
 } from '../auth-validation.js';
 import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
+import { recoverActiveSessionsAfterSetup } from '../spawn-creds-setup-recovery.js';
 import {
   listMaskedUserSkillCredentials,
   upsertUserSkillCredential,
@@ -319,6 +320,33 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       record.role,
       record.jwtSecret,
     );
+
+    // Spawn-env staleness recovery. Sessions spawned before auth.json
+    // existed are running with an empty `AGENT_HUB_API_KEY` env; the
+    // gate just flipped to require credentials, so their next tool
+    // call would 401. Mint a per-session `ahub_*` token for the new
+    // Owner and write it to `<dataDir>/spawn-creds/<sessionId>.token`.
+    // The shell wrappers (`ah-api.sh:ah_resolve_key`) consult that
+    // file as a fallback on every invocation, so the next call after
+    // setup runs picks up working creds without a session restart.
+    //
+    // Best-effort: a failure here must not abort setup. We log a
+    // single summary line and a per-session warn if anything fails.
+    if (user) {
+      try {
+        const { getDb } = await import('../db.js');
+        const result = recoverActiveSessionsAfterSetup({
+          db: getDb(),
+          dataDir: config.dataDir,
+          ownerUserId: user.id,
+        });
+        console.log(
+          `[Auth] /setup spawn-creds recovery: candidates=${result.candidates} recovered=${result.recovered} failed=${result.failed}`,
+        );
+      } catch (err) {
+        console.warn('[Auth] spawn-creds recovery skipped:', (err as Error).message);
+      }
+    }
 
     res.json({
       ok: true,
