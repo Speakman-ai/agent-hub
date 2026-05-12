@@ -10,6 +10,7 @@ import {
   Plus,
   Play,
   ExternalLink,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -119,7 +120,12 @@ function shallowEqualForm(a, b) {
   return true;
 }
 
-export default function PreviewSection({ projects = [], onProjectsChange, registerGuard }) {
+export default function PreviewSection({
+  projects = [],
+  onProjectsChange,
+  registerGuard,
+  onOpenSession,
+}) {
   const [projectId, setProjectId] = useState(projects?.[0]?.id || '');
   const [project, setProject] = useState(projects?.find((p) => p.id === projectId) || null);
   const [form, setForm] = useState(() => formFromProject(project));
@@ -314,6 +320,50 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
     setTestPhase(null);
     setTestResult(null);
   };
+
+  // AI Setup wizard — spawn an interactive session that walks the user
+  // through configuring preview defaults. Server returns
+  // `{ sessionId, agentId }` and we delegate to the parent (settings
+  // page) to actually navigate / open the chat panel for that session.
+  // Falls back to setting an error banner if the parent didn't supply
+  // an `onOpenSession` handler.
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState(null);
+  const handleAISetup = async () => {
+    if (!project || wizardStarting) return;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startPreviewWizard(project.id);
+      if (typeof onOpenSession === 'function' && res?.sessionId) {
+        onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+      } else if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+      }
+    } catch (err) {
+      setWizardError(err?.message || 'Failed to start preview wizard');
+    } finally {
+      setWizardStarting(false);
+    }
+  };
+
+  // Refetch projects when the wizard's session signals it persisted
+  // changes (the SKILL.md instructs the agent to ping
+  // `/preview/wizard-complete` after PUT-ing). Wire up via a window
+  // event — the App-level WS handler bridges the broadcast onto a
+  // DOM CustomEvent for components to listen on without each having to
+  // open its own socket.
+  useEffect(() => {
+    const handler = (e) => {
+      const pid = e?.detail?.projectId;
+      if (!pid) return;
+      if (project?.id && pid === project.id) {
+        if (typeof onProjectsChange === 'function') onProjectsChange();
+      }
+    };
+    window.addEventListener('agenthub:preview_wizard_complete', handler);
+    return () => window.removeEventListener('agenthub:preview_wizard_complete', handler);
+  }, [project?.id, onProjectsChange]);
 
   if (!projects?.length) {
     return (
@@ -735,6 +785,29 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
               {isTesting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               {isTesting ? 'Testing…' : 'Test preview'}
             </button>
+            <button
+              type="button"
+              onClick={handleAISetup}
+              disabled={wizardStarting || saving}
+              title="Open an AI-assisted setup wizard that walks you through preview configuration"
+              className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg"
+              data-testid="preview-ai-setup-button"
+            >
+              {wizardStarting ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Sparkles size={14} />
+              )}
+              {wizardStarting ? 'Starting…' : 'AI Setup'}
+            </button>
+            {wizardError && (
+              <span
+                className="flex items-center gap-1 text-xs text-red-400"
+                data-testid="preview-ai-setup-error"
+              >
+                <AlertCircle size={14} /> {wizardError}
+              </span>
+            )}
             {dirty && !saving && <span className="text-xs text-amber-400">Unsaved changes</span>}
             {saveStatus === 'saved' && (
               <span className="flex items-center gap-1 text-xs text-green-400">

@@ -12,6 +12,7 @@ vi.mock('../utils/api.js', () => ({
     updateProject: vi.fn(),
     detectProjectPreview: vi.fn(),
     testProjectPreview: vi.fn(),
+    startPreviewWizard: vi.fn(),
   },
 }));
 
@@ -272,6 +273,40 @@ describe('PreviewSection — render & save', () => {
     await waitFor(() => {
       expect(queryByTestId('preview-test-panel')).toBeNull();
     });
+  });
+
+  it('renders the AI Setup button and opens the session on click', async () => {
+    api.startPreviewWizard.mockResolvedValueOnce({
+      sessionId: 'sess-abc',
+      agentId: 'agent-xyz',
+    });
+    const onOpenSession = vi.fn();
+    const { getByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} onOpenSession={onOpenSession} />,
+    );
+    const button = getByTestId('preview-ai-setup-button');
+    expect(button.textContent).toMatch(/AI Setup/);
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(api.startPreviewWizard).toHaveBeenCalledWith('proj-1');
+    });
+    await waitFor(() => {
+      expect(onOpenSession).toHaveBeenCalledWith({
+        sessionId: 'sess-abc',
+        agentId: 'agent-xyz',
+      });
+    });
+  });
+
+  it('AI Setup button surfaces an inline error when the server rejects', async () => {
+    api.startPreviewWizard.mockRejectedValueOnce(new Error('403: Forbidden'));
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-ai-setup-button'));
+    const err = await findByTestId('preview-ai-setup-error');
+    expect(err.textContent).toMatch(/Forbidden/);
   });
 
   it('registers an unsaved-changes guard with the parent', async () => {
