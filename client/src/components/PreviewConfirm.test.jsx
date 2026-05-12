@@ -183,20 +183,45 @@ describe('buildPreviewPatch', () => {
     });
   });
 
-  it('skips idleTTL when empty string (not treated as 0)', () => {
-    expect(
-      buildPreviewPatch({
-        enabled: true,
-        startScript: 'npm start',
-        captureRoutes: ['/'],
-        idleTTL: '',
-      }),
-    ).toEqual({
+  it('omits idleTTL when the field is an empty string (cleared input)', () => {
+    // Regression: an empty-string idleTTL used to be coerced to 0
+    // (Number('') === 0 && Number.isInteger(0)), which the server may
+    // reject or accept (instant idle-out). The guard must skip the field
+    // so the server default applies.
+    const patch = buildPreviewPatch({
+      enabled: true,
+      startScript: 'npm run dev',
+      captureRoutes: ['/'],
+      idleTTL: '',
+    });
+    expect(patch.prEnv.preview).not.toHaveProperty('idleTTL');
+    expect(patch).toEqual({
       prEnv: {
         enabled: false,
-        preview: { enabled: true, startScript: 'npm start', captureRoutes: ['/'] },
+        preview: { enabled: true, startScript: 'npm run dev', captureRoutes: ['/'] },
       },
     });
+  });
+
+  it('omits idleTTL when null or zero or negative', () => {
+    expect(buildPreviewPatch({ enabled: true, idleTTL: null }).prEnv.preview).not.toHaveProperty(
+      'idleTTL',
+    );
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 0 }).prEnv.preview).not.toHaveProperty(
+      'idleTTL',
+    );
+    expect(buildPreviewPatch({ enabled: true, idleTTL: -60 }).prEnv.preview).not.toHaveProperty(
+      'idleTTL',
+    );
+  });
+
+  it('clamps idleTTL to the input min/max range (60..86400)', () => {
+    // Below min — clamps up to 60.
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 30 }).prEnv.preview.idleTTL).toBe(60);
+    // Above max — clamps down to 86400.
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 999999 }).prEnv.preview.idleTTL).toBe(86400);
+    // In-range — passes through.
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 600 }).prEnv.preview.idleTTL).toBe(600);
   });
 
   it('drops empty / whitespace routes from captureRoutes', () => {

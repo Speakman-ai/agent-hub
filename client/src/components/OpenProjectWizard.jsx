@@ -557,13 +557,23 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
         const patch = buildPreviewPatch(previewDecision);
         if (patch) {
           try {
-            await fetch(`${getApiBase()}/projects/${project.id}`, {
+            const patchRes = await fetch(`${getApiBase()}/projects/${project.id}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify(patch),
             });
-          } catch {
-            /* best-effort */
+            if (!patchRes.ok) {
+              // Best-effort: surface to devtools so a silent server-side
+              // rejection (e.g. validator change) is at least visible
+              // without blocking the create flow.
+              console.warn(
+                '[OpenProjectWizard] preview PATCH failed:',
+                patchRes.status,
+                await patchRes.text().catch(() => ''),
+              );
+            }
+          } catch (err) {
+            console.warn('[OpenProjectWizard] preview PATCH error:', err);
           }
         }
       }
