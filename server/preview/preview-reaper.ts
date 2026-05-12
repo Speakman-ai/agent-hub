@@ -76,10 +76,15 @@ export async function runPreviewReaper(deps: PreviewReaperDeps): Promise<Preview
   const logger = deps.logger ?? { log: (m) => console.log(m), warn: (m) => console.warn(m) };
   const result: PreviewReaperTickResult = { scanned: 0, reaped: 0, orphaned: 0, notes: [] };
 
+  // Read from the new groups table — `worktree_previews` is retained
+  // for downgrade safety but the runtime writes its canonical state to
+  // `worktree_preview_groups` now (see `preview-schema.ts`). The
+  // boot-time migration folds any legacy rows into the new tables, so
+  // this query sees the union of legacy + new state.
   const rows = deps.db
     .prepare(
       `SELECT id, session_id, project_id, last_active_at, status
-         FROM worktree_previews
+         FROM worktree_preview_groups
         WHERE status IN ('starting','ready','failed')`,
     )
     .all() as ScanRow[];

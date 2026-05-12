@@ -189,3 +189,191 @@ describe('detectPreviewDefaults', () => {
     expect(detectPreviewDefaults(tmpDir)).toMatchObject({ stack: 'next', port: 3000 });
   });
 });
+
+describe('detectPreviewDefaults — multi-process layouts', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'detect-preview-multi-'));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('detects Django + React (backend/ with manage.py + frontend/ Vite)', () => {
+    // Backend: Django-style with manage.py + requirements-local.txt
+    mkdirSync(path.join(tmpDir, 'backend'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'backend', 'manage.py'), '# django entrypoint');
+    writeFileSync(path.join(tmpDir, 'backend', 'requirements-local.txt'), 'django\n');
+    // Frontend: Vite
+    writePkg(path.join(tmpDir, 'frontend'), { devDependencies: { vite: '^5.0.0' } });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stack).toBe('fullstack-django-react');
+    expect(result!.processes).toHaveLength(2);
+    expect(result!.processes![0]).toMatchObject({
+      name: 'backend',
+      cwd: 'backend',
+    });
+    expect(result!.processes![0].startScript).toContain('pip install -r requirements-local.txt');
+    expect(result!.processes![0].startScript).toContain('python manage.py runserver');
+    expect(result!.processes![1]).toMatchObject({
+      name: 'frontend',
+      cwd: 'frontend',
+      startScript: 'npm run dev',
+      dependsOn: ['backend'],
+    });
+  });
+
+  it('falls back to requirements.txt when requirements-local.txt is absent', () => {
+    mkdirSync(path.join(tmpDir, 'backend'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'backend', 'manage.py'), '# django');
+    writeFileSync(path.join(tmpDir, 'backend', 'requirements.txt'), 'django\n');
+    writePkg(path.join(tmpDir, 'frontend'), { devDependencies: { vite: '^5.0.0' } });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result!.processes![0].startScript).toContain('pip install -r requirements.txt');
+  });
+
+  it('returns null when only backend/ exists (no frontend)', () => {
+    mkdirSync(path.join(tmpDir, 'backend'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'backend', 'manage.py'), '# django');
+    expect(detectPreviewDefaults(tmpDir)).toBeNull();
+  });
+
+  it('returns single-process Vite when only frontend/ exists', () => {
+    writePkg(path.join(tmpDir, 'frontend'), { devDependencies: { vite: '^5.0.0' } });
+    // No backend/, so multi-process doesn't fire; top-level package.json
+    // is also missing, so the single-process path returns null too. This
+    // matches the existing convention — `frontend/` alone is not yet
+    // covered by the single-process classifier.
+    expect(detectPreviewDefaults(tmpDir)).toBeNull();
+  });
+
+  it('detects apps/api + apps/web monorepo with dev scripts', () => {
+    writePkg(tmpDir, { dependencies: {}, private: true, workspaces: ['apps/*'] });
+    writePkg(path.join(tmpDir, 'apps', 'api'), {
+      dependencies: { express: '^4.18.0' },
+      scripts: { dev: 'node server.js' },
+    });
+    writePkg(path.join(tmpDir, 'apps', 'web'), {
+      devDependencies: { vite: '^5.0.0' },
+    });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stack).toBe('fullstack-monorepo');
+    expect(result!.processes).toHaveLength(2);
+    expect(result!.processes![0]).toMatchObject({
+      name: 'api',
+      cwd: 'apps/api',
+      startScript: 'npm run dev',
+    });
+    expect(result!.processes![1]).toMatchObject({
+      name: 'web',
+      cwd: 'apps/web',
+      startScript: 'npm run dev',
+      dependsOn: ['api'],
+    });
+  });
+
+  it('detects apps/api + apps/web monorepo with start script fallback', () => {
+    writePkg(tmpDir, { dependencies: {}, private: true, workspaces: ['apps/*'] });
+    writePkg(path.join(tmpDir, 'apps', 'api'), {
+      dependencies: { express: '^4.18.0' },
+      scripts: { start: 'node server.js' },
+    });
+    writePkg(path.join(tmpDir, 'apps', 'web'), {
+      dependencies: { next: '^15.0.0' },
+    });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result!.processes![0].startScript).toBe('npm start');
+    expect(result!.processes![1].startScript).toBe('npm run dev');
+  });
+
+  it('falls through when apps/api has no dev/start script', () => {
+    writePkg(tmpDir, { dependencies: {}, private: true, workspaces: ['apps/*'] });
+    writePkg(path.join(tmpDir, 'apps', 'api'), {
+      dependencies: { express: '^4.18.0' },
+      // no scripts
+    });
+    writePkg(path.join(tmpDir, 'apps', 'web'), {
+      devDependencies: { vite: '^5.0.0' },
+    });
+
+    // Multi-process fails (no api start script), falls through to
+    // single-process monorepo classifier which picks apps/web as Vite.
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result).toMatchObject({ stack: 'vite' });
+  });
+
+  it('detects start:api + start:web scripts in top-level package.json', () => {
+    writePkg(tmpDir, {
+      devDependencies: { vite: '^5.0.0' },
+      scripts: {
+        'start:api': 'node server.js',
+        'start:web': 'vite',
+      },
+    });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.stack).toBe('fullstack-scripts');
+    expect(result!.processes).toEqual([
+      { name: 'api', startScript: 'npm run start:api', healthPath: '/' },
+      { name: 'web', startScript: 'npm run start:web', healthPath: '/', dependsOn: ['api'] },
+    ]);
+  });
+
+  it('detects dev:api + dev:web scripts as well', () => {
+    writePkg(tmpDir, {
+      devDependencies: { vite: '^5.0.0' },
+      scripts: {
+        'dev:api': 'tsx server.ts',
+        'dev:web': 'vite',
+      },
+    });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result!.stack).toBe('fullstack-scripts');
+    expect(result!.processes![0].startScript).toBe('npm run dev:api');
+    expect(result!.processes![1].startScript).toBe('npm run dev:web');
+  });
+
+  it('falls through to single-process when only start:web is present (no start:api)', () => {
+    writePkg(tmpDir, {
+      devDependencies: { vite: '^5.0.0' },
+      scripts: {
+        'start:web': 'vite',
+      },
+    });
+
+    const result = detectPreviewDefaults(tmpDir);
+    expect(result!.stack).toBe('vite');
+    expect(result!.processes).toBeUndefined();
+  });
+
+  it('django+react wins over apps/* monorepo when both patterns are present', () => {
+    // Backend (django) + frontend (vite) layout
+    mkdirSync(path.join(tmpDir, 'backend'), { recursive: true });
+    writeFileSync(path.join(tmpDir, 'backend', 'manage.py'), '');
+    writeFileSync(path.join(tmpDir, 'backend', 'requirements.txt'), 'django\n');
+    writePkg(path.join(tmpDir, 'frontend'), { devDependencies: { vite: '^5.0.0' } });
+    // Also has apps/api + apps/web (e.g. legacy monorepo bits)
+    writePkg(path.join(tmpDir, 'apps', 'api'), {
+      scripts: { dev: 'node x.js' },
+    });
+    writePkg(path.join(tmpDir, 'apps', 'web'), {
+      devDependencies: { vite: '^5.0.0' },
+    });
+
+    expect(detectPreviewDefaults(tmpDir)!.stack).toBe('fullstack-django-react');
+  });
+});

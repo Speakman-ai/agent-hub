@@ -833,6 +833,73 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
+  /**
+   * Per-process detail for the active preview group of `sessionId`.
+   *
+   * Returns `{ group: null, processes: [] }` when no active group exists
+   * (no preview ever started for this session, or it was torn down /
+   * reaped). When a group is present, `processes` is ordered by
+   * `started_at ASC, name ASC` and each row carries its own status, port,
+   * URL, pid, and log path — multi-process callers iterate this; legacy
+   * single-process callers can keep reading the group-level surface.
+   *
+   * Joined directly against the `worktree_preview_groups` /
+   * `worktree_preview_processes` tables; no PreviewRuntime instance
+   * required, which keeps the route usable even before the runtime is
+   * fully wired into prod.
+   */
+  router.get('/api/sessions/:sessionId/preview/processes', (req: Request, res: Response) => {
+    try {
+      const sessionId = req.params.sessionId as string;
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const db = getDb();
+      const groupRow = db
+        .prepare(
+          `SELECT id, session_id, project_id, status, started_at, last_active_at
+             FROM worktree_preview_groups
+            WHERE session_id = ? AND status IN ('starting','ready','failed')
+            ORDER BY started_at DESC
+            LIMIT 1`,
+        )
+        .get(sessionId) as
+        | {
+            id: string;
+            session_id: string;
+            project_id: string;
+            status: string;
+            started_at: string;
+            last_active_at: string;
+          }
+        | undefined;
+      if (!groupRow) {
+        return res.json({ group: null, processes: [] });
+      }
+      const processes = db
+        .prepare(
+          `SELECT id, group_id, name, pid, port, url, log_path, status, started_at
+             FROM worktree_preview_processes
+            WHERE group_id = ?
+            ORDER BY started_at ASC, name ASC`,
+        )
+        .all(groupRow.id) as Array<{
+        id: string;
+        group_id: string;
+        name: string;
+        pid: number | null;
+        port: number;
+        url: string;
+        log_path: string | null;
+        status: string;
+        started_at: string;
+      }>;
+      res.json({ group: groupRow, processes });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.post('/api/sessions/:sessionId/summarize', async (req: Request, res: Response) => {
     try {
       const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;

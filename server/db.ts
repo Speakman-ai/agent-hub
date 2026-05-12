@@ -2,7 +2,11 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
-import { WORKTREE_PREVIEWS_SCHEMA } from './preview/preview-schema.js';
+import {
+  WORKTREE_PREVIEWS_SCHEMA,
+  WORKTREE_PREVIEW_GROUPS_SCHEMA,
+  MIGRATE_LEGACY_PREVIEWS_SQL,
+} from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import type { Stmts } from './types.js';
 
@@ -1479,7 +1483,15 @@ function initDb(dataDir: string): void {
   // by `server/preview/preview-runtime.ts`. Schema lives alongside the
   // runtime so the test suite can spin up an in-memory DB without
   // pulling in the full bootstrap path here.
+  //
+  // Three statements together — legacy single-process table (retained
+  // during rollout for downgrade safety), new groups/processes tables,
+  // and the one-row migration that folds legacy rows into 1-process
+  // groups named `app`. The migration is idempotent (INSERT OR IGNORE)
+  // so re-running on a freshly-migrated DB is a no-op.
   db.exec(WORKTREE_PREVIEWS_SCHEMA);
+  db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
+  db.exec(MIGRATE_LEGACY_PREVIEWS_SQL);
 
   // Worktree-preview secrets: per-project encrypted env merged into
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.

@@ -1448,6 +1448,72 @@ export interface PrEnvPreviewConfig {
    * Defaults to 600 (10 min). Bounded 60–86400 (1 min – 24 h).
    */
   idleTTL?: number;
+  /**
+   * Optional multi-process preview graph. When non-empty, `startScript`
+   * (above) is ignored and the runtime spawns each entry in topological
+   * order based on `dependsOn`. Used for "fullstack" repos that need a
+   * backend AND a frontend running in tandem (e.g. Django runserver +
+   * Vite dev server) with per-process status, logs, and health checks.
+   *
+   * Capped at 6 processes — the cap exists to keep host resource usage
+   * (file handles, log streams, port pool) bounded; bump the constant
+   * in `preview-process-graph.ts` if the cap ever becomes the limit.
+   */
+  processes?: PreviewProcess[];
+}
+
+/**
+ * A single process inside a multi-process preview graph. Names are
+ * the stable identifier — they appear in URLs, log file paths, and the
+ * `dependsOn` adjacency list. Each process is spawned with its own
+ * cwd / env / port; the runtime polls `healthPath` (default `/`) on its
+ * allocated port and only kicks off dependents once 2xx is observed.
+ */
+export interface PreviewProcess {
+  /**
+   * Short kebab-case identifier. Must match `/^[a-z][a-z0-9_-]*$/` and
+   * be unique within `processes[]`. Surfaces in `/api/sessions/:id/
+   * preview/processes` and is the join key for `dependsOn`.
+   */
+  name: string;
+  /**
+   * Shell command run via `sh -c <startScript>` from `cwd` (or the
+   * worktree root when `cwd` is omitted). Same contract as the
+   * single-process `PrEnvPreviewConfig.startScript`.
+   */
+  startScript: string;
+  /**
+   * Optional working directory relative to the worktree root. Defaults
+   * to the worktree root itself. Absolute paths are rejected (the
+   * runtime treats this field as a worktree-relative path and rebases
+   * each spawn to the live session worktree).
+   */
+  cwd?: string;
+  /**
+   * Optional preferred listen port. Ignored by the runtime — port
+   * allocation comes from the worktree-preview pool to preserve the
+   * `UNIQUE(port)` invariant. Persisted so the UI can show the
+   * configured-vs-actual mapping when troubleshooting.
+   */
+  port?: number;
+  /**
+   * Path the runtime polls for readiness. Defaults to `/`. 2xx flips
+   * the process to `ready` and unblocks dependents. Must start with `/`.
+   */
+  healthPath?: string;
+  /**
+   * Names of other processes in the same graph that must reach `ready`
+   * before this one is spawned. Forms a DAG; cycles are rejected at
+   * config save time. Empty / omitted = root (spawned in wave 0).
+   */
+  dependsOn?: string[];
+  /**
+   * Optional path to a dotenv file (relative to the worktree root)
+   * whose contents are parsed and overlaid onto this process's spawn
+   * env after the project-wide preview secrets — per-process values
+   * win against project-wide ones. Missing file is a no-op.
+   */
+  envFile?: string;
 }
 
 export interface Project {

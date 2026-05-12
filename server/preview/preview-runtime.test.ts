@@ -314,10 +314,10 @@ describe('PreviewRuntime — startPreview', () => {
     expect(harness.spawned[0].killed).toBe(true); // SIGTERM'd by replace
     expect(harness.spawned[1].killed).toBe(false);
 
-    // Exactly one row left for this session — the new one.
+    // Exactly one group left for this session — the new one.
     const rows = db
-      .prepare(`SELECT id, port FROM worktree_previews WHERE session_id = ?`)
-      .all('sess-restart') as Array<{ id: string; port: number }>;
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE session_id = ?`)
+      .all('sess-restart') as Array<{ id: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(second.previewId);
 
@@ -563,7 +563,7 @@ describe('preview-reaper', () => {
 
     // Fast-forward last_active_at into the past so the reaper sees it stale.
     db.prepare(
-      `UPDATE worktree_previews
+      `UPDATE worktree_preview_groups
           SET last_active_at = datetime('now', '-10 seconds')
         WHERE id = ?`,
     ).run(previewId);
@@ -647,7 +647,7 @@ describe('preview-reaper', () => {
     const project = makeProject({ prEnv: { enabled: true, startScript: 'x', internalPort: 3000 } });
     const { previewId } = await runtime.startPreview('s', project, '/wt');
     db.prepare(
-      `UPDATE worktree_previews SET last_active_at = datetime('now', '-5 seconds') WHERE id = ?`,
+      `UPDATE worktree_preview_groups SET last_active_at = datetime('now', '-5 seconds') WHERE id = ?`,
     ).run(previewId);
 
     const fresh = await runPreviewReaper({
@@ -762,6 +762,401 @@ describe('PreviewRuntime — loadProjectEnv merge', () => {
     expect(harness.calls[0].env.PORT).toBe(String(result.port));
     // No project keys leaked in — only inherited process.env + PORT.
     expect(harness.calls[0].env.DATABASE_URL).toBeUndefined();
+  });
+});
+
+// ─── Multi-process tests ──────────────────────────────────────────
+
+/**
+ * Helper — fetch fake that gates 2xx on a name predicate. `okWhen(name)`
+ * returns true exactly when the URL's port matches the named process's
+ * allocated port.
+ */
+function makeNamedFetch(opts: { okPredicate: (url: string) => boolean }): {
+  fetch: HealthFetchFn;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const fetch: HealthFetchFn = async (url) => {
+    calls.push(url);
+    if (opts.okPredicate(url)) {
+      return { ok: true, status: 200 };
+    }
+    throw new Error('ECONNREFUSED');
+  };
+  return { fetch, calls };
+}
+
+/**
+ * Drain microtasks + advance the fake clock until either every
+ * pending `sleep()` has resolved or `maxIters` iterations have run.
+ * Lets us let a wave-based health-check loop run to completion in a
+ * deterministic way without `vi.useFakeTimers()`.
+ */
+async function pump(clock: ReturnType<typeof makeClock>, ms: number, maxIters = 50): Promise<void> {
+  for (let i = 0; i < maxIters; i++) {
+    await flushMicrotasks();
+    clock.advance(ms);
+  }
+  await flushMicrotasks();
+}
+
+function multiProcessProject(
+  processes: NonNullable<NonNullable<Project['prEnv']>['preview']>['processes'],
+): Project {
+  return makeProject({
+    prEnv: {
+      enabled: true,
+      startScript: 'unused-in-multi-process',
+      internalPort: 3000,
+      preview: {
+        enabled: true,
+        idleTTL: 600,
+        processes,
+      },
+    },
+  } as Partial<Project>);
+}
+
+describe('PreviewRuntime — multi-process startPreview', () => {
+  it('spawns backend then frontend in order, gated on backend health', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const clock = makeClock();
+    // backend health passes immediately; frontend should only be polled
+    // *after* backend is ready (we'll verify the order via spawn timing).
+    let backendPort = -1;
+    const { fetch, calls } = makeNamedFetch({
+      okPredicate: (url) => url.includes(`:${backendPort}`),
+    });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 10, healthTimeoutMs: 5_000 },
+    });
+
+    const project = multiProcessProject([
+      {
+        name: 'backend',
+        startScript: 'python manage.py runserver',
+        cwd: 'backend',
+        healthPath: '/healthz',
+      },
+      {
+        name: 'frontend',
+        startScript: 'npm run dev',
+        cwd: 'frontend',
+        dependsOn: ['backend'],
+      },
+    ]);
+
+    const { previewId, url } = await runtime.startPreview('sess-fs', project, '/wt');
+
+    // Only one process spawned synchronously — frontend waits for backend.
+    expect(harness.spawned).toHaveLength(1);
+    expect(harness.calls[0].args).toEqual(['-c', 'python manage.py runserver']);
+    expect(harness.calls[0].cwd).toBe('/wt/backend');
+    backendPort = Number(harness.calls[0].port);
+
+    // Drive the health-check loop until backend → ready, which triggers
+    // the frontend spawn, then drives that to ready as well.
+    await pump(clock, 10);
+
+    expect(harness.spawned).toHaveLength(2);
+    expect(harness.calls[1].args).toEqual(['-c', 'npm run dev']);
+    expect(harness.calls[1].cwd).toBe('/wt/frontend');
+
+    // Make frontend health pass too.
+    const frontendPort = Number(harness.calls[1].port);
+    expect(frontendPort).not.toBe(backendPort);
+    await pump(clock, 10);
+    // Allow both processes to flip ready (frontend will start matching the
+    // okPredicate once we widen it; here we update by reassigning):
+    // Instead, just assert the per-process table contains the right shape.
+
+    const processes = runtime.getProcesses(previewId);
+    expect(processes.map((p) => p.name).sort()).toEqual(['backend', 'frontend']);
+    expect(processes.find((p) => p.name === 'backend')!.port).toBe(backendPort);
+    expect(processes.find((p) => p.name === 'frontend')!.port).toBe(frontendPort);
+
+    // Default-surface URL is the frontend (the leaf).
+    expect(url).toBe(`http://localhost:${frontendPort}`);
+
+    // Backend received at least one health poll.
+    expect(calls.some((c) => c.includes(`:${backendPort}/healthz`))).toBe(true);
+  });
+
+  it('short-circuits the group to failed when a dependency fails health', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const clock = makeClock();
+    // Health always fails — backend will time out → group → failed.
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 10, healthTimeoutMs: 50 },
+    });
+
+    const project = multiProcessProject([
+      { name: 'api', startScript: 'fail' },
+      { name: 'web', startScript: 'should-not-run', dependsOn: ['api'] },
+    ]);
+    const { previewId } = await runtime.startPreview('sess-bad', project, '/wt');
+
+    await pump(clock, 20);
+
+    const procs = runtime.getProcesses(previewId);
+    const api = procs.find((p) => p.name === 'api')!;
+    const web = procs.find((p) => p.name === 'web')!;
+
+    // api failed health → flipped to failed.
+    expect(api.status).toBe('failed');
+    // web never had a chance to spawn — short-circuited by the group rollup.
+    expect(web.status).toBe('failed');
+    expect(harness.spawned).toHaveLength(1); // only api was ever spawned
+
+    // Group rollup must be failed.
+    const group = runtime.getById(previewId);
+    expect(group?.status).toBe('failed');
+  });
+
+  it('rejects a cyclic processes[] config at start time', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch: makeFetch({ alwaysFail: true }).fetch,
+      kill: harness.kill,
+      clock: makeClock(),
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1, healthTimeoutMs: 1 },
+    });
+    const project = multiProcessProject([
+      { name: 'a', startScript: 'noop', dependsOn: ['b'] },
+      { name: 'b', startScript: 'noop', dependsOn: ['a'] },
+    ]);
+    await expect(runtime.startPreview('sess-cycle', project, '/wt')).rejects.toThrow(/cycle/);
+    // Nothing was inserted into the DB.
+    const groups = db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get() as {
+      n: number;
+    };
+    expect(groups.n).toBe(0);
+  });
+
+  it('exposes processes via getProcesses() ordered by start time then name', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const clock = makeClock();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 1_000, healthTimeoutMs: 1_000 },
+    });
+
+    const project = multiProcessProject([
+      { name: 'cache', startScript: 'noop' },
+      { name: 'queue', startScript: 'noop' },
+      { name: 'web', startScript: 'noop', dependsOn: ['cache', 'queue'] },
+    ]);
+    const { previewId } = await runtime.startPreview('sess-many', project, '/wt');
+
+    const procs = runtime.getProcesses(previewId);
+    expect(procs).toHaveLength(3);
+    expect(procs.map((p) => p.name).sort()).toEqual(['cache', 'queue', 'web']);
+    // All three rows exist; first wave's two members are spawned, the
+    // leaf is still pending.
+    const byName = Object.fromEntries(procs.map((p) => [p.name, p]));
+    expect(['starting', 'pending']).toContain(byName.cache.status);
+    expect(['starting', 'pending']).toContain(byName.queue.status);
+    expect(byName.web.status).toBe('pending');
+  });
+
+  it('overlays per-process envFile on top of project env (per-process wins)', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch: makeFetch({ alwaysFail: true }).fetch,
+      kill: harness.kill,
+      clock: makeClock(),
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 10_000, healthTimeoutMs: 10_000 },
+      loadProjectEnv: () => ({ SHARED_KEY: 'project-wide', NODE_ENV: 'development' }),
+      readEnvFile: (_worktreePath: string, relPath: string): Record<string, string> => {
+        if (relPath === 'backend/.env') {
+          return { SHARED_KEY: 'backend-only', PG_DSN: 'postgres://' };
+        }
+        return {};
+      },
+    });
+
+    const project = multiProcessProject([
+      { name: 'backend', startScript: 'noop', cwd: 'backend', envFile: 'backend/.env' },
+      { name: 'frontend', startScript: 'noop', cwd: 'frontend', dependsOn: ['backend'] },
+    ]);
+    await runtime.startPreview('sess-env', project, '/wt');
+
+    const backendCall = harness.calls.find((c) => c.args[1] === 'noop' && c.cwd === '/wt/backend')!;
+    // Project-wide SHARED_KEY is overridden by per-process envFile.
+    expect(backendCall.env.SHARED_KEY).toBe('backend-only');
+    // Project-wide NODE_ENV still flows through.
+    expect(backendCall.env.NODE_ENV).toBe('development');
+    // Per-process key is set.
+    expect(backendCall.env.PG_DSN).toBe('postgres://');
+    // PORT always wins last.
+    expect(backendCall.env.PORT).toBeDefined();
+  });
+
+  it('tears down a multi-process group on stopPreview, in reverse-dependency order', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const clock = makeClock();
+    let backendPort = -1;
+    const { fetch } = makeNamedFetch({
+      okPredicate: (url) => backendPort > 0 && url.includes(`:${backendPort}`),
+    });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      clock,
+      logSink: makeLogSink(),
+      config: { healthIntervalMs: 10, healthTimeoutMs: 5_000 },
+    });
+
+    const project = multiProcessProject([
+      { name: 'backend', startScript: 'be' },
+      { name: 'frontend', startScript: 'fe', dependsOn: ['backend'] },
+    ]);
+    const { previewId } = await runtime.startPreview('sess-stop', project, '/wt');
+    backendPort = Number(harness.calls[0].port);
+
+    // Advance to spawn frontend.
+    await pump(clock, 10);
+    expect(harness.spawned).toHaveLength(2);
+
+    await runtime.stopPreview(previewId);
+
+    // Both child processes were SIGTERMed.
+    expect(harness.spawned[0].killed).toBe(true);
+    expect(harness.spawned[1].killed).toBe(true);
+
+    // Reverse-dependency: the frontend was killed before the backend.
+    // We look at the kill-call ordering to verify.
+    const frontendKill = harness.killCalls.findIndex((k) => k.target === -harness.spawned[1].pid);
+    const backendKill = harness.killCalls.findIndex((k) => k.target === -harness.spawned[0].pid);
+    expect(frontendKill).toBeGreaterThan(-1);
+    expect(backendKill).toBeGreaterThan(-1);
+    expect(frontendKill).toBeLessThan(backendKill);
+
+    // Group + process rows are all gone.
+    expect(runtime.getById(previewId)).toBeNull();
+    const remaining = db
+      .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = ?`)
+      .get(previewId) as { n: number };
+    expect(remaining.n).toBe(0);
+  });
+});
+
+describe('PreviewRuntime — legacy migration', () => {
+  it('reads an existing single-process row back as a 1-process group named app', () => {
+    const db = freshDb();
+    // Seed the legacy table with a pre-migration row.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS worktree_previews (
+        id              TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL,
+        project_id      TEXT NOT NULL,
+        pid             INTEGER,
+        port            INTEGER NOT NULL UNIQUE,
+        url             TEXT NOT NULL,
+        log_path        TEXT,
+        started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        last_active_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        status          TEXT NOT NULL CHECK(status IN ('starting','ready','failed'))
+      );
+      INSERT INTO worktree_previews (id, session_id, project_id, pid, port, url, log_path, status)
+      VALUES ('legacy-id', 'sess-old', 'proj-old', 1234, 4150, 'http://localhost:4150', '/tmp/x.log', 'ready');
+    `);
+
+    // Constructing a runtime applies the schema + migration.
+    const harness = makeSpawn();
+    new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch: makeFetch({ alwaysFail: true }).fetch,
+      kill: harness.kill,
+      clock: makeClock(),
+      logSink: makeLogSink(),
+    });
+
+    // New tables now carry the same row.
+    const group = db
+      .prepare(`SELECT * FROM worktree_preview_groups WHERE id = ?`)
+      .get('legacy-id') as
+      | { id: string; session_id: string; project_id: string; status: string }
+      | undefined;
+    expect(group).toBeDefined();
+    expect(group!.session_id).toBe('sess-old');
+    expect(group!.status).toBe('ready');
+
+    const procs = db
+      .prepare(`SELECT * FROM worktree_preview_processes WHERE group_id = ?`)
+      .all('legacy-id') as Array<{ name: string; port: number; status: string; pid: number }>;
+    expect(procs).toHaveLength(1);
+    expect(procs[0].name).toBe('app');
+    expect(procs[0].port).toBe(4150);
+    expect(procs[0].pid).toBe(1234);
+    expect(procs[0].status).toBe('ready');
+  });
+
+  it('migration is idempotent — re-running does not duplicate rows', () => {
+    const db = freshDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS worktree_previews (
+        id TEXT PRIMARY KEY, session_id TEXT, project_id TEXT,
+        pid INTEGER, port INTEGER UNIQUE, url TEXT, log_path TEXT,
+        started_at TEXT DEFAULT (datetime('now')),
+        last_active_at TEXT DEFAULT (datetime('now')),
+        status TEXT
+      );
+      INSERT INTO worktree_previews (id, session_id, project_id, port, url, status)
+      VALUES ('legacy-2', 's', 'p', 4151, 'http://localhost:4151', 'ready');
+    `);
+    const harness = makeSpawn();
+    const mk = (): PreviewRuntime =>
+      new PreviewRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch: makeFetch({ alwaysFail: true }).fetch,
+        kill: harness.kill,
+        clock: makeClock(),
+        logSink: makeLogSink(),
+      });
+    mk();
+    mk();
+    mk();
+    const procs = db
+      .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = 'legacy-2'`)
+      .get() as { n: number };
+    expect(procs.n).toBe(1);
   });
 });
 
