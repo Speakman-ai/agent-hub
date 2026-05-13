@@ -35,6 +35,146 @@ import {
 } from '../github-connections-store.js';
 import { createUser, getUserByUsername } from '../users-store.js';
 import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
+import { registerPath, z } from '../openapi/registry.js';
+import {
+  ErrorResponse,
+  GithubConnectTokenBody,
+  ZodErrorResponse,
+  formatZodError,
+} from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (GitHub OAuth / PAT sign-in) ─────────────────
+registerPath({
+  method: 'get',
+  path: '/api/auth/github/start',
+  tags: ['Auth'],
+  summary: 'Mint a signed state token + return the GitHub authorize URL.',
+  request: { query: z.object({ returnTo: z.string().optional() }) },
+  responses: {
+    200: {
+      description: 'Authorize URL the client should redirect the browser to.',
+      content: {
+        'application/json': { schema: z.object({ authorizeUrl: z.string() }) },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    503: {
+      description: 'GitHub OAuth not configured on the server.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/github/callback',
+  tags: ['Auth'],
+  summary: 'GitHub OAuth callback — exchanges code for tokens (HTML response).',
+  request: {
+    query: z.object({
+      code: z.string().optional(),
+      state: z.string().optional(),
+      error: z.string().optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Successful sign-in (HTML status page).',
+      content: { 'text/html': { schema: z.string() } },
+    },
+    400: {
+      description: 'Missing or invalid parameters.',
+      content: { 'text/html': { schema: z.string() } },
+    },
+    502: {
+      description: 'GitHub token exchange failed.',
+      content: { 'text/html': { schema: z.string() } },
+    },
+    503: {
+      description: 'Server not ready or OAuth not configured.',
+      content: { 'text/html': { schema: z.string() } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/github/status',
+  tags: ['Auth'],
+  summary: 'GitHub connection status for the calling user.',
+  responses: {
+    200: {
+      description: 'Connection summary.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            connected: z.boolean(),
+            login: z.string().nullable().optional(),
+            connectedAt: z.string().nullable().optional(),
+            tokenExpiresAt: z.string().nullable().optional(),
+            serverConfigured: z.boolean(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/github',
+  tags: ['Auth'],
+  summary: 'Disconnect the calling user from GitHub.',
+  responses: {
+    200: {
+      description: 'Disconnected.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/github/connect-token',
+  tags: ['Auth'],
+  summary: 'Connect via a GitHub Personal Access Token (PAT).',
+  request: {
+    body: { content: { 'application/json': { schema: GithubConnectTokenBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Token validated and stored.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), login: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Missing or invalid token.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    502: {
+      description: 'GitHub API call failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 const STATE_TOKEN_TTL_SEC = 10 * 60; // 10 min — plenty for the redirect round-trip
 const STATE_PURPOSE = 'github-oauth';
@@ -374,8 +514,18 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     const uid = resolveOAuthUserId(req);
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
 
-    const tokenRaw = (req.body as { token?: string } | undefined)?.token;
-    const token = typeof tokenRaw === 'string' ? tokenRaw.trim() : '';
+    const parsedConnect = GithubConnectTokenBody.safeParse(req.body ?? {});
+    if (!parsedConnect.success) {
+      // Preserve the legacy "token is required" wording for missing/empty token.
+      const tokenMissing = parsedConnect.error.issues.some(
+        (i) => i.path[0] === 'token' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (tokenMissing) {
+        return res.status(400).json({ error: 'token is required' });
+      }
+      return res.status(400).json(formatZodError(parsedConnect.error));
+    }
+    const token = parsedConnect.data.token.trim();
     if (!token) {
       return res.status(400).json({ error: 'token is required' });
     }

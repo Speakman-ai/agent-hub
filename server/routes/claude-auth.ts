@@ -9,6 +9,224 @@ import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken } from '../config.js';
 import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
+import { registerPath, z } from '../openapi/registry.js';
+import {
+  ApiKeyOnlyBody,
+  ApiKeyRequiredBody,
+  ClaudeCallbackBody,
+  ClaudeLoginBody,
+  ErrorResponse,
+  OauthTokenBody,
+  ZodErrorResponse,
+  formatZodError,
+} from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (Claude Code CLI auth) ───────────────────────
+registerPath({
+  method: 'get',
+  path: '/api/config/claude-auth',
+  tags: ['Auth'],
+  summary: 'Claude Code CLI auth status.',
+  responses: {
+    200: {
+      description: 'Current Claude auth status (OAuth + API key).',
+      content: {
+        'application/json': {
+          schema: z.object({
+            oauth: z.object({ loggedIn: z.boolean() }).passthrough(),
+            token: z.record(z.string(), z.unknown()).nullable(),
+            apiKey: z.object({
+              configured: z.boolean(),
+              source: z.enum(['environment', 'config']).nullable(),
+            }),
+            oauthToken: z.object({
+              configured: z.boolean(),
+              source: z.enum(['environment', 'config']).nullable(),
+              masked: z.string().nullable(),
+            }),
+            activeMethod: z.enum(['api-key', 'oauth', 'none']),
+            loginInProgress: z.boolean(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/login',
+  tags: ['Auth'],
+  summary: 'Start the Claude OAuth login flow.',
+  request: { body: { content: { 'application/json': { schema: ClaudeLoginBody } } } },
+  responses: {
+    200: {
+      description: 'OAuth URL emitted, or login result.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.boolean(),
+            loginId: z.string().optional(),
+            oauthUrl: z.string().optional(),
+            pasteMode: z.boolean().optional(),
+            completed: z.boolean().optional(),
+            output: z.string().optional(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/cancel-login',
+  tags: ['Auth'],
+  summary: 'Cancel an in-progress Claude OAuth login.',
+  responses: {
+    200: {
+      description: 'Cancellation receipt.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/callback',
+  tags: ['Auth'],
+  summary: 'Submit the authorization code from Anthropic to complete login.',
+  request: { body: { content: { 'application/json': { schema: ClaudeCallbackBody } } } },
+  responses: {
+    200: {
+      description: 'Code accepted (may still be pending).',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            pending: z.boolean().optional(),
+            output: z.string().optional(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Missing or invalid `code`.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'No login in progress.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    502: {
+      description: 'CLI rejected the code or proxy failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/api-key',
+  tags: ['Auth'],
+  summary: 'Set or clear the host-wide Anthropic API key.',
+  request: { body: { content: { 'application/json': { schema: ApiKeyOnlyBody } } } },
+  responses: {
+    200: {
+      description: 'API key persisted.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            configured: z.boolean(),
+            masked: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/oauth-token',
+  tags: ['Auth'],
+  summary: 'Set or clear the host-wide Claude OAuth token.',
+  request: { body: { content: { 'application/json': { schema: OauthTokenBody } } } },
+  responses: {
+    200: {
+      description: 'Token persisted.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            configured: z.boolean(),
+            masked: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape or empty token.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/claude-auth/validate-key',
+  tags: ['Auth'],
+  summary: 'Validate a candidate Anthropic API key against the CLI.',
+  request: { body: { content: { 'application/json': { schema: ApiKeyRequiredBody } } } },
+  responses: {
+    200: {
+      description: 'Validation result.',
+      content: {
+        'application/json': {
+          schema: z.object({ valid: z.boolean(), output: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Missing apiKey.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/claude-auth',
+  tags: ['Auth'],
+  summary: 'Log the Claude CLI out (clears host credentials cache).',
+  responses: {
+    200: {
+      description: 'Logout result.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.boolean(), output: z.string() }),
+        },
+      },
+    },
+    500: {
+      description: 'CLI logout failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 const execFileAsync = promisify(execFile);
 
@@ -470,11 +688,11 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       resetActiveLogin();
     }
 
-    const { method, email, sso } = (req.body || {}) as {
-      method?: string;
-      email?: string;
-      sso?: boolean;
-    };
+    const parsedLogin = ClaudeLoginBody.safeParse(req.body ?? {});
+    if (!parsedLogin.success) {
+      return res.status(400).json(formatZodError(parsedLogin.error));
+    }
+    const { method, email, sso } = parsedLogin.data;
     const args = ['auth', 'login'];
 
     if (method === 'console') {
@@ -656,12 +874,21 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/config/claude-auth/callback', async (req: Request, res: Response) => {
-    const { code } = (req.body || {}) as { code?: string };
-    if (!code || typeof code !== 'string') {
-      return res
-        .status(400)
-        .json({ error: 'code is required (the authorization code from Anthropic)' });
+    const parsedCallback = ClaudeCallbackBody.safeParse(req.body ?? {});
+    if (!parsedCallback.success) {
+      // Preserve legacy wording for missing/blank `code` so callers that match
+      // on the old string keep working.
+      const codeMissing = parsedCallback.error.issues.some(
+        (i) => i.path[0] === 'code' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (codeMissing) {
+        return res
+          .status(400)
+          .json({ error: 'code is required (the authorization code from Anthropic)' });
+      }
+      return res.status(400).json(formatZodError(parsedCallback.error));
     }
+    const { code } = parsedCallback.data;
 
     if (!activeLoginProc) {
       return res.status(409).json({ error: 'No login in progress' });
@@ -765,10 +992,19 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/config/claude-auth/api-key', (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: unknown };
-    if (apiKey !== undefined && typeof apiKey !== 'string') {
-      return res.status(400).json({ error: 'apiKey must be a string' });
+    const parsedApiKey = ApiKeyOnlyBody.safeParse(req.body ?? {});
+    if (!parsedApiKey.success) {
+      // Preserve "apiKey must be a string" wording when the field is the
+      // wrong type (legacy behaviour).
+      const wrongType = parsedApiKey.error.issues.some(
+        (i) => i.path[0] === 'apiKey' && i.code === 'invalid_type',
+      );
+      if (wrongType) {
+        return res.status(400).json({ error: 'apiKey must be a string' });
+      }
+      return res.status(400).json(formatZodError(parsedApiKey.error));
     }
+    const { apiKey } = parsedApiKey.data;
 
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
@@ -797,10 +1033,17 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/config/claude-auth/oauth-token', (req: Request, res: Response) => {
-    const { oauthToken } = (req.body || {}) as { oauthToken?: unknown };
-    if (oauthToken !== undefined && typeof oauthToken !== 'string') {
-      return res.status(400).json({ error: 'oauthToken must be a string' });
+    const parsedOauth = OauthTokenBody.safeParse(req.body ?? {});
+    if (!parsedOauth.success) {
+      const wrongType = parsedOauth.error.issues.some(
+        (i) => i.path[0] === 'oauthToken' && i.code === 'invalid_type',
+      );
+      if (wrongType) {
+        return res.status(400).json({ error: 'oauthToken must be a string' });
+      }
+      return res.status(400).json(formatZodError(parsedOauth.error));
     }
+    const { oauthToken } = parsedOauth.data;
 
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
@@ -835,10 +1078,17 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/config/claude-auth/validate-key', async (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: string };
-    if (!apiKey) {
-      return res.status(400).json({ error: 'apiKey is required' });
+    const parsedValidate = ApiKeyRequiredBody.safeParse(req.body ?? {});
+    if (!parsedValidate.success) {
+      const apiKeyMissing = parsedValidate.error.issues.some(
+        (i) => i.path[0] === 'apiKey' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (apiKeyMissing) {
+        return res.status(400).json({ error: 'apiKey is required' });
+      }
+      return res.status(400).json(formatZodError(parsedValidate.error));
     }
+    const { apiKey } = parsedValidate.data;
 
     try {
       const { stdout, stderr, code } = await runClaude(

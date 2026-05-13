@@ -196,6 +196,25 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 Public paths live in `PUBLIC_PATHS` / `PUBLIC_PREFIXES` (`server/auth.ts`);
 everything else falls through `authMiddleware`.
 
+### Body validation contract (Zod + OpenAPI)
+
+Every POST/PUT under `/api/auth` runs its body through a Zod schema
+defined in `server/openapi/schemas/auth.ts` and registered with
+`@asteasolutions/zod-to-openapi`. Two failure shapes are possible:
+
+- **Legacy-compatible strings** for fields existing clients/tests already
+  match on (`apiKey`, `code`, `role`, `newPassword`, `username`,
+  `oauthToken`, `token`). Wording is preserved verbatim — e.g.
+  `{"error": "role must be Owner, Admin, or User"}` for a bad role on
+  `PUT /users/:id/role`.
+- **Structured Zod envelope** for any other shape error:
+  `{"error": "request body failed validation", "issues": [...]}`.
+  Each issue carries `path` (array of field segments) and `message`.
+
+Both surfaces share HTTP 400. The published `docs/api/openapi.yaml`
+auth section is now generated from these schemas — do not hand-edit it
+for auth changes; update the schema + run `npm run generate:openapi`.
+
 ## User-delete cascade
 
 `DELETE /api/auth/users/:id` removes the caller's membership in the active

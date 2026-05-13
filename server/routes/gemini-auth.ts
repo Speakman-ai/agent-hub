@@ -4,6 +4,116 @@ import { spawn } from 'child_process';
 import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
 import { killProcessGroup, trackChild } from '../process-groups.js';
+import { registerPath, z } from '../openapi/registry.js';
+import {
+  ApiKeyOnlyBody,
+  ApiKeyRequiredBody,
+  ErrorResponse,
+  ZodErrorResponse,
+  formatZodError,
+} from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (Gemini CLI auth) ────────────────────────────
+//
+// These run at module load time so the generator picks them up without
+// needing the router to be instantiated.
+registerPath({
+  method: 'get',
+  path: '/api/config/gemini-auth',
+  tags: ['Auth'],
+  summary: 'Gemini CLI auth status (host-config + masked preview).',
+  responses: {
+    200: {
+      description: 'Current Gemini auth status.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            apiKey: z.object({
+              configured: z.boolean(),
+              source: z.enum(['environment', 'config']).nullable(),
+              masked: z.string().nullable(),
+            }),
+            activeMethod: z.enum(['api-key', 'none']),
+            oauth: z.object({ loggedIn: z.boolean().nullable() }),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/gemini-auth/api-key',
+  tags: ['Auth'],
+  summary: 'Set or clear the host-wide Gemini API key.',
+  request: {
+    body: { content: { 'application/json': { schema: ApiKeyOnlyBody } } },
+  },
+  responses: {
+    200: {
+      description: 'API key persisted to config.json.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            configured: z.boolean(),
+            masked: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/gemini-auth/validate-key',
+  tags: ['Auth'],
+  summary: 'Validate a candidate Gemini API key against the CLI.',
+  request: {
+    body: { content: { 'application/json': { schema: ApiKeyRequiredBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Validation result.',
+      content: {
+        'application/json': {
+          schema: z.object({ valid: z.boolean(), output: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape or missing apiKey.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/gemini-auth',
+  tags: ['Auth'],
+  summary: 'Clear the host-wide Gemini API key.',
+  responses: {
+    200: {
+      description: 'Cleared.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+    500: {
+      description: 'Server error.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 /**
  * Gemini CLI auth routes.
@@ -93,10 +203,11 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
 
   // ── Set / clear API key ──────────────────────────────────────────────
   router.post('/api/config/gemini-auth/api-key', (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: unknown };
-    if (apiKey !== undefined && typeof apiKey !== 'string') {
-      return res.status(400).json({ error: 'apiKey must be a string' });
+    const parsed = ApiKeyOnlyBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json(formatZodError(parsed.error));
     }
+    const { apiKey } = parsed.data;
 
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
@@ -126,10 +237,19 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
 
   // ── Validate API key against the CLI ─────────────────────────────────
   router.post('/api/config/gemini-auth/validate-key', async (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: string };
-    if (!apiKey) {
-      return res.status(400).json({ error: 'apiKey is required' });
+    const parsed = ApiKeyRequiredBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      // Preserve the legacy "apiKey is required" wording so existing
+      // clients & smoke tests that match on it keep working.
+      const apiKeyMissing = parsed.error.issues.some(
+        (i) => i.path[0] === 'apiKey' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (apiKeyMissing) {
+        return res.status(400).json({ error: 'apiKey is required' });
+      }
+      return res.status(400).json(formatZodError(parsed.error));
     }
+    const { apiKey } = parsed.data;
 
     try {
       const { stdout, stderr, code } = await runGemini(
