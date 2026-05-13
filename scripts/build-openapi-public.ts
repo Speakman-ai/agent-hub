@@ -30,6 +30,9 @@ interface Args {
   out: string;
   inSpec: string;
   inHtml: string;
+  outExplicit: boolean;
+  specExplicit: boolean;
+  htmlExplicit: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -37,13 +40,22 @@ function parseArgs(argv: string[]): Args {
     out: 'docs/api/_site',
     inSpec: 'docs/api/openapi.yaml',
     inHtml: 'docs/api/index.html',
+    outExplicit: false,
+    specExplicit: false,
+    htmlExplicit: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--out') args.out = argv[++i];
-    else if (a === '--spec') args.inSpec = argv[++i];
-    else if (a === '--html') args.inHtml = argv[++i];
-    else if (a === '-h' || a === '--help') {
+    if (a === '--out') {
+      args.out = argv[++i];
+      args.outExplicit = true;
+    } else if (a === '--spec') {
+      args.inSpec = argv[++i];
+      args.specExplicit = true;
+    } else if (a === '--html') {
+      args.inHtml = argv[++i];
+      args.htmlExplicit = true;
+    } else if (a === '-h' || a === '--help') {
       process.stdout.write(
         'Usage: build-openapi-public.ts [--out dir] [--spec file] [--html file]\n',
       );
@@ -54,9 +66,17 @@ function parseArgs(argv: string[]): Args {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const specPath = resolve(repoRoot, args.inSpec);
-const htmlPath = resolve(repoRoot, args.inHtml);
-const outDir = resolve(repoRoot, args.out);
+
+// Defaults are anchored to the repo root so the script works no matter
+// where it's invoked from. Explicit args follow normal POSIX CLI behavior
+// and resolve against the user's current working directory.
+function anchor(value: string, explicit: boolean): string {
+  return explicit ? resolve(process.cwd(), value) : resolve(repoRoot, value);
+}
+
+const specPath = anchor(args.inSpec, args.specExplicit);
+const htmlPath = anchor(args.inHtml, args.htmlExplicit);
+const outDir = anchor(args.out, args.outExplicit);
 
 if (!existsSync(specPath)) {
   console.error(`error: spec not found at ${specPath}`);
