@@ -371,3 +371,48 @@ describe('GET /api/auth/users (requireRole Admin)', () => {
     expect(res.body.users[0]?.role).toBe('Owner');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+//  Zod body validation — surfaces 400 with structured Zod issues
+// ─────────────────────────────────────────────────────────────────────
+//
+// These guard the OpenAPI-migration contract: every route that used to
+// extract fields off `req.body` ad-hoc now runs the body through a Zod
+// schema and returns a 400 with either a legacy-compatible error string
+// (for fields whose wording downstream clients still match on) OR a
+// structured `{ error, issues: [...] }` envelope for unrecognised shape
+// problems. Legacy-message tests already live elsewhere in this file —
+// this block is the "garbage body" / Zod-shape regression.
+describe('Zod body validation — 400 on malformed bodies', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    mockConfig.apiKey = null;
+    reloadAuthRecord();
+  });
+  afterEach(() => {
+    setAuthFilePathForTests(null);
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
+
+  it('POST /api/auth/setup returns Zod 400 when both fields are wrong types', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 123, password: { not: 'a string' } });
+    expect(res.status).toBe(400);
+    // legacy "username must be a string" wording for shape errors on a
+    // single field — but only if username is the only issue. Here both
+    // are wrong so we expect the structured envelope.
+    expect(res.body).toHaveProperty('issues');
+    expect(Array.isArray(res.body.issues)).toBe(true);
+    expect(res.body.issues.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('POST /api/auth/login returns Zod 400 when body is null', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .set('Content-Type', 'application/json')
+      .send('null');
+    expect(res.status).toBe(400);
+  });
+});

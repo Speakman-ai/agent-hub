@@ -11,6 +11,161 @@ import {
   extractCodexDeviceUrl,
   extractCodexDeviceUserCode,
 } from '../codex-device-auth-parse.js';
+import { registerPath, z } from '../openapi/registry.js';
+import {
+  ApiKeyOnlyBody,
+  ApiKeyRequiredBody,
+  ErrorResponse,
+  ZodErrorResponse,
+  formatZodError,
+} from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (Codex CLI auth) ─────────────────────────────
+registerPath({
+  method: 'get',
+  path: '/api/config/codex-auth',
+  tags: ['Auth'],
+  summary: 'Codex CLI auth status.',
+  responses: {
+    200: {
+      description: 'Current Codex auth status.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            uiStatus: z.string(),
+            binary: z.object({ present: z.boolean(), path: z.string() }),
+            apiKey: z.object({
+              configured: z.boolean(),
+              source: z.enum(['environment', 'config']).nullable(),
+              masked: z.string().nullable(),
+            }),
+            activeMethod: z.enum(['api-key', 'oauth', 'none']),
+            oauth: z.object({
+              loggedIn: z.boolean().nullable(),
+              mode: z.string().nullable().optional(),
+              authJsonPath: z.string().nullable().optional(),
+            }),
+            loginInProgress: z.boolean(),
+            statusError: z.string().nullable(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/codex-auth/device-login',
+  tags: ['Auth'],
+  summary: 'Start Codex device-auth (ChatGPT) login flow.',
+  responses: {
+    200: {
+      description: 'Device code emitted, or login outcome.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.boolean(),
+            loginId: z.string().optional(),
+            deviceAuthUrl: z.string().optional(),
+            userCode: z.string().optional(),
+            output: z.string().optional(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Codex binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/codex-auth/cancel-login',
+  tags: ['Auth'],
+  summary: 'Cancel an in-progress Codex device login.',
+  responses: {
+    200: {
+      description: 'Cancellation receipt.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/codex-auth/api-key',
+  tags: ['Auth'],
+  summary: 'Set or clear the host-wide Codex / OpenAI API key.',
+  request: {
+    body: { content: { 'application/json': { schema: ApiKeyOnlyBody } } },
+  },
+  responses: {
+    200: {
+      description: 'API key persisted.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            configured: z.boolean(),
+            masked: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/codex-auth/validate-key',
+  tags: ['Auth'],
+  summary: 'Validate a candidate Codex API key against the CLI.',
+  request: {
+    body: { content: { 'application/json': { schema: ApiKeyRequiredBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Validation result.',
+      content: {
+        'application/json': {
+          schema: z.object({ valid: z.boolean(), output: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body or missing apiKey.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/codex-auth',
+  tags: ['Auth'],
+  summary: 'Clear host Codex API key + run CLI logout.',
+  responses: {
+    200: {
+      description: 'Cleared.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+  },
+});
 
 const HOME = homedir();
 
@@ -253,10 +408,11 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
 
   // ── Set / clear API key ──────────────────────────────────────────────
   router.post('/api/config/codex-auth/api-key', (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: unknown };
-    if (apiKey !== undefined && typeof apiKey !== 'string') {
-      return res.status(400).json({ error: 'apiKey must be a string' });
+    const parsed = ApiKeyOnlyBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json(formatZodError(parsed.error));
     }
+    const { apiKey } = parsed.data;
 
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
@@ -286,10 +442,17 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
 
   // ── Validate API key against the CLI ─────────────────────────────────
   router.post('/api/config/codex-auth/validate-key', async (req: Request, res: Response) => {
-    const { apiKey } = (req.body || {}) as { apiKey?: string };
-    if (!apiKey) {
-      return res.status(400).json({ error: 'apiKey is required' });
+    const parsed = ApiKeyRequiredBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const apiKeyMissing = parsed.error.issues.some(
+        (i) => i.path[0] === 'apiKey' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (apiKeyMissing) {
+        return res.status(400).json({ error: 'apiKey is required' });
+      }
+      return res.status(400).json(formatZodError(parsed.error));
     }
+    const { apiKey } = parsed.data;
 
     const bin = binPath();
 

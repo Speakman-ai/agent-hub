@@ -91,6 +91,754 @@ import {
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
 import { findAgent } from '../project-model.js';
+import { registerPath, z } from '../openapi/registry.js';
+import {
+  AcceptInviteBody,
+  CreateApiKeyBody,
+  CreateInviteBody,
+  CreateUserBody,
+  ErrorResponse,
+  LoginBody,
+  PasswordResetBody,
+  SetupBody,
+  TokenResponse,
+  UpdateClaudeAuthBody,
+  UpdateSingleKeyAuthBody,
+  UpdateUserRoleBody,
+  UpsertSkillCredentialBody,
+  UserSummary,
+  ZodErrorResponse,
+  formatZodError,
+} from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (Auth & user management) ─────────────────────
+//
+// Registered at module-load so `server/openapi/generate.ts` picks them up
+// before the router factory runs.
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/status',
+  tags: ['Auth'],
+  summary: 'Public auth status (used by the login screen).',
+  responses: {
+    200: {
+      description: 'Whether auth is configured and which secrets are present.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            authConfigured: z.boolean(),
+            username: z.string().nullable(),
+            role: z.enum(['Owner', 'Admin', 'User']).nullable(),
+            jwtConfigured: z.boolean(),
+            apiKeyConfigured: z.boolean(),
+            needsMigration: z.boolean(),
+            activeOrgIsLocal: z.boolean(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/setup',
+  tags: ['Auth'],
+  summary: 'First-run setup — provisions the Owner user.',
+  request: { body: { content: { 'application/json': { schema: SetupBody } } } },
+  responses: {
+    200: {
+      description: 'Setup succeeded; Owner token returned.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            token: z.string(),
+            expiresAt: z.string(),
+            user: z.object({
+              username: z.string(),
+              role: z.enum(['Owner', 'Admin', 'User']),
+            }),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body or domain validation failure.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    409: {
+      description: 'Auth already configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/login',
+  tags: ['Auth'],
+  summary: 'Issue a JWT for an existing user.',
+  request: { body: { content: { 'application/json': { schema: LoginBody } } } },
+  responses: {
+    200: {
+      description: 'Login succeeded.',
+      content: { 'application/json': { schema: TokenResponse } },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Wrong credentials.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'No membership in active org.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Auth not configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me',
+  tags: ['Auth'],
+  summary: 'Identity of the currently authenticated caller.',
+  responses: {
+    200: {
+      description: 'Caller summary.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            user: z
+              .object({ username: z.string(), role: z.enum(['Owner', 'Admin', 'User']).nullable() })
+              .nullable(),
+            authConfigured: z.boolean(),
+            role: z.enum(['Owner', 'Admin', 'User']).nullable(),
+            orgId: z.string().nullable(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/claude-auth',
+  tags: ['Auth'],
+  summary: 'Per-user Claude credentials (masked).',
+  responses: {
+    200: {
+      description: 'Stored credentials with masking.',
+      content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/claude-auth',
+  tags: ['Auth'],
+  summary: 'Update per-user Claude credentials.',
+  request: { body: { content: { 'application/json': { schema: UpdateClaudeAuthBody } } } },
+  responses: {
+    200: {
+      description: 'Updated.',
+      content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: 'Invalid body.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+for (const engine of ['cursor', 'gemini', 'codex'] as const) {
+  registerPath({
+    method: 'get',
+    path: `/api/auth/me/${engine}-auth`,
+    tags: ['Auth'],
+    summary: `Per-user ${engine} credentials (masked).`,
+    responses: {
+      200: {
+        description: 'Stored credentials with masking.',
+        content: {
+          'application/json': {
+            schema: z.object({
+              engine: z.string(),
+              apiKey: z.string().nullable(),
+              updatedAt: z.union([z.string(), z.number()]).nullable().optional(),
+              hostConfigFallback: z.object({ apiKey: z.boolean() }),
+            }),
+          },
+        },
+      },
+      401: {
+        description: 'Not authenticated.',
+        content: { 'application/json': { schema: ErrorResponse } },
+      },
+      404: {
+        description: 'User not found.',
+        content: { 'application/json': { schema: ErrorResponse } },
+      },
+    },
+  });
+  registerPath({
+    method: 'put',
+    path: `/api/auth/me/${engine}-auth`,
+    tags: ['Auth'],
+    summary: `Update per-user ${engine} credentials.`,
+    request: { body: { content: { 'application/json': { schema: UpdateSingleKeyAuthBody } } } },
+    responses: {
+      200: {
+        description: 'Updated.',
+        content: {
+          'application/json': {
+            schema: z.object({
+              engine: z.string(),
+              apiKey: z.string().nullable(),
+              updatedAt: z.union([z.string(), z.number()]).nullable().optional(),
+              hostConfigFallback: z.object({ apiKey: z.boolean() }),
+            }),
+          },
+        },
+      },
+      400: {
+        description: 'Invalid body.',
+        content: { 'application/json': { schema: ZodErrorResponse } },
+      },
+      401: {
+        description: 'Not authenticated.',
+        content: { 'application/json': { schema: ErrorResponse } },
+      },
+      404: {
+        description: 'User not found.',
+        content: { 'application/json': { schema: ErrorResponse } },
+      },
+    },
+  });
+}
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/skill-credentials',
+  tags: ['Auth'],
+  summary: 'List masked per-user skill credentials.',
+  request: { query: z.object({ skillId: z.string().optional() }) },
+  responses: {
+    200: {
+      description: 'Credential list.',
+      content: {
+        'application/json': {
+          schema: z.object({ credentials: z.array(z.record(z.string(), z.unknown())) }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Lookup failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/skill-credentials',
+  tags: ['Auth'],
+  summary: 'Upsert a single per-user skill credential.',
+  request: { body: { content: { 'application/json': { schema: UpsertSkillCredentialBody } } } },
+  responses: {
+    200: {
+      description: 'Created or cleared.',
+      content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: 'Validation failure.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Caller is not a member of the org.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Agent / workspace not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/me/skill-credentials/{id}',
+  tags: ['Auth'],
+  summary: 'Delete a per-user skill credential by id.',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      description: 'Deleted.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Credential not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/keys',
+  tags: ['Auth'],
+  summary: "List the caller's active API keys.",
+  responses: {
+    200: {
+      description: 'Key metadata (no plaintext tokens).',
+      content: {
+        'application/json': {
+          schema: z.object({
+            keys: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                prefix: z.string(),
+                createdAt: z.string(),
+                lastUsedAt: z.string().nullable(),
+                expiresAt: z.string().nullable(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/keys',
+  tags: ['Auth'],
+  summary: 'Create a new per-user API key.',
+  request: { body: { content: { 'application/json': { schema: CreateApiKeyBody } } } },
+  responses: {
+    201: {
+      description: 'Key created — plaintext token shown ONCE.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            id: z.string(),
+            name: z.string(),
+            token: z.string(),
+            prefix: z.string(),
+            createdAt: z.string(),
+            expiresAt: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Key cap reached.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/keys/{id}',
+  tags: ['Auth'],
+  summary: 'Revoke a per-user API key.',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      description: 'Revoked.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Key not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/users',
+  tags: ['Auth'],
+  summary: 'List members of the active org (Admin+).',
+  responses: {
+    200: {
+      description: 'Member list.',
+      content: { 'application/json': { schema: z.object({ users: z.array(UserSummary) }) } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/users',
+  tags: ['Auth'],
+  summary: 'Create a user + membership (Owner only).',
+  request: { body: { content: { 'application/json': { schema: CreateUserBody } } } },
+  responses: {
+    201: {
+      description: 'Created.',
+      content: { 'application/json': { schema: z.object({ user: UserSummary }) } },
+    },
+    400: {
+      description: 'Invalid body or domain failure.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    403: {
+      description: 'Only Owner may create Owner.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Username taken.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/users/{id}/role',
+  tags: ['Auth'],
+  summary: "Change a member's role in the active org (Admin+).",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { 'application/json': { schema: UpdateUserRoleBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            orgId: z.string(),
+            role: z.enum(['Owner', 'Admin', 'User']),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid role or sole-Owner demotion.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User or membership missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/users/{id}',
+  tags: ['Auth'],
+  summary: 'Remove a user from the active org (Owner only).',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      description: 'Removed; cascade summary if the user was deleted entirely.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            orgId: z.string(),
+            userDeleted: z.boolean(),
+            cascadedPrivateProjects: z.array(z.string()),
+            orphanedSharedProjects: z.array(z.string()),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Sole-Owner protection.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User or membership missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/users/{id}/password',
+  tags: ['Auth'],
+  summary: 'Self-reset or Owner-reset a user password.',
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { 'application/json': { schema: PasswordResetBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Password updated.',
+      content: {
+        'application/json': { schema: z.object({ ok: z.literal(true), userId: z.string() }) },
+      },
+    },
+    400: {
+      description: 'Invalid body.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    403: {
+      description: 'Only self or Owner may reset.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/invites',
+  tags: ['Auth'],
+  summary: 'Issue an invite for the active org (Admin+).',
+  request: { body: { content: { 'application/json': { schema: CreateInviteBody } } } },
+  responses: {
+    201: {
+      description: 'Invite created.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            token: z.string(),
+            url: z.string(),
+            role: z.enum(['Owner', 'Admin', 'User']),
+            email: z.string().nullable(),
+            expiresAt: z.string(),
+            createdAt: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid role or missing user session.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/invites',
+  tags: ['Auth'],
+  summary: 'List active invites for the active org (Admin+).',
+  responses: {
+    200: {
+      description: 'Invite list.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            invites: z.array(
+              z.object({
+                token: z.string(),
+                orgId: z.string(),
+                role: z.enum(['Owner', 'Admin', 'User']),
+                email: z.string().nullable(),
+                expiresAt: z.string(),
+                createdAt: z.string(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/invites/{token}',
+  tags: ['Auth'],
+  summary: 'Revoke an invite (Admin+, same org only).',
+  request: { params: z.object({ token: z.string() }) },
+  responses: {
+    200: {
+      description: 'Revoked.',
+      content: {
+        'application/json': { schema: z.object({ ok: z.literal(true), token: z.string() }) },
+      },
+    },
+    403: {
+      description: 'Cross-org or insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Invite not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/invites/{token}',
+  tags: ['Auth'],
+  summary: 'Public landing metadata for an invite token.',
+  request: { params: z.object({ token: z.string() }) },
+  responses: {
+    200: {
+      description: 'Invite preview.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            orgId: z.string(),
+            orgName: z.string(),
+            role: z.enum(['Owner', 'Admin', 'User']),
+            email: z.string().nullable(),
+            expiresAt: z.string(),
+            accepted: z.boolean(),
+          }),
+        },
+      },
+    },
+    404: {
+      description: 'Invite not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    410: {
+      description: 'Invite expired.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/invites/{token}/accept',
+  tags: ['Auth'],
+  summary: 'Redeem an invite — creates user, membership, returns a JWT.',
+  request: {
+    params: z.object({ token: z.string() }),
+    body: { content: { 'application/json': { schema: AcceptInviteBody } } },
+  },
+  responses: {
+    201: {
+      description: 'User created and signed in.',
+      content: { 'application/json': { schema: TokenResponse } },
+    },
+    400: {
+      description: 'Invalid body or domain failure.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    404: {
+      description: 'Invite not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Username taken.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    410: {
+      description: 'Invite expired / already accepted / lost race.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Server auth not configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/logout',
+  tags: ['Auth'],
+  summary: 'Stateless logout receipt (client drops its JWT).',
+  responses: {
+    200: {
+      description: 'Receipt.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+  },
+});
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -275,10 +1023,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(409).json({ error: 'Auth already configured' });
       return;
     }
-    const { username: rawUser, password: rawPass } = req.body as {
-      username?: string;
-      password?: string;
-    };
+    const parsedSetup = SetupBody.safeParse(req.body ?? {});
+    if (!parsedSetup.success) {
+      res.status(400).json(formatZodError(parsedSetup.error));
+      return;
+    }
+    const { username: rawUser, password: rawPass } = parsedSetup.data;
     const username = sanitizeUsername(rawUser);
     const password = sanitizePassword(rawPass);
     if (!username) {
@@ -382,12 +1132,14 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(409).json({ error: 'Auth not configured. Call /api/auth/setup first.' });
       return;
     }
-    const { username: rawUser, password: rawPass } = req.body as {
-      username?: string;
-      password?: string;
-    };
-    const username = typeof rawUser === 'string' ? rawUser.trim() : '';
-    const password = typeof rawPass === 'string' ? rawPass : '';
+    const parsedLogin = LoginBody.safeParse(req.body ?? {});
+    if (!parsedLogin.success) {
+      res.status(400).json(formatZodError(parsedLogin.error));
+      return;
+    }
+    const { username: rawUser, password: rawPass } = parsedLogin.data;
+    const username = rawUser.trim();
+    const password = rawPass;
 
     // Run verifyPassword even on an unknown user so response time doesn't
     // leak whether the username exists. If orgs.db isn't initialized
@@ -542,11 +1294,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    const body = (req.body ?? {}) as {
-      anthropicApiKey?: string | null;
-      claudeCodeOAuthToken?: string | null;
-      claudeCodeOAuthExpiresAt?: string | null;
-    };
+    const parsedClaudeBody = UpdateClaudeAuthBody.safeParse(req.body ?? {});
+    if (!parsedClaudeBody.success) {
+      res.status(400).json(formatZodError(parsedClaudeBody.error));
+      return;
+    }
+    const body = parsedClaudeBody.data;
     // Whitelist fields to prevent stray JSON keys from reaching the DB.
     const patch: {
       anthropicApiKey?: string | null;
@@ -654,7 +1407,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         res.status(401).json({ error: 'Authentication required' });
         return;
       }
-      const body = (req.body ?? {}) as { apiKey?: string | null };
+      const parsedEngineBody = UpdateSingleKeyAuthBody.safeParse(req.body ?? {});
+      if (!parsedEngineBody.success) {
+        res.status(400).json(formatZodError(parsedEngineBody.error));
+        return;
+      }
+      const body = parsedEngineBody.data;
       // Whitelist the single supported field so stray JSON keys can't
       // reach the DB.
       const patch: { apiKey?: string | null } = {};
@@ -698,16 +1456,26 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    const body = (req.body ?? {}) as {
-      skill_id?: unknown;
-      key_name?: unknown;
-      value?: unknown;
-      agent_id?: unknown;
-    };
-    const skill_id = typeof body.skill_id === 'string' ? body.skill_id.trim() : '';
-    const key_name = typeof body.key_name === 'string' ? body.key_name.trim() : '';
-    const agent_id = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
-    const value = typeof body.value === 'string' ? body.value : '';
+    const parsedSkill = UpsertSkillCredentialBody.safeParse(req.body ?? {});
+    if (!parsedSkill.success) {
+      // Preserve the legacy "are required" wording when any of the three
+      // required fields is missing or the wrong type.
+      const requiredMissing = parsedSkill.error.issues.some(
+        (i) =>
+          (i.path[0] === 'skill_id' || i.path[0] === 'key_name' || i.path[0] === 'agent_id') &&
+          (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (requiredMissing) {
+        res.status(400).json({ error: 'skill_id, key_name, and agent_id are required' });
+        return;
+      }
+      res.status(400).json(formatZodError(parsedSkill.error));
+      return;
+    }
+    const skill_id = parsedSkill.data.skill_id.trim();
+    const key_name = parsedSkill.data.key_name.trim();
+    const agent_id = parsedSkill.data.agent_id.trim();
+    const value = typeof parsedSkill.data.value === 'string' ? parsedSkill.data.value : '';
     if (!skill_id || !key_name || !agent_id) {
       res.status(400).json({ error: 'skill_id, key_name, and agent_id are required' });
       return;
@@ -848,8 +1616,22 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    const body = (req.body ?? {}) as { name?: unknown; expiresInDays?: unknown };
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const parsedKey = CreateApiKeyBody.safeParse(req.body ?? {});
+    if (!parsedKey.success) {
+      // Preserve "name must be 1-100 characters" wording when the field is
+      // missing or the wrong type.
+      const nameBad = parsedKey.error.issues.some(
+        (i) => i.path[0] === 'name' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (nameBad) {
+        res.status(400).json({ error: 'name must be 1-100 characters' });
+        return;
+      }
+      res.status(400).json(formatZodError(parsedKey.error));
+      return;
+    }
+    const body = parsedKey.data;
+    const name = body.name.trim();
     if (name.length === 0 || name.length > 100) {
       res.status(400).json({ error: 'name must be 1-100 characters' });
       return;
@@ -962,15 +1744,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   // POST /api/auth/users — Owner only
   router.post('/api/auth/users', requireRole('Owner'), async (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
-    const {
-      username: rawUser,
-      password: rawPass,
-      role: rawRole,
-    } = req.body as {
-      username?: string;
-      password?: string;
-      role?: string;
-    };
+    const parsedCreateUser = CreateUserBody.safeParse(req.body ?? {});
+    if (!parsedCreateUser.success) {
+      res.status(400).json(formatZodError(parsedCreateUser.error));
+      return;
+    }
+    const { username: rawUser, password: rawPass, role: rawRole } = parsedCreateUser.data;
     const username = sanitizeUsername(rawUser);
     const password = sanitizePassword(rawPass);
     const role = parseRole(rawRole) ?? 'User';
@@ -1012,7 +1791,24 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   router.put('/api/auth/users/:id/role', requireRole('Admin'), (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     const { id } = req.params as { id: string };
-    const nextRole = parseRole((req.body as { role?: unknown }).role);
+    const parsedRoleBody = UpdateUserRoleBody.safeParse(req.body ?? {});
+    if (!parsedRoleBody.success) {
+      // Preserve the legacy "role must be Owner, Admin, or User" wording so
+      // existing clients and regex-based tests keep matching, while still
+      // routing other shape errors through the structured Zod response.
+      const roleIssue = parsedRoleBody.error.issues.some(
+        (i) =>
+          i.path[0] === 'role' &&
+          (i.code === 'invalid_type' || i.code === 'invalid_value' || i.code === 'too_small'),
+      );
+      if (roleIssue) {
+        res.status(400).json({ error: 'role must be Owner, Admin, or User' });
+        return;
+      }
+      res.status(400).json(formatZodError(parsedRoleBody.error));
+      return;
+    }
+    const nextRole = parseRole(parsedRoleBody.data.role);
     if (!nextRole) {
       res.status(400).json({ error: 'role must be Owner, Admin, or User' });
       return;
@@ -1117,7 +1913,23 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   router.post('/api/auth/users/:id/password', async (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     const { id } = req.params as { id: string };
-    const { newPassword } = req.body as { newPassword?: string };
+    const parsedPwd = PasswordResetBody.safeParse(req.body ?? {});
+    if (!parsedPwd.success) {
+      // Preserve the legacy "newPassword must be …" wording when the field
+      // is missing/wrong-type; route other shape errors through Zod.
+      const pwdIssue = parsedPwd.error.issues.some(
+        (i) => i.path[0] === 'newPassword' && (i.code === 'invalid_type' || i.code === 'too_small'),
+      );
+      if (pwdIssue) {
+        res.status(400).json({
+          error: `newPassword must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
+        });
+        return;
+      }
+      res.status(400).json(formatZodError(parsedPwd.error));
+      return;
+    }
+    const { newPassword } = parsedPwd.data;
     const password = sanitizePassword(newPassword);
     if (!password) {
       res.status(400).json({
@@ -1156,15 +1968,23 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   // POST /api/auth/invites — Admin+
   router.post('/api/auth/invites', requireRole('Admin'), (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
-    const {
-      role: rawRole,
-      email,
-      ttlHours,
-    } = req.body as {
-      role?: string;
-      email?: string;
-      ttlHours?: number;
-    };
+    const parsedInvite = CreateInviteBody.safeParse(req.body ?? {});
+    if (!parsedInvite.success) {
+      // Preserve the legacy invite-role wording when the role field itself
+      // is bad; otherwise fall through to structured Zod errors.
+      const roleIssue = parsedInvite.error.issues.some(
+        (i) =>
+          i.path[0] === 'role' &&
+          (i.code === 'invalid_type' || i.code === 'invalid_value' || i.code === 'too_small'),
+      );
+      if (roleIssue) {
+        res.status(400).json({ error: 'role must be Admin or User (Owner is never invited)' });
+        return;
+      }
+      res.status(400).json(formatZodError(parsedInvite.error));
+      return;
+    }
+    const { role: rawRole, email, ttlHours } = parsedInvite.data;
     const role = parseRole(rawRole);
     if (!role || role === 'Owner') {
       res.status(400).json({ error: 'role must be Admin or User (Owner is never invited)' });
@@ -1275,10 +2095,32 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         return;
       }
 
-      const { username: rawUser, password: rawPass } = req.body as {
-        username?: string;
-        password?: string;
-      };
+      const parsedAccept = AcceptInviteBody.safeParse(req.body ?? {});
+      if (!parsedAccept.success) {
+        // Preserve legacy wording so existing clients/regex tests keep
+        // working: "invalid username" if the username field is the issue,
+        // password message if password is missing/short. Mixed cases fall
+        // through to structured Zod output.
+        const usernameMissing = parsedAccept.error.issues.some(
+          (i) => i.path[0] === 'username' && (i.code === 'invalid_type' || i.code === 'too_small'),
+        );
+        if (usernameMissing) {
+          res.status(400).json({ error: 'invalid username' });
+          return;
+        }
+        const passwordMissing = parsedAccept.error.issues.some(
+          (i) => i.path[0] === 'password' && (i.code === 'invalid_type' || i.code === 'too_small'),
+        );
+        if (passwordMissing) {
+          res.status(400).json({
+            error: `password must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
+          });
+          return;
+        }
+        res.status(400).json(formatZodError(parsedAccept.error));
+        return;
+      }
+      const { username: rawUser, password: rawPass } = parsedAccept.data;
       const username = sanitizeUsername(rawUser);
       const password = sanitizePassword(rawPass);
       if (!username) {

@@ -10,6 +10,108 @@ import {
   computeCursorUiStatus,
 } from '../cursor-auth-parse.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
+import { registerPath, z } from '../openapi/registry.js';
+import { ErrorResponse } from '../openapi/schemas/auth.js';
+
+// ── OpenAPI registrations (Cursor Agent CLI auth) ──────────────────────
+registerPath({
+  method: 'get',
+  path: '/api/config/cursor-auth',
+  tags: ['Auth'],
+  summary: 'Cursor Agent CLI auth status.',
+  request: {
+    query: z.object({ cursorBin: z.string().optional() }),
+  },
+  responses: {
+    200: {
+      description: 'Current Cursor auth status.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            uiStatus: z.string(),
+            binary: z.object({ present: z.boolean(), path: z.string() }),
+            oauth: z.object({
+              loggedIn: z.boolean().nullable(),
+              email: z.string().nullable().optional(),
+            }),
+            loginInProgress: z.boolean(),
+            activeMethod: z.enum(['oauth', 'none']),
+            statusError: z.string().nullable(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/cursor-auth/login',
+  tags: ['Auth'],
+  summary: 'Start the Cursor Agent OAuth login flow.',
+  responses: {
+    200: {
+      description: 'Login URL emitted by cursor-agent, or login result.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.boolean(),
+            loginId: z.string().optional(),
+            loginUrl: z.string().optional(),
+            completed: z.boolean().optional(),
+            output: z.string().optional(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Cursor binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/cursor-auth/cancel-login',
+  tags: ['Auth'],
+  summary: 'Cancel an in-progress Cursor login.',
+  responses: {
+    200: {
+      description: 'Cancellation receipt.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/cursor-auth',
+  tags: ['Auth'],
+  summary: 'Log the Cursor Agent CLI out.',
+  responses: {
+    200: {
+      description: 'Logout result.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), output: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Cursor binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'CLI logout failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 const HOME = os.homedir();
 
