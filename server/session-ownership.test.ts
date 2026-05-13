@@ -17,11 +17,17 @@ import {
   inheritOwnerFromSession,
   userOwnsSession,
   resolveOwnerUserId,
+  resolveAutonomousOwnerUserId,
   resetOrgOwnerCache,
   backfillSessionOwners,
   getOrgOwnerUserId,
 } from './session-ownership.js';
 import config from './config.js';
+import { initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
+import { createUser } from './users-store.js';
+import { tmpdir } from 'os';
+import { mkdtempSync } from 'fs';
+import path from 'path';
 
 function seedSession(agentId = '_test_agent', name = 'fixture'): string {
   const id = uuidv4();
@@ -139,6 +145,101 @@ describe('userOwnsSession — apiKey-only legacy mode', () => {
     } finally {
       config.apiKey = previous;
     }
+  });
+});
+
+describe('resolveAutonomousOwnerUserId — owner resolution chain', () => {
+  let userA: string;
+  let userB: string;
+  let enabler: string;
+
+  beforeEach(() => {
+    getDb().exec('DELETE FROM sessions');
+    resetOrgOwnerCache();
+    // Spin up a fresh orgs.db per-spec so `isKnownUserId` (via
+    // getUserById) returns true for our seeded ids. The shared
+    // `test/setup.ts` does not init orgs.db, so we own that here.
+    const dir = mkdtempSync(path.join(tmpdir(), 'session-ownership-test-'));
+    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
+    initOrgsDb();
+    userA = createUser({ username: `userA-${Date.now()}-${Math.random()}`, passwordHash: 'h' }).id;
+    userB = createUser({ username: `userB-${Date.now()}-${Math.random()}`, passwordHash: 'h' }).id;
+    enabler = createUser({
+      username: `enabler-${Date.now()}-${Math.random()}`,
+      passwordHash: 'h',
+    }).id;
+    // listUsers() ordering decides the org-owner fallback; reset the
+    // cache so the fresh DB seeds it on the next call.
+    resetOrgOwnerCache();
+  });
+
+  it('step 1: prefers card.created_by when it matches a real user', () => {
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: userA, session_id: null },
+      { autonomous_enabled_by: enabler },
+    );
+    expect(out).toBe(userA);
+  });
+
+  it('step 1: ignores card.created_by when it is a free-form string (e.g. an agent id)', () => {
+    // Falls through to org-owner because the other two signals are absent.
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: 'agent-hub-intake', session_id: null },
+      { autonomous_enabled_by: null },
+    );
+    expect(out).toBe(getOrgOwnerUserId());
+    expect(out).not.toBe('agent-hub-intake');
+  });
+
+  it('step 2: falls back to card.session_id owner when created_by is null', () => {
+    const filerSession = seedSession();
+    setSessionOwner(filerSession, userB);
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: null, session_id: filerSession },
+      { autonomous_enabled_by: enabler },
+    );
+    expect(out).toBe(userB);
+  });
+
+  it('step 2: skips session lookup when the session has no owner (e.g. pre-migration)', () => {
+    const orphanSession = seedSession();
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: null, session_id: orphanSession },
+      { autonomous_enabled_by: enabler },
+    );
+    expect(out).toBe(enabler);
+  });
+
+  it('step 3: falls back to epic.autonomous_enabled_by when card has no signal', () => {
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: null, session_id: null },
+      { autonomous_enabled_by: enabler },
+    );
+    expect(out).toBe(enabler);
+  });
+
+  it('step 3: ignores epic.autonomous_enabled_by when it is not a known user', () => {
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: null, session_id: null },
+      { autonomous_enabled_by: 'not-a-real-user-id' },
+    );
+    // Falls through to org owner (userA — first user seeded).
+    expect(out).toBe(getOrgOwnerUserId());
+  });
+
+  it('step 4: falls back to org owner when nothing else resolves', () => {
+    const out = resolveAutonomousOwnerUserId(
+      { created_by: null, session_id: null },
+      { autonomous_enabled_by: null },
+    );
+    expect(out).toBe(getOrgOwnerUserId());
+    // userA is the first user we seeded → it IS the org owner.
+    expect(out).toBe(userA);
+  });
+
+  it('handles null card and null epic without throwing', () => {
+    expect(() => resolveAutonomousOwnerUserId(null, null)).not.toThrow();
+    expect(resolveAutonomousOwnerUserId(null, null)).toBe(getOrgOwnerUserId());
   });
 });
 

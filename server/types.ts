@@ -475,6 +475,14 @@ export interface KanbanEpicRow {
    * override with their own `pr_base_branch`. Null = repo default.
    */
   pr_base_branch?: string | null;
+  /**
+   * User id of whoever most recently flipped `autonomous = 1` on this
+   * epic. Used by `resolveAutonomousOwnerUserId` as the third step in the
+   * autonomous-dispatch owner-resolution chain (card.created_by →
+   * card.session_id owner → epic.autonomous_enabled_by → org owner).
+   * Null on legacy rows / epics that have never had autonomous enabled.
+   */
+  autonomous_enabled_by?: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -1038,6 +1046,7 @@ export interface Stmts {
   getKanbanEpic: Stmt;
   createKanbanEpic: Stmt;
   updateKanbanEpic: Stmt;
+  setEpicAutonomousEnabledBy: Stmt;
   deleteKanbanEpic: Stmt;
   getKanbanCardsByEpic: Stmt;
   updateKanbanCardEpic: Stmt;

@@ -28,7 +28,7 @@ import type {
   SessionRow,
 } from './types.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
-import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { setSessionOwner, resolveAutonomousOwnerUserId } from './session-ownership.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 
@@ -861,9 +861,14 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const wt = defaultSessionUseWorktreeFlag(projRow);
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       // Autonomous-dispatch sessions are created by the system (no
-      // human caller in scope); attribute them to the org owner so the
-      // single-tenant operator can see them in their session list.
-      setSessionOwner(sessionId, getOrgOwnerUserId());
+      // human caller in scope), but we still want to attribute them to
+      // the real human responsible so per-user GitHub tokens, CLI
+      // credentials, and skill secrets resolve correctly — and so the
+      // session actually shows up on that user's session list under
+      // strict-mode auth. `resolveAutonomousOwnerUserId` walks
+      // card.created_by → card.session_id owner → epic.autonomous_enabled_by
+      // → org owner; only the last hop matches the old behaviour.
+      setSessionOwner(sessionId, resolveAutonomousOwnerUserId(card, epic));
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {
