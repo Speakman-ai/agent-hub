@@ -1,12 +1,27 @@
 name: Deploy Dev
 
-# Manual-only trigger. Deploys whatever is currently on main when invoked
-# from the Actions tab (or via `gh workflow run deploy-dev.yml`). We
-# intentionally do NOT auto-deploy on CI success — operators trigger
-# explicitly so deploys are an opt-in step rather than a side effect of
-# merging to main.
+# Triggered two ways:
+#   1. workflow_dispatch — operator fires it manually from the Actions tab
+#      to roll whatever is on `main` to agent-hub-server. We intentionally do
+#      NOT auto-deploy on CI success; deploys stay opt-in.
+#   2. workflow_call — invoked by `release-all.yml` after a release tag has
+#      been cut and prod-1 has rolled, with `ref` pinned to the new tag so
+#      dev lands on the exact same commit that's going to prod-2.
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag, or SHA). Defaults to origin/main.'
+        required: false
+        type: string
+        default: origin/main
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag, or SHA). Defaults to origin/main.'
+        required: false
+        type: string
+        default: origin/main
 
 # Collapse stacked pushes: only the latest commit on main gets deployed.
 # The "Wait for SSM command" step traps cancellation and calls ssm cancel-command
@@ -33,6 +48,9 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
       INSTANCE_NAME_TAG: agent-hub-server
+      # `inputs.ref` works for both workflow_dispatch and workflow_call (the
+      # input is declared on both). Defaults to origin/main when unspecified.
+      REF: ${{ inputs.ref || 'origin/main' }}
 
     steps:
       - name: Configure AWS credentials (OIDC)
@@ -118,8 +136,13 @@ jobs:
           # shellcheck disable=SC1091
           [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
           cd ${DEPLOY_PATH}
-          git fetch --all --prune
-          git reset --hard origin/main
+          # --tags so tag refs passed by release-all.yml (e.g. v1.2.3) resolve.
+          # The default origin/main case also benefits — no harm fetching tags.
+          git fetch --all --tags --prune
+          git reset --hard "${REF}"
+          # Wipe any local drift. Matches prod-1/prod-2 behavior — dev is a
+          # deploy target, not a development checkout.
+          git clean -fd
           # Ensure cursor-agent CLI is present for sessions with engine=cursor-agent.
           # Idempotent — no-op when already installed at \$HOME/.local/bin/agent.
           bash scripts/ensure-cursor-agent.sh
@@ -159,7 +182,7 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "deploy-dev ${GITHUB_SHA::7}" \
+            --comment "deploy-dev ref=${REF} ${GITHUB_SHA::7}" \
             --parameters "file://$RUNNER_TEMP/ssm-params.json" \
             --cloud-watch-output-config CloudWatchOutputEnabled=true \
             --query 'Command.CommandId' \
