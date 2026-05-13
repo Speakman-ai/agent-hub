@@ -36,7 +36,8 @@
     "test:e2e": "cd e2e && npx playwright test",
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
     "test:e2e:headed": "cd e2e && npx playwright test --headed",
-    "test:e2e:report": "cd e2e && npx playwright show-report"
+    "test:e2e:report": "cd e2e && npx playwright show-report",
+    "generate:openapi": "cd server && npx tsx openapi/generate.ts"
   },
   "engines": {
     "node": ">=22.14.0 <23.0.0"

@@ -17,7 +17,9 @@ on:
     branches: [main]
     paths:
       - 'docs/api/**'
+      - 'server/openapi/**'
       - 'server/openapi-filter.ts'
+      - 'server/routes/**'
       - 'scripts/build-openapi-public.ts'
       - '.github/workflows/api-docs.yml'
       - 'package.json'
@@ -28,7 +30,9 @@ on:
     branches: [main]
     paths:
       - 'docs/api/**'
+      - 'server/openapi/**'
       - 'server/openapi-filter.ts'
+      - 'server/routes/**'
       - 'scripts/build-openapi-public.ts'
       - '.github/workflows/api-docs.yml'
       - 'package.json'
@@ -66,7 +70,10 @@ jobs:
         run: cd server && npm ci --ignore-scripts --include=dev
 
       - name: Run filter unit tests
-        run: cd server && npx vitest run openapi-filter.test.ts
+        run: cd server && npx vitest run openapi-filter.test.ts openapi/registry.test.ts
+
+      - name: Generate OpenAPI spec from Zod registry
+        run: npm run generate:openapi
 
       - name: Build filtered bundle (strip x-internal)
         run: cd server && npx tsx ../scripts/build-openapi-public.ts --out ../docs/api/_site
