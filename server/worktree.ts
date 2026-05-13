@@ -7,7 +7,8 @@ import config from './config.js';
 import type { SessionRow } from './types.js';
 import { classifyCloneUrl, buildAuthenticatedUrl, redactToken } from './clone-url-auth.js';
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
-import { getGithubPatForUser, gitAuthArgsForGithubPat } from './skill-credentials-github.js';
+import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
+import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -580,16 +581,23 @@ export async function ensureProjectRepoCloned(
     resolveToken?: InstallationTokenResolver;
     /**
      * When set, and the GitHub App installation token resolver returns
-     * `null`, the user's stored `GH_TOKEN` skill credential is used as a
-     * fallback so private repos still clone for self-hosters without the
-     * Agent installed. Auth is injected via a per-invocation `-c
-     * http.<host>.extraheader=…` arg (the GH Actions pattern), so the PAT
-     * never lands in the resulting repo's on-disk `.git/config`.
+     * `null`, the user's per-user GitHub credential (OAuth user-to-server
+     * token preferred, skill-credentials PAT as fallback) is used so
+     * private repos still clone for self-hosters without the GitHub App
+     * installed. Auth is injected via a per-invocation `-c
+     * http.<host>.extraheader=…` arg (the GH Actions pattern), so the
+     * token never lands in the resulting repo's on-disk `.git/config`.
      * Installation token wins when both exist — preserves bot attribution.
      */
     requestingUserId?: string | null;
-    /** Test seam — defaults to `getGithubPatForUser`. */
-    resolveUserPat?: (userId: string) => string | null;
+    /**
+     * Test seam — defaults to `resolveUserGithubToken` with the current
+     * server config's OAuth credentials. Returns a Promise so the OAuth
+     * refresh path can run. Override in tests to short-circuit token
+     * resolution without touching the orgs DB or the OAuth refresh
+     * endpoint.
+     */
+    resolveUserToken?: (userId: string) => Promise<string | null>;
   } = {},
 ): Promise<boolean> {
   if (!repoUrl) return false;
@@ -625,19 +633,24 @@ export async function ensureProjectRepoCloned(
     );
   }
 
-  // User-PAT fallback. Only consulted when the App installation token is
-  // unavailable: the bot identity is preferred when present so PR
-  // attribution / API rate buckets stay with the App. The PAT is injected
-  // via `-c http.…extraheader=…` and never embedded into the clone URL,
-  // so it cannot land in the on-disk `.git/config` of the resulting repo.
-  let userPat: string | null = null;
+  // Per-user token fallback. Only consulted when the App installation
+  // token is unavailable: the bot identity is preferred when present so
+  // PR attribution / API rate buckets stay with the App. The user's
+  // credential — OAuth user-to-server token first, skill-credentials PAT
+  // second (see `resolveUserGithubToken`) — is injected via `-c
+  // http.…extraheader=…` and never embedded into the clone URL, so it
+  // cannot land in the on-disk `.git/config` of the resulting repo.
+  let userToken: string | null = null;
   if (!token && options.requestingUserId) {
-    const resolvePat = options.resolveUserPat ?? getGithubPatForUser;
-    userPat = resolvePat(options.requestingUserId);
+    const resolveToken =
+      options.resolveUserToken ??
+      ((uid: string) =>
+        resolveUserGithubToken(uid, { oauthCredentials: resolveOAuthAppCredentials(config) }));
+    userToken = await resolveToken(options.requestingUserId);
   }
 
   const cloneUrl = token ? buildAuthenticatedUrl(parsed, token) : repoUrl;
-  const authArgs = userPat ? gitAuthArgsForGithubPat(userPat) : [];
+  const authArgs = userToken ? gitAuthArgsForGithubPat(userToken) : [];
 
   // Existing zombie (path exists but not a git repo) → wipe before clone.
   if (existsSync(projectCwd)) {
@@ -665,18 +678,18 @@ export async function ensureProjectRepoCloned(
   } catch (err: unknown) {
     // Strip both auth secrets from the error message before re-throwing
     // so the caller / log pipeline never sees the installation token or
-    // the user PAT. `redactToken` is a no-op when its second argument is
-    // falsy, so the chain is safe even when only one of the two is set.
+    // the user token. `redactToken` is a no-op when its second argument
+    // is falsy, so the chain is safe even when only one of the two is set.
     const raw = err instanceof Error ? err.message : String(err);
     const safeOnce = redactToken(raw, token);
-    const safe = redactToken(safeOnce, userPat);
+    const safe = redactToken(safeOnce, userToken);
     throw new Error(
       `Auto-clone failed for project ${options.projectId ?? '<unknown>'} (${repoUrl}): ${safe}`,
     );
   }
 
   console.log(
-    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from ${repoUrl} → ${projectCwd}${userPat && !token ? ' (user PAT)' : ''}`,
+    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from ${repoUrl} → ${projectCwd}${userToken && !token ? ' (user token)' : ''}`,
   );
   return true;
 }
@@ -1008,17 +1021,23 @@ export async function ensureSessionWorkspace(
     return session.worktree_path;
   }
 
-  // Per-session GitHub PAT resolution. Pulled once at the top (before any
-  // branch) so every git network call below — the reuse-path fetches
+  // Per-session GitHub token resolution. Pulled once at the top (before
+  // any branch) so every git network call below — the reuse-path fetches
   // (origin/--quiet, origin/<base>), the auto-clone of the project, and
   // the fresh shallow clone of the session worktree — all use the same
   // credential. Deferring to after remote classification is not possible
   // because the reuse-path fetches run before we ever read the remote URL.
-  // Empty when the session has no owner_user_id (legacy rows, system-owned
-  // sessions) or when the owner hasn't stored a PAT.
+  //
+  // Resolution order (see `resolveUserGithubToken`):
+  //   1. OAuth user-to-server token (canonical, refreshable)
+  //   2. Skill-credentials PAT (override / fallback)
+  //   3. null — session owner missing or unauthenticated owner; downstream
+  //      git calls fall back to unauthenticated access (public repos only)
   const sessionOwnerId = session.owner_user_id ?? null;
-  const userPat: string | null = getGithubPatForUser(sessionOwnerId);
-  const authArgs: string[] = userPat ? gitAuthArgsForGithubPat(userPat) : [];
+  const userToken: string | null = await resolveUserGithubToken(sessionOwnerId, {
+    oauthCredentials: resolveOAuthAppCredentials(config),
+  });
+  const authArgs: string[] = userToken ? gitAuthArgsForGithubPat(userToken) : [];
 
   // Self-heal: when a `repoUrl` is set and `projectCwd` is missing or not a
   // git repo, auto-clone the project before continuing. Errors here are
@@ -1068,7 +1087,7 @@ export async function ensureSessionWorkspace(
       fetchSucceeded = true;
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
-      const message = redactToken(raw, userPat);
+      const message = redactToken(raw, userToken);
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
 
@@ -1097,7 +1116,7 @@ export async function ensureSessionWorkspace(
         );
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : String(err);
-        const message = redactToken(raw, userPat);
+        const message = redactToken(raw, userToken);
         console.warn(
           `[Workspace] Could not refresh origin/${trimmedBase} for drift check on session "${safeName}":`,
           message,
@@ -1218,7 +1237,7 @@ export async function ensureSessionWorkspace(
         await runGit(['reset', '--hard', `origin/${base}`], { cwd: cloneDir });
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : String(err);
-        const message = redactToken(raw, userPat);
+        const message = redactToken(raw, userToken);
         console.error(`[Workspace] Failed to position session clone on origin/${base}:`, message);
         onFailure?.(session.id, message);
         return projectCwd;
@@ -1232,15 +1251,15 @@ export async function ensureSessionWorkspace(
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
     console.log(
-      `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userPat ? ' (PAT)' : ''}`,
+      `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userToken ? ' (user token)' : ''}`,
     );
     return cloneDir;
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
-    // Double-pass redaction: strip the user PAT and any installation token
+    // Double-pass redaction: strip the user token and any installation token
     // that was embedded in the project repo's remote.origin.url so neither
     // secret reaches the WebSocket log or the onFailure callback.
-    const once = redactToken(raw, userPat);
+    const once = redactToken(raw, userToken);
     const message = redactToken(once, embeddedToken);
     console.error(`[Workspace] Failed to create session clone:`, message);
     onFailure?.(session.id, message);

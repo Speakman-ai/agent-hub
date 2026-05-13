@@ -185,45 +185,45 @@ describe('ensureProjectRepoCloned — user PAT fallback', () => {
     }
   });
 
-  it('does not consult the user PAT resolver when no requestingUserId is provided', async () => {
+  it('does not consult the user token resolver when no requestingUserId is provided', async () => {
     const resolveToken = vi.fn(async () => null);
-    const resolveUserPat = vi.fn(() => 'should-not-be-read');
+    const resolveUserToken = vi.fn(async () => 'should-not-be-read');
 
     await expect(
       ensureProjectRepoCloned(projectCwd, 'https://github.com/agenthub-test/missing.git', {
         projectId: 'proj-no-user',
         resolveToken,
-        resolveUserPat,
+        resolveUserToken,
       }),
     ).rejects.toThrow(/Auto-clone failed/);
 
     expect(resolveToken).toHaveBeenCalledOnce();
-    // No requestingUserId → PAT lookup is skipped entirely.
-    expect(resolveUserPat).not.toHaveBeenCalled();
+    // No requestingUserId → user-token lookup is skipped entirely.
+    expect(resolveUserToken).not.toHaveBeenCalled();
   });
 
-  it('consults the user PAT only after the installation-token resolver returns null', async () => {
+  it('consults the user token only after the installation-token resolver returns null', async () => {
     const resolveToken = vi.fn(async () => null);
-    const resolveUserPat = vi.fn(() => null); // user has no stored PAT either
+    const resolveUserToken = vi.fn(async () => null); // user has neither OAuth nor PAT
 
     await expect(
       ensureProjectRepoCloned(projectCwd, 'https://github.com/agenthub-test/missing.git', {
         projectId: 'proj-pat-null',
         resolveToken,
         requestingUserId: 'user-1',
-        resolveUserPat,
+        resolveUserToken,
       }),
     ).rejects.toThrow(/Auto-clone failed/);
 
     expect(resolveToken).toHaveBeenCalledOnce();
-    expect(resolveUserPat).toHaveBeenCalledExactlyOnceWith('user-1');
+    expect(resolveUserToken).toHaveBeenCalledExactlyOnceWith('user-1');
   });
 
-  it('prefers the installation token over the user PAT — App identity wins for bot attribution', async () => {
+  it('prefers the installation token over the user token — App identity wins for bot attribution', async () => {
     const INSTALL_TOK = 'ghs_install_xxxxxxxxxxxxxxxxxxx';
-    const USER_PAT = 'ghp_user_yyyyyyyyyyyyyyyyyyyy';
+    const USER_TOKEN = 'ghp_user_yyyyyyyyyyyyyyyyyyyy';
     const resolveToken = vi.fn(async () => INSTALL_TOK);
-    const resolveUserPat = vi.fn(() => USER_PAT);
+    const resolveUserToken = vi.fn(async () => USER_TOKEN);
 
     let captured: Error | null = null;
     try {
@@ -234,7 +234,7 @@ describe('ensureProjectRepoCloned — user PAT fallback', () => {
           projectId: 'proj-prefer-install',
           resolveToken,
           requestingUserId: 'user-1',
-          resolveUserPat,
+          resolveUserToken,
         },
       );
     } catch (err) {
@@ -242,14 +242,14 @@ describe('ensureProjectRepoCloned — user PAT fallback', () => {
     }
     expect(captured).not.toBeNull();
     expect(resolveToken).toHaveBeenCalledOnce();
-    // Installation token short-circuits the PAT lookup — no fallback consulted.
-    expect(resolveUserPat).not.toHaveBeenCalled();
+    // Installation token short-circuits the user-token lookup — no fallback consulted.
+    expect(resolveUserToken).not.toHaveBeenCalled();
   });
 
-  it('redacts the user PAT from error messages when the PAT path is taken', async () => {
-    const USER_PAT = 'ghp_userToken_REDACT_ME_zzzzzzzzzzzzzzzz';
+  it('redacts the user token from error messages when the user-token path is taken', async () => {
+    const USER_TOKEN = 'ghp_userToken_REDACT_ME_zzzzzzzzzzzzzzzz';
     const resolveToken = vi.fn(async () => null);
-    const resolveUserPat = vi.fn(() => USER_PAT);
+    const resolveUserToken = vi.fn(async () => USER_TOKEN);
 
     let captured: Error | null = null;
     try {
@@ -260,17 +260,17 @@ describe('ensureProjectRepoCloned — user PAT fallback', () => {
           projectId: 'proj-redact-pat',
           resolveToken,
           requestingUserId: 'user-1',
-          resolveUserPat,
+          resolveUserToken,
         },
       );
     } catch (err) {
       captured = err as Error;
     }
     expect(captured).not.toBeNull();
-    // The raw PAT must NEVER appear in the surfaced error — redactToken
+    // The raw token must NEVER appear in the surfaced error — redactToken
     // substitutes `***`. The unauthenticated URL and project id should still
     // be present so operators can diagnose without the secret leaking.
-    expect(captured!.message).not.toContain(USER_PAT);
+    expect(captured!.message).not.toContain(USER_TOKEN);
     expect(captured!.message).toContain('https://github.com/agenthub-test/missing-with-pat.git');
     expect(captured!.message).toContain('proj-redact-pat');
   });
