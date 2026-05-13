@@ -235,10 +235,14 @@ npm run electron:pack       # --dir output for local smoke-test
 npm run release:mac         # macOS DMG (arm64 + Intel universal) — used for S3 releases
 ```
 
-The mac build pipeline (`electron/release-mac.mjs`) uploads versioned
-DMGs to S3 on every tagged release, but the bucket is currently
-internal-only. A public download URL + Linux/Windows CI jobs are tracked
-on the kanban board.
+`electron:build` is a thin wrapper around `electron-builder --mac` and
+produces a single host-arch artifact (run on Apple Silicon → arm64
+DMG; run on Intel → x64 DMG). The dual-arch release path lives in
+`electron/release-mac.mjs` and is invoked via `release:mac`, which
+passes `--arm64 --x64` explicitly. The release pipeline uploads
+versioned DMGs to S3 on every tagged release, but the bucket is
+currently internal-only. A public download URL + Linux/Windows CI jobs
+are tracked on the kanban board.
 
 ## Configuration
 
@@ -287,6 +291,14 @@ Configuration resolves in priority order: **environment variables** >
 > `Access-Control-Allow-Origin` header and the SOP blocks the response.
 > Electron desktop, mobile, curl, and server-to-server callers bypass
 > CORS because they don't send an `Origin` header.
+
+> **Bind-address gotcha:** the server binds to `0.0.0.0` by default
+> (`server/config.ts` → `server/index.ts`), so on a LAN box the API is
+> reachable on **every** interface, not just `localhost`. That's the
+> right default for Modes 1 & 2 (you want LAN reachability), but if
+> you're running it on a multi-user host and only the local UI should
+> reach the API, set `AGENT_HUB_HOST=127.0.0.1` (or `host` in
+> `config.json`) to bind to loopback only.
 
 ## Available Scripts
 
