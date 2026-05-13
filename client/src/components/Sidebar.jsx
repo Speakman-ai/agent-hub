@@ -21,6 +21,7 @@ import {
   Archive,
   RotateCcw,
   Loader2,
+  Lock,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -303,6 +304,14 @@ export default function Sidebar({
                       style={{ backgroundColor: project.color }}
                     />
                     <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
+                    {project.visibility === 'private' && (
+                      <Lock
+                        size={11}
+                        className="text-gray-500 flex-shrink-0"
+                        aria-label="Private project"
+                        data-testid={`project-private-icon-${project.id}`}
+                      />
+                    )}
                     {project.mode === 'workflow' && (
                       <span className="text-[10px] font-medium text-violet-400/90 uppercase tracking-wide flex-shrink-0">
                         Wf

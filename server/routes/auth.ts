@@ -142,6 +142,17 @@ export interface AuthRoutesOptions {
   inviteAcceptRateLimit?: { windowMs: number; limit: number };
   /** Disable rate limiting entirely — used by tests that aren't about the limiter itself. */
   disableRateLimit?: boolean;
+  /**
+   * Callback invoked when the user-delete path drops a user's last
+   * membership and calls `deleteUser`. Implementors sweep the user's
+   * private projects (see `cascadeDeleteUserPrivateProjects`). Optional
+   * because tests for the auth routes themselves don't need to wire
+   * project cascade.
+   */
+  onUserDeleted?: (userId: string) => {
+    deletedProjectIds: string[];
+    orphanedSharedProjectIds: string[];
+  };
 }
 
 type LimiterHandler = NonNullable<RateLimitOptions['handler']>;
@@ -1062,11 +1073,44 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
 
     deleteMembership(id, orgId);
     let userDeleted = false;
+    let cascadedPrivateProjects: string[] = [];
+    let orphanedSharedProjects: string[] = [];
     if (countMembershipsForUser(id) === 0) {
       deleteUser(id);
       userDeleted = true;
+      // Cascade — private projects owned by this user are now unreachable
+      // (no member of any org can pass the visibility gate). Auto-delete
+      // per the design decision; shared projects survive with a now-stale
+      // `ownerUserId`. The cascade is best-effort: per-project failures
+      // log but don't fail the user-delete response.
+      if (options.onUserDeleted) {
+        try {
+          const result = options.onUserDeleted(id);
+          cascadedPrivateProjects = result.deletedProjectIds;
+          orphanedSharedProjects = result.orphanedSharedProjectIds;
+          if (cascadedPrivateProjects.length > 0) {
+            console.log(
+              `[auth] user-delete cascade swept ${cascadedPrivateProjects.length} private project(s) owned by ${id}: ${cascadedPrivateProjects.join(', ')}`,
+            );
+          }
+          if (orphanedSharedProjects.length > 0) {
+            console.log(
+              `[auth] user-delete left ${orphanedSharedProjects.length} shared project(s) orphaned (ownerUserId now stale): ${orphanedSharedProjects.join(', ')}`,
+            );
+          }
+        } catch (err) {
+          console.error('[auth] user-delete cascade threw:', (err as Error).message);
+        }
+      }
     }
-    res.json({ ok: true, userId: id, orgId, userDeleted });
+    res.json({
+      ok: true,
+      userId: id,
+      orgId,
+      userDeleted,
+      cascadedPrivateProjects,
+      orphanedSharedProjects,
+    });
   });
 
   // POST /api/auth/users/:id/password — self-reset or Owner-reset

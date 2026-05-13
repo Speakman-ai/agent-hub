@@ -172,7 +172,7 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `GET  /users`                                  | Admin        | list org members                         |
 | `POST /users`                                  | Owner        | create user + membership                 |
 | `PUT  /users/:id/role`                         | Admin        | change role (sole-Owner guard applies)   |
-| `DELETE /users/:id`                            | Owner        | remove user (sole-Owner guard)           |
+| `DELETE /users/:id`                            | Owner        | remove user (sole-Owner guard; cascades user's private projects — see "User-delete cascade") |
 | `POST /users/:id/password`                     | self/Owner   | reset password                           |
 | `POST /invites`, `GET /invites`, `DELETE …`    | Admin        | invite lifecycle                         |
 | `GET  /invites/:token`                         | **public**   | preview invite before accepting          |
@@ -195,6 +195,43 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 
 Public paths live in `PUBLIC_PATHS` / `PUBLIC_PREFIXES` (`server/auth.ts`);
 everything else falls through `authMiddleware`.
+
+## User-delete cascade
+
+`DELETE /api/auth/users/:id` removes the caller's membership in the active
+org, and only deletes the underlying `users` row when that was the user's
+**last** membership across all orgs (`countMembershipsForUser(id) === 0`).
+When the row is deleted, the route fires a cascade callback
+(`AuthRoutesOptions.onUserDeleted`, wired in `server/index.ts` to
+`cascadeDeleteUserPrivateProjects`) which sweeps the now-orphaned project
+state:
+
+- **Private projects** owned by the deleted user are auto-deleted — no
+  remaining member of any org could pass the visibility gate, so the
+  rows are unreachable. The cascade tears down each project's scoped
+  rows via the shared `deleteProjectScopedRows` helper (kept in sync
+  with the DELETE `/api/projects/:id` handler) so there's no drift.
+- **Shared projects** owned by the deleted user stay alive but their
+  `ownerUserId` is now stale. They are logged but not deleted — shared
+  projects can be re-owned manually or left for an Owner to delete via
+  the kill switch.
+
+The response shape adds two fields:
+
+```json
+{
+  "ok": true,
+  "userId": "...",
+  "orgId": "...",
+  "userDeleted": true,
+  "cascadedPrivateProjects": ["proj-id-1", "proj-id-2"],
+  "orphanedSharedProjects": ["proj-id-3"]
+}
+```
+
+The cascade is **best-effort**: per-project failures are logged but do
+not fail the user-delete response. The user row is gone either way; an
+operator can clean up any stragglers manually.
 
 ## Per-user Claude credentials
 
