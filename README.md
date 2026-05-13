@@ -80,7 +80,7 @@ graph TB
 - **A build toolchain** for `better-sqlite3`'s native module:
   - Linux: `sudo apt install build-essential python3`
   - macOS: `xcode-select --install`
-  - Windows: `npm install -g windows-build-tools` (admin shell)
+  - Windows: install [Visual Studio Build Tools](https://aka.ms/vs/17/release/vs_BuildTools.exe) with the "Desktop development with C++" workload, **or** re-run the [Node.js installer](https://nodejs.org/) and tick "Automatically install the necessary tools"
 - **At least one engine CLI** — see [Engine CLIs](#engine-clis) below. The
   server boots without any installed, but chat sessions cannot run until one
   is on `PATH` or pointed at via config.
