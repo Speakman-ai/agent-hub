@@ -72,59 +72,69 @@ graph TB
 
 ## Prerequisites
 
-- **Node.js** v18+
-- **npm**
-- **Claude Code CLI** and/or **Cursor Agent CLI** installed and accessible
-- **gh CLI** (optional — for webhook registration and PR workflows)
+- **Node.js** `>=22.14.0 <23.0.0` — pinned in `engines.node` and `.nvmrc`. The
+  version is coupled to Electron 35's bundled Node ABI so `better-sqlite3`
+  rebuilds work identically in dev and packaged builds. If you use `nvm`,
+  `nvm use` in the repo root will pick up the right version automatically.
+- **npm** (ships with Node)
+- **A build toolchain** for `better-sqlite3`'s native module:
+  - Linux: `sudo apt install build-essential python3`
+  - macOS: `xcode-select --install`
+  - Windows: install [Visual Studio Build Tools](https://aka.ms/vs/17/release/vs_BuildTools.exe) with the "Desktop development with C++" workload, **or** re-run the [Node.js installer](https://nodejs.org/) and tick "Automatically install the necessary tools"
+- **At least one engine CLI** — see [Engine CLIs](#engine-clis) below. The
+  server boots without any installed, but chat sessions cannot run until one
+  is on `PATH` or pointed at via config.
+- **`gh` CLI** (optional) — only needed for webhook registration helpers and
+  the autonomous PR-review flow.
 
-### Installing the Cursor Agent CLI
+### Engine CLIs
 
-To run sessions with `engine: cursor-agent`, install the CLI from Cursor's
-official installer:
+Agent Hub orchestrates third-party agent CLIs — it does **not** ship them.
+You need at least one of:
 
-```bash
-# Inspect the script first if you prefer:
-# curl -fsS https://cursor.com/install | less
-bash scripts/ensure-cursor-agent.sh
-```
+| Engine        | Acquire                                                              | Auto-installer                          | Notes                                                       |
+| ------------- | -------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------- |
+| Claude Code   | [claude.ai/code](https://claude.ai/code) — Anthropic Pro/Max or API  | _none_ — install per Anthropic's docs   | Paid third-party account required.                          |
+| Cursor Agent  | [cursor.com/install](https://cursor.com/install)                     | `bash scripts/ensure-cursor-agent.sh`   | Symlinks to `~/.local/bin/agent`, server's default.         |
+| Codex         | `@openai/codex` (npm)                                                | `bash scripts/ensure-codex.sh`          | Symlinks `codex` into `~/.local/bin`.                       |
+| Gemini CLI    | Google's official installer                                          | _none_                                  | Same plug-in story as the others — point `geminiBin` at it. |
 
-This wraps `curl -fsS https://cursor.com/install | bash` with an
-idempotent check, so it's safe to re-run. The installer drops a symlink
-at `~/.local/bin/agent`, which is also the server's default `cursorBin`
-— no additional configuration needed. To override (e.g. system-wide
-install at `/usr/local/bin/agent`), set the `CURSOR_BIN` env var or
-`cursorBin` in `~/.agent-hub/data/config.json`.
+Once a binary exists on disk, the Hub finds it three ways (in priority order):
+**env var** (`CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN`) →
+**`~/.agent-hub/data/config.json`** (`claudeBin` etc.) → a **smart PATH probe**
+across common install locations (`/usr/local/bin`, `~/.local/bin`,
+Homebrew, `~/.nvm/.../bin`, etc.) so GUI launches with a minimal `PATH`
+still work. The Settings UI also exposes editable fields for every engine
+path — no hand-editing JSON required.
 
-On EC2 this is handled automatically:
+#### `scripts/ensure-cursor-agent.sh`
 
-- **New instances**: `ops/terraform/main.tf` `user_data` runs the
-  official installer once at bootstrap.
-- **Every deploy**: the dev/prod-2/release-prod workflows in
-  `.github/workflows/` call `scripts/ensure-cursor-agent.sh` inside
-  the SSM rollout, so the CLI stays present on subsequent deploys
-  even if it was manually removed.
+Wraps `curl -fsS https://cursor.com/install | bash` with an idempotent
+check. The installer drops a symlink at `~/.local/bin/agent`, which is
+the server's default `cursorBin` — no further configuration needed.
+Override with `CURSOR_BIN` or `cursorBin` in `config.json` for
+system-wide installs (e.g. `/usr/local/bin/agent`).
 
-### Installing the Codex CLI
+On EC2 this is handled for you: `ops/terraform/main.tf` `user_data`
+runs the installer at bootstrap, and the dev/prod-2/release-prod
+workflows call it again on every SSM rollout so the CLI stays present.
 
-For `engine: codex-cli`, run:
+#### `scripts/ensure-codex.sh`
 
-```bash
-bash scripts/ensure-codex.sh
-```
-
-This installs `@openai/codex` via npm and symlinks `codex` into
-`~/.local/bin` so the Hub finds it via the same `COMMON_BIN_DIRS`
-probe used for other engines (reliable under PM2 even when `PATH` is
-minimal). Terraform bootstrap and the same deploy workflows also run
-`npm install -g @openai/codex` (system Node) plus `ensure-codex.sh`
-after the repo exists on PM2 hosts.
+Installs `@openai/codex` via npm and symlinks `codex` into
+`~/.local/bin`. Same Terraform + workflow auto-install story as above
+(plus a `npm install -g @openai/codex` for the system Node) so PM2
+hosts always have it.
 
 ## Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/speakmanra/agent-hub.git
+git clone https://github.com/Speakman-ai/agent-hub.git
 cd agent-hub
+
+# Pick the right Node version (uses .nvmrc)
+nvm use
 
 # Install all dependencies (root, server, client, mobile)
 npm run install:all
@@ -135,29 +145,160 @@ npm run dev
 
 The web client opens at [http://localhost:3050](http://localhost:3050) and the API server runs on port 3051.
 
+On first launch, visit the web client and complete the **`/api/auth/setup`**
+flow — it creates the first Owner account. No required env vars, no
+external services. SQLite is local, FTS5 is built into `better-sqlite3`.
+
+## Deployment Modes
+
+Agent Hub is a **server-first product with an optional native desktop
+client** — think Plex or Home Assistant. Three legitimate ways to run it,
+all supported today:
+
+| Mode                                | What you run                                                            | When it's the right fit                                                |
+| ----------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Self-hosted + browser**           | `npm run dev` (or PM2) on a Linux box → hit from any device on the LAN  | You already have a home server / VPS and want zero install on clients. |
+| **Self-hosted + Electron remote**   | Same server, plus the Electron app pointed at it via `connConfig.mode = 'remote'` | You want a native window / tray on your laptop without port-forward thinking. |
+| **All-in-one Electron (`local`)**   | Packaged Electron app — boots its own server in-process                 | Single-machine use; the easiest install once binaries exist.           |
+
+### Mode 1: Self-hosted server + browser
+
+Run the server on any host that other devices can reach (LAN box,
+`ssh -L 3051:localhost:3051 host`, or a public box behind a reverse
+proxy). Then point a browser at it.
+
+```bash
+# On the server
+git clone https://github.com/Speakman-ai/agent-hub.git
+cd agent-hub && nvm use && npm run install:all
+
+# Option A — full dev stack (Vite + API). UI on :3050, API on :3051.
+# Set ALLOWED_ORIGINS to the URL the browser will load (the Vite client port).
+ALLOWED_ORIGINS=http://linux-box.local:3050 npm run dev
+
+# Option B — production-style: build the client once, then serve everything
+# from the API server on a single port (:3051). Useful for LAN deploys.
+npm run build
+ALLOWED_ORIGINS=http://linux-box.local:3051 npm run dev:server
+```
+
+**Pick a port and match it.** `npm run dev:server` only serves the
+client at `:3051` if `client/dist/index.html` exists (`npm run build`
+generates it) — otherwise hitting `:3051` in a browser will 404. Either
+run `npm run dev` and point the browser at `:3050`, or `npm run build`
+first and use `:3051`.
+
+**CORS matters here.** Browser requests are gated by an explicit
+allowlist in `server/cors-config.ts`; without `ALLOWED_ORIGINS` matching
+the origin you load the page from, the browser's SOP will block API
+responses. Comma-separate multiple origins. Requests with no `Origin`
+header (Electron, mobile, curl, server-to-server) bypass CORS entirely.
+
+For port-forward via SSH (`ssh -L 3050:localhost:3050 host`), use
+`ALLOWED_ORIGINS=http://localhost:3050` and load the same URL in your
+browser.
+
+### Mode 2: Self-hosted server + Electron remote client
+
+Run the server as in Mode 1, then on each desktop install the Electron
+app and configure it to talk to the remote hub. `electron/main.js`
+reads a `connConfig` and branches on its `mode`:
+
+- `local` — fork the bundled server in-process, load `http://localhost:<port>`.
+- `remote` — `mainWindow.loadURL(connConfig.remoteUrl)`, inject auth
+  headers (`x-api-key`, JWT) on matching hosts via
+  `webRequest.onBeforeSendHeaders`. No server spawned client-side.
+- `dev` — load the Vite dev client at `localhost:3050` for development.
+
+`remote-orgs.json` under `app.getPath('userData')` lets you register
+multiple remote hubs and switch between them; the `setWindowOpenHandler`
+allowlist is built from the configured remote plus every entry there, so
+external link clicks and PR captures behave correctly.
+
+Electron remote mode does **not** care about `ALLOWED_ORIGINS` because
+Electron does not send an `Origin` header.
+
+### Mode 3: All-in-one Electron
+
+The packaged Electron app boots the same Express server in-process under
+`ELECTRON_RUN_AS_NODE` (so `better-sqlite3` is rebuilt against
+Electron's Node ABI by `electron-builder`). No port-forward thinking,
+no server install — single binary.
+
+**Status today:** there's no published installer in the GitHub releases
+section yet. To get an Electron app right now you must clone and build
+it yourself:
+
+```bash
+npm run electron:build      # macOS DMG (host arch only)
+npm run electron:pack       # --dir output for local smoke-test
+npm run release:mac         # macOS DMG (arm64 + Intel universal) — used for S3 releases
+```
+
+`electron:build` is a thin wrapper around `electron-builder --mac` and
+produces a single host-arch artifact (run on Apple Silicon → arm64
+DMG; run on Intel → x64 DMG). The dual-arch release path lives in
+`electron/release-mac.mjs` and is invoked via `release:mac`, which
+passes `--arm64 --x64` explicitly. The release pipeline uploads
+versioned DMGs to S3 on every tagged release, but the bucket is
+currently internal-only. A public download URL + Linux/Windows CI jobs
+are tracked on the kanban board.
+
 ## Configuration
 
-Create or edit `server/config.json` to match your environment:
+The **primary** config file lives at `~/.agent-hub/data/config.json`. A
+legacy `server/config.json` is still honoured as a fallback when the
+data-dir copy is missing, but new installs should write to the data
+dir:
 
 ```json
 {
   "port": 3051,
   "claudeBin": "/usr/local/bin/claude",
   "cursorBin": "/usr/local/bin/agent",
-  "defaultCwd": "/home/youruser"
+  "geminiBin": "/usr/local/bin/gemini",
+  "codexBin": "/usr/local/bin/codex",
+  "defaultCwd": "/home/youruser",
+  "apiKey": null,
+  "publicUrl": null
 }
 ```
 
-Configuration resolves in priority order: **environment variables** > **config.json** > **built-in defaults**.
+You can also edit every CLI path from the **Settings → Engines** UI —
+no hand-editing JSON required.
 
-| Environment Variable | config.json Key | Default | Description |
-|---------------------|-----------------|---------|-------------|
-| `AGENT_HUB_PORT` | `port` | `3051` | Server port |
-| `CLAUDE_BIN` | `claudeBin` | `/usr/local/bin/claude` | Path to Claude Code CLI |
-| `CURSOR_BIN` | `cursorBin` | `/usr/local/bin/agent` | Path to Cursor Agent CLI |
-| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd` | `$HOME` | Fallback working directory |
-| `AGENT_HUB_API_KEY` | `apiKey` | `null` | API key for remote access |
-| `AGENT_HUB_PUBLIC_URL` | `publicUrl` | `null` | Public URL for webhook callbacks |
+Configuration resolves in priority order: **environment variables** >
+**`~/.agent-hub/data/config.json`** > **`server/config.json` (legacy)** >
+**built-in defaults**.
+
+| Environment Variable    | config.json Key | Default                  | Description                                          |
+| ----------------------- | --------------- | ------------------------ | ---------------------------------------------------- |
+| `AGENT_HUB_PORT`        | `port`          | `3051`                   | Server port                                          |
+| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                | Server bind address (all interfaces by default; set to `127.0.0.1` to restrict to loopback) |
+| `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`      | SQLite + workspaces root                             |
+| `CLAUDE_BIN`            | `claudeBin`     | _smart probe_            | Path to Claude Code CLI                              |
+| `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`     | Path to Cursor Agent CLI                             |
+| `GEMINI_BIN`            | `geminiBin`     | _smart probe_            | Path to Gemini CLI                                   |
+| `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`     | Path to Codex CLI                                    |
+| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                  | Fallback working directory                           |
+| `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                   | Break-glass API key (treated as Owner for all orgs)  |
+| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback |
+| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist  |
+
+> **`ALLOWED_ORIGINS` gotcha:** the `ecosystem.config.cjs` default of
+> `https://hub.example.com` is a sample value — override it for any
+> non-reference deployment. Browsers that hit an unlisted origin get no
+> `Access-Control-Allow-Origin` header and the SOP blocks the response.
+> Electron desktop, mobile, curl, and server-to-server callers bypass
+> CORS because they don't send an `Origin` header.
+
+> **Bind-address gotcha:** the server binds to `0.0.0.0` by default
+> (`server/config.ts` → `server/index.ts`), so on a LAN box the API is
+> reachable on **every** interface, not just `localhost`. That's the
+> right default for Modes 1 & 2 (you want LAN reachability), but if
+> you're running it on a multi-user host and only the local UI should
+> reach the API, set `AGENT_HUB_HOST=127.0.0.1` (or `host` in
+> `config.json`) to bind to loopback only.
 
 ## Available Scripts
 
@@ -404,12 +545,16 @@ Never commit directly to `main`. Never push to `main` for feature work.
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| `better-sqlite3` build fails | Ensure build tools are installed: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS) |
-| WebSocket connection refused | Verify the server is running on port 3051 and no firewall is blocking it |
-| CLI binary not found | Update `claudeBin`/`cursorBin` in `server/config.json` or set `CLAUDE_BIN`/`CURSOR_BIN` env vars |
-| `npm run install:all` fails | Try deleting `node_modules` in root, client, server, and mobile, then retry |
+| Issue                                              | Solution                                                                                                                                                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EBADENGINE` / Node version mismatch               | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use` in the repo root; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                                            |
+| `better-sqlite3` build fails                       | Ensure build tools are installed: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                                                    |
+| WebSocket connection refused                       | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                                                                       |
+| Browser API calls fail with CORS error             | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this — only browsers do.                                       |
+| CLI binary not found                               | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines** in the UI.                                                                     |
+| Electron app can't reach the remote server         | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connConfig.json`. Auth headers (`x-api-key` / JWT) are injected only for hosts matching the configured remote.                       |
+| `npm run install:all` fails                        | Try deleting `node_modules` in root, client, server, and mobile, then retry.                                                                                                                                                    |
+| Vitest missing devDependency                       | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or reinstall per package with `npm ci --include=dev`.                                                                                          |
 
 ## License
 
