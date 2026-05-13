@@ -485,6 +485,24 @@ export function buildEnrichedPrompt(
     : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;
+
+  // Resolve flags used by both the early capability callout and the
+  // existing ReAct Loop section further down.
+  const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
+  const browserProject = projectId ? findProject(projectId) : null;
+  const browserToolsOn = effectiveBrowserToolsEnabled(agent as Agent, browserProject ?? undefined);
+
+  // Browser-automation awareness callout — surfaced near the top of the
+  // prompt so the model notices it has live Chromium access before any
+  // AGENTS.md / SOUL.md / skill description has a chance to claim "I
+  // cannot access URLs". The full operation list and egress caveats
+  // remain in the "ReAct Loop" section further down; this is just the
+  // attention-grabbing pointer that prevents capability refusals.
+  if (browserToolsOn && isFirstMessage) {
+    prompt += `\n\n## Browser Automation Available
+You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. The full operation list (\`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`) and the URL-egress caveats are in the **ReAct Loop** section further down — read them before driving sensitive pages.`;
+  }
+
   if (!project.ahw) return prompt;
 
   const paths = resolveProjectPaths(project as Project, agent as Agent);
@@ -539,10 +557,6 @@ Only the skills listed below are real here: use their exact \`name\` in \`<agent
 ${skillsList.join('\n')}`;
     }
   }
-
-  const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
-  const browserProject = projectId ? findProject(projectId) : null;
-  const browserToolsOn = effectiveBrowserToolsEnabled(agent as Agent, browserProject ?? undefined);
 
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn

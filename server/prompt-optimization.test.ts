@@ -116,6 +116,43 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('"tool":"browser"');
   });
 
+  it('surfaces an early "Browser Automation Available" callout above the ReAct Loop section on first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('## Browser Automation Available');
+    // The callout must appear BEFORE the detailed ReAct Loop section so
+    // it's the first thing the model sees when scanning the prompt for
+    // capability hints. If both are present, the callout's index must
+    // be strictly less than the ReAct Loop section's index.
+    const calloutIdx = prompt.indexOf('## Browser Automation Available');
+    const reactIdx = prompt.indexOf('## ReAct Loop');
+    expect(calloutIdx).toBeGreaterThanOrEqual(0);
+    expect(reactIdx).toBeGreaterThan(calloutIdx);
+    // Anti-refusal phrasing must be present so the model doesn't fall
+    // back to "I can't access URLs" responses.
+    expect(prompt).toMatch(/do not claim you lack web access/i);
+    // Must include a concrete `browser` action example so the model
+    // doesn't have to scroll to the ReAct Loop bullet list to learn
+    // the JSON shape.
+    expect(prompt).toContain('"tool":"browser"');
+    expect(prompt).toContain('"op":"navigate"');
+  });
+
+  it('omits the "Browser Automation Available" callout when browser tools are disabled for the agent', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
+      isFirstMessage: true,
+    });
+    expect(prompt).not.toContain('## Browser Automation Available');
+  });
+
+  it('omits the "Browser Automation Available" callout on subsequent (non-first) messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('## Browser Automation Available');
+  });
+
   it('omits browser from ReAct instructions when browserToolsEnabled is false', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
       isFirstMessage: true,
