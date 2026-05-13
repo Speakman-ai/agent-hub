@@ -890,6 +890,37 @@ export default function App() {
           }
           break;
         }
+        case 'auto_pr_failed': {
+          // The server emits this from autoCommitAndPR when the autonomous /
+          // ad-hoc-with-existing-PR path fails (push rejected, commit failed,
+          // gh pr create errored). The session timeline already gets a
+          // durable system message with `kind: 'pr_failed'`; the toast is a
+          // transient nudge so the user notices without scrolling the chat.
+          // Skip the toast on benign codes (none broadcast here — server
+          // filters nothing_to_publish — but defensive against future codes).
+          if (data.sessionId && typeof data.code === 'string') {
+            const codeLabel =
+              data.code === 'push_failed'
+                ? 'Push rejected'
+                : data.code === 'commit_failed'
+                  ? 'Commit failed'
+                  : data.code === 'pr_failed'
+                    ? 'PR creation failed'
+                    : 'Auto-PR failed';
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `pr-failed-${data.sessionId}-${Date.now()}`,
+                type: 'error',
+                message: `${codeLabel}${data.cardTitle ? `: ${data.cardTitle}` : ''}`,
+                duration: 12000,
+                onClick: () =>
+                  data.agentId && focusAgentSessionRef.current?.(data.agentId, data.sessionId),
+              },
+            ]);
+          }
+          break;
+        }
         case 'create_pr_log':
           if (data.sessionId && typeof data.text === 'string') {
             const maxChars = 250_000;

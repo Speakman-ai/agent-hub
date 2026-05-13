@@ -43,3 +43,54 @@ export function shortSha(sha) {
   if (typeof sha !== 'string' || sha.length === 0) return '';
   return sha.substring(0, 7);
 }
+
+/**
+ * Parse the `pr_failed` system-message metadata produced by
+ * `persistAndBroadcastPrFailure` in `server/auto-git.ts`. Shape:
+ *
+ *   { kind: 'pr_failed', code, error, branch, cardId, cardTitle, agentName }
+ *
+ * `code` is one of 'commit_failed' | 'push_failed' | 'pr_failed'.
+ * (`nothing_to_publish` is a benign no-op and is never persisted.)
+ * Malformed metadata returns null so the caller can fall back to a generic
+ * system-message render.
+ */
+export function parsePrFailedMetadata(metadataString) {
+  if (metadataString == null) return null;
+  let parsed;
+  try {
+    parsed = typeof metadataString === 'string' ? JSON.parse(metadataString) : metadataString;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (parsed.kind !== 'pr_failed') return null;
+  const allowedCodes = new Set(['commit_failed', 'push_failed', 'pr_failed']);
+  if (typeof parsed.code !== 'string' || !allowedCodes.has(parsed.code)) return null;
+  if (typeof parsed.error !== 'string') return null;
+  return {
+    code: parsed.code,
+    error: parsed.error,
+    branch: typeof parsed.branch === 'string' ? parsed.branch : null,
+    cardId: typeof parsed.cardId === 'string' ? parsed.cardId : null,
+    cardTitle: typeof parsed.cardTitle === 'string' ? parsed.cardTitle : null,
+    agentName: typeof parsed.agentName === 'string' ? parsed.agentName : null,
+  };
+}
+
+/**
+ * Short human-friendly label for a pr_failed `code`. Used in toasts and chat
+ * callouts so users see "Push rejected" rather than `push_failed`.
+ */
+export function describePrFailureCode(code) {
+  switch (code) {
+    case 'push_failed':
+      return 'Push rejected';
+    case 'commit_failed':
+      return 'Commit failed';
+    case 'pr_failed':
+      return 'PR creation failed';
+    default:
+      return 'Auto-PR failed';
+  }
+}
