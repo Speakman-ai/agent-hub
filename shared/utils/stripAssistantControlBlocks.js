@@ -13,6 +13,18 @@ const TAGS = [
   'agenthub:triage',
 ];
 
+// `[[STEP:<status>:<label>]]` progress-marker protocol — see
+// server/stream-parser.ts `STEP_MARKER_RE` (kept in sync). Long-running
+// sessions (reviewer, autofix, heartbeat, cron) emit these markers to drive
+// the Cursor-Bugbot-style timed checklist (OrchestrationTimelinePanel +
+// ProgressPanel). The parser already extracts markers from **finalized**
+// assistant events, but partial deltas, crashed/cancelled sessions that fall
+// back to `partialFallback`, and legacy persisted messages can all carry raw
+// markers into the renderer. Stripping here in the shared util closes the
+// loop for streaming flicker, persisted message bodies, and the
+// `eventsToBlocks` partial-fallback path uniformly.
+const STEP_MARKER_RE = /\[\[STEP:\s*(?:started|completed|failed)\s*:\s*[^\]\n]+?\s*\]\]/gi;
+
 /**
  * @param {string | null | undefined} text
  * @returns {string | null | undefined}
@@ -22,6 +34,12 @@ export function stripAssistantControlBlocks(text) {
   if (typeof text !== 'string' || !text) return text;
 
   let result = text;
+  // Drop progress-step markers first. They can appear inline with the prose
+  // (not fenced), so doing this before the tag-fence pass keeps the
+  // trailing-whitespace / blank-line collapse below applicable to both.
+  if (result.includes('[[STEP:')) {
+    result = result.replace(STEP_MARKER_RE, '');
+  }
   for (const tag of TAGS) {
     const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

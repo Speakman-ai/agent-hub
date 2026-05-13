@@ -76,6 +76,77 @@ describe('eventsToBlocks — progress_step handling', () => {
 });
 
 /**
+ * `[[STEP:*]]` progress markers are extracted by the server parser, but the
+ * raw markers can still slip into the rendered text via three paths:
+ *
+ *   1. Streaming partial deltas (the parser only extracts on finalized
+ *      assistant blocks; partial chunks are persisted to `session_events`
+ *      raw).
+ *   2. Crashed / cancelled sessions where the finalized assistant event
+ *      never arrived, so only partials survive.
+ *   3. Legacy persisted messages that pre-date the parser change.
+ *
+ * `eventsToBlocks` routes the assistant text through
+ * `stripAssistantControlBlocks`, so adding marker-stripping to the shared
+ * util closes all three paths in one place. These tests pin that contract.
+ *
+ * Bug: "[[STEP:*]] commands should probably be rendered as something"
+ * (in-app report, Electron 1.16.0, agent-hub-reviewer).
+ */
+describe('eventsToBlocks — [[STEP:*]] marker stripping', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('strips inline STEP markers from finalized assistant_text', () => {
+    const events = wrap([
+      {
+        type: 'assistant_text',
+        text: 'Starting review.\n[[STEP:started:Gather PR context]]\nReading diff…',
+        partial: false,
+      },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('text');
+    expect(blocks[0].text).toContain('Starting review.');
+    expect(blocks[0].text).toContain('Reading diff');
+    expect(blocks[0].text).not.toMatch(/\[\[STEP:/);
+  });
+
+  it('strips markers from the partial-fallback path (no finalized event)', () => {
+    // Simulates a crashed / cancelled session: many partial chunks were
+    // persisted with raw markers but the closing partial:false event never
+    // arrived. flushText() falls back to textBuf.partials and must still
+    // strip the markers before handing the text to ReactMarkdown.
+    const events = wrap([
+      { type: 'assistant_text', text: 'Working on it.\n', partial: true },
+      { type: 'assistant_text', text: '[[STEP:started:Gather PR context]]\n', partial: true },
+      { type: 'assistant_text', text: 'Reading the diff now…\n', partial: true },
+      { type: 'assistant_text', text: '[[STEP:completed:Gather PR context]]\n', partial: true },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('text');
+    expect(blocks[0].text).toContain('Working on it.');
+    expect(blocks[0].text).toContain('Reading the diff now');
+    expect(blocks[0].text).not.toMatch(/\[\[STEP:/);
+  });
+
+  it('still strips markers when partial + final both carry them (final wins)', () => {
+    // The parser is supposed to strip markers from the finalized event, but
+    // if for any reason the final still contains a marker we must still
+    // remove it at render time — defense in depth.
+    const events = wrap([
+      { type: 'assistant_text', text: '[[STEP:started:Foo]] partial. ', partial: true },
+      { type: 'assistant_text', text: 'Final body [[STEP:completed:Foo]].', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toContain('Final body');
+    expect(blocks[0].text).not.toMatch(/\[\[STEP:/);
+  });
+});
+
+/**
  * In Claude Code's `--permission-mode plan` flow, Claude calls the
  * `ExitPlanMode` tool with a `plan` string. When the CLI runs
  * non-interactively (`--print`), the permission prompt has no user to
