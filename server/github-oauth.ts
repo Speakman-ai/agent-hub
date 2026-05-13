@@ -122,6 +122,9 @@ export function buildAuthorizeUrl(opts: {
     new Set(scopeList.map((s) => s.trim()).filter((s) => s.length > 0)),
   );
   if (dedupedScopes.length > 0) {
+    // GitHub's spec says space-delimited; comma is tolerated in practice
+    // (and is what classic OAuth Apps actually parse). We use comma because
+    // URLSearchParams would percent-encode spaces as `+` or `%20`.
     params.set('scope', dedupedScopes.join(','));
   }
   if (opts.login) params.set('login', opts.login);
