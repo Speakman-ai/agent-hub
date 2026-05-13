@@ -31,7 +31,7 @@ export function slugifyProjectId(raw) {
 /**
  * POST /api/projects with `mode: 'workflow'`.
  *
- * @param {{ name: string, id?: string, description?: string, color?: string, cwd?: string }} input
+ * @param {{ name: string, id?: string, description?: string, color?: string, cwd?: string, visibility?: 'shared' | 'private' }} input
  * @returns {Promise<object>} the created project row
  *
  * Throws an Error with `.status` set when the server rejects the request
@@ -63,6 +63,12 @@ export async function createWorkflowProject(input) {
     mode: 'workflow',
   };
   if (input?.color) body.color = input.color;
+  // Visibility is optional — server defaults to 'shared' if omitted.
+  // Only forward an explicit 'private' (or 'shared' for clarity) so a
+  // wizard that doesn't expose the toggle yet inherits the safe default.
+  if (input?.visibility === 'private' || input?.visibility === 'shared') {
+    body.visibility = input.visibility;
+  }
 
   const res = await fetch(`${getApiBase()}/projects`, {
     method: 'POST',

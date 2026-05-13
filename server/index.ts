@@ -80,6 +80,8 @@ import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import createProjectRoutes from './routes/projects.js';
+import { createProjectVisibilityGate } from './project-visibility-middleware.js';
+import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createPreviewWizardRoutes from './routes/preview-wizard.js';
 import createProvisioningRoutes from './routes/provisioning.js';
@@ -650,6 +652,14 @@ export const routeDeps: RouteDeps = {
   scheduleAll,
 };
 
+// Visibility gate for every project-scoped route. Mounted ahead of all
+// project sub-routers so a new `/api/projects/:projectId/<thing>` route
+// inherits the check for free. The gate masks unauthorized access as 404
+// (not 403) so we don't leak the existence of private projects to
+// non-members. DELETE on the project itself is allowed through so the
+// route handler can apply its own Owner kill-switch logic.
+app.use('/api/projects/:projectId', createProjectVisibilityGate({ findProject }));
+
 app.use(createMemoryRoutes(routeDeps));
 app.use(createNoteRoutes(routeDeps));
 app.use(createToolErrorRoutes(routeDeps));
@@ -697,7 +707,22 @@ app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
 app.use(createPrNudgeReviewerRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
-app.use(createAuthRoutes());
+app.use(
+  createAuthRoutes({
+    // When a user's last org membership is dropped and the user row is
+    // hard-deleted, sweep their private projects. Shared projects are
+    // left behind (visibility-permitted to other org members) — only
+    // private projects, which would otherwise become unreachable, get
+    // removed. See `project-owner-cascade.ts`.
+    onUserDeleted: (userId) =>
+      cascadeDeleteUserPrivateProjects(
+        // `stmts` is initialized by `initDb` long before any HTTP request
+        // arrives. Mirrors the non-null assert on `routeDeps.stmts`.
+        { stmts: stmts!, getProjects, saveProjects },
+        userId,
+      ),
+  }),
+);
 app.use(createMcpServerRoutes());
 // PR-env settings/provisioning routes and the `pr_env_config` DB row
 // were removed as part of the "Strip PR Environments" epic (88367984).

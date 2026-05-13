@@ -1351,6 +1351,16 @@ export interface GithubWorkflowSettings {
 export type ProjectMode = 'dev' | 'workflow';
 
 /**
+ * Per-project visibility. Defaults to `'shared'` when unset (back-compat:
+ * every project that existed before this field was added is visible to every
+ * org member). `'private'` projects are visible only to their `ownerUserId`
+ * — except an org Owner sees them in the Settings → Projects admin list so
+ * they retain a kill switch (delete-only, no enter). See
+ * `project-visibility.ts` for the gate.
+ */
+export type ProjectVisibility = 'shared' | 'private';
+
+/**
  * Per-project PR-env (preview environment) configuration.
  *
  * When `enabled`, opening or pushing to a PR on this project's GitHub repo
@@ -1534,6 +1544,21 @@ export interface Project {
   color?: string;
   /** Defaults to dev when omitted (see `getProjectMode` in `project-mode.ts`). */
   mode?: ProjectMode;
+  /**
+   * Project visibility. `'shared'` (default when omitted) makes the project
+   * visible to every member of its org. `'private'` restricts visibility to
+   * `ownerUserId`; org Owners can still see + delete it from the admin list
+   * but cannot enter it. See `project-visibility.ts`.
+   */
+  visibility?: ProjectVisibility;
+  /**
+   * User id of the project's creator. Stamped at creation time from the
+   * authenticated caller's `authUserId`. Backfilled to `null` for pre-feature
+   * projects (treated as shared). Used by the visibility gate and the
+   * user-delete cascade (private projects auto-delete when their owner is
+   * deleted).
+   */
+  ownerUserId?: string | null;
   githubRepo?: string;
   /**
    * Optional canonical HTTPS GitHub clone URL (e.g.

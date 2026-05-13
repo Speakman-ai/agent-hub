@@ -18,12 +18,19 @@ import { getActiveAccessToken } from '../github-connections-store.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
-import { getUserByUsername, createUser } from '../users-store.js';
+import { getUserByUsername, getUserById, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import {
+  canViewProject,
+  canDeleteProject,
+  filterVisibleProjects,
+  getVisibility,
+  type VisibilityCaller,
+} from '../project-visibility.js';
 
 const execAsync = promisify(exec);
 import type {
@@ -672,6 +679,35 @@ function resolveCloneUserId(req: Request): string | null {
   return null;
 }
 
+/**
+ * Resolve the caller's visibility context from an authenticated request.
+ * Centralizes the JWT/apiKey/local-bypass story so every project-scoped
+ * route sees the same shape.
+ *
+ * The global apiKey path is treated as `localBypass` because it's the
+ * break-glass Owner credential — scripts using it (heartbeats, crons,
+ * delegations) need to read every project to do their job.
+ */
+function resolveVisibilityCaller(req: Request): VisibilityCaller {
+  const areq = req as AuthenticatedRequest;
+  // Bypass paths — these collapse "who is this caller" into "see
+  // everything" because privacy is meaningless when:
+  //   - `authLocalOrgBypass`: single-tenant local-bundled server.
+  //   - `authViaApiKey`: global `x-api-key` break-glass (Owner-forced).
+  //   - No-auth-configured mode: `apiKey` and `authRecord` both unset
+  //     server-side; the auth middleware stamps `authRole='Owner'` but
+  //     leaves `authUserId` undefined. Detected here by the
+  //     (Owner role, no user id, no JWT) tuple — matches the auth
+  //     middleware's early-return branch and keeps the gate a no-op
+  //     in fresh-install / dev / unit-test environments.
+  const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
+  return {
+    userId: areq.authUserId ?? null,
+    role: areq.authRole,
+    localBypass: Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured),
+  };
+}
+
 export default function createProjectRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -914,8 +950,13 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json({ cloneId, repoName, clonePath });
   });
 
-  router.get('/api/projects', (_req: Request, res: Response) => {
-    const projects = getProjects();
+  router.get('/api/projects', (req: Request, res: Response) => {
+    const caller = resolveVisibilityCaller(req);
+    // Visibility gate: shared projects always pass; private projects only
+    // surface to their owner (and local-bundled / apiKey bypass). Org
+    // Owners do NOT get a read bypass — they hit the admin endpoint
+    // (`GET /api/admin/projects`) for the kill-switch view.
+    const projects = filterVisibleProjects(getProjects(), caller);
     const enriched = projects.map((p) => ({
       ...p,
       agents: p.agents.map((a) => {
@@ -951,6 +992,38 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       }),
     }));
     res.json(enriched);
+  });
+
+  /**
+   * Owner-only admin list of every project in the org, including private
+   * ones the Owner does not own. Powers the Settings → Projects table
+   * whose only action on non-owned private projects is delete (kill
+   * switch). Payload is intentionally narrow — id, name, visibility,
+   * owner — so we don't accidentally leak the contents of a private
+   * project the Owner shouldn't be reading.
+   */
+  router.get('/api/admin/projects', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    const caller = resolveVisibilityCaller(req);
+    // Gate: Owner role required, OR a bypass identity (local-bundled /
+    // global apiKey) which the resolver collapses into localBypass.
+    if (areq.authRole !== 'Owner' && !caller.localBypass) {
+      return res.status(403).json({ error: 'Owner role required.' });
+    }
+    const rows = getProjects().map((p) => {
+      const owner = p.ownerUserId ? getUserById(p.ownerUserId) : null;
+      return {
+        id: p.id,
+        name: p.name,
+        color: p.color ?? null,
+        visibility: getVisibility(p),
+        ownerUserId: p.ownerUserId ?? null,
+        ownerUsername: owner?.username ?? null,
+        canEnter: canViewProject(p, caller),
+        agentCount: p.agents?.length ?? 0,
+      };
+    });
+    res.json(rows);
   });
 
   router.get('/api/setup/status', async (req: Request, res: Response) => {
@@ -1274,6 +1347,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       checkHealCommands,
       checkHealMaxRounds,
       mode,
+      visibility: requestedVisibility,
       engine: requestedEngine,
     } = req.body as {
       id?: string;
@@ -1285,6 +1359,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
       mode?: unknown;
+      visibility?: unknown;
       engine?: unknown;
     };
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
@@ -1322,6 +1397,40 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           .json({ error: `engine must be one of: ${VALID_ENGINES.join(', ')}` });
       }
     }
+    // Visibility — default `'shared'` so existing wizards that omit the
+    // field keep the pre-feature behavior. Anything else (`'private'`)
+    // must be explicit. Invalid strings hard-fail rather than silently
+    // collapsing to a default — a typo here would silently expose a
+    // project the user thought was private.
+    let createVisibility: 'shared' | 'private' = 'shared';
+    if (
+      requestedVisibility !== undefined &&
+      requestedVisibility !== null &&
+      requestedVisibility !== ''
+    ) {
+      if (requestedVisibility === 'shared' || requestedVisibility === 'private') {
+        createVisibility = requestedVisibility;
+      } else {
+        return res.status(400).json({ error: 'visibility must be "shared" or "private"' });
+      }
+    }
+    // Stamp the creator from the authenticated identity. Per-user JWTs and
+    // `ahub_*` keys both populate `authUserId`. The global apiKey path,
+    // single-tenant local mode, and no-auth-configured installs leave it
+    // `null` — those callers see every project via the bypass branches
+    // in `resolveVisibilityCaller`, so a null-owner private project is
+    // still reachable to them.
+    //
+    // In a real multi-user deployment (auth configured, no bypass active)
+    // a `private` project with no owner would be unreachable forever, so
+    // we refuse that combination explicitly to avoid bricking the row.
+    const ownerUserId = (req as AuthenticatedRequest).authUserId ?? null;
+    const visibilityCallerCtx = resolveVisibilityCaller(req);
+    if (createVisibility === 'private' && !ownerUserId && !visibilityCallerCtx.localBypass) {
+      return res.status(400).json({
+        error: 'Private projects require an authenticated user (JWT or per-user API key).',
+      });
+    }
     const dataDir = getProjectDataDir(id);
     const project: Project = {
       id,
@@ -1329,6 +1438,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       cwd: cwd || config.defaultCwd,
       ahw: dataDir,
       color: color || '#6b7280',
+      visibility: createVisibility,
+      ownerUserId,
       agents: [],
     };
     if (createMode) (project as Record<string, unknown>).mode = createMode;
@@ -1690,6 +1801,20 @@ This workspace has no git repo and no PR automation — your job is planning, or
     if (idx === -1) return res.status(404).json({ error: 'Project not found' });
 
     const project = projects[idx];
+
+    // Visibility gate. Owners get an explicit kill-switch path here even
+    // for private projects they don't own — that's the Settings → Projects
+    // admin escape hatch. Non-owners trying to delete someone else's
+    // private project get a 404 (same shape as "doesn't exist") rather
+    // than 403, so we don't leak existence.
+    const caller = resolveVisibilityCaller(req);
+    if (!canDeleteProject(project, caller)) {
+      // Mask private projects we can't see as 404.
+      if (!canViewProject(project, caller)) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+      return res.status(403).json({ error: 'Not permitted to delete this project' });
+    }
 
     stmts.deleteEscalationsByProject.run(project.id);
     stmts.deleteNotesByProject.run(project.id);

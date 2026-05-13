@@ -341,8 +341,8 @@ export default function NewProjectAdaptiveFlow({
   // route the host to the new project's kanban (action:'task' is the
   // existing host signal that transitions to `kanban:<projectId>`).
   const handleWorkflowSubmit = useCallback(
-    async ({ name, description, color }) => {
-      const project = await createWorkflowProject({ name, description, color });
+    async ({ name, description, color, visibility }) => {
+      const project = await createWorkflowProject({ name, description, color, visibility });
       const projectId = project?.id || slugifyProjectId(name);
       setCreatedProjectId(projectId);
       onProjectCreated?.({
@@ -582,6 +582,10 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState(WORKFLOW_COLOR_OPTIONS[0].value);
+  // Visibility toggle: shared (default — visible to every member of the
+  // org) vs. private (visible only to the creator). The latter is also
+  // surfaced in Settings → Projects for org Owners as a kill switch.
+  const [visibility, setVisibility] = useState('shared');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -596,7 +600,12 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }) {
       setSubmitting(true);
       setError(null);
       try {
-        await onSubmit?.({ name: trimmed, description: description.trim(), color });
+        await onSubmit?.({
+          name: trimmed,
+          description: description.trim(),
+          color,
+          visibility,
+        });
         // Don't reset state — onSubmit's host handler unmounts us by
         // routing to the new project's kanban view.
       } catch (err) {
@@ -604,7 +613,7 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }) {
         setSubmitting(false);
       }
     },
-    [canSubmit, color, description, onSubmit, trimmed],
+    [canSubmit, color, description, onSubmit, trimmed, visibility],
   );
 
   return (
@@ -715,6 +724,49 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }) {
                     style={{ backgroundColor: opt.value }}
                   >
                     {selected && <Check size={14} className="text-white drop-shadow" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1">Visibility</label>
+            <div
+              className="grid grid-cols-2 gap-2"
+              data-testid="wpf-visibility-options"
+              role="radiogroup"
+              aria-label="Project visibility"
+            >
+              {[
+                {
+                  value: 'shared',
+                  label: 'Shared',
+                  hint: 'Visible to every member of your org',
+                },
+                {
+                  value: 'private',
+                  label: 'Private',
+                  hint: 'Visible only to you',
+                },
+              ].map((opt) => {
+                const selected = visibility === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setVisibility(opt.value)}
+                    data-testid={`wpf-visibility-${opt.value}`}
+                    className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                      selected
+                        ? 'border-emerald-500 bg-emerald-900/20'
+                        : 'border-gray-700 hover:border-gray-500 bg-gray-950'
+                    }`}
+                  >
+                    <div className="text-sm font-medium text-gray-100">{opt.label}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">{opt.hint}</div>
                   </button>
                 );
               })}

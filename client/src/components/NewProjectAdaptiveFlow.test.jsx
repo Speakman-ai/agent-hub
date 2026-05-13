@@ -399,6 +399,7 @@ describe('NewProjectAdaptiveFlow — workflow (non-code) submit path', () => {
       name: 'Q3 Research',
       description: 'Quarterly findings',
       color: expect.any(String),
+      visibility: 'shared',
     });
     await waitFor(() =>
       expect(onProjectCreated).toHaveBeenCalledWith({
@@ -432,6 +433,28 @@ describe('NewProjectAdaptiveFlow — workflow (non-code) submit path', () => {
     expect(onProjectCreated).not.toHaveBeenCalled();
     // Submit button is re-enabled so the user can rename and retry.
     expect(screen.getByTestId('wpf-submit')).not.toBeDisabled();
+  });
+
+  it('forwards visibility=private when the user picks the Private option', async () => {
+    const createWorkflowProject = vi
+      .fn()
+      .mockResolvedValue({ id: 'secret-plans', mode: 'workflow' });
+    render(
+      <NewProjectAdaptiveFlow
+        onClose={vi.fn()}
+        onProjectCreated={vi.fn()}
+        createWorkflowProject={createWorkflowProject}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    fireEvent.change(screen.getByTestId('wpf-name-input'), { target: { value: 'Secret Plans' } });
+    fireEvent.click(screen.getByTestId('wpf-visibility-private'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('wpf-submit'));
+    });
+    expect(createWorkflowProject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Secret Plans', visibility: 'private' }),
+    );
   });
 
   it('Back button returns to the type picker without invoking onClose', () => {
