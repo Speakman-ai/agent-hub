@@ -578,11 +578,27 @@ export interface ThreadRow {
   created_at: string;
 }
 
+/**
+ * Author role on a thread entry. `system` is the historical default —
+ * heartbeat / cron daemons write directly via `stmts.createThreadEntry`
+ * and leave the role at its column default. `user` is a human posting
+ * through the chatroom composer (POST /api/threads/:threadId/entries).
+ * `assistant` is reserved for a future "agent replies in-thread" path
+ * — no caller writes it today.
+ */
+export type ThreadEntryRole = 'system' | 'user' | 'assistant';
+
 export interface ThreadEntryRow {
   id: string;
   thread_id: string;
   content: string;
   timestamp: string;
+  /** User id of the human who posted this entry, or null for daemon-written rows. */
+  author_user_id: string | null;
+  /** Agent id when an agent posts (future). Null for human / daemon rows today. */
+  author_agent_id: string | null;
+  /** Author kind — see {@link ThreadEntryRole}. */
+  role: ThreadEntryRole;
 }
 
 export interface NoteProcessingRow {
@@ -1090,6 +1106,12 @@ export interface Stmts {
   getThreadEntries: Stmt;
   getThreadEntry: Stmt;
   createThreadEntry: Stmt;
+  /**
+   * Insert a human-authored thread entry with `role = 'user'`. Used by
+   * `POST /api/threads/:threadId/entries` for the chatroom composer.
+   * Args: `(id, thread_id, content, author_user_id | null)`.
+   */
+  createUserThreadEntry: Stmt;
   deleteThreadEntry: Stmt;
   deleteThreadEntries: Stmt;
   pruneThreadEntries: Stmt;

@@ -699,6 +699,13 @@ export const api = {
   },
   getThread: (threadId) => fetchJSON(`/threads/${threadId}`),
   getThreadEntries: (threadId) => fetchJSON(`/threads/${threadId}/entries`),
+  // Human-authored entry — used by the ThreadView composer. The server
+  // stamps `role='user'` and `author_user_id` from req.authUserId.
+  postThreadEntry: (threadId, content) =>
+    fetchJSON(`/threads/${threadId}/entries`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
   getCronThread: (cronId) => fetchJSON(`/crons/${cronId}/thread`),
   getHeartbeatThread: (agentId) => fetchJSON(`/heartbeats/${agentId}/thread`),
 

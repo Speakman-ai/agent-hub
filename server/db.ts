@@ -596,12 +596,21 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_threads_type ON threads(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_threads_source ON threads(project_id, source_id);
 
-    -- Thread entries: individual log lines within a thread
+    -- Thread entries: individual log lines within a thread.
+    -- Historically single-writer (heartbeat/cron daemons). The columns
+    -- author_user_id, author_agent_id, and role were added when humans
+    -- started posting through the chatroom composer; daemon writes
+    -- leave role at its DEFAULT 'system' so existing call sites keep
+    -- working. See server/routes/threads.ts and the corresponding
+    -- migration block above for the existing-install ALTER TABLEs.
     CREATE TABLE IF NOT EXISTS thread_entries (
       id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
       timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      author_user_id TEXT,
+      author_agent_id TEXT,
+      role TEXT NOT NULL DEFAULT 'system' CHECK(role IN ('system','user','assistant')),
       FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_thread_entries_thread ON thread_entries(thread_id);
@@ -760,6 +769,30 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT skill_principal_agent_id FROM crons LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE crons ADD COLUMN skill_principal_agent_id TEXT');
+  }
+
+  // Threads-as-chatroom: thread_entries grew an author identity + role so
+  // humans can post into the same thread the heartbeat / cron daemon
+  // streams into. The fresh-install CREATE TABLE (above) carries the
+  // CHECK(role IN …) constraint; existing installs get the columns
+  // without the inline CHECK because SQLite can't add column-scope CHECK
+  // via ALTER TABLE without a full table rebuild. Validity is enforced
+  // at the app layer (only `createThreadEntry` / `createUserThreadEntry`
+  // write the column, both with a fixed value).
+  try {
+    db.prepare('SELECT role FROM thread_entries LIMIT 1').get();
+  } catch {
+    db.exec("ALTER TABLE thread_entries ADD COLUMN role TEXT NOT NULL DEFAULT 'system'");
+  }
+  try {
+    db.prepare('SELECT author_user_id FROM thread_entries LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE thread_entries ADD COLUMN author_user_id TEXT');
+  }
+  try {
+    db.prepare('SELECT author_agent_id FROM thread_entries LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE thread_entries ADD COLUMN author_agent_id TEXT');
   }
 
   try {
@@ -2731,6 +2764,13 @@ function initDb(dataDir: string): void {
     getThreadEntry: db.prepare('SELECT * FROM thread_entries WHERE id = ?'),
     createThreadEntry: db.prepare(
       'INSERT INTO thread_entries (id, thread_id, content) VALUES (?, ?, ?)',
+    ),
+    // Human-authored entry — `POST /api/threads/:threadId/entries`. Stamps
+    // role='user' and (optionally) the user id resolved by the auth
+    // middleware. Daemons keep using the 3-arg `createThreadEntry` above,
+    // which falls back to the column DEFAULT of 'system' for role.
+    createUserThreadEntry: db.prepare(
+      "INSERT INTO thread_entries (id, thread_id, content, author_user_id, role) VALUES (?, ?, ?, ?, 'user')",
     ),
     deleteThreadEntry: db.prepare('DELETE FROM thread_entries WHERE id = ?'),
     deleteThreadEntries: db.prepare('DELETE FROM thread_entries WHERE thread_id = ?'),
