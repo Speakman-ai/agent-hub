@@ -26,6 +26,12 @@ const {
   migrateAuthRecordIfNeeded,
   getUserClaudeAuth,
   setUserClaudeAuth,
+  getUserCursorAuth,
+  setUserCursorAuth,
+  getUserGeminiAuth,
+  setUserGeminiAuth,
+  getUserCodexAuth,
+  setUserCodexAuth,
 } = await import('./users-store.js');
 const { getMembershipRole, createMembership, listMembershipsForUser } =
   await import('./memberships-store.js');
@@ -215,5 +221,80 @@ describe('users-store — per-user Claude credentials', () => {
   it('returns null for an unknown user id', () => {
     expect(getUserClaudeAuth('does-not-exist')).toBeNull();
     expect(setUserClaudeAuth('does-not-exist', { anthropicApiKey: 'x' })).toBeNull();
+  });
+});
+
+// Per-user single-key engine helpers (Cursor / Gemini / Codex) share the
+// same shape, so we drive them with one table-style test block.
+describe.each([
+  {
+    engine: 'cursor',
+    get: () => getUserCursorAuth,
+    set: () => setUserCursorAuth,
+    sample: 'curs-XYZ',
+  },
+  {
+    engine: 'gemini',
+    get: () => getUserGeminiAuth,
+    set: () => setUserGeminiAuth,
+    sample: 'gem-XYZ',
+  },
+  {
+    engine: 'codex',
+    get: () => getUserCodexAuth,
+    set: () => setUserCodexAuth,
+    sample: 'sk-codex-XYZ',
+  },
+])('users-store — per-user $engine credentials', ({ engine, get, set, sample }) => {
+  beforeEach(() => freshDb());
+
+  it(`returns null ${engine} auth on a fresh user`, () => {
+    const u = createUser({ username: `${engine}-alice`, passwordHash: 'h' });
+    const auth = get()(u.id);
+    expect(auth).not.toBeNull();
+    expect(auth!.apiKey).toBeNull();
+    expect(auth!.updatedAt).toBeNull();
+  });
+
+  it(`round-trips the ${engine} key and stamps updatedAt`, () => {
+    const u = createUser({ username: `${engine}-bob`, passwordHash: 'h' });
+    const updated = set()(u.id, { apiKey: sample });
+    expect(updated!.apiKey).toBe(sample);
+    expect(updated!.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(get()(u.id)!.apiKey).toBe(sample);
+  });
+
+  it(`empty / whitespace clears the ${engine} key`, () => {
+    const u = createUser({ username: `${engine}-dan`, passwordHash: 'h' });
+    set()(u.id, { apiKey: sample });
+    expect(get()(u.id)!.apiKey).toBe(sample);
+    set()(u.id, { apiKey: '' });
+    expect(get()(u.id)!.apiKey).toBeNull();
+    set()(u.id, { apiKey: sample });
+    set()(u.id, { apiKey: '   ' });
+    expect(get()(u.id)!.apiKey).toBeNull();
+  });
+
+  it(`returns null on an unknown user id (${engine})`, () => {
+    expect(get()('does-not-exist')).toBeNull();
+    expect(set()('does-not-exist', { apiKey: 'x' })).toBeNull();
+  });
+
+  it(`isolates ${engine} from the other engines' keys`, () => {
+    const u = createUser({ username: `${engine}-iso`, passwordHash: 'h' });
+    set()(u.id, { apiKey: sample });
+    // The other two single-key engines should still be untouched.
+    const others = (['cursor', 'gemini', 'codex'] as const).filter((e) => e !== engine);
+    for (const other of others) {
+      const fn =
+        other === 'cursor'
+          ? getUserCursorAuth
+          : other === 'gemini'
+            ? getUserGeminiAuth
+            : getUserCodexAuth;
+      expect(fn(u.id)!.apiKey).toBeNull();
+    }
+    // Claude should also be untouched.
+    expect(getUserClaudeAuth(u.id)!.anthropicApiKey).toBeNull();
   });
 });

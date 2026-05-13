@@ -272,6 +272,28 @@ export function initOrgsDb(): void {
     }
   }
 
+  // Per-user CLI credentials for the other supported engines (Cursor,
+  // Gemini, Codex). Mirrors the Claude pattern above: each engine has a
+  // nullable API-key column plus an `<engine>_auth_updated_at` audit
+  // column. `buildSpawnEnv` (see server/config.ts) prefers these values
+  // when spawning a session for that user, falling back to the host-wide
+  // config.*ApiKey settings. Encryption-at-rest is a tracked follow-up.
+  const userEngineAuthColumns: Array<{ name: string; ddl: string }> = [
+    { name: 'cursor_api_key', ddl: 'TEXT' },
+    { name: 'cursor_auth_updated_at', ddl: 'TEXT' },
+    { name: 'gemini_api_key', ddl: 'TEXT' },
+    { name: 'gemini_auth_updated_at', ddl: 'TEXT' },
+    { name: 'codex_api_key', ddl: 'TEXT' },
+    { name: 'codex_auth_updated_at', ddl: 'TEXT' },
+  ];
+  for (const col of userEngineAuthColumns) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM users LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE users ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+
   orgsStmts = {
     getAll: orgsDb.prepare('SELECT * FROM orgs ORDER BY position ASC, created_at ASC'),
     getById: orgsDb.prepare('SELECT * FROM orgs WHERE id = ?'),

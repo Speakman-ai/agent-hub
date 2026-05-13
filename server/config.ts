@@ -338,6 +338,9 @@ const config: AppConfig = {
   // independently of the existing `openaiApiKey` (which we leave untouched for
   // forward-compat with any future OpenAI SDK integrations).
   codexApiKey: resolve('CODEX_API_KEY', 'codexApiKey', null),
+  // Cursor Agent CLI reads its API key from CURSOR_API_KEY. The binary is named
+  // `agent` (not `cursor`). See https://docs.cursor.com/en/cli/reference/authentication.
+  cursorApiKey: resolve('CURSOR_API_KEY', 'cursorApiKey', null),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl:
@@ -396,6 +399,12 @@ export interface SpawnEnvOverride {
   anthropicApiKey?: string | null;
   /** `claude setup-token` OAuth bearer. Empty / whitespace = no override. */
   claudeCodeOAuthToken?: string | null;
+  /** Cursor Agent CLI key — exported as CURSOR_API_KEY. */
+  cursorApiKey?: string | null;
+  /** Gemini CLI key — exported as GEMINI_API_KEY. */
+  geminiApiKey?: string | null;
+  /** Codex CLI key — fanned out to OPENAI_API_KEY and CODEX_API_KEY. */
+  codexApiKey?: string | null;
 }
 
 export interface BuildSpawnEnvOptions {
@@ -443,18 +452,41 @@ export function buildSpawnEnv(
   } else {
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
-  if (cfg.geminiApiKey) {
+  // Cursor / Gemini / Codex follow the same per-user → host → unset
+  // precedence as the Claude vars above. Each field is resolved
+  // independently so a user that only stored a Gemini key still inherits
+  // the host's Cursor / Codex values, and vice versa.
+  const cursorApiKey = presentString(override?.cursorApiKey) ?? presentString(cfg.cursorApiKey);
+  if (cursorApiKey) {
+    // Cursor Agent CLI (binary name `agent`) reads CURSOR_API_KEY when no
+    // cached OAuth token is present. See
+    // https://docs.cursor.com/en/cli/reference/authentication.
+    env.CURSOR_API_KEY = cursorApiKey;
+  } else {
+    delete env.CURSOR_API_KEY;
+  }
+  const geminiApiKey = presentString(override?.geminiApiKey) ?? presentString(cfg.geminiApiKey);
+  if (geminiApiKey) {
     // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached
     // OAuth token is present. See https://geminicli.com/docs/cli/cli-reference.
-    env.GEMINI_API_KEY = cfg.geminiApiKey;
+    env.GEMINI_API_KEY = geminiApiKey;
+  } else {
+    delete env.GEMINI_API_KEY;
   }
-  if (cfg.codexApiKey) {
+  const codexApiKey = presentString(override?.codexApiKey) ?? presentString(cfg.codexApiKey);
+  if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
     // environment when no ChatGPT OAuth token is cached. See
     // https://developers.openai.com/codex/noninteractive. We set both so either
     // variable name works regardless of which the installed CLI version prefers.
-    env.OPENAI_API_KEY = cfg.codexApiKey;
-    env.CODEX_API_KEY = cfg.codexApiKey;
+    env.OPENAI_API_KEY = codexApiKey;
+    env.CODEX_API_KEY = codexApiKey;
+  } else {
+    // Don't leak a stale host-process OPENAI_API_KEY into the Codex spawn when
+    // the user has explicitly cleared their key but the server process still
+    // carries the env var inherited at startup.
+    delete env.OPENAI_API_KEY;
+    delete env.CODEX_API_KEY;
   }
 
   // Hub API access for shell wrappers under the agent-hub skill (scripts/*.sh).

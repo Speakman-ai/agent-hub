@@ -502,6 +502,21 @@ export const api = {
   putMyClaudeAuth: (body) =>
     fetchJSON('/auth/me/claude-auth', { method: 'PUT', body: JSON.stringify(body) }),
 
+  // Per-user Cursor / Gemini / Codex API keys. Each engine carries one
+  // key (no OAuth/expiry round-trip), so the helpers share a uniform
+  // shape: `{ apiKey: string | null }` on the wire. See PR #717 for the
+  // matching Claude pattern and the per-user-cli-auth wiki page for
+  // precedence rules.
+  getMyCursorAuth: () => fetchJSON('/auth/me/cursor-auth'),
+  putMyCursorAuth: (body) =>
+    fetchJSON('/auth/me/cursor-auth', { method: 'PUT', body: JSON.stringify(body) }),
+  getMyGeminiAuth: () => fetchJSON('/auth/me/gemini-auth'),
+  putMyGeminiAuth: (body) =>
+    fetchJSON('/auth/me/gemini-auth', { method: 'PUT', body: JSON.stringify(body) }),
+  getMyCodexAuth: () => fetchJSON('/auth/me/codex-auth'),
+  putMyCodexAuth: (body) =>
+    fetchJSON('/auth/me/codex-auth', { method: 'PUT', body: JSON.stringify(body) }),
+
   getSkillCredentials: (skillId) =>
     fetchJSON(
       `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,

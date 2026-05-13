@@ -23,7 +23,12 @@ import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
-import { getUserClaudeAuth } from './users-store.js';
+import {
+  getUserClaudeAuth,
+  getUserCursorAuth,
+  getUserGeminiAuth,
+  getUserCodexAuth,
+} from './users-store.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2216,21 +2221,36 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // ownerId resolved above. The lookup is reused here for per-user
         // Claude auth (below) and per-user GitHub auth (further down).
 
-        // Per-user Claude auth: when the session has a recorded owner with
-        // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
-        // over the host config. Falsy / missing fields fall back to the
-        // host config so unconfigured users keep working transparently.
+        // Per-user CLI auth: when the session has a recorded owner with
+        // their own keys for Claude / Cursor / Gemini / Codex, those win
+        // over the host config. Each field is resolved independently;
+        // falsy / missing fields fall back to the host config so
+        // unconfigured users keep working transparently.
         let userOverride: {
           anthropicApiKey?: string | null;
           claudeCodeOAuthToken?: string | null;
+          cursorApiKey?: string | null;
+          geminiApiKey?: string | null;
+          codexApiKey?: string | null;
         } | null = null;
         try {
           if (ownerId) {
-            const userAuth = getUserClaudeAuth(ownerId);
-            if (userAuth && (userAuth.anthropicApiKey || userAuth.claudeCodeOAuthToken)) {
+            const userClaude = getUserClaudeAuth(ownerId);
+            const userCursor = getUserCursorAuth(ownerId);
+            const userGemini = getUserGeminiAuth(ownerId);
+            const userCodex = getUserCodexAuth(ownerId);
+            const hasAny =
+              !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
+              !!(userCursor && userCursor.apiKey) ||
+              !!(userGemini && userGemini.apiKey) ||
+              !!(userCodex && userCodex.apiKey);
+            if (hasAny) {
               userOverride = {
-                anthropicApiKey: userAuth.anthropicApiKey,
-                claudeCodeOAuthToken: userAuth.claudeCodeOAuthToken,
+                anthropicApiKey: userClaude?.anthropicApiKey ?? null,
+                claudeCodeOAuthToken: userClaude?.claudeCodeOAuthToken ?? null,
+                cursorApiKey: userCursor?.apiKey ?? null,
+                geminiApiKey: userGemini?.apiKey ?? null,
+                codexApiKey: userCodex?.apiKey ?? null,
               };
             }
           }
@@ -2251,10 +2271,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sev: 'soft',
             resolution: 'recovered',
             session: sessionId,
-            tags: ['per-user-claude-auth', 'spawn'],
+            tags: ['per-user-cli-auth', 'spawn'],
           });
           console.error(
-            `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
+            `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
           );
         }
         const base = buildSpawnEnv(config, { userOverride });

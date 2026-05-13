@@ -160,6 +160,102 @@ describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
   });
 });
 
+describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
+  it('user CURSOR_API_KEY wins over host config', () => {
+    const env = buildSpawnEnv(
+      { ...config, cursorApiKey: 'curs-host' },
+      { userOverride: { cursorApiKey: 'curs-user' } },
+    );
+    expect(env.CURSOR_API_KEY).toBe('curs-user');
+  });
+
+  it('user GEMINI_API_KEY wins over host config', () => {
+    const env = buildSpawnEnv(
+      { ...config, geminiApiKey: 'gem-host' },
+      { userOverride: { geminiApiKey: 'gem-user' } },
+    );
+    expect(env.GEMINI_API_KEY).toBe('gem-user');
+  });
+
+  it('user CODEX_API_KEY fans out to OPENAI_API_KEY + CODEX_API_KEY', () => {
+    const env = buildSpawnEnv(
+      { ...config, codexApiKey: 'sk-codex-host' },
+      { userOverride: { codexApiKey: 'sk-codex-user' } },
+    );
+    expect(env.CODEX_API_KEY).toBe('sk-codex-user');
+    expect(env.OPENAI_API_KEY).toBe('sk-codex-user');
+  });
+
+  it('per-engine fields are independent — Cursor override does not affect Gemini/Codex', () => {
+    const env = buildSpawnEnv(
+      {
+        ...config,
+        cursorApiKey: 'curs-host',
+        geminiApiKey: 'gem-host',
+        codexApiKey: 'sk-codex-host',
+      },
+      { userOverride: { cursorApiKey: 'curs-user' } },
+    );
+    expect(env.CURSOR_API_KEY).toBe('curs-user');
+    expect(env.GEMINI_API_KEY).toBe('gem-host');
+    expect(env.CODEX_API_KEY).toBe('sk-codex-host');
+    expect(env.OPENAI_API_KEY).toBe('sk-codex-host');
+  });
+
+  it('whitespace-only override is treated as not provided per engine', () => {
+    const env = buildSpawnEnv(
+      { ...config, cursorApiKey: 'curs-host', geminiApiKey: 'gem-host', codexApiKey: 'codex-host' },
+      { userOverride: { cursorApiKey: '  ', geminiApiKey: '\t', codexApiKey: '' } },
+    );
+    expect(env.CURSOR_API_KEY).toBe('curs-host');
+    expect(env.GEMINI_API_KEY).toBe('gem-host');
+    expect(env.CODEX_API_KEY).toBe('codex-host');
+  });
+
+  it('with no host config and no user override, all three engine vars are unset', () => {
+    const prevCursor = process.env.CURSOR_API_KEY;
+    const prevGemini = process.env.GEMINI_API_KEY;
+    const prevCodex = process.env.CODEX_API_KEY;
+    const prevOpenai = process.env.OPENAI_API_KEY;
+    process.env.CURSOR_API_KEY = 'leaked-cursor';
+    process.env.GEMINI_API_KEY = 'leaked-gemini';
+    process.env.CODEX_API_KEY = 'leaked-codex';
+    process.env.OPENAI_API_KEY = 'leaked-openai';
+    try {
+      const env = buildSpawnEnv(
+        { ...config, cursorApiKey: null, geminiApiKey: null, codexApiKey: null },
+        { userOverride: { cursorApiKey: null, geminiApiKey: null, codexApiKey: null } },
+      );
+      expect(env.CURSOR_API_KEY).toBeUndefined();
+      expect(env.GEMINI_API_KEY).toBeUndefined();
+      expect(env.CODEX_API_KEY).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      if (prevCursor === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevCursor;
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+      if (prevCodex === undefined) delete process.env.CODEX_API_KEY;
+      else process.env.CODEX_API_KEY = prevCodex;
+      if (prevOpenai === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevOpenai;
+    }
+  });
+
+  it('host config flows through when no override is set', () => {
+    const env = buildSpawnEnv({
+      ...config,
+      cursorApiKey: 'curs-host-only',
+      geminiApiKey: 'gem-host-only',
+      codexApiKey: 'codex-host-only',
+    });
+    expect(env.CURSOR_API_KEY).toBe('curs-host-only');
+    expect(env.GEMINI_API_KEY).toBe('gem-host-only');
+    expect(env.CODEX_API_KEY).toBe('codex-host-only');
+    expect(env.OPENAI_API_KEY).toBe('codex-host-only');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // extraEnv gate — uses production `mergeAllowlistedExtraEnv` from
 // `extra-env-allowlist.ts` (same path as `chat.ts`).
