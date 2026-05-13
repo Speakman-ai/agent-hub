@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { classifyEntry } from './ThreadView.jsx';
 
 // Test the formatTimestamp logic used by ThreadView
 // We extract and test the formatting logic directly
@@ -69,6 +70,40 @@ describe('ThreadView formatTimestamp', () => {
     // Should contain a time and relative portion separated by ·
     expect(result).toContain('·');
     expect(result).toContain('30m ago');
+  });
+});
+
+describe('ThreadView classifyEntry — chatroom roles', () => {
+  it("treats role='user' entries as human (right-aligned bubble)", () => {
+    const out = classifyEntry({ role: 'user', content: 'hi' });
+    expect(out.isHuman).toBe(true);
+    expect(out.role).toBe('user');
+    expect(out.isError).toBe(false);
+  });
+
+  it("treats role='system' entries as daemon log lines", () => {
+    const out = classifyEntry({ role: 'system', content: 'cron tick' });
+    expect(out.isHuman).toBe(false);
+    expect(out.role).toBe('system');
+  });
+
+  it("defaults missing role to 'system' so legacy entries keep their look", () => {
+    // Older rows written before the role column existed return undefined.
+    // classifyEntry must coalesce so the existing log layout is preserved.
+    const out = classifyEntry({ content: 'pre-migration entry' });
+    expect(out.isHuman).toBe(false);
+    expect(out.role).toBe('system');
+  });
+
+  it('still flags ERROR: prefixes regardless of role', () => {
+    expect(classifyEntry({ role: 'system', content: 'ERROR: boom' }).isError).toBe(true);
+    expect(classifyEntry({ role: 'user', content: 'ERROR: boom' }).isError).toBe(true);
+    expect(classifyEntry({ role: 'system', content: 'ok' }).isError).toBe(false);
+  });
+
+  it('tolerates falsy/missing content without throwing', () => {
+    expect(() => classifyEntry({})).not.toThrow();
+    expect(classifyEntry({}).isError).toBe(false);
   });
 });
 

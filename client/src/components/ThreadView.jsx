@@ -1,7 +1,20 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { ArrowLeft, Clock, Activity, Cpu, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Clock, Activity, Cpu, AlertCircle, Send, User } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
+
+/**
+ * Classify an entry for rendering. Daemon-written rows ('system') render
+ * as the historical log line — monospace timestamp column + markdown
+ * content. Human-written rows ('user', via the chatroom composer) render
+ * as a right-aligned chat bubble so the human voice is visually distinct
+ * from the streaming daemon output, even when the two interleave.
+ */
+export function classifyEntry(entry) {
+  const role = entry?.role || 'system';
+  const isError = typeof entry?.content === 'string' && entry.content.startsWith('ERROR:');
+  return { role, isError, isHuman: role === 'user' };
+}
 
 function formatTimestamp(ts) {
   if (!ts) return '';
@@ -26,8 +39,12 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState(null);
   const scrollRef = useRef(null);
   const wasAtBottomRef = useRef(true);
+  const composerRef = useRef(null);
 
   // Fetch thread details and entries
   useEffect(() => {
@@ -82,6 +99,38 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
   };
 
   useImperativeHandle(ref, () => ({ addEntry }), []);
+
+  // Composer submit — posts a `role='user'` entry into the thread. We
+  // optimistically clear the draft on success; the WebSocket broadcast
+  // (`thread_entry_created`) reaches us via App.jsx → addEntry, so we
+  // don't need to manually splice the entry into state.
+  const handleSend = async () => {
+    const content = draft.trim();
+    if (!content || sending) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      await api.postThreadEntry(threadId, content);
+      setDraft('');
+      // Force auto-scroll on the next entry render even if the user
+      // had scrolled up — sending a message implies "show me my message".
+      wasAtBottomRef.current = true;
+    } catch (err) {
+      setSendError(err?.message || 'Failed to send');
+    } finally {
+      setSending(false);
+      // Keep focus on the composer so a user can keep typing.
+      composerRef.current?.focus?.();
+    }
+  };
+
+  const handleComposerKeyDown = (e) => {
+    // Enter to send, Shift+Enter for newline (chat convention).
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
   const typeIcon =
     thread?.type === 'heartbeat' ? (
@@ -163,7 +212,7 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
           </div>
         ) : (
           entries.map((entry, idx) => {
-            const isError = entry.content?.startsWith('ERROR:');
+            const { isError, isHuman } = classifyEntry(entry);
             const prevEntry = idx > 0 ? entries[idx - 1] : null;
             // Add a date separator if the date changed
             const entryDate = new Date(
@@ -179,7 +228,7 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
             const showDateSep = !prevDate || entryDate.toDateString() !== prevDate.toDateString();
 
             return (
-              <div key={entry.id}>
+              <div key={entry.id} data-testid={`thread-entry-${entry.role || 'system'}`}>
                 {showDateSep && (
                   <div className="flex items-center gap-3 py-3">
                     <div className="flex-1 border-t border-gray-800" />
@@ -193,36 +242,91 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
                     <div className="flex-1 border-t border-gray-800" />
                   </div>
                 )}
-                <div
-                  className={`group flex gap-3 py-2 px-3 rounded-lg transition-colors hover:bg-gray-800/40 ${
-                    isError ? 'bg-red-950/20' : ''
-                  }`}
-                >
-                  {/* Timestamp column */}
-                  <span className="text-[11px] text-gray-600 font-mono flex-shrink-0 pt-0.5 w-36 hidden sm:block">
-                    {formatTimestamp(entry.timestamp)}
-                  </span>
-                  {/* Content */}
+                {isHuman ? (
+                  /* Human chatroom bubble — right-aligned to read distinctly
+                     against the daemon's left-aligned log stream. */
+                  <div className="flex justify-end py-1.5 px-3">
+                    <div className="max-w-[80%] flex flex-col items-end gap-0.5">
+                      <div className="flex items-center gap-1.5 text-[10px] text-emerald-400/70 font-medium">
+                        <User size={10} />
+                        <span>you</span>
+                        <span className="text-gray-600">·</span>
+                        <span className="font-mono text-gray-600">
+                          {formatTimestamp(entry.timestamp)}
+                        </span>
+                      </div>
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 text-gray-200 text-sm rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+                        {entry.content}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* System / daemon log line — historical layout. */
                   <div
-                    className={`flex-1 min-w-0 text-sm break-words ${
-                      isError ? 'text-red-400' : 'markdown-content text-gray-300'
+                    className={`group flex gap-3 py-2 px-3 rounded-lg transition-colors hover:bg-gray-800/40 ${
+                      isError ? 'bg-red-950/20' : ''
                     }`}
                   >
-                    {isError ? (
-                      <p className="whitespace-pre-wrap">{entry.content}</p>
-                    ) : (
-                      <MarkdownContent content={entry.content} />
-                    )}
-                    {/* Mobile timestamp */}
-                    <span className="text-[10px] text-gray-600 font-mono sm:hidden mt-0.5 block">
+                    {/* Timestamp column */}
+                    <span className="text-[11px] text-gray-600 font-mono flex-shrink-0 pt-0.5 w-36 hidden sm:block">
                       {formatTimestamp(entry.timestamp)}
                     </span>
+                    {/* Content */}
+                    <div
+                      className={`flex-1 min-w-0 text-sm break-words ${
+                        isError ? 'text-red-400' : 'markdown-content text-gray-300'
+                      }`}
+                    >
+                      {isError ? (
+                        <p className="whitespace-pre-wrap">{entry.content}</p>
+                      ) : (
+                        <MarkdownContent content={entry.content} />
+                      )}
+                      {/* Mobile timestamp */}
+                      <span className="text-[10px] text-gray-600 font-mono sm:hidden mt-0.5 block">
+                        {formatTimestamp(entry.timestamp)}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             );
           })
         )}
+      </div>
+
+      {/* Composer — humans can chat into the same thread alongside the
+          daemon's streamed output. Empty drafts are blocked client-side
+          AND server-side (400 from POST /entries). */}
+      <div className="border-t border-gray-800 bg-gray-900/50 px-3 py-2">
+        {sendError && (
+          <div className="mb-2 flex items-center gap-2 text-xs text-red-400">
+            <AlertCircle size={12} />
+            <span className="break-words">{sendError}</span>
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={composerRef}
+            aria-label="Post a message in this thread"
+            placeholder={`Message this ${thread?.type || 'thread'}…`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleComposerKeyDown}
+            rows={1}
+            disabled={sending}
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-500 resize-none focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={sending || draft.trim().length === 0}
+            aria-label="Send message"
+            className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Send size={14} />
+          </button>
+        </div>
       </div>
     </div>
   );
