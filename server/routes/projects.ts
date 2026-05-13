@@ -31,6 +31,7 @@ import {
   getVisibility,
   type VisibilityCaller,
 } from '../project-visibility.js';
+import { deleteProjectScopedRows } from '../project-owner-cascade.js';
 
 const execAsync = promisify(exec);
 import type {
@@ -1809,27 +1810,14 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // than 403, so we don't leak existence.
     const caller = resolveVisibilityCaller(req);
     if (!canDeleteProject(project, caller)) {
-      // Mask private projects we can't see as 404.
-      if (!canViewProject(project, caller)) {
-        return res.status(404).json({ error: 'Project not found' });
-      }
-      return res.status(403).json({ error: 'Not permitted to delete this project' });
+      // canDeleteProject = canViewProject || role==='Owner', so !canDeleteProject
+      // implies !canViewProject AND not an Owner. Mask as 404 — same shape the
+      // route returns when the project is genuinely missing, so we don't leak
+      // that the private project exists.
+      return res.status(404).json({ error: 'Project not found' });
     }
 
-    stmts.deleteEscalationsByProject.run(project.id);
-    stmts.deleteNotesByProject.run(project.id);
-    stmts.deleteWikiPagesByProject.run(project.id);
-    stmts.deleteWebhookConfigsByProject.run(project.id);
-    stmts.deleteBoardsByProject.run(project.id);
-    stmts.deleteWorkflowsByProject.run(project.id);
-    stmts.deleteThreadsByProject.run(project.id);
-    stmts.deleteRoomsByProject.run(project.id);
-    stmts.deleteCronsByProject.run(project.id);
-
-    const agentIds = (project.agents || []).map((a) => a.id);
-    for (const agentId of agentIds) {
-      stmts.deleteSessionsByAgent.run(agentId);
-    }
+    deleteProjectScopedRows(stmts, project);
 
     projects.splice(idx, 1);
     saveProjects();

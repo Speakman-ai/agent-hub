@@ -34,11 +34,14 @@ export interface CascadeResult {
 }
 
 /**
- * Inline copy of the DELETE cascade in `routes/projects.ts`. Kept narrow
- * to the rows that depend on a project — if you add a new project-scoped
- * table, mirror it here so user-deletion stays clean.
+ * Delete all project-scoped rows from the database for a single project.
+ * Used by both the DELETE /api/projects/:projectId route handler and the
+ * user-deletion cascade below — keep in sync with the database schema.
+ *
+ * If you add a new project-scoped table, add its statement here; both
+ * delete paths will pick it up automatically.
  */
-function deleteProjectRow(stmts: Stmts, project: Project): void {
+export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   stmts.deleteEscalationsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);
   stmts.deleteWikiPagesByProject.run(project.id);
@@ -75,7 +78,7 @@ export function cascadeDeleteUserPrivateProjects(deps: CascadeDeps, userId: stri
     }
 
     try {
-      deleteProjectRow(deps.stmts, p);
+      deleteProjectScopedRows(deps.stmts, p);
       projects.splice(i, 1);
       deletedProjectIds.push(p.id);
     } catch (err) {

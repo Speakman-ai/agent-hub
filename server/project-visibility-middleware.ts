@@ -15,15 +15,14 @@
  *     returned if the project were genuinely missing) so we don't leak
  *     existence of private projects.
  *
- * Exceptions handled OUTSIDE this gate:
+ * Exceptions handled INSIDE this gate:
  *   - GitHub webhook routes are unauthenticated by design and live on
  *     `/api/webhooks/*` (no projectId in the path), so they don't trip
  *     this mount.
- *   - The `DELETE /api/projects/:projectId` route handles its own Owner
- *     kill-switch bypass; this gate would 404 before that check ever
- *     ran. We solve it by mounting the gate AFTER the
- *     `createProjectRoutes` router (which owns DELETE/POST/GET on the
- *     non-:projectId paths).
+ *   - `DELETE /api/projects/:projectId` — the route handler owns the Owner
+ *     kill-switch (`canDeleteProject`). If the gate returned 404 here the
+ *     kill-switch would never run, so we detect the pattern with `isDeleteSelf`
+ *     and call `next()` directly, letting the route handler make the final call.
  */
 
 import type { Request, Response, NextFunction } from 'express';
