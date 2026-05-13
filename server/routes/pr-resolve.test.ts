@@ -140,6 +140,60 @@ describe('pr-resolve — pure helpers', () => {
       expect(prompt).toContain('TEMPLATE[conflict]');
       expect((prompt.match(/\n\n---\n\n/g) || []).length).toBe(3);
     });
+
+    it('includes the gh pr checkout setup directive so commits land on the PR branch (auto-push regression)', () => {
+      // Regression for "Resolve sessions no longer auto-push commits".
+      //
+      // Resolve sessions spawn into a fresh worktree branch
+      // (`agent-hub/<agent-id>/session-<id>`), not the PR's head branch.
+      // Without an explicit `gh pr checkout` step the agent commits to the
+      // worktree branch; at session end `autoCommitAndPR` runs `gh pr view`
+      // against that branch, finds no PR, and falls through to a
+      // `changes_ready` broadcast — the commits stay local and the PR is
+      // never updated.
+      //
+      // The header MUST direct the agent to `gh pr checkout <num>` before
+      // making any code changes so the existing auto-commit pipeline finds
+      // the open PR via the pre-check in `commitPushAndCreatePR` and pushes
+      // the fix. This test locks the directive into the prompt.
+      const prompt = buildResolvePrompt(
+        {
+          number: 42,
+          title: 'Fix thing',
+          html_url: 'https://github.com/o/r/pull/42',
+          head: 'feature/x',
+          base: 'main',
+        },
+        [],
+        [{ conclusion: 'failure' }],
+        [],
+        'o/r',
+        ['ci'],
+      );
+      expect(prompt).toContain('## Setup — required first step');
+      expect(prompt).toContain('gh pr checkout 42');
+      // The directive must appear BEFORE the autofix templates so the agent
+      // reads it before starting work.
+      const setupIdx = prompt.indexOf('## Setup');
+      const templateIdx = prompt.indexOf('TEMPLATE[ci]');
+      expect(setupIdx).toBeGreaterThan(-1);
+      expect(templateIdx).toBeGreaterThan(setupIdx);
+    });
+
+    it('omits the setup directive when the PR number is missing/invalid', () => {
+      // Defensive — buildPrContextHeader is reused by other call sites and
+      // must not blow up when `pr.number` is absent or non-numeric.
+      const prompt = buildResolvePrompt(
+        { title: 'Fix thing' },
+        [],
+        [{ conclusion: 'failure' }],
+        [],
+        'o/r',
+        ['ci'],
+      );
+      expect(prompt).not.toContain('## Setup — required first step');
+      expect(prompt).not.toContain('gh pr checkout');
+    });
   });
 });
 
