@@ -1,42 +1,65 @@
 /**
- * Tests for `disableNativeSkillToolArgs` and the `--disallowed-tools Skill`
+ * Tests for `disableShadowedNativeToolsArgs` (canonical name) plus the
+ * legacy alias `disableNativeSkillToolArgs`, and the `--disallowed-tools`
  * wiring in our Claude Code spawn sites.
  *
- * Regression coverage for bug: "Couldnt find tool skill"
- * (screenshot showed `Skill aws-infra → <tool_use_error>Unknown skill:
- * aws-infra</tool_use_error>`).
+ * Regression coverage for two related bugs:
  *
- * Agent Hub injects its own `## Available Skills` section into enriched
- * prompts and tells agents to load skills via the `<agenthub:skill>` block.
- * Some of those skills (`aws-infra`, `design`, `designs`) are Agent-Hub-only
- * and not in Claude Code's bundled skill list — so when an agent fell back
- * to the native `Skill` tool, the call would error with `Unknown skill`,
- * waste a turn, and surface a confusing failure to the user.
+ *   1. "Couldnt find tool skill" — screenshot showed
+ *      `Skill aws-infra → <tool_use_error>Unknown skill: aws-infra</tool_use_error>`.
+ *      Some Agent-Hub-only skills (`aws-infra`, `design`, `designs`) aren't
+ *      in Claude Code's bundled skill list, so the native `Skill` tool errors.
  *
- * The fix disables the native `Skill` tool via `--disallowed-tools Skill`
- * everywhere we spawn Claude Code with an Agent-Hub-enriched prompt.
+ *   2. "AskUserQuestion ERROR / Answer questions?" — model invoked the
+ *      native `AskUserQuestion` tool instead of emitting an `agenthub:ask`
+ *      fenced block. Agent Hub doesn't bridge the native tool to its own
+ *      picker UI, so the tool_use renders as a generic failed call.
+ *
+ * Both classes are fixed the same way: disable the native tool via
+ * `--disallowed-tools <tool>` on every Agent-Hub-enriched Claude Code spawn.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import {
+  disableShadowedNativeToolsArgs,
+  disableNativeSkillToolArgs,
+  SHADOWED_NATIVE_TOOLS,
+} from './claude-cli-args.js';
 import { buildDesignSpawnArgs } from './design-multi-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-describe('disableNativeSkillToolArgs', () => {
-  it('returns the --disallowed-tools Skill flag pair', () => {
-    const args = disableNativeSkillToolArgs();
-    expect(args).toEqual(['--disallowed-tools', 'Skill']);
+describe('disableShadowedNativeToolsArgs', () => {
+  it('returns the --disallowed-tools flag followed by every shadowed tool', () => {
+    const args = disableShadowedNativeToolsArgs();
+    expect(args).toEqual(['--disallowed-tools', ...SHADOWED_NATIVE_TOOLS]);
+  });
+
+  it('includes Skill (replaced by <agenthub:skill>)', () => {
+    expect(disableShadowedNativeToolsArgs()).toContain('Skill');
+  });
+
+  it('includes AskUserQuestion (replaced by agenthub:ask fenced block)', () => {
+    expect(disableShadowedNativeToolsArgs()).toContain('AskUserQuestion');
   });
 
   it('returns a fresh array each call so callers can safely mutate it', () => {
-    const a = disableNativeSkillToolArgs();
-    const b = disableNativeSkillToolArgs();
+    const a = disableShadowedNativeToolsArgs();
+    const b = disableShadowedNativeToolsArgs();
     expect(a).not.toBe(b);
     a.push('extra');
-    expect(disableNativeSkillToolArgs()).toEqual(['--disallowed-tools', 'Skill']);
+    expect(disableShadowedNativeToolsArgs()).toEqual([
+      '--disallowed-tools',
+      ...SHADOWED_NATIVE_TOOLS,
+    ]);
+  });
+
+  it('exposes a legacy alias `disableNativeSkillToolArgs` for backwards compatibility', () => {
+    // Existing spawn sites still call the old name; keep them working.
+    expect(disableNativeSkillToolArgs).toBe(disableShadowedNativeToolsArgs);
+    expect(disableNativeSkillToolArgs()).toEqual(disableShadowedNativeToolsArgs());
   });
 });
 
@@ -141,7 +164,7 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
   // Behavioural pin for the one path that exposes a pure args-builder we
   // can call directly. The other six are covered by the source-level
   // grep above plus their own existing prompt-structure tests.
-  it('design-multi-engine spawns Claude with --disallowed-tools Skill', () => {
+  it('design-multi-engine spawns Claude with --disallowed-tools Skill AskUserQuestion', () => {
     const { args } = buildDesignSpawnArgs({
       designId: 'design-uuid-1',
       systemPrompt: 'SYS',
@@ -160,7 +183,9 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
     });
     expect(args).toContain('--disallowed-tools');
     const idx = args.indexOf('--disallowed-tools');
+    // Both shadowed tools must follow the flag, in registration order.
     expect(args[idx + 1]).toBe('Skill');
+    expect(args[idx + 2]).toBe('AskUserQuestion');
     // Prompt body must remain the last element so the CLI parses it as
     // the user message rather than a flag value.
     expect(args[args.length - 1]).toBe('Do the thing');
