@@ -75,7 +75,7 @@ const execFileAsync = promisify(execFile);
  *   - working helper second (emits username=x-access-token, password=$GH_TOKEN)
  *   - `GH_TOKEN` + `GITHUB_TOKEN` set so `gh` picks the same identity
  */
-function autoGitChildEnv(githubToken?: string | null): NodeJS.ProcessEnv {
+export function autoGitChildEnv(githubToken?: string | null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: resolveSpawnPath(process.env.PATH) };
   if (githubToken) {
     // Defensively scrub any inherited GitHub token vars from `process.env` so
@@ -132,6 +132,36 @@ export async function resolveAutoGitGithubToken(
     console.warn(
       `[auto-commit] Could not resolve session-owner GitHub token for ${sessionId}: ${msg}`,
     );
+    return null;
+  }
+}
+
+/**
+ * Resolve a GitHub token for a server-side git operation that has NO session
+ * scope (e.g. the autonomous loop's operator base-branch probe, which runs
+ * before any per-card dispatch and therefore predates the session that will
+ * later own the work).
+ *
+ * Falls back to the org owner. Mirrors `resolveAutoGitGithubToken` in error
+ * handling — best-effort, always returns `null` on failure so the caller can
+ * still attempt the git operation and surface a clearer "Authentication
+ * failed" if there really are no usable creds.
+ *
+ * Pair the returned token with `autoGitChildEnv(token)` for any `git` /
+ * `gh` exec so the credential helper / `GH_TOKEN` are wired the same way the
+ * auto-commit push path does it.
+ */
+export async function resolveOrgOwnerGithubToken(
+  config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
+): Promise<string | null> {
+  try {
+    const ownerId = getOrgOwnerUserId();
+    if (!ownerId) return null;
+    const oauthCreds = resolveOAuthAppCredentials(config);
+    return (await getActiveAccessToken(ownerId, oauthCreds)) ?? null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[auto-git] Could not resolve org-owner GitHub token: ${msg}`);
     return null;
   }
 }
