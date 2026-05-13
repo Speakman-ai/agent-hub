@@ -73,6 +73,44 @@ describe('push-image.yml deploy contract', () => {
     expect(yml).toMatch(/!=\s+just-pushed digest/);
   });
 
+  // Regression guard for the dev-sandbox manual-deploy switch. We intentionally
+  // do NOT auto-deploy `agenthub.dev.surveytracker.io` on push to main while
+  // active development on dev-hub is in flight — the dev sandbox should only
+  // roll when an operator explicitly fires the workflow (typically right after
+  // cutting a release tag). The image build itself stays on main pushes so
+  // Terraform consumers and PR-env builds keep getting fresh `:main`. If the
+  // dev sandbox needs to go back to auto-deploy-on-push later, retire this
+  // test together with the gate change so the intent stays in one place.
+  it('gates deploy-dev-sandbox on workflow_dispatch (no auto-deploy on push to main)', () => {
+    const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'push-image.yml');
+    const yml = readFileSync(workflowPath, 'utf8');
+    // Locate the `deploy-dev-sandbox:` job header and capture the lines
+    // immediately following until the first `steps:` directive — the job-
+    // level keys (name, needs, if, runs-on, env, ...) all live in that
+    // window and are indented four spaces. Anchoring on `steps:` makes the
+    // window narrow and unambiguous: per-step `if:` blocks are nested at
+    // six spaces, so they can never leak into the capture.
+    const jobMatch = yml.match(/^ {2}deploy-dev-sandbox:\s*\n([\s\S]*?)^ {4}steps:\s*$/m);
+    expect(jobMatch, 'deploy-dev-sandbox job header must exist in push-image.yml').toBeTruthy();
+    const jobHead = jobMatch![1];
+
+    // Job-level `if:` is the first `if:` line at four-space indent.
+    const ifMatch = jobHead.match(/^ {4}if:\s*(.+?)\s*$/m);
+    expect(ifMatch, 'deploy-dev-sandbox must declare a job-level `if:` gate').toBeTruthy();
+    const gate = ifMatch![1];
+
+    expect(gate, 'deploy-dev-sandbox gate must require workflow_dispatch').toContain(
+      "github.event_name == 'workflow_dispatch'",
+    );
+    // The old gate (`github.ref == 'refs/heads/main'`) without a
+    // workflow_dispatch check would re-enable auto-deploy on main pushes.
+    // Allow `main` to appear in a *compound* gate (e.g. dispatch + main pin)
+    // but reject the bare ref check that used to be there.
+    expect(gate, 'plain main-push gate must NOT be the only condition').not.toMatch(
+      /^github\.ref == 'refs\/heads\/main'$/,
+    );
+  });
+
   // Regression guard for kanban f1015656 (false-positive ECR deploy failures).
   // The original verification did `sleep 8` + single-shot inspect, which raced
   // the wrapper's async `docker pull` + `docker run` and reported FATAL even
