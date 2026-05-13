@@ -1,0 +1,111 @@
+name: API Docs
+
+# Builds the Redoc-rendered OpenAPI bundle and (on main) publishes it to
+# GitHub Pages. The build step strips operations flagged `x-internal: true`
+# via `scripts/build-openapi-public.ts` — the unit test for the filter
+# lives in `server/openapi-filter.test.ts`.
+#
+# On pull_request: build only (no deploy) so reviewers can see the
+# artifact and confirm the filter didn't drop something it shouldn't.
+# On push to main: build + deploy via actions/deploy-pages@v4.
+#
+# **One-time repo setting required:** Settings → Pages → Source → "GitHub
+# Actions". The deploy job will fail until that toggle is flipped.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/api/**'
+      - 'server/openapi-filter.ts'
+      - 'scripts/build-openapi-public.ts'
+      - '.github/workflows/api-docs.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server/package.json'
+      - 'server/package-lock.json'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/api/**'
+      - 'server/openapi-filter.ts'
+      - 'scripts/build-openapi-public.ts'
+      - '.github/workflows/api-docs.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server/package.json'
+      - 'server/package-lock.json'
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build OpenAPI bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts --include=dev
+
+      - name: Install server dependencies (for tsx + filter module)
+        run: cd server && npm ci --ignore-scripts --include=dev
+
+      - name: Run filter unit tests
+        run: cd server && npx vitest run openapi-filter.test.ts
+
+      - name: Build filtered bundle (strip x-internal)
+        run: cd server && npx tsx ../scripts/build-openapi-public.ts --out ../docs/api/_site
+
+      - name: Smoke-test output
+        run: test -f docs/api/_site/openapi.yaml
+
+      - name: Show output for log/debug
+        run: |
+          ls -la docs/api/_site
+          echo "---"
+          head -40 docs/api/_site/openapi.yaml
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api/_site
+
+      - name: Upload PR preview artifact (workflow run only — not deployed)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs-preview
+          path: docs/api/_site
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
