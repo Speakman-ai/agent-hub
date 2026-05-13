@@ -1011,7 +1011,7 @@ components:
         priority: { type: string, enum: [urgent, high, medium, low] }
         columnId: { type: string, format: uuid }
         labels: { type: string }
-        session_id:
+        sessionId:
           type: string
           format: uuid
           description: Optional — links the card to the caller's session.

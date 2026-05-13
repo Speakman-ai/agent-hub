@@ -16,7 +16,7 @@
  * the workflow has a single entry point.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -82,8 +82,8 @@ if (!existsSync(specPath)) {
   console.error(`error: spec not found at ${specPath}`);
   process.exit(1);
 }
-if (!existsSync(htmlPath)) {
-  console.error(`error: index.html not found at ${htmlPath}`);
+if (!existsSync(htmlPath) || !statSync(htmlPath).isFile()) {
+  console.error(`error: index.html not found or is not a file at ${htmlPath}`);
   process.exit(1);
 }
 
