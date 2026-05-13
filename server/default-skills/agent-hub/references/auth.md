@@ -18,6 +18,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
+- [Per-user engine credentials (Cursor / Gemini / Codex)](#per-user-engine-credentials-cursor--gemini--codex)
 - [Per-user skill credentials](#per-user-skill-credentials)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
@@ -178,6 +179,12 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
 | `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
 | `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
+| `GET  /me/cursor-auth`                         | any          | masked per-user Cursor API key           |
+| `PUT  /me/cursor-auth`                         | any          | upsert per-user Cursor API key           |
+| `GET  /me/gemini-auth`                         | any          | masked per-user Gemini API key           |
+| `PUT  /me/gemini-auth`                         | any          | upsert per-user Gemini API key           |
+| `GET  /me/codex-auth`                          | any          | masked per-user Codex (OpenAI) API key   |
+| `PUT  /me/codex-auth`                          | any          | upsert per-user Codex (OpenAI) API key   |
 | `GET  /me/skill-credentials`                   | any          | masked per-user skill secrets (optional `?skillId=`) |
 | `PUT  /me/skill-credentials`                   | any          | upsert one skill credential key (schema-enforced)    |
 | `DELETE /me/skill-credentials/:id`             | any          | revoke a stored skill credential row                 |
@@ -240,6 +247,54 @@ missing (apiKey-only callers + local-bundled-server bypass) and `404`
 when the user row is unknown. Encryption-at-rest is tracked as a
 follow-up — credentials currently sit on the users row in plaintext,
 mirroring the existing `github_user_token` precedent.
+
+## Per-user engine credentials (Cursor / Gemini / Codex)
+
+The three single-key CLI engines (Cursor Agent, Gemini CLI, Codex CLI)
+each carry exactly one API key. They follow the same per-field, per-user
+override pattern as Claude — `buildSpawnEnv` (`server/config.ts`) picks
+the **session owner's** key over the host-wide `config.json` key, and
+the spawn env injects the right variable for each engine:
+
+| Engine | Env var injected into the spawn | Host config field | User column                |
+| ------ | ------------------------------- | ----------------- | -------------------------- |
+| Cursor | `CURSOR_API_KEY`                | `cursorApiKey`    | `users.cursor_api_key`     |
+| Gemini | `GEMINI_API_KEY`                | `geminiApiKey`    | `users.gemini_api_key`     |
+| Codex  | `OPENAI_API_KEY`                | `codexApiKey`     | `users.codex_api_key`      |
+
+**Precedence is per-field** — for each engine the resolver picks:
+
+1. **User value** — `users.<engine>_api_key` on the session-owner row,
+   when truthy.
+2. **Host value** — the matching `cfg.<engine>ApiKey` from
+   `~/.agent-hub/data/config.json`.
+3. **Unset** — the variable is **deleted** from the spawn env so the
+   CLI does not silently inherit a stale ambient value from the
+   operator's shell. Operators relying on systemd/PM2 env inheritance
+   must populate the host config or per-user value explicitly.
+
+**REST shape.** Each engine exposes a `GET` / `PUT` pair at
+`/api/auth/me/{engine}-auth`. All three share the same compact shape:
+
+| Field                | `GET`                                                       | `PUT`                                              |
+| -------------------- | ----------------------------------------------------------- | -------------------------------------------------- |
+| `engine`             | `"cursor" \| "gemini" \| "codex"`                           | — (derived from URL)                               |
+| `apiKey`             | masked (e.g. `sk-…abcd`) or `null`                          | accepts string or `null`; empty string clears      |
+| `updatedAt`          | last-write timestamp                                        | last-write timestamp                               |
+| `hostConfigFallback` | `{ apiKey: boolean }` — does the host have a fallback key?  | same shape — UI re-renders "falling back to host"  |
+
+`PUT` whitelists exactly `apiKey` via
+`Object.prototype.hasOwnProperty.call`; stray keys are ignored. Both
+endpoints return `401` when `authUserId` is missing and `404` when the
+user row is unknown. Encryption-at-rest is tracked as a follow-up —
+keys currently sit on the `users` row in plaintext, mirroring the
+Claude precedent.
+
+**Helpers.** `server/users-store.ts` exposes
+`getUser{Cursor,Gemini,Codex}Auth` / `setUser{Cursor,Gemini,Codex}Auth`
+implemented atop a generic `getSingleKeyAuth` / `setSingleKeyAuth`
+pair. The DB columns (`<engine>_api_key`, `<engine>_auth_updated_at`)
+are added via idempotent `ensureColumn` migrations on boot.
 
 ## Per-user skill credentials
 
