@@ -16,6 +16,12 @@ import type {
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
+import {
+  applyGithubSpawnCredentials,
+  resolveOAuthAppCredentials,
+} from './spawn-github-credentials.js';
+import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { getActiveAccessToken } from './github-connections-store.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -51,9 +57,83 @@ const execFileAsync = promisify(execFile);
  * Child env for `git` / shell steps in this module. Uses the same PATH merge as
  * `buildSpawnEnv` (login shell + fallbacks) without importing `config.ts` — that
  * module has import-time side effects that break unit tests which mock `fs`.
+ *
+ * When a `githubToken` is supplied, the env is wired so `git push` and `gh` use
+ * that exact identity instead of inheriting whatever the Hub process happens to
+ * have configured in `~/.gitconfig` or `gh auth login`. This closes the
+ * `Authentication failed for 'https://github.com/<user>/...'` failure mode for
+ * autonomous-dispatch sessions whose spawn env was deliberately stripped of
+ * GitHub credentials (see `selectGithubSpawnToken` in
+ * `spawn-github-credentials.ts`): the spawn agent has no creds, but the
+ * server-side auto-commit/push runs in the Hub process and must still
+ * authenticate as the session owner to reach their private repos.
+ *
+ * Wiring pattern mirrors `applyReviewerSpawnIsolation` +
+ * `applyGithubSpawnCredentials` so the *injected* helper wins over any
+ * inherited git credential helper:
+ *   - empty `credential.https://github.com.helper` first (clears inherited)
+ *   - working helper second (emits username=x-access-token, password=$GH_TOKEN)
+ *   - `GH_TOKEN` + `GITHUB_TOKEN` set so `gh` picks the same identity
  */
-function autoGitChildEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: resolveSpawnPath(process.env.PATH) };
+function autoGitChildEnv(githubToken?: string | null): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: resolveSpawnPath(process.env.PATH) };
+  if (githubToken) {
+    // Defensively scrub any inherited GitHub token vars from `process.env` so
+    // the helper we install below is the only path that can satisfy `gh` or
+    // the credential prompt — symmetric to `applyReviewerSpawnIsolation`.
+    delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+    delete env.GH_ENTERPRISE_TOKEN;
+    delete env.GITHUB_ENTERPRISE_TOKEN;
+    // Clear inherited credential helpers for github.com so the host
+    // operator's `~/.gitconfig` cannot override the injected helper.
+    const prevCountRaw = env.GIT_CONFIG_COUNT;
+    const prevCount = (() => {
+      if (typeof prevCountRaw !== 'string') return 0;
+      const n = Number.parseInt(prevCountRaw, 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    })();
+    env.GIT_CONFIG_COUNT = String(prevCount + 1);
+    env[`GIT_CONFIG_KEY_${prevCount}`] = 'credential.https://github.com.helper';
+    env[`GIT_CONFIG_VALUE_${prevCount}`] = '';
+    applyGithubSpawnCredentials(env, githubToken);
+  }
+  return env;
+}
+
+/**
+ * Resolve the GitHub token that auto-git should use for `git push` and
+ * `gh pr create` on behalf of `sessionId`.
+ *
+ * Precedence:
+ *   1. Session-owner per-user OAuth/PAT (via `getSessionOwner` →
+ *      `getActiveAccessToken`).
+ *   2. Org-owner fallback for legacy sessions whose `owner_user_id` row
+ *      predates per-user ownership.
+ *   3. `null` — fall back to whatever the Hub process inherits
+ *      (`~/.gitconfig`, exported `GH_TOKEN`, etc.). Preserves
+ *      pre-fix behavior when no per-user token is reachable.
+ *
+ * Best-effort: every error path returns `null` and logs at warn so the
+ * push attempt still runs (and gets a clearer "Authentication failed"
+ * error if there really are no usable creds).
+ */
+export async function resolveAutoGitGithubToken(
+  sessionId: string,
+  config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
+): Promise<string | null> {
+  try {
+    const ownerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+    if (!ownerId) return null;
+    const oauthCreds = resolveOAuthAppCredentials(config);
+    return (await getActiveAccessToken(ownerId, oauthCreds)) ?? null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[auto-commit] Could not resolve session-owner GitHub token for ${sessionId}: ${msg}`,
+    );
+    return null;
+  }
 }
 
 /** Wall-clock cap per configured pre-commit shell command (lint/test can be slow). */
@@ -402,13 +482,24 @@ type SpawnChunkHandler = (chunk: string) => void;
 async function spawnProcessStreaming(
   file: string,
   args: string[],
-  opts: { cwd: string; timeoutMs: number; onChunk?: SpawnChunkHandler; maxOutputBytes?: number },
+  opts: {
+    cwd: string;
+    timeoutMs: number;
+    onChunk?: SpawnChunkHandler;
+    maxOutputBytes?: number;
+    /**
+     * Per-session GitHub token (OAuth/PAT) to inject into the child env so
+     * `git push` / `gh` authenticate as the session owner. When omitted/null,
+     * inherits the Hub process's ambient git/gh auth (pre-fix behavior).
+     */
+    githubToken?: string | null;
+  },
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const maxOut = opts.maxOutputBytes ?? STREAM_OUTPUT_MAX_BYTES;
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
       cwd: opts.cwd,
-      env: autoGitChildEnv(),
+      env: autoGitChildEnv(opts.githubToken),
       windowsHide: true,
     });
     let stdout = '';
@@ -459,8 +550,14 @@ async function runGh(
   args: string[],
   cwd: string,
   timeout?: number,
+  /**
+   * Per-session GitHub token to inject so `gh` authenticates as the session
+   * owner. When omitted/null, `gh` falls back to its ambient login (host
+   * `gh auth status` / inherited `GH_TOKEN`). See `autoGitChildEnv` JSDoc.
+   */
+  githubToken?: string | null,
 ): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('gh', args, { cwd, timeout });
+  return execFileAsync('gh', args, { cwd, timeout, env: autoGitChildEnv(githubToken) });
 }
 
 /** Same argv safety as `runGh`, with optional live stdout/stderr for the UI. */
@@ -469,11 +566,12 @@ async function runGhStreamed(
   cwd: string,
   timeoutMs: number,
   onChunk?: SpawnChunkHandler,
+  githubToken?: string | null,
 ): Promise<{ stdout: string; stderr: string }> {
   if (!onChunk) {
-    return runGh(args, cwd, timeoutMs);
+    return runGh(args, cwd, timeoutMs, githubToken);
   }
-  const r = await spawnProcessStreaming('gh', args, { cwd, timeoutMs, onChunk });
+  const r = await spawnProcessStreaming('gh', args, { cwd, timeoutMs, onChunk, githubToken });
   if (r.code !== 0) {
     const err = new Error(formatSpawnFailure('gh', r)) as Error & { stderr?: Buffer };
     err.stderr = Buffer.from(r.stderr || '');
@@ -1144,10 +1242,11 @@ async function enableAutoMergeIfNeeded(
   project: Project,
   override: boolean | undefined,
   cwd: string,
+  githubToken?: string | null,
 ): Promise<void> {
   if (!resolveShouldAutoMerge(override, project.githubWorkflow)) return;
   try {
-    await runGh(['pr', 'merge', '--auto', '--squash', prUrl], cwd, 15000);
+    await runGh(['pr', 'merge', '--auto', '--squash', prUrl], cwd, 15000, githubToken);
     console.log(`[auto-merge] Enabled GitHub native auto-merge for ${prUrl}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1166,6 +1265,14 @@ async function commitPushAndCreatePR(
 ): Promise<CommitPushPrResult> {
   const d = getDeps();
 
+  // Resolve the session owner's GitHub token ONCE per invocation. Threaded
+  // into every `git push` / `gh` spawn so the server-side push authenticates
+  // as the human owner of the repo — closes the
+  // "Authentication failed for 'https://github.com/<user>/repo.git/'" failure
+  // mode for autonomous-dispatch sessions whose spawn env was deliberately
+  // stripped of GitHub credentials.
+  const githubToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
+
   const changes = await checkWorktreeChanges(effectiveCwd);
 
   if (!changes.hasUncommitted && !changes.hasUnpushed) {
@@ -1177,6 +1284,7 @@ async function commitPushAndCreatePR(
         ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
         effectiveCwd,
         15000,
+        githubToken,
       );
       const existingPrUrl = prOut.trim();
       if (existingPrUrl) {
@@ -1192,6 +1300,7 @@ async function commitPushAndCreatePR(
           project,
           options?.autoMergeOverride,
           effectiveCwd,
+          githubToken,
         ).catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
@@ -1278,6 +1387,7 @@ async function commitPushAndCreatePR(
           cwd: effectiveCwd,
           timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS,
           onChunk: prLog,
+          githubToken,
         });
       } catch (spawnErr: unknown) {
         const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
@@ -1301,6 +1411,7 @@ async function commitPushAndCreatePR(
         cwd: effectiveCwd,
         timeoutMs: 300_000,
         onChunk: prLog,
+        githubToken,
       });
     } catch (pushErr: unknown) {
       const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
@@ -1444,12 +1555,16 @@ async function commitPushAndCreatePR(
 
       // Fire-and-forget: enable GitHub native auto-merge if the project or
       // per-PR override requests it. Failure here never blocks PR creation.
-      enableAutoMergeIfNeeded(prUrl, project, options?.autoMergeOverride, effectiveCwd).catch(
-        (err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
-        },
-      );
+      enableAutoMergeIfNeeded(
+        prUrl,
+        project,
+        options?.autoMergeOverride,
+        effectiveCwd,
+        githubToken,
+      ).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
+      });
     };
 
     // ── PR base-branch override ─────────────────────────────────────
@@ -1543,6 +1658,7 @@ async function commitPushAndCreatePR(
         effectiveCwd,
         15000,
         prLog,
+        githubToken,
       );
       const url = preCheckOut.trim();
       if (url && /^https:\/\/github\.com\/[^\s]+\/pull\/\d+/.test(url)) {
@@ -1578,7 +1694,13 @@ async function commitPushAndCreatePR(
         createArgs.push('--reviewer', validReviewer);
       }
       prLog('\n$ gh pr create …\n');
-      const { stdout: prOutput } = await runGhStreamed(createArgs, effectiveCwd, 30000, prLog);
+      const { stdout: prOutput } = await runGhStreamed(
+        createArgs,
+        effectiveCwd,
+        30000,
+        prLog,
+        githubToken,
+      );
       console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
 
       const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
@@ -1611,6 +1733,7 @@ async function commitPushAndCreatePR(
           effectiveCwd,
           15000,
           prLog,
+          githubToken,
         );
         const discoveredUrl = prDiscovery.trim();
         if (discoveredUrl) {
@@ -1786,11 +1909,13 @@ export async function autoCommitAndPR(
 
       // Does an open PR already exist for this branch?
       let existingPrUrl: string | null = null;
+      const adHocToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
       try {
         const { stdout: prOut } = await runGh(
           ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
           effectiveCwd,
           15000,
+          adHocToken,
         );
         existingPrUrl = prOut.trim() || null;
       } catch {
