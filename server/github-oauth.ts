@@ -28,9 +28,25 @@ export interface GitHubOAuthCredentials {
 
 export interface GitHubTokenResponse {
   access_token: string;
-  expires_in: number; // seconds; typically 28800 (8h)
-  refresh_token: string;
-  refresh_token_expires_in: number; // seconds; typically 15724800 (6mo)
+  /**
+   * Seconds until the access token expires. Typically 28800 (8h) for
+   * GitHub Apps with "Expire user authorization tokens" enabled.
+   *
+   * Optional because **classic OAuth Apps** (registered at
+   * `/settings/applications/new`) and **GitHub Apps without expiring
+   * user tokens** return only `access_token`/`scope`/`token_type` —
+   * the token never expires and there is no refresh flow at all.
+   */
+  expires_in?: number;
+  /**
+   * Optional for the same reason as `expires_in`. When absent, the
+   * caller must persist `null` for both `refreshToken` and
+   * `refreshExpiresAt` and skip the refresh path forever (the user
+   * will need to reconnect manually if the token is revoked).
+   */
+  refresh_token?: string;
+  /** Optional; mirrors `refresh_token`. Typically 15724800 (6mo). */
+  refresh_token_expires_in?: number;
   token_type: 'bearer';
   scope: string;
 }
@@ -111,11 +127,27 @@ export async function exchangeCodeForToken(opts: {
   if (json.error) {
     throw new Error(`GitHub OAuth error: ${json.error_description || json.error}`);
   }
-  if (!json.access_token || !json.refresh_token) {
-    throw new Error('GitHub OAuth response missing access_token or refresh_token');
+  // `refresh_token` is OPTIONAL — classic OAuth Apps and GitHub Apps
+  // without "Expire user authorization tokens" return only the access
+  // token. Only the access token itself is required.
+  if (!json.access_token) {
+    throw new Error('GitHub OAuth response missing access_token');
   }
   return json as GitHubTokenResponse;
 }
+
+/**
+ * The refresh-token grant always returns the full quartet of fields —
+ * by definition, the OAuth client must have expiring tokens enabled
+ * for a refresh_token to have been issued in the first place. We expose
+ * a narrowed type so callers don't need to defensively handle undefined
+ * `expires_in` / `refresh_token_expires_in` in the rotation path.
+ */
+export type GitHubRefreshedTokens = GitHubTokenResponse & {
+  expires_in: number;
+  refresh_token: string;
+  refresh_token_expires_in: number;
+};
 
 /**
  * Refresh an expiring/expired user access token using its paired
@@ -128,7 +160,7 @@ export async function refreshUserToken(opts: {
   credentials: GitHubOAuthCredentials;
   refreshToken: string;
   fetchImpl?: typeof fetch;
-}): Promise<GitHubTokenResponse> {
+}): Promise<GitHubRefreshedTokens> {
   const f = opts.fetchImpl ?? fetch;
   const body = new URLSearchParams({
     client_id: opts.credentials.clientId,
@@ -155,10 +187,15 @@ export async function refreshUserToken(opts: {
   if (json.error) {
     throw new Error(`GitHub OAuth refresh error: ${json.error_description || json.error}`);
   }
-  if (!json.access_token || !json.refresh_token) {
+  if (
+    !json.access_token ||
+    !json.refresh_token ||
+    typeof json.expires_in !== 'number' ||
+    typeof json.refresh_token_expires_in !== 'number'
+  ) {
     throw new Error('GitHub OAuth refresh response missing tokens');
   }
-  return json as GitHubTokenResponse;
+  return json as GitHubRefreshedTokens;
 }
 
 /**

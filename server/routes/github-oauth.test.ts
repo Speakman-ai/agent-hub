@@ -274,6 +274,44 @@ describe('GET /api/auth/github/callback', () => {
     expect(stored?.refreshToken).toBe('ghr_abc');
   });
 
+  // Regression: classic OAuth Apps (registered at /settings/applications/new)
+  // and GitHub Apps without "Expire user authorization tokens" return only
+  // `access_token`/`scope`/`token_type`. Before the fix, the callback would
+  // crash on `tokens.refresh_token_expires_in * 1000` → "Invalid Date" and
+  // the user would land on the "GitHub OAuth response missing access_token
+  // or refresh_token" error page. Now the connection persists with null
+  // expiry / null refresh columns.
+  it('persists null expiry and null refresh for a non-expiring OAuth client', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const state = signJwt(user.id, JWT_SECRET, {
+      claims: { purpose: 'github-oauth' },
+    });
+    mockExchange.mockResolvedValueOnce({
+      access_token: 'gho_no_expiry',
+      token_type: 'bearer',
+      scope: 'repo',
+      // No expires_in, no refresh_token, no refresh_token_expires_in.
+    });
+    mockFetchUser.mockResolvedValueOnce({
+      id: 99,
+      login: 'speakmanra',
+      name: null,
+      avatar_url: null,
+      email: null,
+    });
+
+    const app = makeApp(buildDeps());
+    const res = await request(app).get(`/api/auth/github/callback?code=real-code&state=${state}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Connected as @speakmanra');
+
+    const stored = getGithubConnection(user.id);
+    expect(stored?.accessToken).toBe('gho_no_expiry');
+    expect(stored?.tokenExpiresAt).toBeNull();
+    expect(stored?.refreshToken).toBeNull();
+    expect(stored?.refreshExpiresAt).toBeNull();
+  });
+
   it('rejects returnTo that is an absolute URL (open-redirect guard)', async () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     // Even if somehow minted, an absolute returnTo should be ignored by
@@ -493,7 +531,8 @@ describe('POST /api/auth/github/connect-token', () => {
     expect(stored?.accessToken).toBe('ghp_realPAT');
     // PATs use a far-future expiry — must be > now + a year so the active
     // token resolver returns it directly without trying to refresh.
-    expect(Date.parse(stored!.tokenExpiresAt) - Date.now()).toBeGreaterThan(
+    expect(stored!.tokenExpiresAt).not.toBeNull();
+    expect(Date.parse(stored!.tokenExpiresAt!) - Date.now()).toBeGreaterThan(
       365 * 24 * 60 * 60 * 1000,
     );
   });

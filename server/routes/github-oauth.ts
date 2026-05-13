@@ -287,13 +287,26 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
       });
       const userInfo = await fetchUserInfo({ accessToken: tokens.access_token });
       const nowMs = Date.now();
+      // `expires_in` / `refresh_token` are optional in the OAuth response —
+      // see `GitHubTokenResponse` for why. Persist nulls when missing so the
+      // store knows this connection has no refresh path (classic OAuth Apps
+      // and GitHub Apps without "Expire user authorization tokens" enabled).
+      const tokenExpiresAt =
+        typeof tokens.expires_in === 'number' && tokens.expires_in > 0
+          ? new Date(nowMs + tokens.expires_in * 1000).toISOString()
+          : null;
+      const refreshToken = tokens.refresh_token || null;
+      const refreshExpiresAt =
+        refreshToken && typeof tokens.refresh_token_expires_in === 'number'
+          ? new Date(nowMs + tokens.refresh_token_expires_in * 1000).toISOString()
+          : null;
       upsertGithubConnection({
         userId: callerUserId,
         login: userInfo.login,
         accessToken: tokens.access_token,
-        tokenExpiresAt: new Date(nowMs + tokens.expires_in * 1000).toISOString(),
-        refreshToken: tokens.refresh_token,
-        refreshExpiresAt: new Date(nowMs + tokens.refresh_token_expires_in * 1000).toISOString(),
+        tokenExpiresAt,
+        refreshToken,
+        refreshExpiresAt,
       });
 
       // Defense-in-depth: re-validate returnTo at render time even though
