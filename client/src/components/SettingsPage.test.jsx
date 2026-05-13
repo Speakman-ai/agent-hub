@@ -34,6 +34,21 @@ vi.mock('../utils/api.js', () => ({
   },
 }));
 
+// Role gating helpers — `hasRole` is read at render-time to filter the
+// settings sidebar. Default to Admin so the existing tests (which don't
+// care about the role) keep seeing every tab; individual role-gating
+// tests below override via `vi.mocked(hasRole).mockReturnValueOnce(...)`.
+vi.mock('../utils/auth.js', async () => {
+  const actual = await vi.importActual('../utils/auth.js');
+  return {
+    ...actual,
+    hasRole: vi.fn(() => true),
+    getUserRole: vi.fn(() => 'Admin'),
+    // Default to false (cloud/JWT mode); local-mode tests override below.
+    isLocalMode: vi.fn(() => false),
+  };
+});
+
 // `OrganizationsSection` calls into `utils/orgs.js` at render time.
 // Mock the surface it touches so the focused tests below don't depend on
 // localStorage / Electron file storage / live server fetches.
@@ -204,17 +219,146 @@ describe('SettingsPage — tab labels', () => {
     expect(await findByRole('button', { name: /^Preview$/ })).toBeTruthy();
   });
 
-  it('labels the combined AI CLI auth tab "AI Authentication"', async () => {
-    // Bug report: the combined Claude/Gemini/Cursor/Codex auth tab was
-    // simply labeled "Auth", which is too terse and ambiguous. It should
-    // read "AI Authentication" so users can find CLI sign-in flows.
-    const { findByText, queryByRole } = render(
+  it('labels the host-wide CLI auth tab "Global AI Authentication"', async () => {
+    // The host-wide tab manages credentials in ~/.agent-hub/data/config.json
+    // and is rendered side-by-side with the per-user Account page. Calling
+    // it "Global AI Authentication" makes its scope obvious so the per-user
+    // vs. host-wide split stops confusing users.
+    const { findByText, queryByRole, queryByText } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    expect(await findByText('AI Authentication')).toBeTruthy();
-    // Regression guard: don't accidentally render two tabs labeled just "Auth".
+    expect(await findByText('Global AI Authentication')).toBeTruthy();
+    // The old label is gone — guard against accidental regression.
+    expect(queryByText('AI Authentication')).toBeNull();
+    // Regression guard: don't accidentally render a tab labeled just "Auth".
     expect(queryByRole('button', { name: /^Auth$/ })).toBeNull();
+  });
+});
+
+/**
+ * Role-gated visibility of the host-wide "Global AI Authentication" tab.
+ *
+ * The tab writes to `~/.agent-hub/data/config.json` — a host-wide credential
+ * file — so only Admin/Owner users can act on it. Regular users manage their
+ * own per-user CLI creds on Settings → Account. Hiding the tab from non-Admins
+ * eliminates the long-standing "two places to enter auth" confusion.
+ *
+ * Server-side enforcement of the underlying permissions is unchanged; this
+ * is purely a UX gate, so we only need to verify the client-side filter.
+ */
+describe('SettingsPage — Global AI Authentication tab role gating', () => {
+  beforeEach(async () => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/bin/claude',
+      cursorBin: '/bin/cursor',
+      defaultModel: 'claude-opus-4-7',
+      defaultCwd: '/tmp',
+      port: 3051,
+      publicUrl: '',
+      githubApp: null,
+      _file: {},
+    });
+    api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+    });
+    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    // Reset to default (Admin sees everything, not local mode) before each
+    // test — individual tests override below.
+    vi.mocked(hasRole).mockImplementation(() => true);
+    vi.mocked(isLocalMode).mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('renders the tab for Admin/Owner users', async () => {
+    const { hasRole } = await import('../utils/auth.js');
+    vi.mocked(hasRole).mockImplementation((min) => min === 'Admin');
+
+    const { findByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+
+    expect(await findByText('Global AI Authentication')).toBeTruthy();
+  });
+
+  it('hides the tab from non-Admin users', async () => {
+    const { hasRole } = await import('../utils/auth.js');
+    // Plain User role — hasRole('Admin') returns false.
+    vi.mocked(hasRole).mockImplementation(() => false);
+
+    const { queryByText, findAllByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+
+    // Wait for the page to settle — `General` is in both the desktop
+    // sidebar and the mobile drawer, so we wait for the multi-match form.
+    await findAllByText('General');
+
+    expect(queryByText('Global AI Authentication')).toBeNull();
+    // And the old name doesn't sneak back either.
+    expect(queryByText('AI Authentication')).toBeNull();
+  });
+
+  it('redirects a non-Admin who deep-links to the gated tab back to Account', async () => {
+    const { hasRole } = await import('../utils/auth.js');
+    vi.mocked(hasRole).mockImplementation(() => false);
+
+    // initialTab = 'claude-auth' simulates a saved bookmark / shared URL.
+    // The redirect effect should push them to 'account' before render.
+    const { queryByText, getAllByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="claude-auth" />,
+    );
+
+    // `getAllByText` throws if not found — this assertion actually fails
+    // when the redirect doesn't fire (unlike a Promise-wrapped findAllByText).
+    await waitFor(() => {
+      expect(getAllByText('Account').length).toBeGreaterThan(0);
+    });
+    // The gated panel never rendered.
+    expect(queryByText('Global AI Authentication')).toBeNull();
+  });
+
+  it('does not render the host-wide auth panel for non-Admin even if tab state somehow lands on claude-auth', async () => {
+    // Belt-and-suspenders: the role check on the render switch should
+    // also short-circuit, so even a brief tick where `tab === 'claude-auth'`
+    // before the redirect effect runs won't expose the host-wide panel.
+    const { hasRole } = await import('../utils/auth.js');
+    vi.mocked(hasRole).mockImplementation(() => false);
+
+    const { queryByText, findAllByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="claude-auth" />,
+    );
+
+    // Wait for first render to flush — `General` is in both the desktop
+    // sidebar and the mobile drawer.
+    await findAllByText('General');
+    // The combined-host-auth panel is wrapped in `space-y-10` with the
+    // ClaudeAuth/Gemini/Cursor/Codex sections. The Cursor section's
+    // distinctive heading is a reliable signal that the panel rendered.
+    expect(queryByText('Cursor Agent Authentication')).toBeNull();
+  });
+
+  it('shows the tab in local-bundled mode (no JWT / activeOrgIsLocal=true)', async () => {
+    // Regression guard for Electron / single-user self-host: when the
+    // server returns activeOrgIsLocal=true it never issues a JWT, so
+    // hasRole() returns false. The tab must still appear because local-mode
+    // users own the host and need to configure claudeBin / cursorBin.
+    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    vi.mocked(hasRole).mockImplementation(() => false); // no JWT → no role
+    vi.mocked(isLocalMode).mockImplementation(() => true); // local-mode
+
+    const { findByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+
+    expect(await findByText('Global AI Authentication')).toBeTruthy();
   });
 });
 

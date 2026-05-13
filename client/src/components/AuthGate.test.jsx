@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 vi.mock('../utils/auth.js', () => ({
   getAuthStatus: vi.fn(),
   isAuthenticated: vi.fn(),
+  setActiveOrgIsLocal: vi.fn(),
 }));
 
 vi.mock('../utils/connection.js', () => ({
