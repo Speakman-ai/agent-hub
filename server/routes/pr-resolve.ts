@@ -114,6 +114,31 @@ export function buildPrContextHeader(
     lines.push(`- mergeable: ${pr.mergeable ?? 'unknown'} (state: ${pr.mergeable_state})`);
   }
 
+  // Required first step. Resolve sessions spawn into a fresh worktree branch
+  // (`agent-hub/<agent-id>/session-<id>`), NOT the PR's head branch. If the
+  // agent commits on the worktree branch and the session ends, `autoCommitAndPR`
+  // runs `gh pr view <branch>` against the worktree branch, finds no PR, and
+  // falls through to a `changes_ready` broadcast — the commits stay local and
+  // the PR is never updated. Checking out the PR head branch first guarantees
+  // that:
+  //   1. Subsequent commits land on the same branch GitHub's PR is tracking.
+  //   2. The session-end auto-commit pipeline finds the open PR via the
+  //      pre-check in `commitPushAndCreatePR` and pushes the fix.
+  // See server/auto-git.ts → autoCommitAndPR (`!isAutonomousCard` branch) and
+  // the resolve-comment regression test in server/auto-git.test.ts.
+  const prNumber = pr.number;
+  if (typeof prNumber === 'number' && Number.isFinite(prNumber) && prNumber > 0) {
+    lines.push('');
+    lines.push(`## Setup — required first step`);
+    lines.push('');
+    lines.push(
+      `Run \`gh pr checkout ${prNumber}\` in this worktree before making any code changes.`,
+    );
+    lines.push(
+      "This positions your local checkout on the PR's head branch so commits append to the existing PR. Without this step, your commits land on a fresh session branch and will not be pushed to the PR when the session ends.",
+    );
+  }
+
   const failingChecks = checks.filter((c) => {
     const conc = typeof c.conclusion === 'string' ? (c.conclusion as string).toLowerCase() : null;
     return conc !== null && CI_FAIL_CONCLUSIONS.has(conc);
