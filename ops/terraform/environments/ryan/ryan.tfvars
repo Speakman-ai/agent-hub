@@ -54,3 +54,11 @@ ci_ssm_deploy_instance_id           = "i-066e44ff85ec24d8e"
 #   sudo cat /home/agenthub/.agent-hub/data/initial-credentials.txt
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
+
+# Compute / storage sizing — bumped 2026-05-13.
+# - 4 vCPU / 16 GB for sustained workloads (Postgres restore, ng serve)
+# - 200 GB root for surveytracker stack + Hub artifacts on a single disk.
+#   200 GB was first applied via `aws ec2 modify-volume` on 2026-05-13 to
+#   recover from the disk-full incident; codifying here reconciles the drift.
+instance_type    = "m7i-flex.xlarge"
+root_volume_size = 200
