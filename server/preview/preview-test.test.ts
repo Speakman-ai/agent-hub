@@ -160,6 +160,29 @@ describe('runPreviewTest — validation', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/cwd/i);
   });
+
+  it('returns ok:false with a clear message when the spawn cwd does not exist', async () => {
+    // Regression: Node reports a missing-cwd failure as `spawn sh
+    // ENOENT`, attributing the error to the binary name instead of the
+    // missing directory. The pre-flight existence check turns that
+    // cryptic error into an actionable message before we ever spawn.
+    const harness = makeSpawn();
+    const result = await runPreviewTest({
+      project: makeProject(), // cwd: '/repo' — does NOT exist on disk
+      uploadsDir: '/tmp/uploads',
+      spawn: harness.spawn,
+      cwdExists: () => false,
+      allocatePort: async () => 4123,
+      kill: harness.kill,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ports.allocated).toBe(4123); // allocation happens before the check
+    expect(result.error).toMatch(/Preview cwd does not exist: \/repo/);
+    expect(result.error).toMatch(/prEnv\.preview\.processes\[\]\.cwd/);
+    // No spawn should have happened — the check bails before that.
+    expect(harness.calls).toHaveLength(0);
+    expect(result.logTail).toEqual([]);
+  });
 });
 
 describe('runPreviewTest — happy path', () => {
@@ -173,6 +196,11 @@ describe('runPreviewTest — happy path', () => {
 
       const promise = runPreviewTest({
         project: makeProject(),
+        // The default project cwd (`/repo`) doesn't exist on the test
+        // filesystem — the spawn seam keeps these tests hermetic. Bypass
+        // the production cwd existence check so we don't bail before
+        // exercising the hot path.
+        cwdExists: () => true,
         uploadsDir: tmp,
         publicUrl: 'https://hub.example.com',
         spawn: (cmd, args, options) => {
@@ -233,7 +261,10 @@ describe('runPreviewTest — happy path', () => {
       );
       expect(harness.calls[0]?.port).toBe('4200');
       expect(harness.calls[0]?.args).toEqual(['-c', 'npm run dev']);
-      expect(harness.calls[0]?.cwd).toBe('/repo/client');
+      // Default cwd is now the project root, not <cwd>/client. Projects
+      // that actually live in a subdirectory must set
+      // prEnv.preview.processes[].cwd explicitly.
+      expect(harness.calls[0]?.cwd).toBe('/repo');
       expect(screenshots).toHaveLength(1);
       expect(screenshots[0].url).toBe('http://localhost:4200/');
       // Teardown: SIGTERM sent to the spawned child
@@ -254,6 +285,11 @@ describe('runPreviewTest — happy path', () => {
 
       const promise = runPreviewTest({
         project: makeProject(),
+        // The default project cwd (`/repo`) doesn't exist on the test
+        // filesystem — the spawn seam keeps these tests hermetic. Bypass
+        // the production cwd existence check so we don't bail before
+        // exercising the hot path.
+        cwdExists: () => true,
         uploadsDir: tmp,
         spawn: harness.spawn,
         fetch,
@@ -285,6 +321,8 @@ describe('runPreviewTest — failure modes', () => {
     };
     const result = await runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: failingSpawn,
       allocatePort: async () => 4300,
@@ -302,6 +340,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: harness.spawn,
       fetch,
@@ -330,6 +370,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: harness.spawn,
       fetch,
@@ -351,6 +393,8 @@ describe('runPreviewTest — failure modes', () => {
   it('surfaces port-allocation failure when no port is free', async () => {
     const result = await runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       allocatePort: async () => {
         throw new Error('Preview port pool exhausted');
@@ -369,6 +413,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: harness.spawn,
       fetch,
@@ -422,6 +468,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: harness.spawn,
       fetch,
@@ -473,6 +521,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: harness.spawn,
       fetch,
@@ -515,6 +565,8 @@ describe('runPreviewTest — failure modes', () => {
 
     const promise = runPreviewTest({
       project: makeProject(),
+      // Bypass the production cwd existence check — see note in the tmp tests above.
+      cwdExists: () => true,
       uploadsDir: '/tmp/uploads',
       spawn: (cmd, args, options) => {
         const child = harness.spawn(cmd, args, options);
@@ -562,6 +614,11 @@ describe('runPreviewTest — failure modes', () => {
 
       const promise = runPreviewTest({
         project: makeProject(),
+        // The default project cwd (`/repo`) doesn't exist on the test
+        // filesystem — the spawn seam keeps these tests hermetic. Bypass
+        // the production cwd existence check so we don't bail before
+        // exercising the hot path.
+        cwdExists: () => true,
         uploadsDir: tmp,
         spawn: harness.spawn,
         fetch,
@@ -597,6 +654,11 @@ describe('runPreviewTest — directory side-effects', () => {
 
       const promise = runPreviewTest({
         project: makeProject(),
+        // The default project cwd (`/repo`) doesn't exist on the test
+        // filesystem — the spawn seam keeps these tests hermetic. Bypass
+        // the production cwd existence check so we don't bail before
+        // exercising the hot path.
+        cwdExists: () => true,
         uploadsDir: tmp,
         spawn: harness.spawn,
         fetch,

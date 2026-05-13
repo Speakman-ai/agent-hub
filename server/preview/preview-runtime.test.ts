@@ -223,7 +223,9 @@ describe('PreviewRuntime — startPreview', () => {
     expect(harness.calls[0].command).toBe('sh');
     expect(harness.calls[0].args).toEqual(['-c', 'npm run preview']);
     expect(harness.calls[0].port).toBe(String(result.port));
-    expect(harness.calls[0].cwd).toBe('/wt/sess-1/client');
+    // The single-process fallback now defaults to the worktree root
+    // (DEFAULT_PREVIEW_CWD = '.'), not <wt>/client.
+    expect(harness.calls[0].cwd).toBe('/wt/sess-1');
 
     const row = runtime.getById(result.previewId);
     expect(row).not.toBeNull();
@@ -473,7 +475,7 @@ describe('PreviewRuntime — startPreview', () => {
     await expect(runtime.startPreview('s-2', makeProject(), '/wt')).rejects.toThrow(/exhausted/i);
   });
 
-  it('falls back to `npm run dev` and `<wt>/client` when the project has no preview config', async () => {
+  it('falls back to `npm run dev` and the worktree root when the project has no preview config', async () => {
     const db = freshDb();
     const harness = makeSpawn();
     const { fetch } = makeFetch({ alwaysFail: true });
@@ -489,7 +491,8 @@ describe('PreviewRuntime — startPreview', () => {
     const bareProject = { id: 'p', name: 'p', cwd: '/r', ahw: '/a' } as Project;
     await runtime.startPreview('s', bareProject, '/wt');
     expect(harness.calls[0].args).toEqual(['-c', 'npm run dev']);
-    expect(harness.calls[0].cwd).toBe('/wt/client');
+    // Single-process fallback now lands at the worktree root, not <wt>/client.
+    expect(harness.calls[0].cwd).toBe('/wt');
   });
 });
 

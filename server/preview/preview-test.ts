@@ -13,8 +13,13 @@
  *      `net.createServer().listen(p)` probe — we don't touch the
  *      `worktree_previews` table because this run is not a session.
  *   3. `spawn('sh', ['-c', startScript])` with `PORT=<port>` inside
- *      `project.cwd/client` (matching `DEFAULT_PREVIEW_CWD` in
+ *      `project.cwd` (matching `DEFAULT_PREVIEW_CWD = '.'` in
  *      `preview-runtime.ts`), in its own process group (`detached: true`).
+ *      The cwd is verified with `existsSync` before spawn so a misconfigured
+ *      project (legacy `client/` subdir, typo'd `prEnv.preview.processes[].cwd`)
+ *      reports a clear "Preview cwd <path> does not exist" instead of Node's
+ *      misleading `spawn sh ENOENT` (Node attributes a missing-cwd error to
+ *      the binary name, not the directory).
  *   4. Poll `http://localhost:<port><healthPath>` every 500 ms for a 2xx
  *      response. Default deadline 120 s (mirrors `PreviewRuntime`).
  *      ENOENT / EACCES (async spawn errors) and premature child exits
@@ -50,7 +55,7 @@
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { spawn as nodeSpawn } from 'child_process';
 import { createServer as createNetServer } from 'net';
-import { mkdirSync } from 'fs';
+import { existsSync, mkdirSync, statSync } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
@@ -112,6 +117,13 @@ export interface PreviewTestDeps {
   allocatePort?: (min: number, max: number) => Promise<number>;
   /** Override the kill seam — production uses `process.kill`. */
   kill?: (target: number, signal: NodeJS.Signals) => void;
+  /**
+   * Override the cwd-existence check seam. Returns `true` if the spawn
+   * cwd is a usable directory. Production wires this to
+   * `existsSync(p) && statSync(p).isDirectory()`; tests inject a fake so
+   * they don't need real filesystem fixtures for hot paths.
+   */
+  cwdExists?: (cwd: string) => boolean;
   /** Override the timeout in ms. Defaults to 120s (matches `PreviewRuntime`). */
   healthTimeoutMs?: number;
   /** Override the polling cadence. Defaults to 500ms. */
@@ -128,8 +140,15 @@ export interface PreviewTestDeps {
 // fast, so the bump only affects genuinely-slow boots, not config errors.
 const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
-/** `<cwd>/client` matches `DEFAULT_PREVIEW_CWD` in preview-runtime.ts. */
-const DEFAULT_PREVIEW_CWD = 'client';
+/**
+ * `'.'` resolves to `project.cwd` (project root) via `path.join`. Matches
+ * `DEFAULT_PREVIEW_CWD` in `preview-runtime.ts` and the corresponding
+ * `resolveProcessCwd` behaviour, so a project that doesn't override
+ * `prEnv.preview.processes[].cwd` boots from its repo root. Projects that
+ * actually live in a subdirectory (`client/`, `web/`, `apps/foo/`) should
+ * set `prEnv.preview.processes[].cwd` explicitly.
+ */
+const DEFAULT_PREVIEW_CWD = '.';
 const DEFAULT_START_SCRIPT = 'npm run dev';
 const SIGKILL_GRACE_MS = 3_000;
 
@@ -201,6 +220,31 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
   const healthIntervalMs = deps.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
 
   const previewCwd = path.join(cwd, DEFAULT_PREVIEW_CWD);
+
+  // Pre-flight: verify the spawn cwd exists. Node reports a missing-cwd
+  // failure as `spawn sh ENOENT` (it attributes the error to the binary
+  // name, not the directory), which is useless to the user. Catching it
+  // here lets us surface a clear, actionable message. The async-error
+  // short-circuit below would still fire ~10ms later if we skipped this,
+  // but the message would be cryptic.
+  const cwdExistsFn = deps.cwdExists ?? defaultCwdExists;
+  let cwdMissing: string | null = null;
+  try {
+    if (!cwdExistsFn(previewCwd)) cwdMissing = previewCwd;
+  } catch {
+    cwdMissing = previewCwd;
+  }
+  if (cwdMissing) {
+    return {
+      ok: false,
+      ports,
+      durationMs: clock.nowMs() - start,
+      error:
+        `Preview cwd does not exist: ${cwdMissing}. ` +
+        `Set prEnv.preview.processes[].cwd in project settings, or remove the override to boot from the project root.`,
+      logTail: [],
+    };
+  }
 
   let child: ChildProcess | null = null;
   let spawnError: Error | null = null;
@@ -443,6 +487,20 @@ async function defaultAllocatePort(min: number, max: number): Promise<number> {
     if (ok) return p;
   }
   throw new Error(`Preview port pool exhausted: all ports in [${min}, ${max}] are in use`);
+}
+
+/**
+ * Production cwd-existence check. Treats any non-directory entry
+ * (regular file, symlink dangling, EACCES on stat) as missing — the
+ * spawn would fail anyway, and the user benefits from the same
+ * actionable error message in all those cases.
+ */
+function defaultCwdExists(cwd: string): boolean {
+  try {
+    return existsSync(cwd) && statSync(cwd).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Wraps `fetch` and reports `ok`/`status` even on non-2xx replies. */
