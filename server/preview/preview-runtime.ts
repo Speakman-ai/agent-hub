@@ -251,7 +251,14 @@ export interface PreviewRuntimeDeps {
 const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
 const DEFAULT_LOG_TAIL_LINES = 50;
-const DEFAULT_PREVIEW_CWD = 'client';
+/**
+ * Default cwd for the single-process fallback. `'.'` lands at the
+ * worktree root via `resolveProcessCwd` (see end of file). Projects that
+ * actually boot from a subdirectory must set `prEnv.preview.processes[].cwd`
+ * explicitly — hardcoding `'client'` here was an Agent-Hub-ism that broke
+ * the Test-preview button for every other repo layout.
+ */
+const DEFAULT_PREVIEW_CWD = '.';
 const DEFAULT_START_SCRIPT = 'npm run dev';
 const SINGLE_PROCESS_NAME = 'app';
 
