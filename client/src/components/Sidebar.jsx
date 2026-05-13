@@ -26,6 +26,7 @@ import {
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
+import { isElectron } from '../utils/isElectron.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import {
   inferPrUrlFromSessionTitle,
@@ -175,10 +176,17 @@ export default function Sidebar({
 
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
-      {/* Header — Org Switcher */}
-      <div className="p-4 border-b border-gray-800">
-        <OrgSwitcher onNavigateSettings={() => onNavigate('settings:orgs')} />
-      </div>
+      {/* Header — Org Switcher (Electron-only).
+          The web app is locked to a single Hub server, so the
+          multi-org / server-switcher concept is meaningless in a
+          browser context. Only Electron — which can hop between
+          Hub servers via its file-backed remote-orgs store — needs
+          the switcher. */}
+      {isElectron() && (
+        <div className="p-4 border-b border-gray-800">
+          <OrgSwitcher onNavigateSettings={() => onNavigate('settings:orgs')} />
+        </div>
+      )}
 
       {/* Projects & Agents */}
       <div className="flex-1 overflow-y-auto min-h-0 relative">
@@ -1127,39 +1135,63 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
-        {/* Version display */}
-        <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            <span>v{clientVersion}</span>
-            {footerServerVersion && footerServerVersion !== clientVersion && (
-              <span
-                className="inline-flex items-center gap-1 text-amber-400"
-                title={`Client v${clientVersion} · Server v${footerServerVersion}`}
-              >
-                <AlertTriangle size={12} />
-                <span>server v{footerServerVersion}</span>
-              </span>
-            )}
-          </div>
-          {(clientGitHash || footerServerGitHash) && (
-            <div
-              className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
-              title={
-                footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash
-                  ? `Client ${clientGitHash} · Server ${footerServerGitHash} (mismatch — rebuild/redeploy)`
-                  : `Build ${clientGitHash || footerServerGitHash}`
-              }
-            >
-              <span>{clientGitHash || '—'}</span>
-              {footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash && (
-                <span className="inline-flex items-center gap-1 text-amber-400">
-                  <AlertTriangle size={10} />
-                  <span>server {footerServerGitHash}</span>
+        {/* Version display.
+            In a browser, the React bundle is served by the same Hub that
+            answers /api/health — client and server versions are always
+            identical, so showing both is noise. Render ONLY the server
+            version there. In Electron, the desktop binary version can
+            drift from the server it's connected to, so we keep the
+            client-primary line plus a mismatch warning chip. */}
+        {isElectron() ? (
+          <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <span>v{clientVersion}</span>
+              {footerServerVersion && footerServerVersion !== clientVersion && (
+                <span
+                  className="inline-flex items-center gap-1 text-amber-400"
+                  title={`Client v${clientVersion} · Server v${footerServerVersion}`}
+                >
+                  <AlertTriangle size={12} />
+                  <span>server v{footerServerVersion}</span>
                 </span>
               )}
             </div>
-          )}
-        </div>
+            {(clientGitHash || footerServerGitHash) && (
+              <div
+                className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
+                title={
+                  footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash
+                    ? `Client ${clientGitHash} · Server ${footerServerGitHash} (mismatch — rebuild/redeploy)`
+                    : `Build ${clientGitHash || footerServerGitHash}`
+                }
+              >
+                <span>{clientGitHash || '—'}</span>
+                {footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash && (
+                  <span className="inline-flex items-center gap-1 text-amber-400">
+                    <AlertTriangle size={10} />
+                    <span>server {footerServerGitHash}</span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
+            {footerServerVersion && (
+              <div className="flex items-center gap-1.5">
+                <span>v{footerServerVersion}</span>
+              </div>
+            )}
+            {footerServerGitHash && (
+              <div
+                className="text-[10px] text-gray-600 font-mono"
+                title={`Build ${footerServerGitHash}`}
+              >
+                {footerServerGitHash}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

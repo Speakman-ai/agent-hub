@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import Sidebar from './Sidebar.jsx';
 
 // OrgSwitcher hits the server on mount; stub it so we can render Sidebar standalone.
@@ -358,5 +358,78 @@ describe('Sidebar — archived sessions', () => {
     fireEvent.click(screen.getByText(/Archived \(1\)/));
     const btn = screen.getByRole('button', { name: /Restore/i });
     expect(btn).toBeDisabled();
+  });
+});
+
+describe('Sidebar — version footer (server-only in browser)', () => {
+  // /api/health is mocked in the global beforeEach to return
+  //   { version: 'test', gitHash: 'abc' }
+  // In Electron the footer shows v{clientVersion} as primary with a
+  // server-mismatch chip; in a plain browser the client and server are
+  // the same artifact, so only the server version renders.
+
+  it('shows ONLY the server version in a plain browser (no client v-prefix, no mismatch chip)', async () => {
+    render(<Sidebar {...buildProps()} />);
+    // Wait for the /api/health useEffect to land.
+    const serverVersion = await screen.findByText('vtest');
+    expect(serverVersion).toBeInTheDocument();
+    // The mismatch chip is the only other place the literal "server v…"
+    // appears — it MUST NOT render in the browser path.
+    expect(screen.queryByText(/server v/)).not.toBeInTheDocument();
+  });
+
+  it('renders the build hash (server hash) as plain text in the browser', async () => {
+    render(<Sidebar {...buildProps()} />);
+    await waitFor(() => {
+      expect(screen.getByText('abc')).toBeInTheDocument();
+    });
+    // No mismatch-style "server abc" chip should appear.
+    expect(screen.queryByText(/server abc/)).not.toBeInTheDocument();
+  });
+
+  it('in Electron, keeps the client-primary line with the server-mismatch chip', async () => {
+    const origElectronAPI = globalThis.window.electronAPI;
+    globalThis.window.electronAPI = { isElectron: true };
+    try {
+      render(<Sidebar {...buildProps()} />);
+      // useClientBuildVersion() returns 'unknown' in the test bundle (no
+      // VITE_APP_VERSION baked in), so the primary line reads "vunknown".
+      // The server returned "test" via the mocked fetch, so the chip
+      // appears because the two values differ.
+      await screen.findByText('vunknown');
+      await screen.findByText(/server vtest/);
+    } finally {
+      if (origElectronAPI === undefined) {
+        delete globalThis.window.electronAPI;
+      } else {
+        globalThis.window.electronAPI = origElectronAPI;
+      }
+    }
+  });
+});
+
+describe('Sidebar — org switcher gating (Electron-only)', () => {
+  // The web app is locked to a single Hub server, so the org switcher
+  // (which manages remote Hub-server bookmarks) only renders in Electron.
+
+  it('does NOT render the OrgSwitcher when window.electronAPI is missing (browser)', () => {
+    // jsdom default: no electronAPI bridge.
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByTestId('org-switcher-stub')).not.toBeInTheDocument();
+  });
+
+  it('renders the OrgSwitcher when window.electronAPI.isElectron is true', () => {
+    const origElectronAPI = globalThis.window.electronAPI;
+    globalThis.window.electronAPI = { isElectron: true };
+    try {
+      render(<Sidebar {...buildProps()} />);
+      expect(screen.getByTestId('org-switcher-stub')).toBeInTheDocument();
+    } finally {
+      if (origElectronAPI === undefined) {
+        delete globalThis.window.electronAPI;
+      } else {
+        globalThis.window.electronAPI = origElectronAPI;
+      }
+    }
   });
 });
