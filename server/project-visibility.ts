@@ -94,3 +94,58 @@ export function filterVisibleProjects<T extends Project>(
 ): T[] {
   return projects.filter((p) => canViewProject(p, caller));
 }
+
+/**
+ * Direction of a visibility transition for `canChangeVisibility`.
+ *
+ * - `shared->private` ("claim"): the project is currently visible to every
+ *   org member; flipping it private hides it from everyone except the new
+ *   owner. That's destructive for collaborators, so we restrict it to org
+ *   Owners. The route layer is responsible for choosing/validating the
+ *   `ownerUserId` to stamp (typically the caller).
+ *
+ * - `private->shared` ("publish"): exposes a previously-private project to
+ *   the entire org. Allowed for the current `ownerUserId` (their project,
+ *   their call) OR for any org Owner (kill-switch parallel — Owners can
+ *   already delete private projects; allowing them to publish is strictly
+ *   less destructive). The route layer clears `ownerUserId` on success.
+ *
+ * - `noop`: same visibility on both sides; always allowed at the auth
+ *   layer (the route may still re-validate the body).
+ *
+ * `localBypass` collapses every transition to "allowed" because single-
+ * tenant local mode has no privacy boundary.
+ */
+export type VisibilityTransition = 'shared->private' | 'private->shared' | 'noop';
+
+export function classifyVisibilityTransition(
+  from: 'shared' | 'private',
+  to: 'shared' | 'private',
+): VisibilityTransition {
+  if (from === to) return 'noop';
+  return from === 'shared' ? 'shared->private' : 'private->shared';
+}
+
+/**
+ * May this caller flip a project between shared and private?
+ *
+ * See `VisibilityTransition` for the per-direction policy. Returns
+ * `false` for callers with no `userId` (real multi-user deployments
+ * require an authenticated identity to attribute the change) unless
+ * `localBypass` is set.
+ */
+export function canChangeVisibility(
+  project: Project,
+  transition: VisibilityTransition,
+  caller: VisibilityCaller,
+): boolean {
+  if (caller.localBypass) return true;
+  if (!caller.userId) return false;
+  if (transition === 'noop') return true;
+  if (transition === 'shared->private') {
+    return caller.role === 'Owner';
+  }
+  // private -> shared
+  if (caller.role === 'Owner') return true;
+  return project.ownerUserId === caller.userId;
+}

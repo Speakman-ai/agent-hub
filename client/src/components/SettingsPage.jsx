@@ -2192,7 +2192,7 @@ export function GitHubSection({ onProjectsChange }) {
  * on the GitHub tab. The deep-link from the per-project Workflows page
  * (settings:projects) still expands a single project card on mount.
  */
-function ProjectsSection({
+export function ProjectsSection({
   projects = [],
   onProjectsChange,
   showToast,
@@ -2614,6 +2614,37 @@ function ProjectsSection({
                             {repoUrlSaveStatus[p.id].error}
                           </span>
                         )}
+                    </div>
+
+                    <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
+                      <label className={labelClass}>Visibility</label>
+                      <p className="text-xs text-gray-500">
+                        <strong>Shared</strong> (default): every member of your org can see and
+                        enter this project. <strong>Private</strong>: visible only to you; org
+                        Owners retain a delete-only kill switch from the admin list. Flipping a
+                        shared project private is restricted to org Owners (it hides the project
+                        from collaborators); the current owner or any org Owner can publish a
+                        private project back to shared.
+                      </p>
+                      <select
+                        value={p.visibility === 'private' ? 'private' : 'shared'}
+                        data-testid={`project-visibility-select-${p.id}`}
+                        onChange={async (e) => {
+                          const visibility = e.target.value;
+                          try {
+                            await api.updateProject(p.id, { visibility });
+                            if (onProjectsChange) onProjectsChange();
+                          } catch (err) {
+                            const msg = String(err.message || err);
+                            if (showToast) showToast(msg, 'error');
+                            else alert(msg);
+                          }
+                        }}
+                        className={inputClass}
+                      >
+                        <option value="shared">Shared (org-wide)</option>
+                        <option value="private">Private (only me)</option>
+                      </select>
                     </div>
 
                     <div className="space-y-2">

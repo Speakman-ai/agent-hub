@@ -4,6 +4,8 @@ import {
   canViewProject,
   canDeleteProject,
   filterVisibleProjects,
+  canChangeVisibility,
+  classifyVisibilityTransition,
 } from './project-visibility.js';
 import type { Project } from './types.js';
 
@@ -148,6 +150,87 @@ describe('project-visibility', () => {
       ];
       const visible = filterVisibleProjects(projects, { userId: null });
       expect(visible.map((p) => p.id)).toEqual(['b']);
+    });
+  });
+
+  describe('classifyVisibilityTransition', () => {
+    it('returns noop when source === target', () => {
+      expect(classifyVisibilityTransition('shared', 'shared')).toBe('noop');
+      expect(classifyVisibilityTransition('private', 'private')).toBe('noop');
+    });
+    it('classifies shared → private as claim', () => {
+      expect(classifyVisibilityTransition('shared', 'private')).toBe('shared->private');
+    });
+    it('classifies private → shared as publish', () => {
+      expect(classifyVisibilityTransition('private', 'shared')).toBe('private->shared');
+    });
+  });
+
+  describe('canChangeVisibility', () => {
+    const shared = makeProject({ visibility: 'shared' });
+    const privOwnedByU1 = makeProject({ visibility: 'private', ownerUserId: 'u1' });
+
+    it('noop transitions: any authenticated caller is allowed', () => {
+      expect(canChangeVisibility(shared, 'noop', { userId: 'u1', role: 'User' })).toBe(true);
+      expect(canChangeVisibility(privOwnedByU1, 'noop', { userId: 'u1', role: 'User' })).toBe(true);
+    });
+
+    it('anonymous (no userId, no bypass) is always denied for real transitions', () => {
+      expect(canChangeVisibility(shared, 'shared->private', { userId: null })).toBe(false);
+      expect(canChangeVisibility(privOwnedByU1, 'private->shared', { userId: null })).toBe(false);
+    });
+
+    it('localBypass collapses to allow for any transition', () => {
+      expect(
+        canChangeVisibility(shared, 'shared->private', { userId: null, localBypass: true }),
+      ).toBe(true);
+      expect(
+        canChangeVisibility(privOwnedByU1, 'private->shared', {
+          userId: null,
+          localBypass: true,
+        }),
+      ).toBe(true);
+    });
+
+    describe('shared -> private (claim)', () => {
+      it('allows org Owner', () => {
+        expect(
+          canChangeVisibility(shared, 'shared->private', { userId: 'u1', role: 'Owner' }),
+        ).toBe(true);
+      });
+      it('denies Admin', () => {
+        expect(
+          canChangeVisibility(shared, 'shared->private', { userId: 'u1', role: 'Admin' }),
+        ).toBe(false);
+      });
+      it('denies User', () => {
+        expect(canChangeVisibility(shared, 'shared->private', { userId: 'u1', role: 'User' })).toBe(
+          false,
+        );
+      });
+    });
+
+    describe('private -> shared (publish)', () => {
+      it('allows the current ownerUserId', () => {
+        expect(
+          canChangeVisibility(privOwnedByU1, 'private->shared', { userId: 'u1', role: 'User' }),
+        ).toBe(true);
+      });
+      it('allows org Owner even if they are not the project owner', () => {
+        expect(
+          canChangeVisibility(privOwnedByU1, 'private->shared', { userId: 'u2', role: 'Owner' }),
+        ).toBe(true);
+      });
+      it('denies Admin who is not the project owner', () => {
+        expect(
+          canChangeVisibility(privOwnedByU1, 'private->shared', { userId: 'u2', role: 'Admin' }),
+        ).toBe(false);
+      });
+      it('denies User who is not the project owner', () => {
+        expect(
+          canChangeVisibility(privOwnedByU1, 'private->shared', { userId: 'u2', role: 'User' }),
+        ).toBe(false);
+      });
     });
   });
 });

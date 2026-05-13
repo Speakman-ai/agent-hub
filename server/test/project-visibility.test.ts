@@ -122,6 +122,66 @@ describe('GET /api/admin/projects', () => {
   });
 });
 
+describe('PATCH /api/projects/:projectId — visibility', () => {
+  it('flips a shared project to private (bypass; null owner allowed in single-tenant)', async () => {
+    const id = `vis-patch-claim-${Date.now()}`;
+    await request.post('/api/projects').send({ id, name: 'Claim', cwd: '/tmp' }).expect(201);
+
+    const res = await request
+      .patch(`/api/projects/${id}`)
+      .send({ visibility: 'private' })
+      .expect(200);
+    expect(res.body.visibility).toBe('private');
+    // Under bypass the resolver has no userId to stamp; null is acceptable
+    // because localBypass callers can still read every project.
+    expect(res.body.ownerUserId).toBeNull();
+  });
+
+  it('flips a private project back to shared and clears ownerUserId', async () => {
+    const id = `vis-patch-publish-${Date.now()}`;
+    await request
+      .post('/api/projects')
+      .send({ id, name: 'Publish', cwd: '/tmp', visibility: 'private' })
+      .expect(201);
+
+    const res = await request
+      .patch(`/api/projects/${id}`)
+      .send({ visibility: 'shared' })
+      .expect(200);
+    expect(res.body.visibility).toBe('shared');
+    expect(res.body.ownerUserId).toBeNull();
+  });
+
+  it('accepts a same-visibility no-op patch without altering ownerUserId', async () => {
+    const id = `vis-patch-noop-${Date.now()}`;
+    await request
+      .post('/api/projects')
+      .send({ id, name: 'Noop', cwd: '/tmp', visibility: 'shared' })
+      .expect(201);
+
+    const res = await request
+      .patch(`/api/projects/${id}`)
+      .send({ visibility: 'shared' })
+      .expect(200);
+    expect(res.body.visibility).toBe('shared');
+  });
+
+  it('rejects invalid visibility values', async () => {
+    const id = `vis-patch-bad-${Date.now()}`;
+    await request.post('/api/projects').send({ id, name: 'Bad', cwd: '/tmp' }).expect(201);
+    await request.patch(`/api/projects/${id}`).send({ visibility: 'public' }).expect(400);
+  });
+
+  it('rejects ownerUserId pointing at an unknown user when claiming', async () => {
+    const id = `vis-patch-bad-owner-${Date.now()}`;
+    await request.post('/api/projects').send({ id, name: 'BadOwner', cwd: '/tmp' }).expect(201);
+    await request
+      .patch(`/api/projects/${id}`)
+      .send({ visibility: 'private', ownerUserId: 'no-such-user' })
+      .expect(400);
+  });
+});
+
 describe('DELETE /api/projects/:projectId — visibility', () => {
   it('owner of bypass context can delete a private project', async () => {
     const id = `vis-delete-${Date.now()}`;

@@ -4,6 +4,7 @@ import SettingsPage, {
   GeneralSection,
   GitHubSection,
   OrganizationsSection,
+  ProjectsSection,
 } from './SettingsPage.jsx';
 import { api } from '../utils/api.js';
 
@@ -453,5 +454,97 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
     expect(getByText(/Connection Mode/i)).toBeTruthy();
     expect(getByText(/Server runs on this machine/i)).toBeTruthy();
     expect(getByText(/Connect to a remote server/i)).toBeTruthy();
+  });
+});
+
+describe('ProjectsSection — visibility toggle', () => {
+  beforeEach(() => {
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+    });
+    api.updateProject.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeProject(overrides = {}) {
+    return {
+      id: 'p1',
+      name: 'Demo',
+      cwd: '/tmp/p1',
+      ahw: '/tmp/p1-ahw',
+      color: '#6366f1',
+      visibility: 'shared',
+      ownerUserId: null,
+      agents: [],
+      ...overrides,
+    };
+  }
+
+  it('renders the Visibility select pre-populated from project.visibility', async () => {
+    const project = makeProject({ visibility: 'private', ownerUserId: 'u1' });
+    const { getByTestId } = render(
+      <ProjectsSection
+        projects={[project]}
+        onProjectsChange={() => {}}
+        initialExpandedProjectId="p1"
+      />,
+    );
+    await waitFor(() => {
+      const sel = getByTestId('project-visibility-select-p1');
+      expect(sel.value).toBe('private');
+    });
+  });
+
+  it('calls api.updateProject with the new visibility and triggers onProjectsChange', async () => {
+    const project = makeProject({ visibility: 'shared' });
+    const onProjectsChange = vi.fn();
+    const { getByTestId } = render(
+      <ProjectsSection
+        projects={[project]}
+        onProjectsChange={onProjectsChange}
+        initialExpandedProjectId="p1"
+      />,
+    );
+
+    const sel = await waitFor(() => getByTestId('project-visibility-select-p1'));
+    fireEvent.change(sel, { target: { value: 'private' } });
+
+    await waitFor(() => {
+      expect(api.updateProject).toHaveBeenCalledWith('p1', { visibility: 'private' });
+    });
+    await waitFor(() => {
+      expect(onProjectsChange).toHaveBeenCalled();
+    });
+  });
+
+  it('surfaces a server error via showToast when updateProject rejects (e.g. 403)', async () => {
+    api.updateProject.mockRejectedValueOnce(
+      new Error('Only org Owners can make a shared project private.'),
+    );
+    const project = makeProject({ visibility: 'shared' });
+    const showToast = vi.fn();
+    const { getByTestId } = render(
+      <ProjectsSection
+        projects={[project]}
+        onProjectsChange={() => {}}
+        initialExpandedProjectId="p1"
+        showToast={showToast}
+      />,
+    );
+
+    const sel = await waitFor(() => getByTestId('project-visibility-select-p1'));
+    fireEvent.change(sel, { target: { value: 'private' } });
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringMatching(/Only org Owners can make a shared project private/),
+        'error',
+      );
+    });
   });
 });

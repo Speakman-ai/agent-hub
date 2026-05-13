@@ -29,6 +29,8 @@ import {
   canDeleteProject,
   filterVisibleProjects,
   getVisibility,
+  canChangeVisibility,
+  classifyVisibilityTransition,
   type VisibilityCaller,
 } from '../project-visibility.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
@@ -1728,6 +1730,87 @@ This workspace has no git repo and no PR automation — your job is planning, or
       } else {
         return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
       }
+    }
+    // ─── Visibility (shared ↔ private) ──────────────────────────────
+    // Mirrors the create-time validation but additionally enforces the
+    // role-gated transition policy (see `canChangeVisibility`). Two
+    // transitions are real:
+    //   - shared → private ("claim"): org Owner only. `ownerUserId`
+    //     stamped from the body (when provided) or the caller. We require
+    //     a non-null owner unless localBypass is active (single-tenant).
+    //   - private → shared ("publish"): current ownerUserId OR org Owner.
+    //     We unconditionally clear `ownerUserId` so a future re-claim
+    //     stamps a fresh owner rather than inheriting the previous one.
+    // Same-visibility "no-op" patches are accepted and stamp the
+    // optional new owner only if the caller is allowed (Owner) — useful
+    // for transferring ownership of a private project.
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'visibility')) {
+      const rawVisibility = (req.body as Record<string, unknown>).visibility;
+      if (
+        rawVisibility !== 'shared' &&
+        rawVisibility !== 'private' &&
+        rawVisibility !== null &&
+        rawVisibility !== undefined &&
+        rawVisibility !== ''
+      ) {
+        return res.status(400).json({ error: 'visibility must be "shared" or "private"' });
+      }
+      const targetVisibility: 'shared' | 'private' =
+        rawVisibility === 'private' ? 'private' : 'shared';
+      const currentVisibility = getVisibility(project);
+      const transition = classifyVisibilityTransition(currentVisibility, targetVisibility);
+      const caller = resolveVisibilityCaller(req);
+      if (!canChangeVisibility(project, transition, caller)) {
+        return res.status(403).json({
+          error:
+            transition === 'shared->private'
+              ? 'Only org Owners can make a shared project private.'
+              : 'Only the project owner or an org Owner can publish a private project.',
+        });
+      }
+      // Resolve ownerUserId for the post-state:
+      //   - publish: always clear.
+      //   - claim:   prefer body.ownerUserId if provided (Owner can claim on
+      //              behalf of another user), otherwise stamp the caller.
+      //              Validate the user exists.
+      //   - noop:    leave ownerUserId untouched (transfer-of-ownership is
+      //              out of scope for v1; a follow-up card can add it).
+      if (transition === 'private->shared') {
+        (project as Record<string, unknown>).visibility = 'shared';
+        (project as Record<string, unknown>).ownerUserId = null;
+      } else if (transition === 'shared->private') {
+        let nextOwner: string | null = caller.userId ?? null;
+        if (Object.prototype.hasOwnProperty.call(req.body as object, 'ownerUserId')) {
+          const rawOwner = (req.body as Record<string, unknown>).ownerUserId;
+          if (rawOwner === null || rawOwner === '') {
+            // Explicit null means "stamp me" — same as omitting the field.
+            nextOwner = caller.userId ?? null;
+          } else if (typeof rawOwner !== 'string') {
+            return res
+              .status(400)
+              .json({ error: 'ownerUserId must be a string user id, null, or omitted' });
+          } else {
+            const trimmed = rawOwner.trim();
+            if (!trimmed) {
+              nextOwner = caller.userId ?? null;
+            } else if (!getUserById(trimmed)) {
+              return res.status(400).json({ error: 'ownerUserId does not match any user' });
+            } else {
+              nextOwner = trimmed;
+            }
+          }
+        }
+        if (!nextOwner && !caller.localBypass) {
+          return res.status(400).json({
+            error:
+              'Private projects require an authenticated user (JWT or per-user API key) to be the owner.',
+          });
+        }
+        (project as Record<string, unknown>).visibility = 'private';
+        (project as Record<string, unknown>).ownerUserId = nextOwner;
+      }
+      // noop: visibility unchanged; intentionally no-op for ownerUserId
+      // in v1. A future ownership-transfer endpoint will live here.
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'browserToolsDefaultEnabled')) {
       const v = (req.body as Record<string, unknown>).browserToolsDefaultEnabled;
