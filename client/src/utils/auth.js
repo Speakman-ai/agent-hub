@@ -13,6 +13,30 @@
 
 const STORAGE_KEY = 'agent-hub-jwt';
 
+/**
+ * Module-level cache for the `activeOrgIsLocal` flag returned by
+ * `GET /api/auth/status`. Set by `AuthGate` when the status resolves.
+ * In local-bundled mode (Electron / single-user self-host) the server
+ * short-circuits auth, no JWT is ever written, and `hasRole()` returns
+ * false for everyone — so consumers that need to show admin-equivalent UI
+ * in local mode should check `isLocalMode()` in addition to `hasRole()`.
+ */
+let _activeOrgIsLocal = false;
+
+/** Called by AuthGate once the /auth/status response is available. */
+export function setActiveOrgIsLocal(val) {
+  _activeOrgIsLocal = !!val;
+}
+
+/**
+ * True when the active org is running in local mode (no JWT required).
+ * Treat local-mode users as Admin-equivalent for UX visibility gates;
+ * the server still enforces real permissions on every request.
+ */
+export function isLocalMode() {
+  return _activeOrgIsLocal;
+}
+
 function safeGet() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);

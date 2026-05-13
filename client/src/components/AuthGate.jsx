@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, WifiOff, Settings as SettingsIcon, Monitor } from 'lucide-react';
 import LoginScreen from './LoginScreen.jsx';
-import { isAuthenticated, getAuthStatus } from '../utils/auth.js';
+import { isAuthenticated, getAuthStatus, setActiveOrgIsLocal } from '../utils/auth.js';
 import { getApiBase, getConnectionConfig, saveConnectionConfig } from '../utils/connection.js';
 
 /**
@@ -40,6 +40,7 @@ export default function AuthGate({ children }) {
       try {
         const res = await getAuthStatus(getApiBase());
         if (cancelled) return;
+        setActiveOrgIsLocal(!!res.activeOrgIsLocal);
         setStatus({
           state: 'ready',
           required: !!res.authConfigured,

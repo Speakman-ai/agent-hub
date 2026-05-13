@@ -44,6 +44,8 @@ vi.mock('../utils/auth.js', async () => {
     ...actual,
     hasRole: vi.fn(() => true),
     getUserRole: vi.fn(() => 'Admin'),
+    // Default to false (cloud/JWT mode); local-mode tests override below.
+    isLocalMode: vi.fn(() => false),
   };
 });
 
@@ -263,10 +265,11 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       engineDefaultModels: {},
       engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
     });
-    const { hasRole } = await import('../utils/auth.js');
-    // Reset to default (Admin sees everything) before each test —
-    // individual tests override below.
+    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    // Reset to default (Admin sees everything, not local mode) before each
+    // test — individual tests override below.
     vi.mocked(hasRole).mockImplementation(() => true);
+    vi.mocked(isLocalMode).mockImplementation(() => false);
   });
 
   afterEach(() => {
@@ -309,14 +312,14 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
 
     // initialTab = 'claude-auth' simulates a saved bookmark / shared URL.
     // The redirect effect should push them to 'account' before render.
-    const { queryByText, findAllByText } = render(
+    const { queryByText, getAllByText } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="claude-auth" />,
     );
 
-    // The Account tab heading appears (it's both a sidebar entry and the
-    // active panel's first heading), confirming the redirect fired.
+    // `getAllByText` throws if not found — this assertion actually fails
+    // when the redirect doesn't fire (unlike a Promise-wrapped findAllByText).
     await waitFor(() => {
-      expect(findAllByText('Account')).toBeTruthy();
+      expect(getAllByText('Account').length).toBeGreaterThan(0);
     });
     // The gated panel never rendered.
     expect(queryByText('Global AI Authentication')).toBeNull();
@@ -340,6 +343,22 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
     // ClaudeAuth/Gemini/Cursor/Codex sections. The Cursor section's
     // distinctive heading is a reliable signal that the panel rendered.
     expect(queryByText('Cursor Agent Authentication')).toBeNull();
+  });
+
+  it('shows the tab in local-bundled mode (no JWT / activeOrgIsLocal=true)', async () => {
+    // Regression guard for Electron / single-user self-host: when the
+    // server returns activeOrgIsLocal=true it never issues a JWT, so
+    // hasRole() returns false. The tab must still appear because local-mode
+    // users own the host and need to configure claudeBin / cursorBin.
+    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    vi.mocked(hasRole).mockImplementation(() => false); // no JWT → no role
+    vi.mocked(isLocalMode).mockImplementation(() => true); // local-mode
+
+    const { findByText } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+
+    expect(await findByText('Global AI Authentication')).toBeTruthy();
   });
 });
 

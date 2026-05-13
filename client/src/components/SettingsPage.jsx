@@ -11,7 +11,7 @@ import {
   serializeAllowlist,
   parseAllowlistFromBackend,
 } from '../utils/authorAllowlist.js';
-import { hasRole } from '../utils/auth.js';
+import { hasRole, isLocalMode } from '../utils/auth.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
@@ -7974,7 +7974,11 @@ export default function SettingsPage({
   // The server still enforces the underlying permissions; this is a
   // UX hint only.
   const electronShell = isElectron();
-  const isAdminPlus = hasRole('Admin');
+  // In local-bundled mode (Electron / single-user self-host) the server
+  // short-circuits auth so no JWT is written and hasRole() returns false.
+  // Treat local-mode sessions as Admin-equivalent so the host-wide CLI
+  // auth tab stays visible on every fresh install.
+  const isAdminPlus = hasRole('Admin') || isLocalMode();
   const visibleSettingsGroups = useMemo(() => {
     return SETTINGS_GROUPS.map((group) => ({
       ...group,
