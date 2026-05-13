@@ -38,16 +38,38 @@ vi.mock('./github-app.js', () => ({
 
 // ── skill-credentials-github mock ────────────────────────────────────────────
 // We re-implement `gitAuthArgsForGithubPat` faithfully here so tests don't
-// depend on an import of the real module (which might pull in orgs DB).
+// depend on an import of the real module (which might pull in orgs DB). The
+// `resolveUserGithubToken` helper is mocked synchronously-resolving so tests
+// can drive token availability without standing up the OAuth refresh path
+// or the user_skill_credentials table.
 const mockGetGithubPatForUser = vi.fn((_userId?: string | null): string | null => null);
 
 vi.mock('./skill-credentials-github.js', () => ({
   getGithubPatForUser: (userId?: string | null) => mockGetGithubPatForUser(userId),
+  // Test-side resolver mirrors the production precedence: OAuth lookup is
+  // skipped (no oauthCredentials path under test), so this reduces to the
+  // PAT lookup the existing assertions rely on.
+  resolveUserGithubToken: async (
+    userId: string | null | undefined,
+    _opts: unknown,
+  ): Promise<string | null> => {
+    if (!userId) return null;
+    return mockGetGithubPatForUser(userId);
+  },
   gitAuthArgsForGithubPat: (token: string | null | undefined): string[] => {
     if (!token) return [];
     const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
     return ['-c', `http.https://github.com/.extraheader=Authorization: basic ${basic}`];
   },
+}));
+
+// `worktree.ts` now also imports `resolveOAuthAppCredentials` from
+// `./spawn-github-credentials.js` to thread OAuth client creds into the
+// resolver. The function only inspects two fields on the config object;
+// stub it to return null (no OAuth App configured in tests) so the
+// resolver short-circuits to the PAT path the mock above controls.
+vi.mock('./spawn-github-credentials.js', () => ({
+  resolveOAuthAppCredentials: () => null,
 }));
 
 // ── child_process.execFile intercept ─────────────────────────────────────────

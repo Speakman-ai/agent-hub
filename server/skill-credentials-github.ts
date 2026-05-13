@@ -23,6 +23,8 @@
 
 import { decryptSecret } from './secret-crypto.js';
 import { getOrgsDb } from './orgs.js';
+import { getActiveAccessToken } from './github-connections-store.js';
+import type { GitHubOAuthCredentials } from './github-oauth.js';
 
 const LAST_USED_DEBOUNCE_MS = 60_000;
 const lastUsedWriteAt = new Map<string, number>();
@@ -85,6 +87,70 @@ function maybeTouchLastUsed(rowId: string): void {
   } catch {
     /* best-effort — surface the value either way */
   }
+}
+
+/**
+ * Resolve the per-user GitHub token to use for git network operations
+ * (clone / fetch / push) at the pre-spawn boundary — worktree creation,
+ * project auto-clone, anywhere we need an HTTPS auth token before an
+ * agent shell exists.
+ *
+ * Source-of-truth precedence:
+ *
+ *   1. **OAuth user-to-server token** via `getActiveAccessToken`. This is
+ *      the "Sign in with GitHub" credential stored on the `users` row,
+ *      with transparent refresh inside the 5-minute safety window.
+ *      Preferred because it's the canonical per-user identity, supports
+ *      automatic rotation, and matches what the spawn-env path
+ *      (`chat.ts` → `applyGithubSpawnCredentials`) already injects — so a
+ *      `git clone` here and a later `git push` from inside the spawned
+ *      agent use the SAME token, scoped to the SAME user.
+ *
+ *   2. **Skill-credential PAT** via `getGithubPatForUser`. Only consulted
+ *      when the OAuth path returns `null` (user hasn't signed in, refresh
+ *      token dead, no OAuth App configured). Useful as an override for
+ *      users on enterprise GitHub instances that can't use our OAuth App,
+ *      or for fine-grained PATs scoped to a single repo.
+ *
+ *   3. `null` — no credential available. Caller falls back to
+ *      unauthenticated (public-repo-only) access.
+ *
+ * Why this exists:
+ *   Historically the pre-spawn path consulted ONLY the skill-credentials
+ *   PAT. A user who completed the friendly OAuth sign-in flow but never
+ *   pasted a PAT in Settings → Skills couldn't auto-clone a private repo
+ *   into a new worktree — the agent hit "Username for 'https://github.com'"
+ *   at spawn time. The spawn-env path already preferred OAuth, so the two
+ *   per-user identities silently disagreed. This helper collapses them so
+ *   OAuth sign-in is sufficient end-to-end.
+ *
+ * Never throws — every failure mode (no userId, no row, decrypt failure,
+ * OAuth refresh failure, store outage) yields `null`. Best-effort by
+ * design; the caller's "fall back to unauthenticated clone" path is the
+ * single recovery branch.
+ */
+export async function resolveUserGithubToken(
+  userId: string | null | undefined,
+  opts: { oauthCredentials: GitHubOAuthCredentials | null },
+): Promise<string | null> {
+  if (!userId) return null;
+  // 1. Prefer the OAuth user-to-server token. `getActiveAccessToken`
+  //    handles its own refresh and returns null on any failure, but we
+  //    still wrap in try/catch as belt-and-braces — a DB outage or
+  //    bad-state row must not break the worktree clone path; we want
+  //    to fall through to the PAT fallback.
+  try {
+    const oauthToken = await getActiveAccessToken(userId, opts.oauthCredentials);
+    if (oauthToken) return oauthToken;
+  } catch (err: unknown) {
+    console.warn(
+      '[skill-credentials-github] OAuth token lookup failed, falling back to PAT:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  // 2. Fall back to the skill-credentials PAT. Synchronous; already
+  //    swallows its own errors.
+  return getGithubPatForUser(userId);
 }
 
 /**
