@@ -73,6 +73,266 @@ components:
       name: agent_hub_session
       description: Session cookie issued by `POST /api/auth/login`.
   schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+        code:
+          type: string
+      required:
+        - error
+      description: Standard error envelope used across the API.
+    ZodIssue:
+      type: object
+      properties:
+        path:
+          type: array
+          items:
+            anyOf:
+              - type: string
+              - type: number
+        message:
+          type: string
+        code:
+          type: string
+      required:
+        - path
+        - message
+      description: A single Zod validation issue. Returned on 400 responses caused by request-body shape errors.
+    ZodErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/ZodIssue"
+      required:
+        - error
+      description: A 400 response produced by Zod body/query validation. `issues` lists each field that failed.
+    UserSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        username:
+          type: string
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - User
+        createdAt:
+          anyOf:
+            - type: string
+            - type: number
+            - nullable: true
+      required:
+        - username
+        - role
+    TokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            username:
+              type: string
+            role:
+              type: string
+              enum:
+                - Owner
+                - Admin
+                - User
+          required:
+            - username
+            - role
+      required:
+        - token
+        - expiresAt
+        - user
+    AuthSetupBody:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+    AuthLoginBody:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+    AuthCreateUserBody:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - User
+      required:
+        - username
+        - password
+    AuthUpdateUserRoleBody:
+      type: object
+      properties:
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - User
+      required:
+        - role
+    AuthPasswordResetBody:
+      type: object
+      properties:
+        newPassword:
+          type: string
+      required:
+        - newPassword
+    CreateApiKeyBody:
+      type: object
+      properties:
+        name:
+          type: string
+        expiresInDays:
+          anyOf:
+            - type: number
+            - type: string
+            - nullable: true
+          description: 1–3650 days, or null/omitted to never expire. Strings are coerced to numbers.
+      required:
+        - name
+    CreateInviteBody:
+      type: object
+      properties:
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - User
+        email:
+          type: string
+          nullable: true
+        ttlHours:
+          type: number
+    AcceptInviteBody:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+    UpdateClaudeAuthBody:
+      type: object
+      properties:
+        anthropicApiKey:
+          type: string
+          nullable: true
+        claudeCodeOAuthToken:
+          type: string
+          nullable: true
+        claudeCodeOAuthExpiresAt:
+          type: string
+          nullable: true
+      description: Per-user Claude credentials. Each field is whitelisted before reaching the DB — unknown keys are silently dropped.
+    UpdateSingleKeyAuthBody:
+      type: object
+      properties:
+        apiKey:
+          type: string
+          nullable: true
+      description: Per-user single-key engine credentials (Cursor / Gemini / Codex).
+    UpsertSkillCredentialBody:
+      type: object
+      properties:
+        skill_id:
+          type: string
+        key_name:
+          type: string
+        agent_id:
+          type: string
+        value:
+          type: string
+      required:
+        - skill_id
+        - key_name
+        - agent_id
+    ClaudeLoginBody:
+      type: object
+      properties:
+        method:
+          type: string
+        email:
+          type: string
+        sso:
+          type: boolean
+    ClaudeCallbackBody:
+      type: object
+      properties:
+        code:
+          type: string
+          description: OAuth authorization code from Anthropic.
+      required:
+        - code
+    ApiKeyOnlyBody:
+      type: object
+      properties:
+        apiKey:
+          type: string
+          nullable: true
+    ApiKeyRequiredBody:
+      type: object
+      properties:
+        apiKey:
+          type: string
+          minLength: 1
+      required:
+        - apiKey
+    OauthTokenBody:
+      type: object
+      properties:
+        oauthToken:
+          type: string
+          nullable: true
+    GithubConnectTokenBody:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+      required:
+        - token
     KanbanBoard:
       type: object
       properties:
@@ -358,6 +618,1338 @@ components:
       description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
   parameters: {}
 paths:
+  /api/auth/status:
+    get:
+      tags:
+        - Auth
+      summary: Public auth status (used by the login screen).
+      responses:
+        "200":
+          description: Whether auth is configured and which secrets are present.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authConfigured:
+                    type: boolean
+                  username:
+                    type: string
+                    nullable: true
+                  role:
+                    type: string
+                    nullable: true
+                    enum:
+                      - Owner
+                      - Admin
+                      - User
+                      - null
+                  jwtConfigured:
+                    type: boolean
+                  apiKeyConfigured:
+                    type: boolean
+                  needsMigration:
+                    type: boolean
+                  activeOrgIsLocal:
+                    type: boolean
+                required:
+                  - authConfigured
+                  - username
+                  - role
+                  - jwtConfigured
+                  - apiKeyConfigured
+                  - needsMigration
+                  - activeOrgIsLocal
+  /api/auth/setup:
+    post:
+      tags:
+        - Auth
+      summary: First-run setup — provisions the Owner user.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthSetupBody"
+      responses:
+        "200":
+          description: Setup succeeded; Owner token returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  token:
+                    type: string
+                  expiresAt:
+                    type: string
+                  user:
+                    type: object
+                    properties:
+                      username:
+                        type: string
+                      role:
+                        type: string
+                        enum:
+                          - Owner
+                          - Admin
+                          - User
+                    required:
+                      - username
+                      - role
+                required:
+                  - ok
+                  - token
+                  - expiresAt
+                  - user
+        "400":
+          description: Invalid body or domain validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "409":
+          description: Auth already configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Issue a JWT for an existing user.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthLoginBody"
+      responses:
+        "200":
+          description: Login succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Wrong credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: No membership in active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Auth not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Identity of the currently authenticated caller.
+      responses:
+        "200":
+          description: Caller summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    nullable: true
+                    properties:
+                      username:
+                        type: string
+                      role:
+                        type: string
+                        nullable: true
+                        enum:
+                          - Owner
+                          - Admin
+                          - User
+                          - null
+                    required:
+                      - username
+                      - role
+                  authConfigured:
+                    type: boolean
+                  role:
+                    type: string
+                    nullable: true
+                    enum:
+                      - Owner
+                      - Admin
+                      - User
+                      - null
+                  orgId:
+                    type: string
+                    nullable: true
+                required:
+                  - user
+                  - authConfigured
+                  - role
+                  - orgId
+  /api/auth/me/claude-auth:
+    get:
+      tags:
+        - Auth
+      summary: Per-user Claude credentials (masked).
+      responses:
+        "200":
+          description: Stored credentials with masking.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  nullable: true
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Update per-user Claude credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateClaudeAuthBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  nullable: true
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/cursor-auth:
+    get:
+      tags:
+        - Auth
+      summary: Per-user cursor credentials (masked).
+      responses:
+        "200":
+          description: Stored credentials with masking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Update per-user cursor credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/gemini-auth:
+    get:
+      tags:
+        - Auth
+      summary: Per-user gemini credentials (masked).
+      responses:
+        "200":
+          description: Stored credentials with masking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Update per-user gemini credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/codex-auth:
+    get:
+      tags:
+        - Auth
+      summary: Per-user codex credentials (masked).
+      responses:
+        "200":
+          description: Stored credentials with masking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Update per-user codex credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/skill-credentials:
+    get:
+      tags:
+        - Auth
+      summary: List masked per-user skill credentials.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: skillId
+          in: query
+      responses:
+        "200":
+          description: Credential list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credentials:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties:
+                        nullable: true
+                required:
+                  - credentials
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Lookup failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Upsert a single per-user skill credential.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertSkillCredentialBody"
+      responses:
+        "200":
+          description: Created or cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  nullable: true
+        "400":
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Caller is not a member of the org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Agent / workspace not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/skill-credentials/{id}:
+    delete:
+      tags:
+        - Auth
+      summary: Delete a per-user skill credential by id.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Credential not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/keys:
+    get:
+      tags:
+        - Auth
+      summary: List the caller's active API keys.
+      responses:
+        "200":
+          description: Key metadata (no plaintext tokens).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        prefix:
+                          type: string
+                        createdAt:
+                          type: string
+                        lastUsedAt:
+                          type: string
+                          nullable: true
+                        expiresAt:
+                          type: string
+                          nullable: true
+                      required:
+                        - id
+                        - name
+                        - prefix
+                        - createdAt
+                        - lastUsedAt
+                        - expiresAt
+                required:
+                  - keys
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Auth
+      summary: Create a new per-user API key.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyBody"
+      responses:
+        "201":
+          description: Key created — plaintext token shown ONCE.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  token:
+                    type: string
+                  prefix:
+                    type: string
+                  createdAt:
+                    type: string
+                  expiresAt:
+                    type: string
+                    nullable: true
+                required:
+                  - id
+                  - name
+                  - token
+                  - prefix
+                  - createdAt
+                  - expiresAt
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Key cap reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/keys/{id}:
+    delete:
+      tags:
+        - Auth
+      summary: Revoke a per-user API key.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Key not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users:
+    get:
+      tags:
+        - Auth
+      summary: List members of the active org (Admin+).
+      responses:
+        "200":
+          description: Member list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserSummary"
+                required:
+                  - users
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Auth
+      summary: Create a user + membership (Owner only).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCreateUserBody"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/UserSummary"
+                required:
+                  - user
+        "400":
+          description: Invalid body or domain failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "403":
+          description: Only Owner may create Owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users/{id}/role:
+    put:
+      tags:
+        - Auth
+      summary: Change a member's role in the active org (Admin+).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthUpdateUserRoleBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  userId:
+                    type: string
+                  orgId:
+                    type: string
+                  role:
+                    type: string
+                    enum:
+                      - Owner
+                      - Admin
+                      - User
+                required:
+                  - ok
+                  - userId
+                  - orgId
+                  - role
+        "400":
+          description: Invalid role or sole-Owner demotion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User or membership missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users/{id}:
+    delete:
+      tags:
+        - Auth
+      summary: Remove a user from the active org (Owner only).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Removed; cascade summary if the user was deleted entirely.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  userId:
+                    type: string
+                  orgId:
+                    type: string
+                  userDeleted:
+                    type: boolean
+                  cascadedPrivateProjects:
+                    type: array
+                    items:
+                      type: string
+                  orphanedSharedProjects:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - userId
+                  - orgId
+                  - userDeleted
+                  - cascadedPrivateProjects
+                  - orphanedSharedProjects
+        "400":
+          description: Sole-Owner protection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User or membership missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users/{id}/password:
+    post:
+      tags:
+        - Auth
+      summary: Self-reset or Owner-reset a user password.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthPasswordResetBody"
+      responses:
+        "200":
+          description: Password updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  userId:
+                    type: string
+                required:
+                  - ok
+                  - userId
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "403":
+          description: Only self or Owner may reset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/invites:
+    post:
+      tags:
+        - Auth
+      summary: Issue an invite for the active org (Admin+).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInviteBody"
+      responses:
+        "201":
+          description: Invite created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  url:
+                    type: string
+                  role:
+                    type: string
+                    enum:
+                      - Owner
+                      - Admin
+                      - User
+                  email:
+                    type: string
+                    nullable: true
+                  expiresAt:
+                    type: string
+                  createdAt:
+                    type: string
+                required:
+                  - token
+                  - url
+                  - role
+                  - email
+                  - expiresAt
+                  - createdAt
+        "400":
+          description: Invalid role or missing user session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags:
+        - Auth
+      summary: List active invites for the active org (Admin+).
+      responses:
+        "200":
+          description: Invite list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        token:
+                          type: string
+                        orgId:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                            - Owner
+                            - Admin
+                            - User
+                        email:
+                          type: string
+                          nullable: true
+                        expiresAt:
+                          type: string
+                        createdAt:
+                          type: string
+                      required:
+                        - token
+                        - orgId
+                        - role
+                        - email
+                        - expiresAt
+                        - createdAt
+                required:
+                  - invites
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/invites/{token}:
+    delete:
+      tags:
+        - Auth
+      summary: Revoke an invite (Admin+, same org only).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  token:
+                    type: string
+                required:
+                  - ok
+                  - token
+        "403":
+          description: Cross-org or insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Invite not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags:
+        - Auth
+      summary: Public landing metadata for an invite token.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      responses:
+        "200":
+          description: Invite preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgId:
+                    type: string
+                  orgName:
+                    type: string
+                  role:
+                    type: string
+                    enum:
+                      - Owner
+                      - Admin
+                      - User
+                  email:
+                    type: string
+                    nullable: true
+                  expiresAt:
+                    type: string
+                  accepted:
+                    type: boolean
+                required:
+                  - orgId
+                  - orgName
+                  - role
+                  - email
+                  - expiresAt
+                  - accepted
+        "404":
+          description: Invite not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Invite expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/invites/{token}/accept:
+    post:
+      tags:
+        - Auth
+      summary: Redeem an invite — creates user, membership, returns a JWT.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInviteBody"
+      responses:
+        "201":
+          description: User created and signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Invalid body or domain failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "404":
+          description: Invite not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Invite expired / already accepted / lost race.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server auth not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Stateless logout receipt (client drops its JWT).
+      responses:
+        "200":
+          description: Receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
   /api/projects/{projectId}/board:
     get:
       tags:
@@ -1270,3 +2862,1009 @@ paths:
                       - true
                 required:
                   - ok
+  /api/config/claude-auth:
+    get:
+      tags:
+        - Auth
+      summary: Claude Code CLI auth status.
+      responses:
+        "200":
+          description: Current Claude auth status (OAuth + API key).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  oauth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                    required:
+                      - loggedIn
+                    additionalProperties:
+                      nullable: true
+                  token:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
+                  apiKey:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      source:
+                        type: string
+                        nullable: true
+                        enum:
+                          - environment
+                          - config
+                          - null
+                    required:
+                      - configured
+                      - source
+                  oauthToken:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      source:
+                        type: string
+                        nullable: true
+                        enum:
+                          - environment
+                          - config
+                          - null
+                      masked:
+                        type: string
+                        nullable: true
+                    required:
+                      - configured
+                      - source
+                      - masked
+                  activeMethod:
+                    type: string
+                    enum:
+                      - api-key
+                      - oauth
+                      - none
+                  loginInProgress:
+                    type: boolean
+                required:
+                  - oauth
+                  - token
+                  - apiKey
+                  - oauthToken
+                  - activeMethod
+                  - loginInProgress
+    delete:
+      tags:
+        - Auth
+      summary: Log the Claude CLI out (clears host credentials cache).
+      responses:
+        "200":
+          description: Logout result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "500":
+          description: CLI logout failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/claude-auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Start the Claude OAuth login flow.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaudeLoginBody"
+      responses:
+        "200":
+          description: OAuth URL emitted, or login result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  oauthUrl:
+                    type: string
+                  pasteMode:
+                    type: boolean
+                  completed:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config/claude-auth/cancel-login:
+    post:
+      tags:
+        - Auth
+      summary: Cancel an in-progress Claude OAuth login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+  /api/config/claude-auth/callback:
+    post:
+      tags:
+        - Auth
+      summary: Submit the authorization code from Anthropic to complete login.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaudeCallbackBody"
+      responses:
+        "200":
+          description: Code accepted (may still be pending).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  pending:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Missing or invalid `code`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: No login in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: CLI rejected the code or proxy failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/claude-auth/api-key:
+    post:
+      tags:
+        - Auth
+      summary: Set or clear the host-wide Anthropic API key.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyOnlyBody"
+      responses:
+        "200":
+          description: API key persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  configured:
+                    type: boolean
+                  masked:
+                    type: string
+                    nullable: true
+                required:
+                  - ok
+                  - configured
+                  - masked
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config/claude-auth/oauth-token:
+    post:
+      tags:
+        - Auth
+      summary: Set or clear the host-wide Claude OAuth token.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OauthTokenBody"
+      responses:
+        "200":
+          description: Token persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  configured:
+                    type: boolean
+                  masked:
+                    type: string
+                    nullable: true
+                required:
+                  - ok
+                  - configured
+                  - masked
+        "400":
+          description: Invalid body shape or empty token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/claude-auth/validate-key:
+    post:
+      tags:
+        - Auth
+      summary: Validate a candidate Anthropic API key against the CLI.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyRequiredBody"
+      responses:
+        "200":
+          description: Validation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - valid
+                  - output
+        "400":
+          description: Missing apiKey.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/codex-auth:
+    get:
+      tags:
+        - Auth
+      summary: Codex CLI auth status.
+      responses:
+        "200":
+          description: Current Codex auth status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uiStatus:
+                    type: string
+                  binary:
+                    type: object
+                    properties:
+                      present:
+                        type: boolean
+                      path:
+                        type: string
+                    required:
+                      - present
+                      - path
+                  apiKey:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      source:
+                        type: string
+                        nullable: true
+                        enum:
+                          - environment
+                          - config
+                          - null
+                      masked:
+                        type: string
+                        nullable: true
+                    required:
+                      - configured
+                      - source
+                      - masked
+                  activeMethod:
+                    type: string
+                    enum:
+                      - api-key
+                      - oauth
+                      - none
+                  oauth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                        nullable: true
+                      mode:
+                        type: string
+                        nullable: true
+                      authJsonPath:
+                        type: string
+                        nullable: true
+                    required:
+                      - loggedIn
+                  loginInProgress:
+                    type: boolean
+                  statusError:
+                    type: string
+                    nullable: true
+                required:
+                  - uiStatus
+                  - binary
+                  - apiKey
+                  - activeMethod
+                  - oauth
+                  - loginInProgress
+                  - statusError
+    delete:
+      tags:
+        - Auth
+      summary: Clear host Codex API key + run CLI logout.
+      responses:
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+  /api/config/codex-auth/device-login:
+    post:
+      tags:
+        - Auth
+      summary: Start Codex device-auth (ChatGPT) login flow.
+      responses:
+        "200":
+          description: Device code emitted, or login outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Codex binary missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/codex-auth/cancel-login:
+    post:
+      tags:
+        - Auth
+      summary: Cancel an in-progress Codex device login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+  /api/config/codex-auth/api-key:
+    post:
+      tags:
+        - Auth
+      summary: Set or clear the host-wide Codex / OpenAI API key.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyOnlyBody"
+      responses:
+        "200":
+          description: API key persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  configured:
+                    type: boolean
+                  masked:
+                    type: string
+                    nullable: true
+                required:
+                  - ok
+                  - configured
+                  - masked
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config/codex-auth/validate-key:
+    post:
+      tags:
+        - Auth
+      summary: Validate a candidate Codex API key against the CLI.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyRequiredBody"
+      responses:
+        "200":
+          description: Validation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - valid
+                  - output
+        "400":
+          description: Invalid body or missing apiKey.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config/cursor-auth:
+    get:
+      tags:
+        - Auth
+      summary: Cursor Agent CLI auth status.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: cursorBin
+          in: query
+      responses:
+        "200":
+          description: Current Cursor auth status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uiStatus:
+                    type: string
+                  binary:
+                    type: object
+                    properties:
+                      present:
+                        type: boolean
+                      path:
+                        type: string
+                    required:
+                      - present
+                      - path
+                  oauth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                        nullable: true
+                      email:
+                        type: string
+                        nullable: true
+                    required:
+                      - loggedIn
+                  loginInProgress:
+                    type: boolean
+                  activeMethod:
+                    type: string
+                    enum:
+                      - oauth
+                      - none
+                  statusError:
+                    type: string
+                    nullable: true
+                required:
+                  - uiStatus
+                  - binary
+                  - oauth
+                  - loginInProgress
+                  - activeMethod
+                  - statusError
+    delete:
+      tags:
+        - Auth
+      summary: Log the Cursor Agent CLI out.
+      responses:
+        "200":
+          description: Logout result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "400":
+          description: Cursor binary missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: CLI logout failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/cursor-auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Start the Cursor Agent OAuth login flow.
+      responses:
+        "200":
+          description: Login URL emitted by cursor-agent, or login result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  loginUrl:
+                    type: string
+                  completed:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Cursor binary missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/cursor-auth/cancel-login:
+    post:
+      tags:
+        - Auth
+      summary: Cancel an in-progress Cursor login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+  /api/config/gemini-auth:
+    get:
+      tags:
+        - Auth
+      summary: Gemini CLI auth status (host-config + masked preview).
+      responses:
+        "200":
+          description: Current Gemini auth status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      source:
+                        type: string
+                        nullable: true
+                        enum:
+                          - environment
+                          - config
+                          - null
+                      masked:
+                        type: string
+                        nullable: true
+                    required:
+                      - configured
+                      - source
+                      - masked
+                  activeMethod:
+                    type: string
+                    enum:
+                      - api-key
+                      - none
+                  oauth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                        nullable: true
+                    required:
+                      - loggedIn
+                required:
+                  - apiKey
+                  - activeMethod
+                  - oauth
+    delete:
+      tags:
+        - Auth
+      summary: Clear the host-wide Gemini API key.
+      responses:
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "500":
+          description: Server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/config/gemini-auth/api-key:
+    post:
+      tags:
+        - Auth
+      summary: Set or clear the host-wide Gemini API key.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyOnlyBody"
+      responses:
+        "200":
+          description: API key persisted to config.json.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  configured:
+                    type: boolean
+                  masked:
+                    type: string
+                    nullable: true
+                required:
+                  - ok
+                  - configured
+                  - masked
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config/gemini-auth/validate-key:
+    post:
+      tags:
+        - Auth
+      summary: Validate a candidate Gemini API key against the CLI.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyRequiredBody"
+      responses:
+        "200":
+          description: Validation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  output:
+                    type: string
+                required:
+                  - valid
+                  - output
+        "400":
+          description: Invalid body shape or missing apiKey.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+  /api/auth/github/start:
+    get:
+      tags:
+        - Auth
+      summary: Mint a signed state token + return the GitHub authorize URL.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: returnTo
+          in: query
+      responses:
+        "200":
+          description: Authorize URL the client should redirect the browser to.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizeUrl:
+                    type: string
+                required:
+                  - authorizeUrl
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: GitHub OAuth not configured on the server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/github/callback:
+    get:
+      tags:
+        - Auth
+      summary: GitHub OAuth callback — exchanges code for tokens (HTML response).
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: code
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: state
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: error
+          in: query
+      responses:
+        "200":
+          description: Successful sign-in (HTML status page).
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Missing or invalid parameters.
+          content:
+            text/html:
+              schema:
+                type: string
+        "502":
+          description: GitHub token exchange failed.
+          content:
+            text/html:
+              schema:
+                type: string
+        "503":
+          description: Server not ready or OAuth not configured.
+          content:
+            text/html:
+              schema:
+                type: string
+  /api/auth/github/status:
+    get:
+      tags:
+        - Auth
+      summary: GitHub connection status for the calling user.
+      responses:
+        "200":
+          description: Connection summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: boolean
+                  login:
+                    type: string
+                    nullable: true
+                  connectedAt:
+                    type: string
+                    nullable: true
+                  tokenExpiresAt:
+                    type: string
+                    nullable: true
+                  serverConfigured:
+                    type: boolean
+                required:
+                  - connected
+                  - serverConfigured
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/github:
+    delete:
+      tags:
+        - Auth
+      summary: Disconnect the calling user from GitHub.
+      responses:
+        "200":
+          description: Disconnected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/github/connect-token:
+    post:
+      tags:
+        - Auth
+      summary: Connect via a GitHub Personal Access Token (PAT).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GithubConnectTokenBody"
+      responses:
+        "200":
+          description: Token validated and stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  login:
+                    type: string
+                required:
+                  - ok
+                  - login
+        "400":
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: GitHub API call failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
