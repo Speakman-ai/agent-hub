@@ -1292,6 +1292,12 @@ export async function pollForMissedReviews(): Promise<void> {
     for (const card of cardsToScan) {
       if (!card.pr_url) continue;
 
+      // Skip cards whose PR has already been approved — no point re-notifying
+      // the agent about stale `changes_requested` reviews that were superseded
+      // by an approval. This guards against the case where the reviewer approved
+      // but the old `changes_requested` review remains in GitHub's history.
+      if (card.review_status === 'approved') continue;
+
       const prMatch = card.pr_url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
       if (!prMatch) continue;
       const [, repoFullName, prNumber] = prMatch;
@@ -1318,10 +1324,20 @@ export async function pollForMissedReviews(): Promise<void> {
           submitted_at: string;
         }>;
 
-        const lastDispatched = lastDispatchedReviewId.get(card.id);
-        const newReviews = lastDispatched
-          ? reviews.filter((r) => r.id > Number(lastDispatched))
-          : reviews;
+        // Prefer the in-memory dedup value (fast path). On server restart the
+        // in-memory map is empty, so we fall back to the DB-persisted value on
+        // the card row. This prevents re-dispatching the same review feedback
+        // after every server restart (the original source of the repeated-ack
+        // bug where the agent kept saying "Another auto background-task
+        // notification — no action needed").
+        const inMemory = lastDispatchedReviewId.get(card.id);
+        const dbPersisted =
+          inMemory === undefined && card.last_dispatched_review_id != null
+            ? Number(card.last_dispatched_review_id)
+            : undefined;
+        const lastDispatched = inMemory ?? dbPersisted;
+        const newReviews =
+          lastDispatched !== undefined ? reviews.filter((r) => r.id > lastDispatched) : reviews;
 
         if (newReviews.length > 0) {
           console.log(
@@ -1356,7 +1372,19 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
           );
           if (result.userMessagePersisted) {
             const latestId = Math.max(...newReviews.map((r) => r.id));
+            // Update in-memory dedup map.
             recordDispatchedChangesRequestedReview(card.id, latestId);
+            // Also persist to DB so the dedup state survives server restarts.
+            // Without this, the map is cleared on every restart and the same
+            // reviews are re-dispatched each time the server comes back up.
+            try {
+              d.stmts.setCardLastDispatchedReviewId?.run(latestId, card.id);
+            } catch (persistErr) {
+              console.warn(
+                `[ReviewPoll] Failed to persist last_dispatched_review_id for card ${card.id}:`,
+                (persistErr as Error).message,
+              );
+            }
           }
         }
       } catch {

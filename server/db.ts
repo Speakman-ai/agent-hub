@@ -1123,6 +1123,19 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_base_branch TEXT DEFAULT NULL');
   }
 
+  // Persistent dedup for `pollForMissedReviews`. Stores the highest GitHub
+  // review id we have already dispatched author feedback for. Without this,
+  // the in-memory `lastDispatchedReviewId` map is cleared on every server
+  // restart, causing the same `changes_requested` reviews to be re-dispatched
+  // repeatedly (each restart = a new unwanted "Missed Review Feedback" message
+  // injected into the agent session). Persisting here means the poll can
+  // restore its dedup state after restart without touching GitHub's API.
+  try {
+    db.prepare('SELECT last_dispatched_review_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN last_dispatched_review_id INTEGER DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -2365,6 +2378,9 @@ function initDb(dataDir: string): void {
     ),
     setCardPrUrl: db.prepare(
       "UPDATE kanban_cards SET pr_url = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setCardLastDispatchedReviewId: db.prepare(
+      "UPDATE kanban_cards SET last_dispatched_review_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Used by <handoff> delivery to re-point a card from the source session
     // to the newly-created target session and update the assignee to the
