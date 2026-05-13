@@ -11,6 +11,7 @@ import {
   serializeAllowlist,
   parseAllowlistFromBackend,
 } from '../utils/authorAllowlist.js';
+import { hasRole } from '../utils/auth.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
@@ -7857,7 +7858,11 @@ const SETTINGS_GROUPS = [
     label: 'Agents & Auth',
     tabs: [
       { id: 'agents', iconName: 'Bot', text: 'Agents' },
-      { id: 'claude-auth', iconName: 'Key', text: 'AI Authentication' },
+      // Host-wide CLI credentials (managed in ~/.agent-hub/data/config.json).
+      // Per-user CLI creds live on Settings → Account, so this tab is gated
+      // to Admin/Owner via `visibleSettingsGroups` below. Sole-source-of-truth
+      // for the tab id is `claude-auth` (historical — predates the renaming).
+      { id: 'claude-auth', iconName: 'Key', text: 'Global AI Authentication' },
       { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
     ],
   },
@@ -7960,14 +7965,34 @@ export default function SettingsPage({
   // hop between Hub servers via its file-backed remote-orgs store +
   // cross-origin API-key injector). The web app is locked to a single
   // Hub server, so hide the tab there.
+  //
+  // Role-gated tab visibility. The host-wide "Global AI Authentication"
+  // panel writes to `~/.agent-hub/data/config.json` and only Admin/Owner
+  // users have a reason to touch it — regular users manage their own
+  // per-user creds on Settings → Account. Empty groups are dropped to
+  // keep the sidebar layout tidy when every tab in a group is hidden.
+  // The server still enforces the underlying permissions; this is a
+  // UX hint only.
   const electronShell = isElectron();
+  const isAdminPlus = hasRole('Admin');
   const visibleSettingsGroups = useMemo(() => {
-    if (electronShell) return SETTINGS_GROUPS;
     return SETTINGS_GROUPS.map((group) => ({
       ...group,
-      tabs: group.tabs.filter((t) => t.id !== 'orgs'),
-    }));
-  }, [electronShell]);
+      tabs: group.tabs.filter((t) => {
+        if (t.id === 'orgs' && !electronShell) return false;
+        if (t.id === 'claude-auth' && !isAdminPlus) return false;
+        return true;
+      }),
+    })).filter((group) => group.tabs.length > 0);
+  }, [electronShell, isAdminPlus]);
+
+  // If a non-Admin user lands on the hidden `claude-auth` tab via a deep
+  // link, send them to Account (which hosts their per-user CLI creds).
+  useEffect(() => {
+    if (tab === 'claude-auth' && !isAdminPlus) {
+      setTab('account');
+    }
+  }, [tab, isAdminPlus]);
 
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
@@ -8082,7 +8107,7 @@ export default function SettingsPage({
             <SettingsErrorBoundary key={tab}>
               {tab === 'general' && <GeneralSection />}
               {tab === 'account' && <AccountSection />}
-              {tab === 'claude-auth' && (
+              {tab === 'claude-auth' && isAdminPlus && (
                 <div className="space-y-10">
                   <ClaudeAuthSection />
                   <div className="h-px bg-gray-800" />
