@@ -1695,6 +1695,11 @@ describe('Setup', () => {
       // App.jsx — must always be present (boolean) regardless of host state.
       expect(res.body).toHaveProperty('hasAnyAiCredentials');
       expect(typeof res.body.hasAnyAiCredentials).toBe('boolean');
+      // authConfigured is the authoritative "needs first-run wizard"
+      // signal — it must always be present so the client can gate on it
+      // without falling back to the unreliable orgs / host-creds heuristic.
+      expect(res.body).toHaveProperty('authConfigured');
+      expect(typeof res.body.authConfigured).toBe('boolean');
       expect(res.body.engineAuth).toEqual(
         expect.objectContaining({
           'claude-code': expect.any(Boolean),
