@@ -1,0 +1,433 @@
+name: Release All
+
+# One-shot full rollout. Operator picks a semver bump (patch/minor/major)
+# and the workflow:
+#   1. release       — bumps version, tags, generates notes, creates a
+#                      GitHub release (identical to release-prod.yml).
+#   2. build-mac     — builds + uploads macOS DMGs in parallel with the
+#                      server rollout. Non-gating (DMG failure does NOT
+#                      block the server deploy — same posture as
+#                      release-prod.yml).
+#   3. deploy-prod-1 — rolls the new tag to agent-hub-prod (identical to
+#                      release-prod.yml).
+#   4. AFTER prod-1 succeeds, deploy-dev + deploy-prod-2 run in parallel
+#      via workflow_call, both pinned to the new release tag.
+#
+# `release-prod.yml` and `deploy-prod-2.yml` still exist as standalone
+# workflows for operators who want the conservative path (roll prod-1 now,
+# soak, then roll prod-2). This workflow is the "ship to everywhere"
+# button for routine releases.
+#
+# The release + prod-1 jobs are intentionally duplicated from
+# `release-prod.yml` rather than extracted into a callable workflow — the
+# duplication keeps the proven release path in one file and lets us iterate
+# on the orchestrator without risking the conservative single-prod-1 flow.
+# If the duplication becomes painful, follow up with a refactor to extract
+# `deploy-prod-1` into a callable workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semver bump type'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+# Only one Release All can be in flight at a time. We do NOT cancel
+# in-progress: a half-finished release (tag pushed but deploys not run)
+# leaves the system in an awkward state — better to wait for the prior
+# run to finish before starting another.
+concurrency:
+  group: release-all
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC for AWS (build-mac, deploy-prod-1)
+  # Mutations (push version bump + tag, gh release create) go through
+  # RELEASE_PAT, so the default GITHUB_TOKEN only needs read access. The
+  # called deploy-dev / deploy-prod-2 workflows declare their own
+  # permissions blocks.
+  contents: read
+
+jobs:
+  # Tests are not re-run here. ci.yml gates every PR with the full suite
+  # before merge to main, so by the time main is taggable it is already
+  # green. Skipping the duplicate run shortens the release cycle. If you
+  # suspect main is dirty, run `gh workflow run ci.yml --ref main` before
+  # triggering Release All.
+  release:
+    name: Tag & release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      previous_tag: ${{ steps.bump.outputs.previous_tag }}
+    steps:
+      # Checkout with RELEASE_PAT so the version-bump commit + tag push can
+      # re-trigger downstream workflows. A fine-grained PAT scoped to this
+      # repo with contents:write is the minimum required.
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Configure git identity
+        run: |
+          git config user.name "agent-hub-release-bot"
+          git config user.email "release-bot@agent-hub.local"
+
+      - name: Bump version & sync lockfiles
+        id: bump
+        env:
+          BUMP: ${{ github.event.inputs.bump }}
+        run: |
+          set -euo pipefail
+          # Capture the previous tag BEFORE we create a new one. If no tags
+          # exist yet (first release), previous_tag stays empty and notes
+          # are generated from the whole history.
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "previous_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+          # Bump the root package.json without creating git artifacts;
+          # we commit + tag ourselves so we can also bump server/package.json.
+          npm version "$BUMP" --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Keep server/package.json in lockstep — the server version is
+          # surfaced by the /api/health endpoint.
+          (cd server && npm version "$VERSION" --no-git-tag-version --allow-same-version)
+
+          # Regenerate lockfiles so the version bump is reflected.
+          npm install --package-lock-only --ignore-scripts
+          (cd server && npm install --package-lock-only --ignore-scripts)
+
+      - name: Commit, tag, and push
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git add package.json package-lock.json server/package.json server/package-lock.json
+          git commit -m "chore(release): $TAG"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin main
+          git push origin "$TAG"
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          PREV_TAG: ${{ steps.bump.outputs.previous_tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+          git log --pretty='- %s (%h)' "$RANGE" \
+            | node server/scripts/format-release-notes.mjs \
+                --version "$TAG" \
+                --previous "${PREV_TAG:-}" \
+                --repo "$REPO" \
+            > notes.md
+          echo "--- notes.md ---"
+          cat notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file notes.md
+
+  build-mac:
+    name: Build & upload macOS DMGs
+    # Parallel with deploy-prod-1. DMG failure does NOT gate the server
+    # rollout — desktop app and server are independent artifacts. If this
+    # job fails, the server deploys still proceed and the DMG can be cut
+    # manually afterward with `npm run release:mac`.
+    needs: release
+    runs-on: macos-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+            server/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          # `server/node_modules` must exist at pack time because
+          # `server/**/*` is in `asarUnpack` and electron/main.js boots the
+          # embedded server via `node_modules/tsx/dist/cli.mjs`. Without
+          # this, the .app ships without tsx and launches to a black screen.
+          npm ci --include=dev
+          (cd client && npm ci --include=dev)
+          (cd server && npm ci --include=dev)
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-release-all-mac-${{ github.run_id }}
+
+      - name: Build DMGs and upload to S3
+        run: node electron/release-mac.mjs
+
+      - name: Summarize
+        if: success()
+        run: |
+          {
+            echo "## 🍎 macOS DMGs uploaded"
+            echo ""
+            echo "- Bucket: \`s3://agent-hub-prod-releases/${TAG}/\`"
+            echo "- Artifacts: \`Agent Hub-*-arm64.dmg\`, \`Agent Hub-*.dmg\`"
+            echo ""
+            echo "> First-pass builds are **unsigned**. Code-signing and notarization will be added in a follow-up PR."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-prod-1:
+    name: Deploy agent-hub-prod
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
+      INSTANCE_NAME_TAG: agent-hub-prod
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-release-all-prod1-${{ github.run_id }}
+
+      - name: Resolve instance ID
+        id: resolve
+        run: |
+          set -euo pipefail
+          IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=${INSTANCE_NAME_TAG}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)
+          COUNT=$(echo "$IDS" | wc -w)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly 1 running instance with Name=${INSTANCE_NAME_TAG}, found $COUNT: $IDS"
+            exit 1
+          fi
+          echo "instance_id=$IDS" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy tag ${{ env.TAG }} via SSM
+        id: deploy
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          # See deploy-dev.yml for the full rationale on the
+          # dash→setpriv→bash chain and why we materialize the inner
+          # script to a tempfile. Prod mirrors dev's hardening:
+          #   - No EXIT trap (cleanup leaks can flip exit 0 → 1 under errexit).
+          #   - `bash --noprofile --norc` instead of `bash -l` (avoids
+          #     ~/.bash_profile / ~/.bash_logout teardown exit-code leaks);
+          #     nvm is sourced explicitly inside the script.
+          #   - `set +e` before the final `exit 0` so deferred shell
+          #     bookkeeping can't flip it.
+          # Prod uses `git reset --hard "${TAG}"` + `git clean -fd`
+          # instead of `git checkout "${TAG}"`. Reset + clean moves HEAD
+          # to the tag commit and wipes any drift, making the deploy
+          # idempotent regardless of the instance's prior state.
+          INNER_SCRIPT=$(cat <<INNER
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export NVM_DIR="\$HOME/.nvm"
+          # shellcheck disable=SC1091
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+          cd ${DEPLOY_PATH}
+          git fetch --all --tags --prune
+          git reset --hard "${TAG}"
+          git clean -fd
+          # Ensure cursor-agent CLI is present for sessions with engine=cursor-agent.
+          # Idempotent — no-op when already installed at \$HOME/.local/bin/agent.
+          bash scripts/ensure-cursor-agent.sh
+          bash scripts/ensure-codex.sh
+          npm ci --include=dev
+          (cd server && npm ci --include=dev)
+          (cd client && npm ci --include=dev)
+          npm run build
+          bash scripts/pm2-reload-and-wait.sh
+          INNER
+          )
+          INNER_B64=$(printf '%s\n' "$INNER_SCRIPT" | base64 -w0)
+
+          DEPLOY_SCRIPT=$(cat <<OUTER
+          set -eu
+          TMP=\$(mktemp /tmp/agent-hub-deploy.XXXXXX.sh)
+          printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
+          chmod 0750 "\$TMP"
+          chown agenthub:agenthub "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash --noprofile --norc "\$TMP"
+          OUTER
+          )
+
+          jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "release-all ${TAG} prod-1" \
+            --parameters "file://$RUNNER_TEMP/ssm-params.json" \
+            --cloud-watch-output-config CloudWatchOutputEnabled=true \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deploy
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
+        run: |
+          set -euo pipefail
+          trap 'echo "Received signal; cancelling SSM command $COMMAND_ID..."; aws ssm cancel-command --command-id "$COMMAND_ID" --instance-ids "$INSTANCE_ID" || true; exit 130' INT TERM
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            echo "[$i] status=$STATUS"
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text | tail -n 40
+                {
+                  echo "## ✅ Release ${TAG} rolled out to agent-hub-prod"
+                  echo ""
+                  echo "- dev and prod-2 deploys are now starting in parallel."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::prod-1 deploy finished with status=$STATUS"
+                echo "--- stdout ---"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text || true
+                echo "--- stderr ---"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' --output text || true
+                {
+                  echo "## ⛔ Rollout halted"
+                  echo ""
+                  echo "agent-hub-prod failed its deploy/health-check for **${TAG}**."
+                  echo ""
+                  echo "- dev and prod-2 were **not** touched — they are gated on prod-1 success."
+                  echo "- Investigate, fix forward or roll back, then re-run this workflow or roll the remaining targets manually."
+                  echo "- Runbook: docs/deployment/OIDC-SETUP.md#runbook"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+                ;;
+              *)
+                sleep 10
+                ;;
+            esac
+          done
+          echo "::error::Timed out waiting for SSM command $COMMAND_ID"
+          exit 1
+
+  # dev and prod-2 fan out in parallel ONLY after prod-1 is green. If
+  # prod-1 fails, neither runs — operator can investigate prod-1, then
+  # roll the remaining targets manually with deploy-dev.yml and
+  # deploy-prod-2.yml using the new tag.
+  deploy-dev:
+    name: Deploy agent-hub-server (dev)
+    needs: [release, deploy-prod-1]
+    uses: ./.github/workflows/deploy-dev.yml
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+    # No secrets passed — deploy-dev.yml uses OIDC + vars only. If it ever
+    # gains a secret dependency, add `secrets: inherit` here.
+
+  deploy-prod-2:
+    name: Deploy agent-hub-prod-2
+    needs: [release, deploy-prod-1]
+    uses: ./.github/workflows/deploy-prod-2.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+
+  summary:
+    name: Release All summary
+    needs: [release, deploy-prod-1, deploy-dev, deploy-prod-2, build-mac]
+    # Always run so the operator gets a single status block at the bottom
+    # of the workflow page, regardless of which fan-out leg succeeded.
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+      RELEASE_RESULT: ${{ needs.release.result }}
+      PROD1_RESULT: ${{ needs.deploy-prod-1.result }}
+      DEV_RESULT: ${{ needs.deploy-dev.result }}
+      PROD2_RESULT: ${{ needs.deploy-prod-2.result }}
+      MAC_RESULT: ${{ needs.build-mac.result }}
+    steps:
+      - name: Emit summary
+        run: |
+          set -euo pipefail
+          icon() {
+            case "$1" in
+              success) echo "✅";;
+              failure) echo "❌";;
+              cancelled) echo "⚪";;
+              skipped) echo "⏭️";;
+              *) echo "❓";;
+            esac
+          }
+          {
+            echo "## 🚀 Release All — ${TAG:-(no tag cut)}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
+            echo "| Deploy prod-1      | $(icon "$PROD1_RESULT") $PROD1_RESULT |"
+            echo "| Deploy dev         | $(icon "$DEV_RESULT") $DEV_RESULT |"
+            echo "| Deploy prod-2      | $(icon "$PROD2_RESULT") $PROD2_RESULT |"
+            echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
+          } >> "$GITHUB_STEP_SUMMARY"
