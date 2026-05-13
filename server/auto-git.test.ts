@@ -14,6 +14,17 @@ vi.mock('fs', () => ({
   statSync: vi.fn(),
 }));
 
+// Stubs for the per-user GitHub token resolution path. Default to nulls so
+// the bulk of the suite (which doesn't care about token injection) is
+// unaffected — tests that DO care override the return values inline.
+vi.mock('./session-ownership.js', () => ({
+  getSessionOwner: vi.fn(() => null),
+  getOrgOwnerUserId: vi.fn(() => null),
+}));
+vi.mock('./github-connections-store.js', () => ({
+  getActiveAccessToken: vi.fn(async () => null),
+}));
+
 import { exec, execFile, spawn } from 'child_process';
 import {
   checkWorktreeChanges,
@@ -3083,6 +3094,300 @@ describe('tasks-only project (no githubRepo) — auto/manual PR are no-ops', () 
     if (result.ok === false) {
       expect(result.code).toBe('no_github_repo');
       expect(result.error).toMatch(/not connected to a GitHub repository/i);
+    }
+  });
+});
+
+describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
+  // Regression: autonomous-dispatch sessions deliberately strip GitHub
+  // credentials from the agent's spawn env (anti-bypass). Auto-git runs in
+  // the Hub server process, so it must resolve the session owner's per-user
+  // token itself and inject it into every `git push` / `gh` child env.
+  // Without this, pushes to private repos fail with "Authentication failed
+  // for 'https://github.com/<owner>/<repo>.git/'".
+  const mockBroadcast = vi.fn();
+  const FAKE_TOKEN = 'gho_test_token_42';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { getSessionOwner, getOrgOwnerUserId } = await import('./session-ownership.js');
+    const { getActiveAccessToken } = await import('./github-connections-store.js');
+    (getSessionOwner as unknown as Mock).mockReturnValue('owner-user-1');
+    (getOrgOwnerUserId as unknown as Mock).mockReturnValue('owner-user-1');
+    (getActiveAccessToken as unknown as Mock).mockResolvedValue(FAKE_TOKEN);
+  });
+
+  it('injects the session owner GH_TOKEN + credential helper into git push env', async () => {
+    const mockCard = {
+      id: 'card-token-1',
+      title: 'Token-injection card',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    };
+    const mockStmts = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getKanbanCard: { get: vi.fn(() => mockCard) },
+      getKanbanEpic: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'Token session' })) },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-inprog', name: 'In Progress' },
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      getMessages: { all: vi.fn(() => [] as MessageRow[]) },
+      setCardPrUrl: { run: vi.fn() },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      createKanbanCardComment: { run: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+      getMessageById: {
+        get: vi.fn(() => ({
+          id: 'm-1',
+          session_id: 'sess-token',
+          role: 'system',
+          content: '',
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata: null,
+          created_at: '2026-05-13T00:00:00.000Z',
+        })),
+      },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    // Capture env for every spawned git/gh child so we can assert the push
+    // child saw the resolved token in its env.
+    const spawnEnvs: Array<{ file: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+
+    (spawn as unknown as Mock).mockImplementation(
+      (file: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        spawnEnvs.push({ file, args, env: options?.env ?? {} });
+        const child = new EventEmitter() as EventEmitter & {
+          stdout: EventEmitter;
+          stderr: EventEmitter;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = vi.fn();
+        queueMicrotask(() => {
+          // gh pr create returns the URL; everything else exits 0 silently.
+          if (file === 'gh' && args[0] === 'pr' && args[1] === 'create') {
+            child.stdout.emit('data', Buffer.from('https://github.com/test/repo/pull/123\n'));
+          }
+          child.emit('close', 0, null);
+        });
+        return child;
+      },
+    );
+
+    // exec/execFile cover `git config`, `git status`, `git log`, `git remote -v`,
+    // and the `gh pr view` pre-check. Mirror the patterns used by other tests.
+    (exec as unknown as Mock).mockImplementation(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => cb?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/token-test\n');
+        if (cmd.includes('git log @{upstream}..HEAD'))
+          return cb?.(new Error('no upstream'), { stdout: '', stderr: '' });
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.startsWith('git config user.name'))
+          return cb?.(null, { stdout: 'CI Bot\n', stderr: '' });
+        if (cmd.startsWith('git config user.email'))
+          return cb?.(null, { stdout: 'ci@example.com\n', stderr: '' });
+        return ok('');
+      },
+    );
+
+    (execFile as unknown as Mock).mockImplementation(
+      (
+        file: string,
+        args: string[],
+        _opts: Record<string, unknown>,
+        cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (file === 'gh' && args[0] === 'pr' && args[1] === 'view') {
+          return cb?.(null, { stdout: '', stderr: '' });
+        }
+        cb?.(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'token-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-token', 'agent-token', project, agent, '/worktree', '');
+
+    const pushSpawn = spawnEnvs.find((s) => s.file === 'git' && s.args[0] === 'push');
+    expect(pushSpawn).toBeDefined();
+    // Token must be present so the credential helper / gh fall through to it.
+    expect(pushSpawn?.env.GH_TOKEN).toBe(FAKE_TOKEN);
+    expect(pushSpawn?.env.GITHUB_TOKEN).toBe(FAKE_TOKEN);
+    // The "clear inherited helper" sentinel must be installed at index 0 so
+    // host operator credentials in ~/.gitconfig can't shadow the injected
+    // helper. The working helper is appended at the next index by
+    // `applyGithubSpawnCredentials`.
+    expect(pushSpawn?.env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+    expect(pushSpawn?.env.GIT_CONFIG_VALUE_0).toBe('');
+    const countRaw = pushSpawn?.env.GIT_CONFIG_COUNT;
+    const count = countRaw ? Number.parseInt(countRaw, 10) : NaN;
+    expect(Number.isFinite(count) && count >= 2).toBe(true);
+  });
+
+  it('does NOT inject GH_TOKEN when no session owner is resolvable', async () => {
+    // Regression guard: when the owner lookup yields nothing (legacy install,
+    // tests, or a misconfigured row), we fall back to the Hub process's
+    // ambient git/gh auth — env stays unmodified so we don't accidentally
+    // surface a stale token from process.env.
+    const { getSessionOwner, getOrgOwnerUserId } = await import('./session-ownership.js');
+    (getSessionOwner as unknown as Mock).mockReturnValue(null);
+    (getOrgOwnerUserId as unknown as Mock).mockReturnValue(null);
+
+    const mockCard = {
+      id: 'card-no-token',
+      title: 'No-token card',
+      description: '',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    };
+    const mockStmts = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getKanbanCard: { get: vi.fn(() => mockCard) },
+      getKanbanEpic: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'No-token session' })) },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-inprog', name: 'In Progress' },
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      getMessages: { all: vi.fn(() => [] as MessageRow[]) },
+      setCardPrUrl: { run: vi.fn() },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      createKanbanCardComment: { run: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+      getMessageById: {
+        get: vi.fn(() => ({
+          id: 'm-2',
+          session_id: 'sess-no-token',
+          role: 'system',
+          content: '',
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata: null,
+          created_at: '2026-05-13T00:00:00.000Z',
+        })),
+      },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    // Force a process-env baseline that has no inherited GH_TOKEN so we can
+    // assert the push child also has none.
+    const prevGhToken = process.env.GH_TOKEN;
+    const prevGithubToken = process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+
+    try {
+      const spawnEnvs: Array<{ file: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+      (spawn as unknown as Mock).mockImplementation(
+        (file: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+          spawnEnvs.push({ file, args, env: options?.env ?? {} });
+          const child = new EventEmitter() as EventEmitter & {
+            stdout: EventEmitter;
+            stderr: EventEmitter;
+            kill: ReturnType<typeof vi.fn>;
+          };
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = vi.fn();
+          queueMicrotask(() => {
+            if (file === 'gh' && args[0] === 'pr' && args[1] === 'create') {
+              child.stdout.emit('data', Buffer.from('https://github.com/test/repo/pull/123\n'));
+            }
+            child.emit('close', 0, null);
+          });
+          return child;
+        },
+      );
+      (exec as unknown as Mock).mockImplementation(
+        (
+          cmd: string,
+          _opts: Record<string, unknown>,
+          cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+        ) => {
+          const ok = (stdout: string) => cb?.(null, { stdout, stderr: '' });
+          if (cmd.includes('git remote -v'))
+            return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+          if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+          if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/no-token\n');
+          if (cmd.includes('git log @{upstream}..HEAD'))
+            return cb?.(new Error('no upstream'), { stdout: '', stderr: '' });
+          if (cmd.includes('git log main..HEAD')) return ok('');
+          if (cmd.startsWith('git config user.name'))
+            return cb?.(null, { stdout: 'CI Bot\n', stderr: '' });
+          if (cmd.startsWith('git config user.email'))
+            return cb?.(null, { stdout: 'ci@example.com\n', stderr: '' });
+          return ok('');
+        },
+      );
+      (execFile as unknown as Mock).mockImplementation(
+        (
+          _file: string,
+          _args: string[],
+          _opts: Record<string, unknown>,
+          cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+        ) => {
+          cb?.(null, { stdout: '', stderr: '' });
+        },
+      );
+
+      const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+      const agent = { name: 'no-token-agent', role: 'dev' } as never;
+      await autoCommitAndPR('sess-no-token', 'agent-no-token', project, agent, '/worktree', '');
+
+      const pushSpawn = spawnEnvs.find((s) => s.file === 'git' && s.args[0] === 'push');
+      expect(pushSpawn).toBeDefined();
+      expect(pushSpawn?.env.GH_TOKEN).toBeUndefined();
+      expect(pushSpawn?.env.GITHUB_TOKEN).toBeUndefined();
+    } finally {
+      if (prevGhToken !== undefined) process.env.GH_TOKEN = prevGhToken;
+      if (prevGithubToken !== undefined) process.env.GITHUB_TOKEN = prevGithubToken;
     }
   });
 });
