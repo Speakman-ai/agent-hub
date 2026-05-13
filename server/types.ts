@@ -385,6 +385,11 @@ export interface KanbanCardRow {
    *  branch no longer exists at PR-open time, the server falls back to the
    *  default and posts an explanatory comment on the card. */
   pr_base_branch?: string | null;
+  /** Persistent dedup key for `pollForMissedReviews`. Stores the highest
+   *  GitHub review id already dispatched to the linked session so the poll
+   *  can restore its dedup state after a server restart without re-sending
+   *  stale "Missed Review Feedback" messages. NULL = never dispatched. */
+  last_dispatched_review_id?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1022,6 +1027,7 @@ export interface Stmts {
   updateKanbanCard: Stmt;
   moveKanbanCard: Stmt;
   setCardPrUrl: Stmt;
+  setCardLastDispatchedReviewId: Stmt;
   reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
   getKanbanCardByPrUrl: Stmt;
