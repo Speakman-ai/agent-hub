@@ -21,10 +21,30 @@
  *     owner so an upgrade doesn't lose access.
  */
 import { getDb } from './db.js';
-import { listUsers } from './users-store.js';
+import { listUsers, getUserById } from './users-store.js';
 import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
 import type { AuthenticatedRequest } from './auth.js';
+
+/**
+ * True when `id` looks like a real user row in orgs.db. Used by the
+ * autonomous owner-resolution chain to drop free-form `created_by`
+ * values (agent ids, "system", legacy strings) so they don't end up
+ * stamped as `owner_user_id` and silently lock the actual operator out
+ * of their own sessions.
+ *
+ * Errors from `getUserById` (orgs.db not initialized in mid-boot / test
+ * harness) collapse to `false` — the caller falls through to the next
+ * resolution step rather than crash.
+ */
+function isKnownUserId(id: string | null | undefined): id is string {
+  if (!id) return false;
+  try {
+    return getUserById(id) != null;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * True when neither an apiKey nor an auth record (JWT setup) is
@@ -189,6 +209,55 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
     return callerId === getOrgOwnerUserId();
   }
   return callerId === owner;
+}
+
+/**
+ * Resolve the user id that should own a session spawned by the
+ * autonomous dispatcher (and any sibling system-spawn path that wants
+ * the same semantics — crons, heartbeats, webhook reviewers). The
+ * dispatcher has no `req` to read `authUserId` off of, so we walk a
+ * series of progressively-weaker signals to find the human responsible:
+ *
+ *   1. **`card.created_by`** — the user who filed the ticket. We only
+ *      accept it when it matches a real user row, because the
+ *      `POST /board/cards` endpoint currently accepts the field as
+ *      free-form text from the body (intake agents stamp their own
+ *      `agent.id`, for example), and writing a non-user string into
+ *      `owner_user_id` would lock everyone out under strict-mode auth.
+ *   2. **`card.session_id` owner** — the chat session that filed the
+ *      card. Useful when the ticket came in via a chat thread that
+ *      doesn't write `created_by` (e.g. the user typed the ticket in
+ *      free-form and the agent created it under its own session).
+ *   3. **`epic.autonomous_enabled_by`** — whoever flipped
+ *      `epic.autonomous = 1`. Same validity check as `created_by`.
+ *      Captures the "no card-level signal, but a human did press the
+ *      autonomous switch" case.
+ *   4. **`getOrgOwnerUserId()`** — last-resort fallback so a fresh
+ *      install / legacy data still produces a non-null owner.
+ *
+ * Returns `null` only when no users exist yet (pre-`/api/auth/setup`,
+ * tests) — `setSessionOwner` is a no-op on null, matching the previous
+ * behaviour where the column stayed NULL until backfill ran.
+ */
+export function resolveAutonomousOwnerUserId(
+  card: { created_by?: string | null; session_id?: string | null } | null | undefined,
+  epic: { autonomous_enabled_by?: string | null } | null | undefined,
+): string | null {
+  // 1. Card creator — if it points at a real user row.
+  if (card?.created_by && isKnownUserId(card.created_by)) {
+    return card.created_by;
+  }
+  // 2. Owner of the session that filed the card.
+  if (card?.session_id) {
+    const sessionOwner = getSessionOwner(card.session_id);
+    if (sessionOwner && isKnownUserId(sessionOwner)) return sessionOwner;
+  }
+  // 3. Whoever flipped autonomous = 1 on the epic.
+  if (epic?.autonomous_enabled_by && isKnownUserId(epic.autonomous_enabled_by)) {
+    return epic.autonomous_enabled_by;
+  }
+  // 4. Org owner fallback.
+  return getOrgOwnerUserId();
 }
 
 /**

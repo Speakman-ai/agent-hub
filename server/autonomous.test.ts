@@ -31,6 +31,7 @@ vi.mock('./session-ownership.js', () => ({
   getOrgOwnerUserId: vi.fn(() => null),
   inheritOwnerFromSession: vi.fn(),
   resolveOwnerUserId: vi.fn(() => null),
+  resolveAutonomousOwnerUserId: vi.fn(() => null),
   userOwnsSession: vi.fn(() => true),
 }));
 
@@ -499,6 +500,85 @@ describe('runAutonomousLoop — dispatch', () => {
       0,
       1,
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  runAutonomousLoop — owner attribution (per-user identity)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('runAutonomousLoop — owner attribution', () => {
+  it('attributes the spawned session to the user returned by resolveAutonomousOwnerUserId', async () => {
+    const card = makeCard({ created_by: 'userA' });
+    const epicWithEnabler = {
+      ...ACTIVE_EPIC,
+      autonomous_enabled_by: 'enabler-user',
+    } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epicWithEnabler) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+
+    const ownership = await import('./session-ownership.js');
+    const mockResolveAutonomousOwner = ownership.resolveAutonomousOwnerUserId as Mock;
+    const mockSetSessionOwner = ownership.setSessionOwner as Mock;
+    mockResolveAutonomousOwner.mockReset();
+    mockSetSessionOwner.mockReset();
+    mockResolveAutonomousOwner.mockReturnValue('userA');
+
+    initAutonomous(deps as never);
+    await runAutonomousLoop('proj-1');
+
+    // The dispatcher must consult the chain with BOTH the card and the
+    // epic so created_by → session_id owner → autonomous_enabled_by →
+    // org owner all have a chance to resolve.
+    expect(mockResolveAutonomousOwner).toHaveBeenCalledTimes(1);
+    const [calledCard, calledEpic] = mockResolveAutonomousOwner.mock.calls[0] as [unknown, unknown];
+    expect((calledCard as { id: string }).id).toBe('card-1');
+    expect((calledCard as { created_by: string }).created_by).toBe('userA');
+    expect((calledEpic as { id: string }).id).toBe('epic-1');
+    expect((calledEpic as { autonomous_enabled_by: string }).autonomous_enabled_by).toBe(
+      'enabler-user',
+    );
+
+    // And the resolved id must be stamped onto the new session.
+    expect(mockSetSessionOwner).toHaveBeenCalledTimes(1);
+    const sessionId = stmts.createSession.run.mock.calls[0]?.[0] as string;
+    expect(mockSetSessionOwner).toHaveBeenCalledWith(sessionId, 'userA');
+  });
+
+  it('still stamps null when the chain resolves to null (fresh install / pre-setup)', async () => {
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+
+    const ownership = await import('./session-ownership.js');
+    const mockResolveAutonomousOwner = ownership.resolveAutonomousOwnerUserId as Mock;
+    const mockSetSessionOwner = ownership.setSessionOwner as Mock;
+    mockResolveAutonomousOwner.mockReset();
+    mockSetSessionOwner.mockReset();
+    mockResolveAutonomousOwner.mockReturnValue(null);
+
+    initAutonomous(deps as never);
+    await runAutonomousLoop('proj-1');
+
+    expect(mockResolveAutonomousOwner).toHaveBeenCalledTimes(1);
+    // setSessionOwner itself is a no-op on null (see session-ownership.ts),
+    // but the dispatcher must still call it so the contract is observable.
+    expect(mockSetSessionOwner).toHaveBeenCalledTimes(1);
+    expect(mockSetSessionOwner.mock.calls[0]?.[1]).toBeNull();
   });
 });
 

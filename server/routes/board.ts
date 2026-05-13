@@ -924,6 +924,20 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
+    // Stamp the user who flipped autonomous on, so
+    // `resolveAutonomousOwnerUserId` can fall back to them when an
+    // autonomous-dispatched card lacks card-level owner signals.
+    // Only fires on a 0 → 1 transition; a no-op rewrite (autonomous=1
+    // → 1) keeps the original enabler so we don't churn the column
+    // every time the UI saves the epic for an unrelated field change.
+    const turningAutonomousOn = !!(autonomous && !epic.autonomous);
+    if (turningAutonomousOn) {
+      const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
+      if (enablerId) {
+        stmts.setEpicAutonomousEnabledBy.run(enablerId, req.params.epicId);
+      }
+    }
+
     stmts.updateKanbanEpic.run(
       name ?? epic.name,
       description ?? epic.description,

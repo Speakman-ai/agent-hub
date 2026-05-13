@@ -1141,6 +1141,18 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN pr_base_branch TEXT DEFAULT NULL');
   }
 
+  // User id of whoever last flipped `autonomous = 1` on this epic. Used by
+  // the autonomous-dispatch owner-resolution chain (see
+  // `resolveAutonomousOwnerUserId` in server/session-ownership.ts) so that
+  // sessions spawned for cards under this epic are attributed to the user
+  // who turned autonomous mode on, when no card-level owner can be found.
+  // NULL = legacy row OR autonomous mode was never enabled.
+  try {
+    db.prepare('SELECT autonomous_enabled_by FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_enabled_by TEXT DEFAULT NULL');
+  }
+
   // Per-device push notification preferences. JSON array of enabled event
   // type strings; NULL = all events enabled (legacy default).
   try {
@@ -2518,6 +2530,12 @@ function initDb(dataDir: string): void {
     ),
     updateKanbanEpic: db.prepare(
       `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    // Standalone stamp for the user who flipped autonomous mode on. Kept
+    // separate from updateKanbanEpic so existing call sites (and the
+    // public PUT /epics/:id payload) don't have to thread an extra arg.
+    setEpicAutonomousEnabledBy: db.prepare(
+      `UPDATE kanban_epics SET autonomous_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
     getKanbanCardsByEpic: db.prepare(
