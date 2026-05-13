@@ -30,7 +30,11 @@ vi.mock('child_process', async (importOriginal) => {
 });
 
 import { execFile } from 'child_process';
-import { createUmbrellaBranch, ensureOperatorBaseBranch } from '../autonomous.js';
+import {
+  createUmbrellaBranch,
+  ensureOperatorBaseBranch,
+  lastOperatorBaseBranchFailureSignature,
+} from '../autonomous.js';
 import type { KanbanEpicRow, Project } from '../types.js';
 
 const mockedExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
@@ -394,6 +398,262 @@ describe('ensureOperatorBaseBranch', () => {
 
     const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
     expect(result).toBe('exists');
+  });
+});
+
+describe('ensureOperatorBaseBranch — per-user GitHub credential injection', () => {
+  beforeEach(() => {
+    lastOperatorBaseBranchFailureSignature.clear();
+  });
+
+  /**
+   * Captures the `env` passed to every git exec call so we can assert the
+   * credential wiring (GH_TOKEN, GIT_CONFIG_KEY_*) matches what the
+   * auto-commit/push path uses.
+   */
+  function captureExecEnv(stdoutByVerb: Record<string, string> = {}) {
+    const envs: NodeJS.ProcessEnv[] = [];
+    mockedExecFile.mockImplementation(
+      (
+        _cmd: unknown,
+        args: string[],
+        opts: { env?: NodeJS.ProcessEnv },
+        cb: (...a: unknown[]) => void,
+      ) => {
+        envs.push(opts?.env ?? {});
+        const verb = args[0];
+        const stdout = stdoutByVerb[verb] ?? '';
+        cb(null, { stdout, stderr: '' });
+      },
+    );
+    return envs;
+  }
+
+  it('injects GH_TOKEN and the credential helper into every git child when a token resolves', async () => {
+    // The test process env may already carry GH_TOKEN / GIT_CONFIG_KEY_* from
+    // the outer agent's spawn. We assert on the *delta*: GH_TOKEN now points
+    // at the resolved token, and two new credential-helper entries (empty +
+    // working) have been appended on top of whatever was inherited.
+    const preCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+
+    const envs = captureExecEnv({
+      // ls-remote returns empty → triggers the rev-parse + push flow,
+      // exercising every git verb in the function.
+      'ls-remote': '',
+      'rev-parse': 'deadbeefcafef00d\n',
+    });
+
+    const outcome = await ensureOperatorBaseBranch(makeProject(), 'feature/auth', {
+      resolveToken: async () => 'gho_test_token_42',
+    });
+    expect(outcome).toBe('created');
+
+    // At least the fetch + ls-remote + rev-parse + push must have run with the
+    // injected env. (`createUmbrellaBranch` and other helpers in the file are
+    // unchanged; this assertion is scoped to ensureOperatorBaseBranch.)
+    expect(envs.length).toBeGreaterThanOrEqual(4);
+    for (const env of envs) {
+      // GH_TOKEN is reset to the resolved value regardless of what was inherited.
+      expect(env.GH_TOKEN).toBe('gho_test_token_42');
+      expect(env.GITHUB_TOKEN).toBe('gho_test_token_42');
+      // autoGitChildEnv appends exactly two entries:
+      //   index N    : empty-helper sentinel (clears inherited helpers)
+      //   index N+1  : working helper that emits username=x-access-token + password=$GH_TOKEN
+      const postCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+      expect(postCount).toBe(preCount + 2);
+      expect(env[`GIT_CONFIG_KEY_${preCount}`]).toBe('credential.https://github.com.helper');
+      expect(env[`GIT_CONFIG_VALUE_${preCount}`]).toBe('');
+      expect(env[`GIT_CONFIG_KEY_${preCount + 1}`]).toBe('credential.https://github.com.helper');
+      expect((env[`GIT_CONFIG_VALUE_${preCount + 1}`] ?? '').length).toBeGreaterThan(0);
+    }
+  });
+
+  it('runs unauthenticated (no NEW credential helper appended) when no token resolves, but still attempts the probe', async () => {
+    // The test process env may already carry GH_TOKEN / GIT_CONFIG_KEY_* (the
+    // outer agent's spawn injects them). We can't assert their absence — only
+    // that ensureOperatorBaseBranch did not APPEND new credential-helper
+    // entries on top of whatever was inherited.
+    const preCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+
+    const envs = captureExecEnv({
+      'ls-remote': 'abc\trefs/heads/feature/auth\n',
+    });
+
+    const outcome = await ensureOperatorBaseBranch(makeProject(), 'feature/auth', {
+      resolveToken: async () => null,
+    });
+    expect(outcome).toBe('exists');
+    expect(envs.length).toBeGreaterThanOrEqual(2);
+    for (const env of envs) {
+      // No token → autoGitChildEnv adds zero entries.
+      const postCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+      expect(postCount).toBe(preCount);
+    }
+  });
+
+  it('runs without appending credential entries when called without opts (pre-fix shape preserved)', async () => {
+    const preCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+
+    const envs: NodeJS.ProcessEnv[] = [];
+    mockedExecFile.mockImplementation(
+      (
+        _cmd: unknown,
+        args: string[],
+        opts: { env?: NodeJS.ProcessEnv } | undefined,
+        cb: (...a: unknown[]) => void,
+      ) => {
+        envs.push(opts?.env ?? {});
+        const verb = args[0];
+        cb(null, {
+          stdout: verb === 'ls-remote' ? 'abc\trefs/heads/feature/auth\n' : '',
+          stderr: '',
+        });
+      },
+    );
+
+    const outcome = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(outcome).toBe('exists');
+    // Without opts the function passes `env: autoGitChildEnv(null)` which is
+    // a clone of process.env (PATH-normalised) with NO new credential helper
+    // entries. Pre-fix and post-fix shapes are observationally equivalent here.
+    for (const env of envs) {
+      const postCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
+      expect(postCount).toBe(preCount);
+    }
+  });
+
+  it('debounces repeated failure logs by signature (project,branch,errorline) — only logs once per change', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          // Fail with the same error every tick — the classic auth failure.
+          return cb(new Error("Authentication failed for 'https://github.com/example/repo.git/'"), {
+            stdout: '',
+            stderr: '',
+          });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = makeProject();
+
+    // Three back-to-back ticks with the same failure → exactly one error line.
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed');
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed');
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed');
+
+    const failureCalls = errorSpy.mock.calls.filter((c) =>
+      String(c[0] ?? '').includes('Failed to ensure operator base branch'),
+    );
+    expect(failureCalls).toHaveLength(1);
+
+    errorSpy.mockRestore();
+  });
+
+  it('re-logs when the failure signature changes (new underlying error)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    let errorMessage = 'first error';
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          return cb(new Error(errorMessage), { stdout: '', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = makeProject();
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' });
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' });
+    errorMessage = 'second different error';
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' });
+
+    const failureCalls = errorSpy.mock.calls.filter((c) =>
+      String(c[0] ?? '').includes('Failed to ensure operator base branch'),
+    );
+    // First error logged once (3rd tick suppressed); second error logged once.
+    expect(failureCalls).toHaveLength(2);
+
+    errorSpy.mockRestore();
+  });
+
+  it('clears the debounce slot on success so a later failure logs again', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    let mode: 'fail' | 'exists' = 'fail';
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          if (mode === 'fail') return cb(new Error('auth failed'), { stdout: '', stderr: '' });
+          return cb(null, { stdout: 'abc\trefs/heads/feature/auth\n', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = makeProject();
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed'); // logs once
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed'); // suppressed by debounce
+    mode = 'exists';
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('exists'); // clears the slot
+    mode = 'fail';
+    expect(
+      await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => 'tok' }),
+    ).toBe('failed'); // logs again because the slot is cleared
+
+    const failureCalls = errorSpy.mock.calls.filter((c) =>
+      String(c[0] ?? '').includes('Failed to ensure operator base branch'),
+    );
+    expect(failureCalls).toHaveLength(2);
+
+    errorSpy.mockRestore();
+  });
+
+  it('emits a single "connect a GitHub account" warning when no token is reachable, debounced across ticks', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          // Probe still runs unauthenticated — exists path keeps it noise-free
+          return cb(null, { stdout: 'abc\trefs/heads/feature/auth\n', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = makeProject();
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => null });
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => null });
+    await ensureOperatorBaseBranch(project, 'feature/auth', { resolveToken: async () => null });
+
+    const noTokenWarnings = errorSpy.mock.calls.filter((c) =>
+      String(c[0] ?? '').includes('No per-user GitHub credential reachable'),
+    );
+    expect(noTokenWarnings).toHaveLength(1);
+    expect(String(noTokenWarnings[0][0])).toContain('Settings → Integrations');
+
+    errorSpy.mockRestore();
   });
 });
 

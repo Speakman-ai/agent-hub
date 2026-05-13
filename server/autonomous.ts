@@ -30,6 +30,7 @@ import type {
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
+import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -140,16 +141,71 @@ export type EnsureOperatorBaseBranchOutcome =
   | 'skipped';
 
 /**
+ * Debounce key → last-logged failure signature for
+ * `ensureOperatorBaseBranch`. The autonomous loop runs every 60 seconds (and
+ * on several other triggers), and each tick calls this function. Without
+ * debouncing, a missing per-user GitHub credential produces a fresh
+ * `Authentication failed` error line on every tick — drowning the rest of
+ * the server log and the Electron client's surfaced error toast.
+ *
+ * Key: `${projectId}:${branchName}` so a different operator-typed branch on
+ * the same project (or the same branch across different projects) gets its
+ * own debounce slot. Value: the last error/no-token signature we logged.
+ *
+ * Cleared on a successful outcome (`exists` / `created`) so the next failure
+ * is logged again — operators see when transient errors resolve, and a new
+ * regression isn't silently swallowed.
+ *
+ * Exported so tests can reset it between cases.
+ */
+export const lastOperatorBaseBranchFailureSignature = new Map<string, string>();
+
+/**
+ * Options for `ensureOperatorBaseBranch`. All fields optional so existing
+ * callers / tests don't need to change.
+ */
+export interface EnsureOperatorBaseBranchOptions {
+  /**
+   * App config. When supplied, the function resolves the org owner's
+   * GitHub OAuth/PAT via `resolveOrgOwnerGithubToken` and wires it into
+   * the `git` child env using `autoGitChildEnv`. This matches the
+   * auto-commit/push path in `auto-git.ts` so the ls-remote / fetch /
+   * push probe authenticates the same way.
+   *
+   * When omitted, git inherits the Hub process env unchanged (pre-fix
+   * behaviour; preserved for existing unit tests that don't need to
+   * exercise the credential path).
+   */
+  config?: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+  /**
+   * Test seam. When supplied, used in place of
+   * `resolveOrgOwnerGithubToken(config)`. Lets tests inject a fake token
+   * (or null) without mocking the entire OAuth/refresh path.
+   */
+  resolveToken?: () => Promise<string | null>;
+}
+
+/**
  * Ensure an operator-supplied PR base branch exists on `origin`. Creates it
  * from the current `origin/HEAD` (falling back to `origin/main` / `origin/master`)
  * if missing. Returns the outcome so the caller can log without re-doing the
  * decision.
  *
  * Exported for unit testing.
+ *
+ * **Credentials**: when `opts.config` (or `opts.resolveToken`) is supplied,
+ * the spawned `git` processes inherit a `GH_TOKEN` + process-scoped
+ * credential helper for `https://github.com` — wired by `autoGitChildEnv`.
+ * Without that wiring the probe runs under the Hub process's ambient env,
+ * which on most multi-tenant installs has no GitHub credentials reachable
+ * for an operator-owned private repo. That mismatch is the failure mode
+ * tracked in `troubleshooting-auto-commit-push-authentication-failed-...`,
+ * extended to this code path.
  */
 export async function ensureOperatorBaseBranch(
   project: Project,
   branchName: string | null | undefined,
+  opts?: EnsureOperatorBaseBranchOptions,
 ): Promise<EnsureOperatorBaseBranchOutcome> {
   if (!branchName || !branchName.trim()) return 'skipped';
   const name = branchName.trim();
@@ -170,10 +226,71 @@ export async function ensureOperatorBaseBranch(
   const cwd = project.cwd;
   if (!cwd) return 'skipped';
 
+  // Debounce key — same scope as the failure signature map.
+  const debounceKey = `${project.id}:${name}`;
+
+  /**
+   * Log a failure once per distinct signature for this (project, branch).
+   * Subsequent ticks that hit the same signature stay silent until either
+   * the outcome changes (we clear the slot on success) or the signature
+   * itself changes (a different underlying error appears).
+   */
+  const logFailureOnce = (sig: string, line: string) => {
+    if (lastOperatorBaseBranchFailureSignature.get(debounceKey) === sig) return;
+    lastOperatorBaseBranchFailureSignature.set(debounceKey, sig);
+    console.error(line);
+  };
+
+  // Resolve the GitHub token (best-effort). Mirrors `resolveAutoGitGithubToken`
+  // in auto-git.ts — null when no owner is reachable, no token is stored, or
+  // any error occurs. We never throw out of token resolution.
+  let token: string | null = null;
+  try {
+    if (opts?.resolveToken) {
+      token = (await opts.resolveToken()) ?? null;
+    } else if (opts?.config) {
+      token = await resolveOrgOwnerGithubToken(opts.config);
+    }
+  } catch (err: unknown) {
+    // resolveOrgOwnerGithubToken already swallows internally; this catches
+    // the test-seam resolver throwing. Preserve pre-fix behaviour by falling
+    // through with no token.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Autonomous] Token resolver threw while preparing base-branch probe: ${msg}`);
+    token = null;
+  }
+
+  // Surface a single actionable warning when no per-user GitHub credential is
+  // reachable — debounced separately from the failure-line debounce so it
+  // doesn't get cleared by a successful unauthenticated probe (against a
+  // public repo, say). The state we're tracking here is "credential is
+  // configured", which only changes when the operator connects/disconnects
+  // a GitHub account — not on a per-call basis.
+  if (!token && (opts?.config || opts?.resolveToken)) {
+    const credKey = `cred:${project.id}`;
+    if (lastOperatorBaseBranchFailureSignature.get(credKey) !== 'no-token') {
+      lastOperatorBaseBranchFailureSignature.set(credKey, 'no-token');
+      console.error(
+        `[Autonomous] No per-user GitHub credential reachable for project "${project.name}" — base-branch probe will run unauthenticated. ` +
+          `Connect a GitHub account at Settings → Integrations to silence this and allow private-repo access.`,
+      );
+    }
+  } else if (token && (opts?.config || opts?.resolveToken)) {
+    // Token became available — clear the "no-cred" warning slot so a later
+    // disconnect/refresh-failure logs again.
+    lastOperatorBaseBranchFailureSignature.delete(`cred:${project.id}`);
+  }
+
+  const childEnv = autoGitChildEnv(token);
+
   try {
     // Best-effort fetch so the existence check sees recently-created branches.
     try {
-      await execFileAsync('git', ['fetch', 'origin', '--no-tags'], { cwd, timeout: 30_000 });
+      await execFileAsync('git', ['fetch', 'origin', '--no-tags'], {
+        cwd,
+        timeout: 30_000,
+        env: childEnv,
+      });
     } catch {
       // Non-fatal: we still try ls-remote, which talks to the remote directly.
     }
@@ -183,8 +300,10 @@ export async function ensureOperatorBaseBranch(
     const { stdout: lsOut } = await execFileAsync('git', ['ls-remote', '--heads', 'origin', name], {
       cwd,
       timeout: 15_000,
+      env: childEnv,
     });
     if (lsOut.trim()) {
+      lastOperatorBaseBranchFailureSignature.delete(debounceKey);
       return 'exists';
     }
 
@@ -192,7 +311,11 @@ export async function ensureOperatorBaseBranch(
     let sha: string | null = null;
     for (const ref of ['origin/HEAD', 'origin/main', 'origin/master']) {
       try {
-        const { stdout } = await execFileAsync('git', ['rev-parse', ref], { cwd, timeout: 5_000 });
+        const { stdout } = await execFileAsync('git', ['rev-parse', ref], {
+          cwd,
+          timeout: 5_000,
+          env: childEnv,
+        });
         sha = stdout.trim();
         if (sha) break;
       } catch {
@@ -200,7 +323,8 @@ export async function ensureOperatorBaseBranch(
       }
     }
     if (!sha) {
-      console.warn(
+      logFailureOnce(
+        'no-remote-head',
         `[Autonomous] Cannot resolve remote HEAD for project "${project.name}" — operator base branch "${name}" not created; PRs will fall back to default branch`,
       );
       return 'failed';
@@ -209,14 +333,22 @@ export async function ensureOperatorBaseBranch(
     await execFileAsync('git', ['push', 'origin', `${sha}:refs/heads/${name}`], {
       cwd,
       timeout: 30_000,
+      env: childEnv,
     });
     console.log(
       `[Autonomous] ✅ Created operator-set base branch "${name}" for project "${project.name}" (base SHA: ${sha.substring(0, 7)})`,
     );
+    lastOperatorBaseBranchFailureSignature.delete(debounceKey);
     return 'created';
   } catch (err) {
-    console.error(
-      `[Autonomous] Failed to ensure operator base branch "${name}" for project "${project.name}": ${(err as Error).message} — PRs will fall back to default branch`,
+    const msg = (err as Error).message;
+    // Stable signature: collapse changing transient bits (timestamps, request
+    // ids) by hashing on the first line only. Most git failures here put the
+    // actionable text on line 1.
+    const firstLine = msg.split('\n', 1)[0] || msg;
+    logFailureOnce(
+      `err:${firstLine}`,
+      `[Autonomous] Failed to ensure operator base branch "${name}" for project "${project.name}": ${msg} — PRs will fall back to default branch`,
     );
     return 'failed';
   }
@@ -479,7 +611,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
   // the card so the operator sees what happened.
   // ───────────────────────────────────────────────────────────────────────
   if (epic.pr_base_branch && epic.pr_base_branch.trim()) {
-    await ensureOperatorBaseBranch(project, epic.pr_base_branch);
+    await ensureOperatorBaseBranch(project, epic.pr_base_branch, { config: d.getConfig() });
   }
 
   // Label-based routing: every eligible card is dispatchable. The intake

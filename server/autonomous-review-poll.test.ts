@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import type { KanbanCardRow } from './types.js';
 
-vi.mock('child_process', () => ({
-  execFile: vi.fn(),
-}));
+// `autonomous.ts` now (transitively, via the per-user GitHub credential
+// helpers in `auto-git.ts`) calls `promisify(exec)` at module load. A bare
+// `{ execFile: vi.fn() }` mock leaves `exec` undefined and load fails. We
+// preserve the original module's other exports via `importOriginal` and
+// only stub the methods the tests actually inspect.
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFile: vi.fn(),
+  };
+});
 
 vi.mock('./routes/board.js', () => ({
   getOrCreateBoard: vi.fn(),
