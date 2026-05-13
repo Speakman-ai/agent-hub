@@ -130,7 +130,7 @@ hosts always have it.
 
 ```bash
 # Clone the repository
-git clone https://github.com/speakmanra/agent-hub.git
+git clone https://github.com/Speakman-ai/agent-hub.git
 cd agent-hub
 
 # Pick the right Node version (uses .nvmrc)
@@ -169,12 +169,24 @@ proxy). Then point a browser at it.
 
 ```bash
 # On the server
-git clone https://github.com/speakmanra/agent-hub.git
+git clone https://github.com/Speakman-ai/agent-hub.git
 cd agent-hub && nvm use && npm run install:all
 
-# Set ALLOWED_ORIGINS to the URL you'll hit from the browser
+# Option A — full dev stack (Vite + API). UI on :3050, API on :3051.
+# Set ALLOWED_ORIGINS to the URL the browser will load (the Vite client port).
+ALLOWED_ORIGINS=http://linux-box.local:3050 npm run dev
+
+# Option B — production-style: build the client once, then serve everything
+# from the API server on a single port (:3051). Useful for LAN deploys.
+npm run build
 ALLOWED_ORIGINS=http://linux-box.local:3051 npm run dev:server
 ```
+
+**Pick a port and match it.** `npm run dev:server` only serves the
+client at `:3051` if `client/dist/index.html` exists (`npm run build`
+generates it) — otherwise hitting `:3051` in a browser will 404. Either
+run `npm run dev` and point the browser at `:3050`, or `npm run build`
+first and use `:3051`.
 
 **CORS matters here.** Browser requests are gated by an explicit
 allowlist in `server/cors-config.ts`; without `ALLOWED_ORIGINS` matching
@@ -182,8 +194,9 @@ the origin you load the page from, the browser's SOP will block API
 responses. Comma-separate multiple origins. Requests with no `Origin`
 header (Electron, mobile, curl, server-to-server) bypass CORS entirely.
 
-For port-forward via SSH, `ALLOWED_ORIGINS=http://localhost:3051` is
-usually right.
+For port-forward via SSH (`ssh -L 3050:localhost:3050 host`), use
+`ALLOWED_ORIGINS=http://localhost:3050` and load the same URL in your
+browser.
 
 ### Mode 2: Self-hosted server + Electron remote client
 
@@ -265,7 +278,7 @@ Configuration resolves in priority order: **environment variables** >
 | `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                  | Fallback working directory                           |
 | `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                   | Break-glass API key (treated as Owner for all orgs)  |
 | `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback |
-| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050`  | Comma-separated browser CORS allowlist               |
+| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist  |
 
 > **`ALLOWED_ORIGINS` gotcha:** the `ecosystem.config.cjs` default of
 > `https://hub.example.com` is a sample value — override it for any
@@ -524,7 +537,7 @@ Never commit directly to `main`. Never push to `main` for feature work.
 | `EBADENGINE` / Node version mismatch               | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use` in the repo root; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                                            |
 | `better-sqlite3` build fails                       | Ensure build tools are installed: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                                                    |
 | WebSocket connection refused                       | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                                                                       |
-| Browser API calls fail with CORS error             | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050`. Electron / mobile / curl don't need this — only browsers do.                                                            |
+| Browser API calls fail with CORS error             | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this — only browsers do.                                       |
 | CLI binary not found                               | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines** in the UI.                                                                     |
 | Electron app can't reach the remote server         | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connConfig.json`. Auth headers (`x-api-key` / JWT) are injected only for hosts matching the configured remote.                       |
 | `npm run install:all` fails                        | Try deleting `node_modules` in root, client, server, and mobile, then retry.                                                                                                                                                    |
