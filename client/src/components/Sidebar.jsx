@@ -26,6 +26,7 @@ import {
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
+import { isElectron } from '../utils/isElectron.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import {
   inferPrUrlFromSessionTitle,
@@ -175,10 +176,17 @@ export default function Sidebar({
 
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
-      {/* Header — Org Switcher */}
-      <div className="p-4 border-b border-gray-800">
-        <OrgSwitcher onNavigateSettings={() => onNavigate('settings:orgs')} />
-      </div>
+      {/* Header — Org Switcher (Electron-only).
+          The web app is locked to a single Hub server, so the
+          multi-org / server-switcher concept is meaningless in a
+          browser context. Only Electron — which can hop between
+          Hub servers via its file-backed remote-orgs store — needs
+          the switcher. */}
+      {isElectron() && (
+        <div className="p-4 border-b border-gray-800">
+          <OrgSwitcher onNavigateSettings={() => onNavigate('settings:orgs')} />
+        </div>
+      )}
 
       {/* Projects & Agents */}
       <div className="flex-1 overflow-y-auto min-h-0 relative">

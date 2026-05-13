@@ -23,6 +23,7 @@ import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import PreviewSection from './PreviewSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
+import { isElectron } from '../utils/isElectron.js';
 import * as LucideIcons from 'lucide-react';
 
 /** Error boundary to catch render crashes in individual settings tabs */
@@ -7947,7 +7948,26 @@ export default function SettingsPage({
     if (initialTab && initialTab !== 'integrations') setTab(initialTab);
   }, [initialTab]);
 
-  const visibleSettingsGroups = SETTINGS_GROUPS;
+  // Browser deep-links can still target `?tab=orgs` even though we no
+  // longer render the tab there. Redirect to the first visible tab so
+  // the user doesn't land on a blank settings pane.
+  useEffect(() => {
+    if (tab === 'orgs' && !isElectron()) setTab('general');
+  }, [tab]);
+
+  // The "Organizations" tab manages remote Hub-server bookmarks and the
+  // multi-org switcher. That UX only makes sense in Electron (which can
+  // hop between Hub servers via its file-backed remote-orgs store +
+  // cross-origin API-key injector). The web app is locked to a single
+  // Hub server, so hide the tab there.
+  const electronShell = isElectron();
+  const visibleSettingsGroups = useMemo(() => {
+    if (electronShell) return SETTINGS_GROUPS;
+    return SETTINGS_GROUPS.map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((t) => t.id !== 'orgs'),
+    }));
+  }, [electronShell]);
 
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
@@ -8082,7 +8102,7 @@ export default function SettingsPage({
                   initialExpandedProjectId={initialGithubExpandedProjectId || null}
                 />
               )}
-              {tab === 'orgs' && <OrganizationsSection />}
+              {tab === 'orgs' && electronShell && <OrganizationsSection />}
               {tab === 'preview' && (
                 <PreviewSection
                   projects={projects}

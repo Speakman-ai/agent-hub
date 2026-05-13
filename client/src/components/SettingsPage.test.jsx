@@ -352,11 +352,42 @@ describe('SettingsPage — sidebar navigation', () => {
   });
 
   it('marks the active sidebar item with aria-current="page"', () => {
-    const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} initialTab="orgs" />);
-    // "Organizations" appears in the sidebar; the active one carries aria-current.
-    const orgButtons = getAllByText('Organizations').map((el) => el.closest('button'));
-    const active = orgButtons.find((b) => b?.getAttribute('aria-current') === 'page');
+    // Use the "Account" tab (always visible) — the previous version targeted
+    // "Organizations", but that tab is now Electron-only and absent in the
+    // jsdom (browser-like) test environment.
+    const { getAllByText } = render(
+      <SettingsPage projects={[]} agents={[]} initialTab="account" />,
+    );
+    const accountButtons = getAllByText('Account').map((el) => el.closest('button'));
+    const active = accountButtons.find((b) => b?.getAttribute('aria-current') === 'page');
     expect(active).toBeTruthy();
+  });
+
+  // The web app is locked to a single Hub server, so the "Organizations" tab
+  // (which manages multi-server bookmarks) is Electron-only. In a plain
+  // browser context the tab MUST NOT appear in the settings sidebar, and a
+  // deep-link with initialTab="orgs" MUST redirect to a visible tab so the
+  // user doesn't land on a blank settings pane.
+  describe('Organizations tab — Electron-only gating', () => {
+    it('does NOT render the "Organizations" sidebar entry in a plain browser', () => {
+      const { queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
+      expect(queryByText('Organizations')).toBeNull();
+    });
+
+    it('renders the "Organizations" sidebar entry when window.electronAPI.isElectron is true', () => {
+      const origElectronAPI = globalThis.window.electronAPI;
+      globalThis.window.electronAPI = { isElectron: true };
+      try {
+        const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
+        expect(getAllByText('Organizations').length).toBeGreaterThan(0);
+      } finally {
+        if (origElectronAPI === undefined) {
+          delete globalThis.window.electronAPI;
+        } else {
+          globalThis.window.electronAPI = origElectronAPI;
+        }
+      }
+    });
   });
 
   it('exposes a mobile menu trigger labelled "Open settings navigation"', () => {

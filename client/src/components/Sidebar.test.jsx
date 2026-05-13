@@ -360,3 +360,29 @@ describe('Sidebar — archived sessions', () => {
     expect(btn).toBeDisabled();
   });
 });
+
+describe('Sidebar — org switcher gating (Electron-only)', () => {
+  // The web app is locked to a single Hub server, so the org switcher
+  // (which manages remote Hub-server bookmarks) only renders in Electron.
+
+  it('does NOT render the OrgSwitcher when window.electronAPI is missing (browser)', () => {
+    // jsdom default: no electronAPI bridge.
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByTestId('org-switcher-stub')).not.toBeInTheDocument();
+  });
+
+  it('renders the OrgSwitcher when window.electronAPI.isElectron is true', () => {
+    const origElectronAPI = globalThis.window.electronAPI;
+    globalThis.window.electronAPI = { isElectron: true };
+    try {
+      render(<Sidebar {...buildProps()} />);
+      expect(screen.getByTestId('org-switcher-stub')).toBeInTheDocument();
+    } finally {
+      if (origElectronAPI === undefined) {
+        delete globalThis.window.electronAPI;
+      } else {
+        globalThis.window.electronAPI = origElectronAPI;
+      }
+    }
+  });
+});
