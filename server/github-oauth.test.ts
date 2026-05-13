@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   buildAuthorizeUrl,
+  DEFAULT_OAUTH_SCOPES,
   exchangeCodeForToken,
   refreshUserToken,
   fetchUserInfo,
@@ -8,7 +9,7 @@ import {
 } from './github-oauth.js';
 
 describe('buildAuthorizeUrl', () => {
-  it('produces the github.com authorize URL with required params', () => {
+  it('produces the github.com authorize URL with required params and default scopes', () => {
     const url = buildAuthorizeUrl({
       clientId: 'Iv1.abc',
       redirectUri: 'https://hub.example.com/api/auth/github/callback',
@@ -21,8 +22,10 @@ describe('buildAuthorizeUrl', () => {
       'https://hub.example.com/api/auth/github/callback',
     );
     expect(parsed.searchParams.get('state')).toBe('state-token-xyz');
-    // We deliberately do NOT include scope — GitHub Apps ignore it.
-    expect(parsed.searchParams.has('scope')).toBe(false);
+    // Defaults include `repo,read:org,workflow` so classic OAuth Apps mint
+    // a token that can clone/push private repos and list orgs. GitHub Apps
+    // ignore the parameter, so this is safe either way.
+    expect(parsed.searchParams.get('scope')).toBe(DEFAULT_OAUTH_SCOPES.join(','));
     expect(parsed.searchParams.has('login')).toBe(false);
   });
 
@@ -34,6 +37,38 @@ describe('buildAuthorizeUrl', () => {
       login: 'speakmanra',
     });
     expect(new URL(url).searchParams.get('login')).toBe('speakmanra');
+  });
+
+  it('honors an explicit scope list', () => {
+    const url = buildAuthorizeUrl({
+      clientId: 'Iv1.abc',
+      redirectUri: 'https://hub/example',
+      state: 's',
+      scopes: ['repo', 'admin:org'],
+    });
+    expect(new URL(url).searchParams.get('scope')).toBe('repo,admin:org');
+  });
+
+  it('dedupes and trims scope entries', () => {
+    const url = buildAuthorizeUrl({
+      clientId: 'Iv1.abc',
+      redirectUri: 'https://hub/example',
+      state: 's',
+      scopes: [' repo ', 'repo', '', 'read:org'],
+    });
+    expect(new URL(url).searchParams.get('scope')).toBe('repo,read:org');
+  });
+
+  it('omits scope= entirely when caller passes an empty array', () => {
+    // Opt-out path for deployers who registered a GitHub App and want
+    // the legacy "no scope param" behavior.
+    const url = buildAuthorizeUrl({
+      clientId: 'Iv1.abc',
+      redirectUri: 'https://hub/example',
+      state: 's',
+      scopes: [],
+    });
+    expect(new URL(url).searchParams.has('scope')).toBe(false);
   });
 });
 

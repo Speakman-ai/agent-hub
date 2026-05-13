@@ -60,14 +60,42 @@ export interface GitHubUserInfo {
 }
 
 /**
+ * Default OAuth scopes requested when the registered app is a **classic
+ * OAuth App** (`/settings/applications/<id>`). Classic apps follow OAuth
+ * scope semantics — a token issued with no `scope=` is scopeless and
+ * cannot see private repos or list orgs, even though it can identify the
+ * user. The defaults below cover the common agent-hub use cases:
+ *
+ *   - `repo`     — clone / push / open PRs on private repos
+ *   - `read:org` — list orgs the signed-in user belongs to (used by `gh`)
+ *   - `workflow` — push changes that touch `.github/workflows/*.yml`
+ *
+ * GitHub Apps (`/settings/apps/<slug>`) **ignore** the `scope` parameter
+ * entirely — their user-to-server tokens inherit the App's installation
+ * permissions. So sending these defaults is safe regardless of the app
+ * type: classic apps respect them, GitHub Apps silently drop them.
+ */
+export const DEFAULT_OAUTH_SCOPES = ['repo', 'read:org', 'workflow'] as const;
+
+/**
  * Build the GitHub authorize URL the user's browser should hit to start
  * the OAuth flow. The `state` is a short-lived signed token the caller
  * mints via `server/jwt.ts` — it carries the hub userId and is verified
  * on callback to prevent CSRF.
  *
- * We deliberately do NOT request `scope=` — GitHub Apps ignore the scope
- * parameter and instead use the App's installed permissions. Passing a
- * scope string would be a no-op at best and confusing at worst.
+ * Scope handling:
+ *   - Omit `scopes` → uses {@link DEFAULT_OAUTH_SCOPES}.
+ *   - Pass `scopes: []` → no `scope=` param at all (legacy GitHub-App-only
+ *     behavior, preserved so callers can opt out explicitly).
+ *   - Pass `scopes: ['repo', ...]` → comma-separated list per the OAuth
+ *     spec. Duplicates are deduped; empty strings are dropped.
+ *
+ * Why default to scopes: in practice many self-hosters register a classic
+ * OAuth App rather than a GitHub App (the UI is simpler and doesn't
+ * require an "Install on org" step). Without a `scope=` param, classic
+ * apps issue scopeless tokens, which is what caused the "git push 404"
+ * symptom that motivated this fix. GitHub Apps are unaffected because
+ * they ignore the parameter.
  */
 export function buildAuthorizeUrl(opts: {
   clientId: string;
@@ -78,12 +106,27 @@ export function buildAuthorizeUrl(opts: {
    * "reconnect as a different account" flows. Usually left undefined.
    */
   login?: string;
+  /**
+   * OAuth scopes to request. Omit to use {@link DEFAULT_OAUTH_SCOPES};
+   * pass an empty array to send no `scope=` parameter at all.
+   */
+  scopes?: readonly string[];
 }): string {
   const params = new URLSearchParams({
     client_id: opts.clientId,
     redirect_uri: opts.redirectUri,
     state: opts.state,
   });
+  const scopeList = opts.scopes ?? DEFAULT_OAUTH_SCOPES;
+  const dedupedScopes = Array.from(
+    new Set(scopeList.map((s) => s.trim()).filter((s) => s.length > 0)),
+  );
+  if (dedupedScopes.length > 0) {
+    // GitHub's spec says space-delimited; comma is tolerated in practice
+    // (and is what classic OAuth Apps actually parse). We use comma because
+    // URLSearchParams would percent-encode spaces as `+` or `%20`.
+    params.set('scope', dedupedScopes.join(','));
+  }
   if (opts.login) params.set('login', opts.login);
   return `https://github.com/login/oauth/authorize?${params.toString()}`;
 }
