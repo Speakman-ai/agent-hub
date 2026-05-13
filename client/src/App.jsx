@@ -1909,9 +1909,17 @@ export default function App() {
 
       // Step 2: Check setup status
       //
-      // Two triggers for the SetupWizard, in priority order:
+      // Three triggers for the SetupWizard, in priority order:
       //
-      //   1. **No AI credentials.** If the current user has zero usable AI
+      //   1. **Auth not configured.** No Agent Hub Owner record exists
+      //      (`/setup/status` -> `authConfigured: false`). This is the
+      //      authoritative "fresh install" signal. We force the full
+      //      wizard from step 1 because the user still needs to create an
+      //      Owner account regardless of host-CLI auth state or whether
+      //      the server auto-seeded a default org. Pre-existing servers
+      //      that don't return the field fall back to the legacy logic
+      //      below.
+      //   2. **No AI credentials.** If the current user has zero usable AI
       //      engines (per-user Claude OR host-level Claude/Cursor/Codex), the
       //      wizard is shown unconditionally — they can't spawn an agent
       //      without picking one of the three. This catches the
@@ -1919,11 +1927,11 @@ export default function App() {
       //      but `auth.json`/host CLIs were wiped. Without it, init falls
       //      through to the project picker and the user has no obvious
       //      route to the credentials UI.
-      //   2. **First run.** Brand-new install with no projects yet. We split
-      //      on `getOrgs()`: with no orgs we walk the full wizard (welcome →
-      //      org → creds → github → first project); with orgs already
-      //      present we open the adaptive project wizard, since this is
-      //      typically a returning user adding their first project.
+      //   3. **First run.** Brand-new install with no projects yet. We
+      //      open the adaptive project wizard, since this is typically a
+      //      returning user adding their first project. (The greenfield
+      //      case is now handled by #1; this branch only fires after the
+      //      Owner has been created.)
       try {
         const statusRes = await fetch(`${getApiBase()}/setup/status`, {
           headers: getAuthHeaders(),
@@ -1931,7 +1939,14 @@ export default function App() {
         });
         const status = await statusRes.json();
         setSetupStatus(status);
-        if (status.hasAnyAiCredentials === false) {
+        if (status.authConfigured === false) {
+          // Truly fresh install — Owner record does not exist. Always
+          // walk the user through the full wizard (welcome → org → creds
+          // → github → first project) regardless of host CLI auth or the
+          // auto-seeded default org.
+          setSetupInitialStep(1);
+          setShowSetup(true);
+        } else if (status.hasAnyAiCredentials === false) {
           // If an org already exists, skip Welcome + Organization and land
           // directly on the AI-credentials step. With no orgs (true greenfield)
           // we still want the full wizard.

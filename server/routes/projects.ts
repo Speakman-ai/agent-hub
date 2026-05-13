@@ -19,6 +19,7 @@ import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, getUserById, createUser } from '../users-store.js';
+import { isAuthConfigured } from '../auth-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
@@ -1071,8 +1072,24 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       engineAuth = { claude: false, cursor: false, codex: false, any: false };
     }
 
+    // `authConfigured` reflects whether the Agent Hub Owner record exists.
+    // It is the authoritative signal for "needs first-run setup wizard" —
+    // host-level Claude/Cursor/Codex auth (hasAnyAiCredentials) and the
+    // auto-seeded default org (getOrgs() on the client) are both routinely
+    // true on a fresh install, so neither tells us whether the wizard has
+    // actually been completed. See server/auth-store.ts:isAuthConfigured.
+    let authConfigured = false;
+    try {
+      authConfigured = isAuthConfigured();
+    } catch {
+      // auth-store may not be initialized in some test contexts; treat as
+      // not-configured so the wizard runs in tests by default.
+      authConfigured = false;
+    }
+
     res.json({
       firstRun: projects.length === 0,
+      authConfigured,
       hasAnyAiCredentials: engineAuth.any,
       engineAuth: {
         'claude-code': engineAuth.claude,
