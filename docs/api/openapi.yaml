@@ -72,6 +72,1201 @@ components:
       in: cookie
       name: agent_hub_session
       description: Session cookie issued by `POST /api/auth/login`.
-  schemas: {}
+  schemas:
+    KanbanBoard:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - name
+        - created_at
+      description: A project kanban board (one per project).
+    KanbanColumn:
+      type: object
+      properties:
+        id:
+          type: string
+        board_id:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        color:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - board_id
+        - name
+        - position
+        - color
+        - created_at
+      description: A column on a kanban board (To Do, In Progress, …).
+    KanbanCard:
+      type: object
+      properties:
+        id:
+          type: string
+        column_id:
+          type: string
+        board_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        priority:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - urgent
+        assignee:
+          type: string
+          nullable: true
+        labels:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+        github_issue_url:
+          type: string
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+        review_status:
+          type: string
+          nullable: true
+          enum:
+            - awaiting_review
+            - reviewing
+            - approved
+            - changes_requested
+            - null
+        created_by:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        epic_id:
+          type: string
+          nullable: true
+        documented:
+          type: integer
+        dispatched_by_autonomous:
+          type: integer
+        assign_model:
+          type: string
+          nullable: true
+        pr_base_branch:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - column_id
+        - board_id
+        - title
+        - description
+        - priority
+        - assignee
+        - labels
+        - session_id
+        - github_issue_url
+        - pr_url
+        - review_status
+        - created_by
+        - position
+        - epic_id
+        - documented
+        - dispatched_by_autonomous
+        - created_at
+        - updated_at
+      description: A kanban card (task / ticket).
+    KanbanBlockerLink:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        column_id:
+          type: string
+        done:
+          type: boolean
+      required:
+        - id
+        - title
+        - column_id
+        - done
+      description: A blocker / blocked-by relationship view. `done` is derived from the referenced card's column ("Done"-ish columns resolve the link).
+    KanbanCardEnriched:
+      allOf:
+        - $ref: "#/components/schemas/KanbanCard"
+        - type: object
+          properties:
+            blockers:
+              type: array
+              items:
+                $ref: "#/components/schemas/KanbanBlockerLink"
+            blocks:
+              type: array
+              items:
+                $ref: "#/components/schemas/KanbanBlockerLink"
+          required:
+            - blockers
+            - blocks
+      description: A card with its blocker graph attached (used by GET /board).
+    KanbanEpic:
+      type: object
+      properties:
+        id:
+          type: string
+        board_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+        autonomous:
+          type: integer
+        autonomous_interval:
+          type: integer
+        autonomous_max_concurrent:
+          type: integer
+        autonomous_model:
+          type: string
+          nullable: true
+        orchestration_budgets_json:
+          type: string
+          nullable: true
+        pr_base_branch:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - board_id
+        - name
+        - description
+        - color
+        - autonomous
+        - autonomous_interval
+        - autonomous_max_concurrent
+        - autonomous_model
+        - position
+        - created_at
+        - updated_at
+      description: A kanban epic — a group of related cards.
+    KanbanCardComment:
+      type: object
+      properties:
+        id:
+          type: string
+        card_id:
+          type: string
+        author:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+      required:
+        - id
+        - card_id
+        - author
+        - content
+        - created_at
+      description: A comment posted to a kanban card.
+    BoardResponse:
+      type: object
+      properties:
+        board:
+          $ref: "#/components/schemas/KanbanBoard"
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanColumn"
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanCardEnriched"
+        epics:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanEpic"
+      required:
+        - board
+        - columns
+        - cards
+        - epics
+      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics."
+    BoardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+        path:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
   parameters: {}
-paths: {}
+paths:
+  /api/projects/{projectId}/board:
+    get:
+      tags:
+        - Board
+      summary: Get full board state
+      description: Returns the project board, all columns, all cards (with blocker graph attached), and all epics. Idempotently creates the board and the four default columns on first call.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Board state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards:
+    get:
+      tags:
+        - Board
+      summary: List cards on a project board
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Array of cards.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCard"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    post:
+      tags:
+        - Board
+      summary: Create a kanban card
+      description: Creates a card in the given column. Returns the existing card unchanged if (a) a card with the same case-insensitive title already exists on this board, or (b) `sessionId` is already linked to a card on this board.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                columnId:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                assignee:
+                  type: string
+                  nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                sessionId:
+                  type: string
+                  nullable: true
+                githubIssueUrl:
+                  type: string
+                  nullable: true
+                createdBy:
+                  type: string
+                  nullable: true
+              required:
+                - title
+                - columnId
+      responses:
+        "200":
+          description: Card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project or column not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}:
+    put:
+      tags:
+        - Board
+      summary: Update a kanban card
+      description: Partial update. Fields omitted from the body keep their current value. Nullable fields can be cleared by sending `null` explicitly.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                assignee:
+                  type: string
+                  nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                sessionId:
+                  type: string
+                  nullable: true
+                githubIssueUrl:
+                  type: string
+                  nullable: true
+                prUrl:
+                  type: string
+                  nullable: true
+                epicId:
+                  type: string
+                  nullable: true
+                assignModel:
+                  type: string
+                  nullable: true
+                prBaseBranch:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card, project, or referenced epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/move:
+    post:
+      tags:
+        - Board
+      summary: Move a card to another column / position
+      description: "Soft-enforced: blocker state does NOT gate the move. Clients should consult `blockers` on the GET /board response and warn before issuing the move."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                columnId:
+                  type: string
+                  minLength: 1
+                position:
+                  type: integer
+              required:
+                - columnId
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found, or target column not on this card's board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/assign:
+    post:
+      tags:
+        - Board
+      summary: Assign a card to an agent and spawn a session
+      description: Picks the agent, mints a new session linked to the card, optionally overrides the model (must be valid for the agent's engine), moves the card to "In Progress", and dispatches the agent with a task-context prompt.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                  nullable: true
+              required:
+                - agentId
+      responses:
+        "200":
+          description: Session id + updated card.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  card:
+                    $ref: "#/components/schemas/KanbanCard"
+                required:
+                  - sessionId
+                  - card
+        "400":
+          description: Validation failed or model invalid for engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card, agent, or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/comments:
+    get:
+      tags:
+        - Board
+      summary: List comments on a card
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      responses:
+        "200":
+          description: Array of comments (oldest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCardComment"
+    post:
+      tags:
+        - Board
+      summary: Post a comment to a card
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                author:
+                  type: string
+                  minLength: 1
+                content:
+                  type: string
+                  minLength: 1
+              required:
+                - author
+                - content
+      responses:
+        "200":
+          description: Updated comment list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCardComment"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/comments/{commentId}:
+    delete:
+      tags:
+        - Board
+      summary: Delete a card comment
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+        - schema:
+            type: string
+            description: Comment UUID.
+          required: true
+          description: Comment UUID.
+          name: commentId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+  /api/projects/{projectId}/board/cards/{cardId}/blockers:
+    post:
+      tags:
+        - Board
+      summary: Declare that this card is blocked by another card
+      description: Both cards must live on the same project board. Adding the edge is rejected when it would close a cycle (`409 cycle`, with `path` naming the cycle) or when the edge already exists (`409 duplicate`).
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                blockedByCardId:
+                  type: string
+                  minLength: 1
+              required:
+                - blockedByCardId
+      responses:
+        "201":
+          description: New blocker link.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  card_id:
+                    type: string
+                  blocked_by_card_id:
+                    type: string
+                required:
+                  - id
+                  - card_id
+                  - blocked_by_card_id
+        "400":
+          description: Validation failed or self-block attempted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found (either side).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "409":
+          description: Duplicate edge or cycle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/blockers/{blockedByCardId}:
+    delete:
+      tags:
+        - Board
+      summary: Remove a blocker edge
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+        - schema:
+            type: string
+            description: The blocker card UUID to remove.
+          required: true
+          description: The blocker card UUID to remove.
+          name: blockedByCardId
+          in: path
+      responses:
+        "204":
+          description: Edge removed.
+        "404":
+          description: Blocker link not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics:
+    get:
+      tags:
+        - Board
+      summary: List epics on a project board
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Array of epics.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanEpic"
+    post:
+      tags:
+        - Board
+      summary: Create an epic
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                color:
+                  type: string
+                prBaseBranch:
+                  type: string
+                  nullable: true
+              required:
+                - name
+      responses:
+        "200":
+          description: New epic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}:
+    put:
+      tags:
+        - Board
+      summary: Update an epic
+      description: Partial update. Setting `autonomous` to 1 on this epic clears the autonomous flag on any other autonomous epic on the same board (only one epic can be autonomous at a time).
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                color:
+                  type: string
+                autonomous:
+                  type: integer
+                autonomousInterval:
+                  type: integer
+                autonomousMaxConcurrent:
+                  type: integer
+                autonomousModel:
+                  type: string
+                  nullable: true
+                orchestrationBudgets:
+                  type: object
+                  description: Optional partial overrides merged onto the project orchestrationBudgets at run time.
+                prBaseBranch:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated epic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete an epic
+      description: Unlinks every card that belonged to the epic, then removes the epic row.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+  /api/projects/{projectId}/board/cards/{cardId}/epic:
+    post:
+      tags:
+        - Board
+      summary: Link or unlink a card to an epic
+      description: 'Pass `{ epicId: "<id>" }` to link. Pass an empty body or `{ epicId: null }` to unlink.'
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card or epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/columns:
+    post:
+      tags:
+        - Board
+      summary: Create a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                color:
+                  type: string
+                  nullable: true
+              required:
+                - name
+      responses:
+        "200":
+          description: Updated columns list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanColumn"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/columns/{columnId}:
+    put:
+      tags:
+        - Board
+      summary: Update a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban column UUID.
+          required: true
+          description: Kanban column UUID.
+          name: columnId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                position:
+                  type: integer
+                color:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban column UUID.
+          required: true
+          description: Kanban column UUID.
+          name: columnId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
