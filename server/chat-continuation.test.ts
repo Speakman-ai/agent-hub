@@ -92,6 +92,77 @@ describe('stripAssistantControlBlocks', () => {
     expect(out).not.toContain('<agenthub:skill>');
     expect(out).not.toContain('~~~');
   });
+
+  // [[STEP:*]] markers — the parser extracts these from finalized assistant
+  // events, but partial deltas, crashed sessions (fallback to partialFallback),
+  // and legacy persisted messages can still carry raw markers. The shared
+  // strip util is the last line of defense; without these tests the renderer
+  // and persisted message body show literal `[[STEP:...]]` text.
+  describe('[[STEP:*]] progress markers', () => {
+    it('strips a single started marker from the rendered text', () => {
+      const out = stripAssistantControlBlocks(
+        'Working on PR review.\n[[STEP:started:Gather PR context]]\nReading diff…',
+      );
+      expect(out).toContain('Working on PR review.');
+      expect(out).toContain('Reading diff');
+      expect(out).not.toMatch(/\[\[STEP:/);
+    });
+
+    it('strips all three status variants and is case-insensitive', () => {
+      const input = [
+        'A',
+        '[[STEP:started:Gather]]',
+        '[[STEP:completed:Gather]]',
+        '[[STEP:failed:Post]]',
+        '[[step:Started:Lowercase tag]]',
+        'B',
+      ].join('\n');
+      const out = stripAssistantControlBlocks(input);
+      expect(out).not.toMatch(/\[\[step:/i);
+      expect(out).toContain('A');
+      expect(out).toContain('B');
+    });
+
+    it('tolerates whitespace around the colons (matches STEP_MARKER_RE)', () => {
+      const out = stripAssistantControlBlocks('x [[STEP: started : Foo bar baz ]] y');
+      expect(out).not.toMatch(/\[\[STEP:/);
+      expect(out).toContain('x');
+      expect(out).toContain('y');
+    });
+
+    it('leaves malformed markers alone (matches parser behavior)', () => {
+      // No closing brackets — must NOT be stripped (matches the parser's
+      // tolerance contract). Otherwise a runaway regex could swallow prose.
+      const out = stripAssistantControlBlocks('Note [[STEP:started:Foo without close');
+      expect(out).toContain('[[STEP:started:Foo without close');
+    });
+
+    it('collapses blank-line runs left behind by marker removal', () => {
+      const input = ['Line A.', '', '[[STEP:started:Foo]]', '', 'Line B.'].join('\n');
+      const out = stripAssistantControlBlocks(input);
+      // A blank-line run between A and B is preserved as a single blank
+      // line; what we care about is no triple-newline gap and no marker.
+      expect(out).not.toMatch(/\[\[STEP:/);
+      expect(out).not.toMatch(/\n{3,}/);
+      expect(out).toContain('Line A.');
+      expect(out).toContain('Line B.');
+    });
+
+    it('strips markers alongside <agenthub:*> blocks in one pass', () => {
+      const input = [
+        'Working.',
+        '[[STEP:started:Lookup wiki]]',
+        '<agenthub:react>{"actions":[{"tool":"wiki","query":"x"}]}</agenthub:react>',
+        '[[STEP:completed:Lookup wiki]]',
+        'Done.',
+      ].join('\n');
+      const out = stripAssistantControlBlocks(input);
+      expect(out).not.toMatch(/\[\[STEP:/);
+      expect(out).not.toContain('<agenthub:react>');
+      expect(out).toContain('Working.');
+      expect(out).toContain('Done.');
+    });
+  });
 });
 
 describe('ReAct block parse', () => {
