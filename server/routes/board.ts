@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
+import type { z } from 'zod';
 import { defaultModelForEngine } from '../config.js';
 import type {
   RouteDeps,
@@ -22,6 +23,46 @@ import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
+import {
+  CreateCardRequestSchema,
+  UpdateCardRequestSchema,
+  MoveCardRequestSchema,
+  AssignCardRequestSchema,
+  CreateCommentRequestSchema,
+  AddBlockerRequestSchema,
+  CreateColumnRequestSchema,
+  UpdateColumnRequestSchema,
+  CreateEpicRequestSchema,
+  UpdateEpicRequestSchema,
+  LinkEpicRequestSchema,
+} from './board.openapi.js';
+
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * The error message is taken from the first Zod issue so terse one-line
+ * errors like "title is required" (carried over from the pre-Zod hand-rolled
+ * checks) keep their shape. The full issue list is exposed under `details`
+ * for clients that want to surface per-field validation.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
+}
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -175,8 +216,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.post('/api/projects/:projectId/board/columns', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const { name, color } = req.body as { name?: string; color?: string };
-    if (!name) return res.status(400).json({ error: 'name is required' });
+    const parsed = parseBody(CreateColumnRequestSchema, req, res);
+    if (!parsed) return;
+    const { name, color } = parsed;
     const { board, columns } = getOrCreateBoard(stmts, req.params.projectId as string);
     const maxPos = columns.length > 0 ? Math.max(...columns.map((c) => c.position)) + 1 : 0;
     const id = uuidv4();
@@ -188,11 +230,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/board/columns/:columnId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const { name, position, color } = req.body as {
-      name?: string;
-      position?: number;
-      color?: string;
-    };
+    const parsed = parseBody(UpdateColumnRequestSchema, req, res);
+    if (!parsed) return;
+    const { name, position, color } = parsed;
     stmts.updateKanbanColumn.run(name, position, color || null, req.params.columnId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
@@ -217,18 +257,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.post('/api/projects/:projectId/board/cards', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const body = req.body as Record<string, unknown>;
-    const title = body.title as string | undefined;
-    const description = body.description as string | undefined;
-    const priority = body.priority as string | undefined;
-    const assignee = body.assignee as string | undefined;
-    const labels = body.labels as string | undefined;
-    const columnId = (body.columnId ?? body.column_id) as string | undefined;
-    const sessionId = (body.sessionId ?? body.session_id) as string | undefined;
-    const githubIssueUrl = (body.githubIssueUrl ?? body.github_issue_url) as string | undefined;
-    const createdBy = (body.createdBy ?? body.created_by) as string | undefined;
-    if (!title) return res.status(400).json({ error: 'title is required' });
-    if (!columnId) return res.status(400).json({ error: 'columnId is required' });
+    const parsed = parseBody(CreateCardRequestSchema, req, res);
+    if (!parsed) return;
+    const {
+      title,
+      description,
+      priority,
+      assignee,
+      labels,
+      columnId,
+      sessionId,
+      githubIssueUrl,
+      createdBy,
+    } = parsed;
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
 
     // FK pre-flight: better-sqlite3 throws an opaque
@@ -258,9 +299,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // 2026-05 repro). Return the originally-linked card instead of
     // creating a duplicate. Title-dedup above already runs first so
     // legitimate "rename a card" flows aren't affected.
-    const sessionIdRaw = (body.sessionId ?? body.session_id) as string | undefined;
-    if (sessionIdRaw && typeof sessionIdRaw === 'string' && sessionIdRaw.trim()) {
-      const linked = stmts.getKanbanCardBySession.get(sessionIdRaw) as KanbanCardRow | undefined;
+    if (sessionId && sessionId.trim()) {
+      const linked = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
       if (linked && linked.board_id === board.id) {
         return res.json(linked);
       }
@@ -313,49 +353,37 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (!card) return res.status(404).json({ error: 'Card not found' });
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const body = req.body as Record<string, unknown>;
+    const parsed = parseBody(UpdateCardRequestSchema, req, res);
+    if (!parsed) return;
 
-    // Non-nullable fields: only overwrite when a new value is supplied.
-    const title = body.title as string | undefined;
-    const priority = body.priority as string | undefined;
+    // After Zod parsing + snake_case alias preprocess, key presence is
+    // signalled by `field !== undefined`. The handler downstream uses the
+    // `has*` flags to distinguish "omitted from body" (keep current value)
+    // from "explicit null" (clear the column).
+    const { title, priority } = parsed;
+    const hasDescription = parsed.description !== undefined;
+    const description = parsed.description;
+    const hasAssignee = parsed.assignee !== undefined;
+    const assignee = parsed.assignee;
+    const hasLabels = parsed.labels !== undefined;
+    const labels = parsed.labels;
+    const hasSessionId = parsed.sessionId !== undefined;
+    const sessionId = parsed.sessionId;
+    const hasGithubIssueUrl = parsed.githubIssueUrl !== undefined;
+    const githubIssueUrl = parsed.githubIssueUrl;
+    const hasPrUrl = parsed.prUrl !== undefined;
+    const prUrl = parsed.prUrl;
+    const hasEpicId = parsed.epicId !== undefined;
+    const epicId = parsed.epicId;
+    const hasAssignModel = parsed.assignModel !== undefined;
+    const assignModel = parsed.assignModel;
 
-    // Nullable fields: an explicit `null` (or `null` via snake_case alias) must
-    // clear the column. `??` treats `null` as absent, so we check key
-    // presence instead — that's the only way the client can drop a value.
-    const hasDescription = 'description' in body;
-    const description = body.description as string | null | undefined;
-
-    const hasAssignee = 'assignee' in body;
-    const assignee = body.assignee as string | null | undefined;
-
-    const hasLabels = 'labels' in body;
-    const labels = body.labels as string | null | undefined;
-
-    const hasSessionId = 'sessionId' in body || 'session_id' in body;
-    const sessionId = (body.sessionId ?? body.session_id) as string | null | undefined;
-
-    const hasGithubIssueUrl = 'githubIssueUrl' in body || 'github_issue_url' in body;
-    const githubIssueUrl = (body.githubIssueUrl ?? body.github_issue_url) as
-      | string
-      | null
-      | undefined;
-
-    const hasPrUrl = 'prUrl' in body || 'pr_url' in body;
-    const prUrl = (body.prUrl ?? body.pr_url) as string | null | undefined;
-
-    const hasEpicId = 'epicId' in body || 'epic_id' in body;
-    const epicId = (body.epicId ?? body.epic_id) as string | null | undefined;
-
-    const hasAssignModel = 'assignModel' in body || 'assign_model' in body;
-    const assignModel = (body.assignModel ?? body.assign_model) as string | null | undefined;
-
-    const hasPrBaseBranch = 'prBaseBranch' in body || 'pr_base_branch' in body;
-    const prBaseBranchRaw = (body.prBaseBranch ?? body.pr_base_branch) as string | null | undefined;
+    const hasPrBaseBranch = parsed.prBaseBranch !== undefined;
     let prBaseBranch: string | null | undefined;
     if (hasPrBaseBranch) {
-      const parsed = parsePrBaseBranchInput(prBaseBranchRaw);
-      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
-      prBaseBranch = parsed.value;
+      const branchParsed = parsePrBaseBranchInput(parsed.prBaseBranch);
+      if (!branchParsed.ok) return res.status(400).json({ error: branchParsed.error });
+      prBaseBranch = branchParsed.value;
     } else {
       prBaseBranch = undefined;
     }
@@ -428,8 +456,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     (req: Request, res: Response) => {
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
-      const { columnId, position } = req.body as { columnId?: string; position?: number };
-      if (!columnId) return res.status(400).json({ error: 'columnId is required' });
+      const parsedMove = parseBody(MoveCardRequestSchema, req, res);
+      if (!parsedMove) return;
+      const { columnId, position } = parsedMove;
       // FK pre-flight: target column must exist AND belong to the card's
       // own board. Cross-board moves silently corrupt the join with
       // kanban_boards via the cascading FK; a stale columnId throws an
@@ -499,8 +528,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
 
-      const { agentId, model: modelBody } = req.body as { agentId?: string; model?: string | null };
-      if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+      const parsedAssign = parseBody(AssignCardRequestSchema, req, res);
+      if (!parsedAssign) return;
+      const { agentId, model: modelBody } = parsedAssign;
 
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -700,9 +730,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.post(
     '/api/projects/:projectId/board/cards/:cardId/comments',
     (req: Request, res: Response) => {
-      const { author, content } = req.body as { author?: string; content?: string };
-      if (!author || !content)
-        return res.status(400).json({ error: 'author and content are required' });
+      const parsedComment = parseBody(CreateCommentRequestSchema, req, res);
+      if (!parsedComment) return;
+      const { author, content } = parsedComment;
       // FK pre-flight: comments are FK-bound to kanban_cards.id. A stale
       // cardId would otherwise surface as a 500 SqliteError.
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
@@ -733,11 +763,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
-      const { blockedByCardId } = req.body as { blockedByCardId?: string };
+      const parsedBlocker = parseBody(AddBlockerRequestSchema, req, res);
+      if (!parsedBlocker) return;
+      const { blockedByCardId } = parsedBlocker;
       const cardId = req.params.cardId as string;
-      if (!blockedByCardId || typeof blockedByCardId !== 'string') {
-        return res.status(400).json({ error: 'blockedByCardId is required' });
-      }
       if (blockedByCardId === cardId) {
         return res.status(400).json({ error: 'A card cannot block itself' });
       }
@@ -798,27 +827,20 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   router.post('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-    const body = req.body as {
-      name?: string;
-      description?: string;
-      color?: string;
-      prBaseBranch?: string | null;
-      pr_base_branch?: string | null;
-    };
-    const { name, description, color } = body;
-    const hasEpicPrBase = 'prBaseBranch' in body || 'pr_base_branch' in body;
-    const epicPrBaseRaw = body.prBaseBranch ?? body.pr_base_branch;
+    const parsedEpic = parseBody(CreateEpicRequestSchema, req, res);
+    if (!parsedEpic) return;
+    const { name, description, color } = parsedEpic;
+    const hasEpicPrBase = parsedEpic.prBaseBranch !== undefined;
     if (hasEpicPrBase) {
-      const parsed = parsePrBaseBranchInput(epicPrBaseRaw);
-      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      const parsedBranch = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
+      if (!parsedBranch.ok) return res.status(400).json({ error: parsedBranch.error });
     }
-    if (!name) return res.status(400).json({ error: 'name is required' });
     const epics = stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[];
     const maxPos = epics.length > 0 ? Math.max(...epics.map((e) => e.position)) + 1 : 0;
     const id = uuidv4();
     stmts.createKanbanEpic.run(id, board.id, name, description || null, color || '#6366F1', maxPos);
     if (hasEpicPrBase) {
-      const p = parsePrBaseBranchInput(epicPrBaseRaw);
+      const p = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
       if (p.ok) {
         const row = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
         stmts.updateKanbanEpic.run(
@@ -842,6 +864,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/board/epics/:epicId', (req: Request, res: Response) => {
     const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
     if (!epic) return res.status(404).json({ error: 'Epic not found' });
+    const parsedEpic = parseBody(UpdateEpicRequestSchema, req, res);
+    if (!parsedEpic) return;
     const {
       name,
       description,
@@ -851,26 +875,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousMaxConcurrent,
       autonomousModel,
       orchestrationBudgets,
-    } = req.body as {
-      name?: string;
-      description?: string | null;
-      color?: string;
-      autonomous?: number;
-      autonomousInterval?: number;
-      autonomousMaxConcurrent?: number;
-      autonomousModel?: string | null;
-      orchestrationBudgets?: Record<string, unknown> | null;
-    };
+    } = parsedEpic;
 
-    const hasEpicPrBasePut = 'prBaseBranch' in req.body || 'pr_base_branch' in req.body;
-    const epicPrBasePutRaw =
-      (req.body as { prBaseBranch?: unknown; pr_base_branch?: unknown }).prBaseBranch ??
-      (req.body as { pr_base_branch?: unknown }).pr_base_branch;
+    const hasEpicPrBasePut = parsedEpic.prBaseBranch !== undefined;
     let nextEpicPrBaseField: string | null | undefined;
     if (hasEpicPrBasePut) {
-      const parsed = parsePrBaseBranchInput(epicPrBasePutRaw);
-      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
-      nextEpicPrBaseField = parsed.value;
+      const parsedBranch = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
+      if (!parsedBranch.ok) return res.status(400).json({ error: parsedBranch.error });
+      nextEpicPrBaseField = parsedBranch.value;
     }
 
     const nextAutonomousModel =
@@ -1004,7 +1016,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     (req: Request, res: Response) => {
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
-      const { epicId } = req.body as { epicId?: string };
+      const parsedLink = parseBody(LinkEpicRequestSchema, req, res);
+      if (!parsedLink) return;
+      const { epicId } = parsedLink;
       // FK pre-flight: a non-empty epicId must reference an existing epic
       // on the same board. Without this, a stale epicId from the client
       // surfaces as an opaque `SqliteError: FOREIGN KEY constraint failed`.
