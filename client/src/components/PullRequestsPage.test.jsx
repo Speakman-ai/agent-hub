@@ -376,6 +376,28 @@ describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
   });
 });
 
+describe('<PullRequestsPage /> — PR list row button layout', () => {
+  beforeEach(() => {
+    api.getProjectPulls.mockReset();
+  });
+
+  it('action buttons in list rows are arranged horizontally (flex-row not flex-col)', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+
+    await screen.findByText('Fix the flaky test');
+
+    // The Merge, Nudge, and Resolve buttons share a container div.
+    // It must use flex-row so buttons sit side-by-side (not stacked vertically).
+    const mergeBtn = screen.getByRole('button', { name: /merge pr #123/i });
+    const container = mergeBtn.parentElement;
+
+    expect(container.className).toMatch(/flex-row/);
+    expect(container.className).not.toMatch(/flex-col/);
+  });
+});
+
 describe('<PullRequestsPage /> — listRefreshNonce (live sync from App)', () => {
   beforeEach(() => {
     api.getProjectPulls.mockReset();

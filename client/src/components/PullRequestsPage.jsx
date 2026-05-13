@@ -162,7 +162,7 @@ function PrListItem({
           </div>
         )}
       </button>
-      <div className="flex-shrink-0 self-center flex flex-col gap-2 items-stretch">
+      <div className="flex-shrink-0 self-center flex flex-row gap-2 items-stretch">
         <button
           type="button"
           onClick={(e) => {
