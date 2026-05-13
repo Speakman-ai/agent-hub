@@ -1135,39 +1135,63 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
-        {/* Version display */}
-        <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            <span>v{clientVersion}</span>
-            {footerServerVersion && footerServerVersion !== clientVersion && (
-              <span
-                className="inline-flex items-center gap-1 text-amber-400"
-                title={`Client v${clientVersion} · Server v${footerServerVersion}`}
-              >
-                <AlertTriangle size={12} />
-                <span>server v{footerServerVersion}</span>
-              </span>
-            )}
-          </div>
-          {(clientGitHash || footerServerGitHash) && (
-            <div
-              className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
-              title={
-                footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash
-                  ? `Client ${clientGitHash} · Server ${footerServerGitHash} (mismatch — rebuild/redeploy)`
-                  : `Build ${clientGitHash || footerServerGitHash}`
-              }
-            >
-              <span>{clientGitHash || '—'}</span>
-              {footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash && (
-                <span className="inline-flex items-center gap-1 text-amber-400">
-                  <AlertTriangle size={10} />
-                  <span>server {footerServerGitHash}</span>
+        {/* Version display.
+            In a browser, the React bundle is served by the same Hub that
+            answers /api/health — client and server versions are always
+            identical, so showing both is noise. Render ONLY the server
+            version there. In Electron, the desktop binary version can
+            drift from the server it's connected to, so we keep the
+            client-primary line plus a mismatch warning chip. */}
+        {isElectron() ? (
+          <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <span>v{clientVersion}</span>
+              {footerServerVersion && footerServerVersion !== clientVersion && (
+                <span
+                  className="inline-flex items-center gap-1 text-amber-400"
+                  title={`Client v${clientVersion} · Server v${footerServerVersion}`}
+                >
+                  <AlertTriangle size={12} />
+                  <span>server v{footerServerVersion}</span>
                 </span>
               )}
             </div>
-          )}
-        </div>
+            {(clientGitHash || footerServerGitHash) && (
+              <div
+                className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
+                title={
+                  footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash
+                    ? `Client ${clientGitHash} · Server ${footerServerGitHash} (mismatch — rebuild/redeploy)`
+                    : `Build ${clientGitHash || footerServerGitHash}`
+                }
+              >
+                <span>{clientGitHash || '—'}</span>
+                {footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash && (
+                  <span className="inline-flex items-center gap-1 text-amber-400">
+                    <AlertTriangle size={10} />
+                    <span>server {footerServerGitHash}</span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
+            {footerServerVersion && (
+              <div className="flex items-center gap-1.5">
+                <span>v{footerServerVersion}</span>
+              </div>
+            )}
+            {footerServerGitHash && (
+              <div
+                className="text-[10px] text-gray-600 font-mono"
+                title={`Build ${footerServerGitHash}`}
+              >
+                {footerServerGitHash}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
