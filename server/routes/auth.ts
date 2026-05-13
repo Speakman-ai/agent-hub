@@ -49,6 +49,12 @@ import {
   migrateAuthRecordIfNeeded,
   getUserClaudeAuth,
   setUserClaudeAuth,
+  getUserCursorAuth,
+  setUserCursorAuth,
+  getUserGeminiAuth,
+  setUserGeminiAuth,
+  getUserCodexAuth,
+  setUserCodexAuth,
 } from '../users-store.js';
 import {
   createMembership,
@@ -570,6 +576,93 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       },
     });
   });
+
+  // ── Per-user single-key engine credentials (Cursor / Gemini / Codex) ──
+  //
+  // Each engine carries one API key today. The shape is intentionally
+  // identical across the three so the UI can render them with one
+  // component. `buildSpawnEnv` (server/config.ts) handles per-field
+  // precedence — per-user override → host config → unset.
+  type SingleKeyEngine = 'cursor' | 'gemini' | 'codex';
+  const singleKeyEngines: Array<{
+    engine: SingleKeyEngine;
+    path: string;
+    get: (userId: string) => ReturnType<typeof getUserCursorAuth>;
+    set: (
+      userId: string,
+      patch: { apiKey?: string | null },
+    ) => ReturnType<typeof setUserCursorAuth>;
+    hostHasKey: () => boolean;
+  }> = [
+    {
+      engine: 'cursor',
+      path: '/api/auth/me/cursor-auth',
+      get: getUserCursorAuth,
+      set: setUserCursorAuth,
+      hostHasKey: () => !!config.cursorApiKey,
+    },
+    {
+      engine: 'gemini',
+      path: '/api/auth/me/gemini-auth',
+      get: getUserGeminiAuth,
+      set: setUserGeminiAuth,
+      hostHasKey: () => !!config.geminiApiKey,
+    },
+    {
+      engine: 'codex',
+      path: '/api/auth/me/codex-auth',
+      get: getUserCodexAuth,
+      set: setUserCodexAuth,
+      hostHasKey: () => !!config.codexApiKey,
+    },
+  ];
+
+  for (const route of singleKeyEngines) {
+    router.get(route.path, (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
+      if (!authedReq.authUserId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      const stored = route.get(authedReq.authUserId);
+      if (!stored) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      res.json({
+        engine: route.engine,
+        apiKey: maskCredential(stored.apiKey),
+        updatedAt: stored.updatedAt,
+        hostConfigFallback: { apiKey: route.hostHasKey() },
+      });
+    });
+
+    router.put(route.path, (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
+      if (!authedReq.authUserId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      const body = (req.body ?? {}) as { apiKey?: string | null };
+      // Whitelist the single supported field so stray JSON keys can't
+      // reach the DB.
+      const patch: { apiKey?: string | null } = {};
+      if (Object.prototype.hasOwnProperty.call(body, 'apiKey')) {
+        patch.apiKey = body.apiKey ?? null;
+      }
+      const updated = route.set(authedReq.authUserId, patch);
+      if (!updated) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      res.json({
+        engine: route.engine,
+        apiKey: maskCredential(updated.apiKey),
+        updatedAt: updated.updatedAt,
+        hostConfigFallback: { apiKey: route.hostHasKey() },
+      });
+    });
+  }
 
   // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──
   router.get('/api/auth/me/skill-credentials', (req: Request, res: Response) => {

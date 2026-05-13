@@ -185,6 +185,100 @@ function normalizeStoredCredential(raw: string | null): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
+// ── Per-user Cursor / Gemini / Codex credentials ────────────────────
+//
+// Each non-Claude engine carries a single API key column today. The
+// `<engine>_auth_updated_at` audit column lets the UI render "Last
+// updated …" without needing a JOIN to an event log. As with the Claude
+// helpers above, `buildSpawnEnv` prefers these values when spawning a
+// session and falls back to host-wide `config.cursorApiKey` /
+// `config.geminiApiKey` / `config.codexApiKey`.
+
+export interface UserSingleKeyAuth {
+  apiKey: string | null;
+  updatedAt: string | null;
+}
+
+interface SingleKeyRow {
+  api_key: string | null;
+  auth_updated_at: string | null;
+}
+
+function getSingleKeyAuth(
+  userId: string,
+  keyCol: string,
+  updatedCol: string,
+): UserSingleKeyAuth | null {
+  const db = getOrgsDb();
+  const row = db
+    .prepare(
+      `SELECT ${keyCol} AS api_key, ${updatedCol} AS auth_updated_at
+       FROM users WHERE id = ?`,
+    )
+    .get(userId) as SingleKeyRow | undefined;
+  if (!row) return null;
+  return {
+    apiKey: row.api_key ?? null,
+    updatedAt: row.auth_updated_at ?? null,
+  };
+}
+
+function setSingleKeyAuth(
+  userId: string,
+  keyCol: string,
+  updatedCol: string,
+  patch: { apiKey?: string | null },
+): UserSingleKeyAuth | null {
+  const db = getOrgsDb();
+  const existing = getSingleKeyAuth(userId, keyCol, updatedCol);
+  if (!existing) return null;
+
+  const nextKey =
+    patch.apiKey === undefined ? existing.apiKey : normalizeStoredCredential(patch.apiKey);
+  const nextUpdated = new Date().toISOString();
+
+  db.prepare(`UPDATE users SET ${keyCol} = ?, ${updatedCol} = ? WHERE id = ?`).run(
+    nextKey,
+    nextUpdated,
+    userId,
+  );
+
+  return { apiKey: nextKey, updatedAt: nextUpdated };
+}
+
+export function getUserCursorAuth(userId: string): UserSingleKeyAuth | null {
+  return getSingleKeyAuth(userId, 'cursor_api_key', 'cursor_auth_updated_at');
+}
+
+export function setUserCursorAuth(
+  userId: string,
+  patch: { apiKey?: string | null },
+): UserSingleKeyAuth | null {
+  return setSingleKeyAuth(userId, 'cursor_api_key', 'cursor_auth_updated_at', patch);
+}
+
+export function getUserGeminiAuth(userId: string): UserSingleKeyAuth | null {
+  return getSingleKeyAuth(userId, 'gemini_api_key', 'gemini_auth_updated_at');
+}
+
+export function setUserGeminiAuth(
+  userId: string,
+  patch: { apiKey?: string | null },
+): UserSingleKeyAuth | null {
+  return setSingleKeyAuth(userId, 'gemini_api_key', 'gemini_auth_updated_at', patch);
+}
+
+export function getUserCodexAuth(userId: string): UserSingleKeyAuth | null {
+  return getSingleKeyAuth(userId, 'codex_api_key', 'codex_auth_updated_at');
+}
+
+export function setUserCodexAuth(
+  userId: string,
+  patch: { apiKey?: string | null },
+): UserSingleKeyAuth | null {
+  return setSingleKeyAuth(userId, 'codex_api_key', 'codex_auth_updated_at', patch);
+}
+
 /**
  * One-shot migration from the Phase-1/2 `auth.json` singleton to the
  * Phase-3 users + memberships tables. Safe to call on every boot:

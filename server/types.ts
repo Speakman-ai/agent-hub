@@ -1705,6 +1705,8 @@ export interface AppConfig {
   openaiApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;
+  /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
+  cursorApiKey: string | null;
   slackWebhookUrl: string | null;
   capturesEnabled: boolean;
   /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */

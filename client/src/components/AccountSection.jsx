@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Copy, Key, Loader2, LogOut, Plus, Trash2, Users, X } from 'lucide-react';
+import {
+  Copy,
+  Key,
+  Loader2,
+  LogOut,
+  Plus,
+  Sparkles,
+  Terminal,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
+import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
+import { api } from '../utils/api.js';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
@@ -186,6 +199,39 @@ export default function AccountSection() {
       </div>
 
       {me && <MyClaudeAuthSection />}
+
+      {me && (
+        <MySingleKeyAuthSection
+          engineLabel="Cursor"
+          Icon={Terminal}
+          placeholder="cursor-api-key-..."
+          hostSettingHint="Settings → Cursor Auth"
+          getter={() => api.getMyCursorAuth()}
+          setter={(body) => api.putMyCursorAuth(body)}
+        />
+      )}
+
+      {me && (
+        <MySingleKeyAuthSection
+          engineLabel="Gemini"
+          Icon={Sparkles}
+          placeholder="AIza..."
+          hostSettingHint="Settings → Gemini Auth"
+          getter={() => api.getMyGeminiAuth()}
+          setter={(body) => api.putMyGeminiAuth(body)}
+        />
+      )}
+
+      {me && (
+        <MySingleKeyAuthSection
+          engineLabel="Codex"
+          Icon={Terminal}
+          placeholder="sk-..."
+          hostSettingHint="Settings → Codex Auth"
+          getter={() => api.getMyCodexAuth()}
+          setter={(body) => api.putMyCodexAuth(body)}
+        />
+      )}
 
       {me && <ApiKeysSection />}
 
