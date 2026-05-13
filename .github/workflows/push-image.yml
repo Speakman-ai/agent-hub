@@ -33,11 +33,11 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  id-token: write   # OIDC: assume AWS role without long-lived keys
+  id-token: write # OIDC: assume AWS role without long-lived keys
   contents: read
 
 env:
-  AWS_REGION: us-east-1              # ECR Public API is us-east-1 only
+  AWS_REGION: us-east-1 # ECR Public API is us-east-1 only
   ECR_PUBLIC_URI: public.ecr.aws/h9t4v7h0/agent-hub
   AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
 
@@ -116,13 +116,27 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Dev sandbox (ryan) pulls `agent-hub:main` via systemd; restart re-runs
-  # docker pull on the host. IAM: inline policy on agent-hub-ci-ecr-push from
-  # Terraform (`enable_ci_ssm_deploy_after_ecr_push` in environments/ryan).
+  # Dev sandbox (ryan, serving https://agenthub.dev.surveytracker.io/) pulls
+  # `agent-hub:main` via systemd; restart re-runs docker pull on the host.
+  # IAM: inline policy on agent-hub-ci-ecr-push from Terraform
+  # (`enable_ci_ssm_deploy_after_ecr_push` in environments/ryan).
+  #
+  # MANUAL-ONLY: we intentionally do NOT auto-deploy on push to main. The
+  # `push` job above still builds + tags `:sha` / `:main` on every main push
+  # so Terraform consumers, PR-env builds, and any operator pulling `:main`
+  # always see fresh bits. But the dev sandbox restart fires only when an
+  # operator triggers this workflow via `workflow_dispatch` (Actions tab or
+  # `gh workflow run push-image.yml`). Pair this with a tagged release: cut
+  # the tag, then manually fire this workflow to roll dev to the new image.
+  #
+  # If a `gh workflow run` from a non-main branch needs to roll the sandbox
+  # too, that's fine — the dispatch gate doesn't pin to a ref. The image
+  # tagged `:main` is only written when the workflow runs against main, so
+  # dispatching from a feature branch will rebuild but won't move `:main`.
   deploy-dev-sandbox:
     name: Deploy dev sandbox (SSM)
     needs: push
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
