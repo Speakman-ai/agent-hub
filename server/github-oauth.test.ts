@@ -95,7 +95,7 @@ describe('exchangeCodeForToken', () => {
     ).rejects.toThrow(/bad_verification_code|incorrect or expired/);
   });
 
-  it('throws when response is missing tokens', async () => {
+  it('throws when response is missing access_token', async () => {
     const fetchImpl = mockFetchJsonResponse({ scope: 'repo' });
     await expect(
       exchangeCodeForToken({
@@ -104,7 +104,28 @@ describe('exchangeCodeForToken', () => {
         redirectUri: 'https://hub/cb',
         fetchImpl,
       }),
-    ).rejects.toThrow(/missing access_token or refresh_token/);
+    ).rejects.toThrow(/missing access_token/);
+  });
+
+  // Classic OAuth Apps (registered at /settings/applications/new) and
+  // GitHub Apps without "Expire user authorization tokens" enabled
+  // return only `access_token`/`scope`/`token_type` — no refresh token,
+  // no expiry. We must accept that shape, not throw.
+  it('accepts a response with only access_token (non-expiring OAuth client)', async () => {
+    const fetchImpl = mockFetchJsonResponse({
+      access_token: 'ghu_no_refresh',
+      scope: 'repo',
+      token_type: 'bearer',
+    });
+    const tokens = await exchangeCodeForToken({
+      credentials: { clientId: 'a', clientSecret: 'b' },
+      code: 'x',
+      redirectUri: 'https://hub/cb',
+      fetchImpl,
+    });
+    expect(tokens.access_token).toBe('ghu_no_refresh');
+    expect(tokens.refresh_token).toBeUndefined();
+    expect(tokens.expires_in).toBeUndefined();
   });
 
   it('throws on non-2xx HTTP status', async () => {

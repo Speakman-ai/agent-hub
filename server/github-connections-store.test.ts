@@ -257,6 +257,72 @@ describe('getActiveAccessToken — transparent refresh', () => {
     expect(token).toBeNull();
   });
 
+  // ── Non-expiring access tokens ──────────────────────────────────
+  //
+  // Classic OAuth Apps and GitHub Apps without "Expire user
+  // authorization tokens" issue access tokens with no expiry and no
+  // refresh token. The store must accept null expiry/refresh columns
+  // and `getActiveAccessToken` must return the stored token directly
+  // without attempting to call the (non-existent) refresh endpoint.
+
+  it('upserts and reads back a connection with null expiry + null refresh', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    upsertGithubConnection({
+      userId: user.id,
+      login: 'speakmanra',
+      accessToken: 'gho_no_expiry',
+      tokenExpiresAt: null,
+      refreshToken: null,
+      refreshExpiresAt: null,
+    });
+    const conn = getGithubConnection(user.id);
+    expect(conn).not.toBeNull();
+    expect(conn!.accessToken).toBe('gho_no_expiry');
+    expect(conn!.tokenExpiresAt).toBeNull();
+    expect(conn!.refreshToken).toBeNull();
+    expect(conn!.refreshExpiresAt).toBeNull();
+  });
+
+  it('getActiveAccessToken returns the token directly when tokenExpiresAt is null', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    upsertGithubConnection({
+      userId: user.id,
+      login: 'speakmanra',
+      accessToken: 'never-expires',
+      tokenExpiresAt: null,
+      refreshToken: null,
+      refreshExpiresAt: null,
+    });
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const token = await getActiveAccessToken(
+      user.id,
+      { clientId: 'a', clientSecret: 'b' },
+      { fetchImpl },
+    );
+    expect(token).toBe('never-expires');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('getActiveAccessToken returns null when token is expired and no refresh token exists', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    upsertGithubConnection({
+      userId: user.id,
+      login: 'speakmanra',
+      accessToken: 'expired-no-refresh',
+      tokenExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      refreshToken: null,
+      refreshExpiresAt: null,
+    });
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const token = await getActiveAccessToken(
+      user.id,
+      { clientId: 'a', clientSecret: 'b' },
+      { fetchImpl },
+    );
+    expect(token).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('updateRotatedTokens rewrites only the token columns', () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     const originalConnected = '2026-01-01T00:00:00.000Z';

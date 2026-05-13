@@ -17,16 +17,28 @@ import { getOrgsDb } from './orgs.js';
 import {
   refreshUserToken,
   type GitHubOAuthCredentials,
-  type GitHubTokenResponse,
+  type GitHubRefreshedTokens,
 } from './github-oauth.js';
 
 export interface GithubConnectionRow {
   userId: string;
   login: string;
   accessToken: string;
-  tokenExpiresAt: string; // ISO
-  refreshToken: string;
-  refreshExpiresAt: string; // ISO
+  /**
+   * ISO timestamp, or `null` when the access token never expires
+   * (classic OAuth Apps and GitHub Apps without "Expire user
+   * authorization tokens" enabled).
+   */
+  tokenExpiresAt: string | null;
+  /**
+   * The refresh token, or `null` when the OAuth client does not
+   * issue refresh tokens. When null, the access token is treated
+   * as non-rotating — if it ever stops working, the user must
+   * reconnect manually from Settings.
+   */
+  refreshToken: string | null;
+  /** ISO timestamp paired with `refreshToken`; null iff `refreshToken` is null. */
+  refreshExpiresAt: string | null;
   connectedAt: string; // ISO
 }
 
@@ -59,14 +71,10 @@ function isoFromSecondsFromNow(seconds: number): string {
 
 function rowToConnection(userId: string, row: RawUserRow | undefined): GithubConnectionRow | null {
   if (!row) return null;
-  if (
-    !row.github_login ||
-    !row.github_user_token ||
-    !row.github_token_expires_at ||
-    !row.github_refresh_token ||
-    !row.github_refresh_expires_at ||
-    !row.github_connected_at
-  ) {
+  // Only the identifying triple is required — login, access token, and
+  // the connectedAt marker. Refresh/expiry columns may legitimately be
+  // null for OAuth clients that don't issue them.
+  if (!row.github_login || !row.github_user_token || !row.github_connected_at) {
     return null;
   }
   return {
@@ -80,14 +88,21 @@ function rowToConnection(userId: string, row: RawUserRow | undefined): GithubCon
   };
 }
 
-/** Persist a fresh or rotated connection. Safe to call multiple times. */
+/**
+ * Persist a fresh or rotated connection. Safe to call multiple times.
+ *
+ * `tokenExpiresAt`, `refreshToken`, and `refreshExpiresAt` accept null
+ * for OAuth clients that don't issue expiring tokens or refresh tokens
+ * (classic OAuth Apps and GitHub Apps without "Expire user
+ * authorization tokens").
+ */
 export function upsertGithubConnection(args: {
   userId: string;
   login: string;
   accessToken: string;
-  tokenExpiresAt: string;
-  refreshToken: string;
-  refreshExpiresAt: string;
+  tokenExpiresAt: string | null;
+  refreshToken: string | null;
+  refreshExpiresAt: string | null;
   connectedAt?: string;
 }): void {
   const db = getOrgsDb();
@@ -115,7 +130,7 @@ export function upsertGithubConnection(args: {
 /** Persist the rotated tokens from a refresh — keeps connectedAt/login. */
 export function updateRotatedTokens(
   userId: string,
-  tokens: GitHubTokenResponse,
+  tokens: GitHubRefreshedTokens,
 ): { tokenExpiresAt: string; refreshExpiresAt: string } {
   const tokenExpiresAt = isoFromSecondsFromNow(tokens.expires_in);
   const refreshExpiresAt = isoFromSecondsFromNow(tokens.refresh_token_expires_in);
@@ -193,6 +208,12 @@ export async function getActiveAccessToken(
   if (!conn) return null;
   const now = opts.now ?? Date.now();
 
+  // Non-expiring access tokens (classic OAuth Apps, GitHub Apps without
+  // expiring user tokens). Nothing to refresh — return what we have.
+  if (conn.tokenExpiresAt === null) {
+    return conn.accessToken;
+  }
+
   const tokenExpiryMs = Date.parse(conn.tokenExpiresAt);
   if (Number.isFinite(tokenExpiryMs) && tokenExpiryMs - now > REFRESH_SAFETY_WINDOW_MS) {
     return conn.accessToken;
@@ -200,10 +221,17 @@ export async function getActiveAccessToken(
 
   // Token is expired or in the safety window — try to refresh.
   if (!credentials) return null;
-  const refreshExpiryMs = Date.parse(conn.refreshExpiresAt);
-  if (Number.isFinite(refreshExpiryMs) && refreshExpiryMs <= now) {
-    // Refresh token itself is dead — user must reconnect.
-    return null;
+
+  // No refresh token issued by the OAuth client. We can't rotate — the
+  // user must reconnect from Settings.
+  if (!conn.refreshToken) return null;
+
+  if (conn.refreshExpiresAt) {
+    const refreshExpiryMs = Date.parse(conn.refreshExpiresAt);
+    if (Number.isFinite(refreshExpiryMs) && refreshExpiryMs <= now) {
+      // Refresh token itself is dead — user must reconnect.
+      return null;
+    }
   }
 
   try {
