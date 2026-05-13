@@ -2,11 +2,16 @@ import React, { memo, useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { GitPullRequest } from 'lucide-react';
+import { GitPullRequest, AlertTriangle } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { markdownComponents } from './MarkdownRenderer.jsx';
-import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage.js';
+import {
+  parsePrCreatedMetadata,
+  parsePrFailedMetadata,
+  describePrFailureCode,
+  shortSha,
+} from '../utils/prMessage.js';
 import { stripAskAnswerBlocks } from '../utils/askAnswers.js';
 
 function ImageLightbox({ src, alt, onClose }) {
@@ -269,6 +274,55 @@ function SystemPrCreatedMessage({ message }) {
   );
 }
 
+function SystemPrFailedMessage({ message }) {
+  const meta = parsePrFailedMetadata(message.metadata);
+  if (!meta) {
+    return (
+      <div className="flex justify-center mb-4">
+        <div className="text-xs text-gray-500 italic">{message.content || 'System event'}</div>
+      </div>
+    );
+  }
+  const heading = describePrFailureCode(meta.code);
+  return (
+    <div className="flex justify-center mb-4">
+      <div className="max-w-[95%] sm:max-w-[80%] w-full bg-red-950/30 border border-red-700/40 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2 mb-1.5">
+          <AlertTriangle className="w-4 h-4 text-red-400" />
+          <span className="text-sm font-medium text-red-300">{heading}</span>
+          <code className="text-[11px] text-red-300/70 bg-red-950/40 px-1.5 py-0.5 rounded">
+            {meta.code}
+          </code>
+        </div>
+        <div className="text-sm text-red-100/80 whitespace-pre-wrap break-words">{meta.error}</div>
+        {(meta.branch || meta.cardTitle) && (
+          <div className="mt-1.5 text-xs text-gray-400 space-x-3">
+            {meta.branch && (
+              <span>
+                Branch: <code className="text-gray-300">{meta.branch}</code>
+              </span>
+            )}
+            {meta.cardTitle && (
+              <span>
+                Card: <span className="text-gray-300">{meta.cardTitle}</span>
+              </span>
+            )}
+          </div>
+        )}
+        <div className="mt-2 text-[11px] text-red-200/70">
+          Your work is still on the local branch. Open the worktree, run{' '}
+          <code className="bg-red-950/40 px-1 rounded">git fetch origin</code> +{' '}
+          <code className="bg-red-950/40 px-1 rounded">git rebase origin/&lt;branch&gt;</code>, then
+          push manually or click <em>Create PR</em>.
+        </div>
+        {message.created_at && (
+          <div className="text-[11px] text-gray-600 mt-1.5">{relativeTime(message.created_at)}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const isSystem = message.role === 'system';
   const isUser = message.role === 'user';
@@ -293,6 +347,12 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   }, [message.content, message.attachments, message.role]);
 
   if (isSystem) {
+    // Dispatch by metadata `kind`. pr_created → green callout; pr_failed →
+    // red callout with recovery hint. Anything else (or malformed metadata)
+    // falls back to the generic system-event render inside SystemPrCreatedMessage.
+    if (parsePrFailedMetadata(message.metadata)) {
+      return <SystemPrFailedMessage message={message} />;
+    }
     return <SystemPrCreatedMessage message={message} />;
   }
 

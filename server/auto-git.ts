@@ -1111,7 +1111,7 @@ export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges
 /** Result of `commitPushAndCreatePR` — discriminated union for logging + API errors. */
 export type CommitPushPrResult =
   | { ok: true; prUrl: string }
-  | { ok: false; error: string; code: CommitPushPrFailureCode };
+  | { ok: false; error: string; code: CommitPushPrFailureCode; branch?: string };
 
 export type CommitPushPrFailureCode =
   | 'nothing_to_publish'
@@ -1264,7 +1264,7 @@ async function commitPushAndCreatePR(
       } catch (preErr: unknown) {
         const msg = preErr instanceof Error ? preErr.message : String(preErr);
         console.error(`[auto-commit] Pre-commit failed: ${msg}`);
-        return { ok: false, error: msg, code: 'commit_failed' };
+        return { ok: false, error: msg, code: 'commit_failed', branch: changes.branch };
       }
       // Pre-commit commands may run formatters / fixers that write the tree; re-stage
       // so those edits are included in the commit (matches typical hook UX).
@@ -1282,12 +1282,12 @@ async function commitPushAndCreatePR(
       } catch (spawnErr: unknown) {
         const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
         console.error(`[auto-commit] Commit failed: ${msg}`);
-        return { ok: false, error: msg, code: 'commit_failed' };
+        return { ok: false, error: msg, code: 'commit_failed', branch: changes.branch };
       }
       if (commitResult.code !== 0) {
         const msg = formatSpawnFailure('git', commitResult);
         console.error(`[auto-commit] Commit failed: ${msg}`);
-        return { ok: false, error: msg, code: 'commit_failed' };
+        return { ok: false, error: msg, code: 'commit_failed', branch: changes.branch };
       }
       console.log(`[auto-commit] Committed: ${commitTitle}`);
     } else {
@@ -1305,12 +1305,12 @@ async function commitPushAndCreatePR(
     } catch (pushErr: unknown) {
       const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
       console.error(`[auto-commit] Push failed: ${msg}`);
-      return { ok: false, error: msg, code: 'push_failed' };
+      return { ok: false, error: msg, code: 'push_failed', branch: changes.branch };
     }
     if (pushResult.code !== 0) {
       const msg = formatSpawnFailure('git', pushResult);
       console.error(`[auto-commit] Push failed: ${msg}`);
-      return { ok: false, error: msg, code: 'push_failed' };
+      return { ok: false, error: msg, code: 'push_failed', branch: changes.branch };
     }
     console.log(`[auto-commit] Pushed branch ${changes.branch}`);
 
@@ -1621,12 +1621,88 @@ async function commitPushAndCreatePR(
       } catch {
         // No PR found by branch name either
       }
-      return { ok: false, error: errMsg, code: 'pr_failed' };
+      return { ok: false, error: errMsg, code: 'pr_failed', branch: changes.branch };
     }
   } finally {
     if (prLogStarted) {
       d.broadcast({ type: 'create_pr_log_done', sessionId });
     }
+  }
+}
+
+// ─── Auto-PR failure surfacing ─────────────────────────────────────
+//
+// `commitPushAndCreatePR` historically only logged failures to
+// `console.error`. For the **autonomous** and **ad-hoc-with-existing-PR**
+// paths nothing reaches the UI, so a session that fails to push (typical
+// cause: push rejected because the remote branch is ahead — see
+// `troubleshooting-auto-commit-push-rejected-remote-branch-ahead`) looks
+// like a session that finished normally, with no PR and no explanation.
+//
+// `persistAndBroadcastPrFailure` writes a single durable system-role
+// message into the session timeline (so the failure shows up in the chat
+// transcript, in the same place users already look for the PR-created
+// banner) and broadcasts `auto_pr_failed` so the App can also toast it.
+// Failure-of-the-failure-logger is intentionally swallowed: we already
+// failed once and adding a second failure path that aborts the session
+// teardown would just make the original symptom worse.
+async function persistAndBroadcastPrFailure(args: {
+  sessionId: string;
+  agentId: string;
+  agentName: string;
+  card: KanbanCardRow | undefined;
+  outcome: Extract<CommitPushPrResult, { ok: false }>;
+}): Promise<void> {
+  const { sessionId, agentId, agentName, card, outcome } = args;
+  const d = getDeps();
+  try {
+    const human = humanizeCommitPrFailure(outcome);
+    const metadata = JSON.stringify({
+      kind: 'pr_failed',
+      code: outcome.code,
+      error: outcome.error,
+      branch: outcome.branch ?? null,
+      cardId: card?.id ?? null,
+      cardTitle: card?.title ?? null,
+      agentName,
+    });
+    const content = `Auto-PR failed (${outcome.code}): ${human}`;
+
+    let inserted: MessageRow | undefined;
+    try {
+      const msgId = crypto.randomUUID();
+      d.stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+      inserted = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system' as const,
+        content,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[auto-commit] Failed to persist pr_failed marker: ${msg}`);
+    }
+    if (inserted) {
+      d.broadcast({ type: 'message_added', sessionId, message: inserted });
+    }
+    d.broadcast({
+      type: 'auto_pr_failed',
+      sessionId,
+      agentId,
+      code: outcome.code,
+      error: outcome.error,
+      branch: outcome.branch ?? null,
+      cardId: card?.id ?? null,
+      cardTitle: card?.title ?? null,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[auto-commit] persistAndBroadcastPrFailure unexpected error: ${msg}`);
   }
 }
 
@@ -1751,6 +1827,13 @@ export async function autoCommitAndPR(
           console.error(
             `[auto-commit] Ad-hoc push/PR path failed (${prOutcome.code}): ${prOutcome.error}`,
           );
+          await persistAndBroadcastPrFailure({
+            sessionId,
+            agentId,
+            agentName: agent.name || 'Agent',
+            card: undefined,
+            outcome: prOutcome,
+          });
         }
         return;
       }
@@ -1812,6 +1895,13 @@ export async function autoCommitAndPR(
         console.error(
           `[auto-commit] Autonomous PR path failed (${autonomousOutcome.code}): ${autonomousOutcome.error}`,
         );
+        await persistAndBroadcastPrFailure({
+          sessionId,
+          agentId,
+          agentName: agent.name || 'Agent',
+          card,
+          outcome: autonomousOutcome,
+        });
       }
     }
   } catch (err: unknown) {

@@ -1795,6 +1795,98 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
     expect(errorMatches.length).toBeGreaterThan(0);
   });
 
+  // Regression: silent push failures used to leave the user with no UI
+  // indication that the session never published its work. The bug card
+  // (8de09e88) called for surfacing the failure in the chat timeline and
+  // via a top-level WebSocket event so the next operator notices.
+  it('autonomous path: push_failed persists a pr_failed system message and broadcasts auto_pr_failed', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmts({
+      id: 'card-push-fail-2',
+      title: 'Push will fail (visibility)',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    });
+    // Make getMessageById return the row keyed by the id passed to addMessage
+    // so the broadcast payload matches the inserted shape.
+    const insertedRows: Record<string, unknown> = {};
+    (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run = vi.fn(
+      (id: string, sessionId: string, role: string, content: string, ...rest: unknown[]) => {
+        insertedRows[id] = {
+          id,
+          session_id: sessionId,
+          role,
+          content,
+          engine: rest[0] ?? null,
+          model: rest[1] ?? null,
+          attachments: rest[2] ?? null,
+          metadata: rest[3] ?? null,
+          created_at: new Date().toISOString(),
+        };
+      },
+    );
+    (stmts.getMessageById as { get: ReturnType<typeof vi.fn> }).get = vi.fn(
+      (id: string) => insertedRows[id],
+    );
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecPushFails(execCalls);
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'Hub Lead Dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-push-fail-2', 'agent-1', project, agent, '/repo/.worktrees/x', '');
+
+    // 1) A system-role message was persisted with pr_failed metadata.
+    const addMessageCalls = (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    const prFailedInsert = addMessageCalls.find((args: unknown[]) => {
+      const role = args[2];
+      const metaJson = args[7];
+      if (role !== 'system' || typeof metaJson !== 'string') return false;
+      try {
+        const meta = JSON.parse(metaJson);
+        return meta?.kind === 'pr_failed' && meta?.code === 'push_failed';
+      } catch {
+        return false;
+      }
+    });
+    expect(prFailedInsert).toBeTruthy();
+
+    // 2) auto_pr_failed broadcast fired with the failure code and card linkage.
+    const autoPrFailed = mockBroadcast.mock.calls.find((args: unknown[]) => {
+      const payload = args[0] as { type?: string };
+      return payload?.type === 'auto_pr_failed';
+    })?.[0] as
+      | {
+          type: string;
+          sessionId: string;
+          agentId: string;
+          code: string;
+          cardId: string | null;
+          cardTitle: string | null;
+        }
+      | undefined;
+    expect(autoPrFailed).toBeTruthy();
+    expect(autoPrFailed?.sessionId).toBe('sess-push-fail-2');
+    expect(autoPrFailed?.agentId).toBe('agent-1');
+    expect(autoPrFailed?.code).toBe('push_failed');
+    expect(autoPrFailed?.cardId).toBe('card-push-fail-2');
+    expect(autoPrFailed?.cardTitle).toBe('Push will fail (visibility)');
+
+    // 3) message_added broadcast fired so the chat timeline updates live.
+    const messageAdded = mockBroadcast.mock.calls.find((args: unknown[]) => {
+      const payload = args[0] as { type?: string };
+      return payload?.type === 'message_added';
+    });
+    expect(messageAdded).toBeTruthy();
+  });
+
   it('ad-hoc-with-existing-PR path: nothing_to_publish logs at INFO, not ERROR', async () => {
     // Construct the no-card / existing-PR ad-hoc shape: the worktree has
     // changes (so the early !changes return is skipped), gh pr view finds an

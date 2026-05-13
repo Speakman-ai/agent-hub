@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parsePrCreatedMetadata, shortSha } from './prMessage.js';
+import {
+  parsePrCreatedMetadata,
+  parsePrFailedMetadata,
+  describePrFailureCode,
+  shortSha,
+} from './prMessage.js';
 
 describe('parsePrCreatedMetadata', () => {
   const valid = {
@@ -75,6 +80,96 @@ describe('parsePrCreatedMetadata', () => {
     const out = parsePrCreatedMetadata(minimal);
     expect(out?.commitSha).toBe('');
     expect(out?.commitTitle).toBe('');
+  });
+});
+
+describe('parsePrFailedMetadata', () => {
+  const valid = {
+    kind: 'pr_failed',
+    code: 'push_failed',
+    error: 'git push rejected — remote contains work you do not have locally',
+    branch: 'agent-hub/agent-hub/session-abc',
+    cardId: 'card-uuid',
+    cardTitle: 'Sessions arent pushing',
+    agentName: 'Hub Lead Dev',
+  };
+
+  it('parses well-formed metadata', () => {
+    const out = parsePrFailedMetadata(JSON.stringify(valid));
+    expect(out).toEqual({
+      code: 'push_failed',
+      error: valid.error,
+      branch: valid.branch,
+      cardId: 'card-uuid',
+      cardTitle: 'Sessions arent pushing',
+      agentName: 'Hub Lead Dev',
+    });
+  });
+
+  it('accepts pre-parsed objects', () => {
+    const out = parsePrFailedMetadata(valid);
+    expect(out?.code).toBe('push_failed');
+  });
+
+  it('returns null for null/undefined/malformed', () => {
+    expect(parsePrFailedMetadata(null)).toBeNull();
+    expect(parsePrFailedMetadata(undefined)).toBeNull();
+    expect(parsePrFailedMetadata('{ not json')).toBeNull();
+    expect(parsePrFailedMetadata('')).toBeNull();
+  });
+
+  it('returns null when kind is not pr_failed', () => {
+    expect(parsePrFailedMetadata(JSON.stringify({ ...valid, kind: 'pr_created' }))).toBeNull();
+  });
+
+  it('returns null for unknown / missing code (whitelist enforced)', () => {
+    expect(
+      parsePrFailedMetadata(JSON.stringify({ ...valid, code: 'nothing_to_publish' })),
+    ).toBeNull();
+    expect(parsePrFailedMetadata(JSON.stringify({ ...valid, code: 'bogus' }))).toBeNull();
+    const { code: _c, ...noCode } = valid;
+    expect(parsePrFailedMetadata(JSON.stringify(noCode))).toBeNull();
+  });
+
+  it('returns null when error is missing', () => {
+    const { error: _e, ...noError } = valid;
+    expect(parsePrFailedMetadata(JSON.stringify(noError))).toBeNull();
+  });
+
+  it('tolerates null branch / cardId / cardTitle / agentName (ad-hoc flow)', () => {
+    const adhoc = JSON.stringify({
+      ...valid,
+      branch: null,
+      cardId: null,
+      cardTitle: null,
+      agentName: null,
+    });
+    const out = parsePrFailedMetadata(adhoc);
+    expect(out?.branch).toBeNull();
+    expect(out?.cardId).toBeNull();
+    expect(out?.cardTitle).toBeNull();
+    expect(out?.agentName).toBeNull();
+    expect(out?.code).toBe('push_failed');
+  });
+
+  it('accepts each whitelisted failure code', () => {
+    for (const code of ['commit_failed', 'push_failed', 'pr_failed']) {
+      const out = parsePrFailedMetadata(JSON.stringify({ ...valid, code }));
+      expect(out?.code).toBe(code);
+    }
+  });
+});
+
+describe('describePrFailureCode', () => {
+  it('maps known codes to human-friendly labels', () => {
+    expect(describePrFailureCode('push_failed')).toBe('Push rejected');
+    expect(describePrFailureCode('commit_failed')).toBe('Commit failed');
+    expect(describePrFailureCode('pr_failed')).toBe('PR creation failed');
+  });
+
+  it('falls back to generic label for unknown codes', () => {
+    expect(describePrFailureCode('bogus')).toBe('Auto-PR failed');
+    expect(describePrFailureCode(undefined)).toBe('Auto-PR failed');
   });
 });
 
