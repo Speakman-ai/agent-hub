@@ -230,8 +230,9 @@ section yet. To get an Electron app right now you must clone and build
 it yourself:
 
 ```bash
-npm run electron:build      # macOS DMG (arm64 + Intel)
+npm run electron:build      # macOS DMG (host arch only)
 npm run electron:pack       # --dir output for local smoke-test
+npm run release:mac         # macOS DMG (arm64 + Intel universal) — used for S3 releases
 ```
 
 The mac build pipeline (`electron/release-mac.mjs`) uploads versioned
@@ -269,7 +270,7 @@ Configuration resolves in priority order: **environment variables** >
 | Environment Variable    | config.json Key | Default                  | Description                                          |
 | ----------------------- | --------------- | ------------------------ | ---------------------------------------------------- |
 | `AGENT_HUB_PORT`        | `port`          | `3051`                   | Server port                                          |
-| `AGENT_HUB_HOST`        | `host`          | `127.0.0.1`              | Server bind address                                  |
+| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                | Server bind address (all interfaces by default; set to `127.0.0.1` to restrict to loopback) |
 | `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`      | SQLite + workspaces root                             |
 | `CLAUDE_BIN`            | `claudeBin`     | _smart probe_            | Path to Claude Code CLI                              |
 | `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`     | Path to Cursor Agent CLI                             |
