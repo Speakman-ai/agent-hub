@@ -64,7 +64,7 @@ JSON schema:
     {
       "name": "Human-readable agent name",
       "id": "kebab-case-id",
-      "role": "lead | sub",
+      "role": "dev",
       "specialty": "Brief description of what this agent focuses on",
       "systemPrompt": "Full system prompt for this agent. Be specific about the project's tech stack, conventions, and what this agent should focus on. 2-4 paragraphs."
     }
@@ -84,18 +84,13 @@ JSON schema:
   }
 }
 
-Guidelines for agents — LEAD + SUB-AGENT HIERARCHY:
-- ALWAYS create exactly ONE lead agent first in the array with role "lead"
-- The lead agent is the project coordinator — it understands the full codebase, delegates tasks to sub-agents, and synthesizes results
-- The lead agent's name should be "[Project] Lead" (e.g. "MyApp Lead")
-- The lead agent's systemPrompt should emphasize coordination, architecture decisions, code review, and delegation
-- For small projects (single language, few files): create 1 lead + 1 sub-agent (general developer)
-- For medium projects: create 1 lead + 2 sub-agents (e.g. frontend + backend, or app + testing)
-- For large projects: create 1 lead + 2-3 sub-agents (e.g. frontend, backend, devops)
-- Never create more than 4 agents total (1 lead + 3 subs max)
-- Sub-agents have role "sub" and should be specialists for specific areas of the codebase
-- Each sub-agent's systemPrompt should be detailed about their specialty and the specific tech stack they work with
-- Agent IDs should be descriptive kebab-case (e.g. "myapp-lead", "myapp-frontend", "myapp-backend")
+Guidelines for agents — SINGLE FLAT DEV AGENT:
+- Return EXACTLY ONE agent in the array. Sub-agent hierarchies (lead + frontend + backend, etc.) are deprecated — Agent Hub uses a flat agent model. The user can add additional dev agents from the UI later if they want a multi-specialist setup.
+- The agent's role MUST be "dev".
+- The agent's name should be "[Project] Dev" (e.g. "MyApp Dev") — short and human-readable.
+- The agent's systemPrompt should be a comprehensive, full-stack-capable persona that owns the entire codebase: architecture, frontend, backend, tests, deploy. 3-5 paragraphs that bake in the project's tech stack, conventions, and notable directories so a fresh chat session has the context it needs to ship work without delegating.
+- The agent's id should be descriptive kebab-case (e.g. "myapp-dev").
+- Do NOT emit roles "lead" or "sub". Do NOT split work across multiple agents.
 
 Guidelines for commands:
 - Detect the install command by checking lock files: bun.lockb/bun.lock -> "bun install", pnpm-lock.yaml -> "pnpm install", yarn.lock -> "yarn install", package-lock.json -> "npm ci", package.json -> "npm install", requirements.txt -> "pip install -r requirements.txt", Cargo.toml -> "cargo build"
@@ -106,7 +101,7 @@ Guidelines for commands:
 
 Guidelines for contextFiles:
 - SOUL.md: capture actual coding style (indentation, naming conventions, patterns observed)
-- AGENTS.md: describe the lead/sub-agent team structure and how they coordinate
+- AGENTS.md: describe the single dev agent and the kinds of work they own. The flat-agent model means there is no team to coordinate — write this from the perspective of one full-stack developer agent.
 - TOOLS.md: list actual commands from package.json scripts, Makefile targets, etc.
 - MEMORY.md: note the project structure and key directories
 - All content must be specific to this project, not generic`;
@@ -1493,9 +1488,14 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // Workflow-mode scaffolding — match the shell a dev project gets minus
     // the GitHub/PR-specific bits. Without this, the wizard lands the user
     // on a blank page: no kanban columns until they visit /board, no default
-    // agents (so `ensureIntakeAgents` / `ensureProjectRoom` early-return),
-    // and no conference room. We seed the minimum so the project is
-    // immediately usable as a tasks-only workspace.
+    // agent (so `ensureProjectRoom` early-returns), and no conference room.
+    // We seed the minimum so the project is immediately usable as a
+    // tasks-only workspace.
+    //
+    // Per the flat-agent model (sub-agents are deprecated — see CLAUDE.md
+    // "Flat Agent Model"), we seed EXACTLY ONE dev agent. The user can add
+    // more dev agents from the UI later if they want a multi-specialist
+    // setup. We no longer auto-seed Intake / Docs / Reviewer here.
     //
     // Dev-mode (default) projects keep the lean POST behavior — the richer
     // `POST /api/projects/onboard` route owns dev scaffolding because it
@@ -1506,69 +1506,50 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         //    lands on a structured To Do → Done view.
         getOrCreateBoard(stmts, project.id);
 
-        // 2. Seed a single project-coordinator "lead" agent so subsequent
-        //    helpers (intake / room) have an anchor — those helpers
-        //    early-return on `project.agents.length === 0`. Engine
+        // 2. Seed a single dev agent so subsequent helpers
+        //    (`ensureProjectRoom`) have an anchor — that helper
+        //    early-returns on `project.agents.length === 0`. Engine
         //    defaults to claude-code but is overridable via the optional
         //    `engine` POST field for Cursor-only installs.
-        const leadAgentId = `${project.id}-lead`;
-        if (!findAgent(leadAgentId)) {
-          const leadAgent: Agent = {
-            id: leadAgentId,
-            name: `${project.name} Lead`,
+        const devAgentId = `${project.id}-dev`;
+        if (!findAgent(devAgentId)) {
+          const devAgent: Agent = {
+            id: devAgentId,
+            name: `${project.name} Dev`,
             engine: resolvedEngine,
-            role: 'lead',
+            role: 'dev',
             color: project.color,
-            systemPrompt: `You are the lead coordinator for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
+            systemPrompt: `You are the primary dev agent for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
 
 You own:
 - The kanban board (To Do → Done) at /api/projects/${project.id}/board
 - The wiki at /api/projects/${project.id}/wiki
 - Conversations with collaborators in this workspace's conference room
-- Triaging and routing user requests to the right agent
+- Triaging and routing user requests through the board
 
 This workspace has no git repo and no PR automation — your job is planning, organizing, and synthesizing, not shipping code. Use the kanban board to track work, the wiki to capture decisions and reference material, and chat sessions to drive the work forward.`,
             heartbeat: { enabled: false, interval: '', prompt: '' },
-            subAgents: [],
           };
-          mkdirSync(path.join(dataDir, 'agents', leadAgentId), { recursive: true });
+          mkdirSync(path.join(dataDir, 'agents', devAgentId), { recursive: true });
           writeFileSync(
-            path.join(dataDir, 'agents', leadAgentId, 'IDENTITY.md'),
-            `# ${project.name} Lead\n\nYou coordinate work in the ${project.name} workspace. You own the kanban board, the wiki, and routing user requests to the right specialist. This is a non-coding workspace — no git repo, no PRs.\n`,
+            path.join(dataDir, 'agents', devAgentId, 'IDENTITY.md'),
+            `# ${project.name} Dev\n\nYou are the primary dev agent for the ${project.name} workspace. You own the kanban board, the wiki, and routing user requests into actionable work. This is a non-coding workspace — no git repo, no PRs.\n`,
             'utf-8',
           );
-          project.agents.push(leadAgent);
-          // No saveProjects() here — `ensureIntakeAgents()` below will save
-          // the lead+intake state in a single write. The initial empty-row
-          // save above keeps crash-safety covered if the helper short-circuits.
+          project.agents.push(devAgent);
         }
 
-        // 3. Seed the Intake agent (generic, board-only — no git deps) so
-        //    the user can convert natural-language requests into tickets
-        //    out of the box. We deliberately SKIP `ensureDocsAgents` here
-        //    because the docs agent's heartbeat is git-/PR-coupled and
-        //    would fail on a workflow project. We also SKIP
-        //    `ensureReviewerAgents` — it's already gated on `githubRepo`.
-        //
-        // Side-effect note: `ensureIntakeAgents()` iterates ALL projects,
-        // so calling it here also retroactively backfills intake into any
-        // pre-existing project that has agents but no intake. That's the
-        // helper's documented contract (matches `/api/projects/onboard`'s
-        // usage) — flagged for the next reader.
-        ensureIntakeAgents();
-
-        // 4. Defensive save — guarantees the seeded lead row is on disk
-        //    even if `ensureIntakeAgents()` short-circuited (e.g. the
-        //    intake agent already existed on a re-POST scenario). When
-        //    the helper did add an intake agent, this is a redundant but
-        //    cheap second write; the alternative — trusting the helper
-        //    to always save — was fragile across future refactors.
+        // 3. Persist the seeded dev agent. (We previously deferred this
+        //    save to `ensureIntakeAgents()`; that helper is no longer
+        //    invoked here because the Intake agent is deprecated as an
+        //    auto-seed.)
         saveProjects();
 
-        // 5. Create the project's conference room now that we have agents.
+        // 4. Create the project's conference room now that we have an
+        //    anchor agent.
         ensureProjectRoom(project);
 
-        // 6. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
+        // 5. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
         //    USER.md, TOOLS.md, MEMORY.md). Without this, a freshly-scaffolded
         //    workflow project's data dir has empty `agents/`, `skills/`,
         //    `memory/` subdirs but no top-level context files until the next
@@ -2238,17 +2219,18 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
+    // Flat agent model — every onboarded agent lands as a peer `role: 'dev'`.
+    // The legacy lead/sub hierarchy (with `parentAgentId` / `subAgents`
+    // wiring) is no longer set automatically here; `<delegate>` / `<handoff>`
+    // are deprecated and CLI engines manage their own internal sub-agent
+    // orchestration. The wizard should be sending a single dev agent in
+    // most cases — but we tolerate multiple peers in case the caller
+    // explicitly wants them (e.g. for power users who already have a
+    // multi-specialist setup in mind).
     if (Array.isArray(agentDefs)) {
-      const leadDef =
-        agentDefs.find((d) => d.role === 'lead') || (agentDefs.length > 1 ? agentDefs[0] : null);
-      const subDefs = agentDefs.filter((d) => d !== leadDef);
-
       for (const def of agentDefs) {
         if (!def.id || !/^[a-zA-Z0-9-]+$/.test(def.id)) continue;
         if (findAgent(def.id)) continue;
-
-        const isLead = def === leadDef && agentDefs.length > 1;
-        const isSub = !isLead && leadDef && agentDefs.length > 1;
 
         const agent: Agent = {
           id: def.id,
@@ -2257,17 +2239,8 @@ This workspace has no git repo and no PR automation — your job is planning, or
           systemPrompt: def.systemPrompt || '',
           color: def.color || project.color,
           heartbeat: { enabled: false, interval: '', prompt: '' },
+          role: 'dev',
         };
-
-        if (isLead) {
-          agent.role = 'lead';
-          agent.subAgents = subDefs
-            .filter((s) => s.id && /^[a-zA-Z0-9-]+$/.test(s.id))
-            .map((s) => s.id);
-        } else if (isSub) {
-          agent.role = 'sub';
-          agent.parentAgentId = leadDef!.id;
-        }
 
         mkdirSync(path.join(dataDir, 'agents', agent.id), { recursive: true });
 
@@ -2305,15 +2278,16 @@ This workspace has no git repo and no PR automation — your job is planning, or
     projects.push(project);
     saveProjects();
 
-    ensureDocsAgents();
-    ensureIntakeAgents();
-    ensureReviewerAgents();
+    // Sub-agents (Docs / Intake / Reviewer) are deprecated as an auto-seed
+    // on project creation — see CLAUDE.md "Flat Agent Model". The user can
+    // add additional dev agents from the UI later. (`ensureReviewerAgents`
+    // is still invoked from the GitHub-App / webhook routes when the user
+    // explicitly wires up GitHub, so the reviewer path stays opt-in.)
 
     ensureProjectRoom(project);
 
     // Notify any connected clients so their sidebar picks up the new
-    // project (and any auto-seeded Docs/Intake/Reviewer agents) without
-    // requiring a full page refresh.
+    // project without requiring a full page refresh.
     broadcast({ type: 'projects_updated', reason: 'project-created' });
 
     const enriched = {

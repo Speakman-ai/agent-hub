@@ -300,9 +300,12 @@ try {
 }
 
 migrateAhwDirectories();
-ensureDocsAgents();
-ensureIntakeAgents();
-ensureReviewerAgents();
+// Auto-seeding Docs/Intake/Reviewer at startup is deprecated alongside the
+// sub-agent model (see CLAUDE.md "Flat Agent Model"). We no longer
+// retroactively backfill them on existing projects — projects keep
+// whatever roster they were created with. `ensureReviewerAgents` is still
+// invoked from the GitHub-App / webhook routes when the user explicitly
+// wires up GitHub.
 ensureContextFiles();
 
 // Pre-create the empty `GH_CONFIG_DIR` reviewer spawns are routed to.

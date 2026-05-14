@@ -147,17 +147,16 @@ describe('Projects', () => {
       expect(res.body.githubRepo).toBeUndefined();
     });
 
-    it('scaffolds a workflow project with board, lead+intake agents, conference room, and context files', async () => {
+    it('scaffolds a workflow project with board, single dev agent, conference room, and context files', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
       //   - kanban board with the 4 default columns (To Do → Done)
-      //   - one project-coordinator "lead" agent (so downstream helpers fire)
-      //   - the generic Intake agent (board-only — no git deps)
-      //   - the project's conference room (containing both seeded agents)
+      //   - exactly ONE dev agent (flat-agent model — sub-agents deprecated)
+      //   - the project's conference room (containing the seeded dev agent)
       //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
-      // and explicitly NOT seed a Docs agent (its heartbeat is git/PR-coupled)
-      // or a Reviewer agent (correctly gated by `githubRepo`).
+      // and explicitly NOT seed an Intake / Docs / Reviewer agent
+      // (deprecated as auto-seeds — users add additional dev agents on demand).
       // ID combines `Date.now()` + a per-test counter so the test stays
       // collision-free even under file-parallel vitest execution.
       const projectId = `wf-scaffold-${Date.now()}-${++_uniqueCounter}`;
@@ -172,29 +171,29 @@ describe('Projects', () => {
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
       expect(columnNames).toEqual(['To Do', 'In Progress', 'Review', 'Done']);
 
-      // Project now carries the seeded agents — lead + intake at minimum,
-      // no docs (git-coupled), no reviewer (GitHub-gated).
+      // Project now carries a single seeded dev agent — sub-agents
+      // (Intake / Docs / Reviewer) are no longer auto-seeded.
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
       const agents =
         (proj.body.agents as Array<{ id: string; role?: string; engine?: string }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
-      expect(roles).toContain('lead');
-      expect(roles).toContain('intake');
+      expect(agents).toHaveLength(1);
+      expect(roles).toContain('dev');
+      expect(roles).not.toContain('lead');
+      expect(roles).not.toContain('intake');
       expect(roles).not.toContain('docs');
       expect(roles).not.toContain('reviewer');
-      expect(agents.some((a) => a.id === `${projectId}-lead`)).toBe(true);
-      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-dev`)).toBe(true);
       // Default engine when no override is supplied = claude-code.
-      const lead = agents.find((a) => a.id === `${projectId}-lead`);
-      expect(lead?.engine).toBe('claude-code');
+      const dev = agents.find((a) => a.id === `${projectId}-dev`);
+      expect(dev?.engine).toBe('claude-code');
 
-      // Conference room exists for the workspace.
+      // Conference room exists for the workspace and contains the dev agent.
       const room = await request.get(`/api/projects/${projectId}/room`).expect(200);
       expect(room.body).toBeTruthy();
       expect(room.body.project_id).toBe(projectId);
       const roomAgentIds = (room.body.agents as Array<{ id: string }>).map((a) => a.id);
-      expect(roomAgentIds).toContain(`${projectId}-lead`);
-      expect(roomAgentIds).toContain(`${projectId}-intake`);
+      expect(roomAgentIds).toContain(`${projectId}-dev`);
 
       // Top-level context files (`ensureContextFiles`) are seeded immediately,
       // not deferred to the next server restart.
@@ -206,9 +205,9 @@ describe('Projects', () => {
       }
     });
 
-    it('honours an optional `engine` override on the seeded workflow lead agent', async () => {
+    it('honours an optional `engine` override on the seeded workflow dev agent', async () => {
       // Cursor-only installs (or any non-Claude default) should be able to
-      // pass `engine: 'cursor-agent'` on POST and have the seeded lead
+      // pass `engine: 'cursor-agent'` on POST and have the seeded dev
       // agent come up with that engine — no follow-up PATCH required.
       const projectId = `wf-engine-${Date.now()}-${++_uniqueCounter}`;
       await request
@@ -222,13 +221,13 @@ describe('Projects', () => {
         })
         .expect(201);
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
-      const lead = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
-        (a) => a.id === `${projectId}-lead`,
+      const dev = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-dev`,
       );
-      expect(lead?.engine).toBe('cursor-agent');
+      expect(dev?.engine).toBe('cursor-agent');
     });
 
-    it('honours `engine: codex-cli` on the seeded workflow lead agent', async () => {
+    it('honours `engine: codex-cli` on the seeded workflow dev agent', async () => {
       // Validates that 'codex-cli' (the canonical identifier used throughout
       // the server) is accepted — a typo in VALID_ENGINES ('codex') would
       // reject this with a 400 even though the caller is correct.
@@ -244,10 +243,10 @@ describe('Projects', () => {
         })
         .expect(201);
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
-      const lead = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
-        (a) => a.id === `${projectId}-lead`,
+      const dev = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-dev`,
       );
-      expect(lead?.engine).toBe('codex-cli');
+      expect(dev?.engine).toBe('codex-cli');
     });
 
     it('rejects an invalid `engine` value with 400', async () => {

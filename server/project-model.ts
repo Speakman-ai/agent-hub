@@ -98,9 +98,9 @@ function reloadProjects(dataDir: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
-  ensureDocsAgents();
-  ensureIntakeAgents();
-  ensureReviewerAgents();
+  // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
+  // sub-agent model (see CLAUDE.md "Flat Agent Model"). Context files are
+  // still seeded so projects always have SOUL.md/AGENTS.md/etc. on disk.
   ensureContextFiles();
 }
 
