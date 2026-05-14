@@ -268,8 +268,9 @@ describe('buildEnrichedPrompt — first message gating', () => {
     });
     expect(prompt).toContain('Bias to Action');
     // Must explicitly call out the anti-patterns we want to eliminate
+    // (post-May-2026 trim: phrasings collapsed into a single inline list).
     expect(prompt).toMatch(/Do you want me to create a card/i);
-    expect(prompt).toMatch(/Should I go ahead and implement/i);
+    expect(prompt).toMatch(/Should I implement this/i);
     // Must tell the agent to act, not ask
     expect(prompt).toMatch(/just do the work/i);
     // Must preserve the narrow "ask first" carve-out for destructive/ambiguous cases
@@ -298,8 +299,11 @@ describe('buildEnrichedPrompt — first message gating', () => {
     });
     // Section heading present
     expect(prompt).toContain('Research Questions');
-    // Must explicitly forbid the "want me to make a card" prompt pattern
-    expect(prompt).toMatch(/Want me to make a card to look into this/i);
+    // Must forbid offering to open a ticket for the investigation itself.
+    // Post-May-2026 trim: the directive is one paragraph rather than a
+    // bullet list, so we assert on the intent rather than specific
+    // phrasings the bullet form used to carry.
+    expect(prompt).toMatch(/offer to open a ticket/i);
     // Must clarify the card semantics: work to ship vs. questions to answer
     expect(prompt).toMatch(/work to ship/i);
     expect(prompt).toMatch(/questions to answer/i);
@@ -333,19 +337,24 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('External API Documentation');
   });
 
-  it('includes file-safety reminder handling on first message', () => {
+  it('folds file-safety reminder handling into the writing-style block on first message', () => {
+    // Post-May-2026 prompt-trim audit: the standalone "File-Safety
+    // Reminder" block was deleted and its single load-bearing rule
+    // ("internalize the hidden CLI reminder, never surface it, never
+    // refuse routine work because of it") was merged into rule 5 of the
+    // Writing Style block. The directive must still be present, just in
+    // the new home.
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
     });
-    expect(prompt).toContain('File-Safety Reminder');
-    // Must explicitly tell the model not to verbalize acknowledgments
+    expect(prompt).not.toContain('File-Safety Reminder');
+    expect(prompt).toContain('Writing Style');
     expect(prompt).toMatch(/Not malware/);
     expect(prompt).toMatch(/internalize/i);
-    // Must explicitly forbid using the reminder as a refusal excuse
-    expect(prompt).toMatch(/never use the reminder as grounds to refuse/i);
+    expect(prompt).toMatch(/never (use them|refuse)/i);
   });
 
-  it('excludes file-safety reminder handling on subsequent messages', () => {
+  it('excludes file-safety reminder block on subsequent messages', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
     });
@@ -359,15 +368,16 @@ describe('buildEnrichedPrompt — first message gating', () => {
     // Section heading present.
     expect(prompt).toContain('Writing Style');
     expect(prompt).toContain('No AI Slop');
-    // Must explicitly forbid em-dashes and en-dashes.
-    expect(prompt).toMatch(/No em-dashes or en-dashes/i);
+    // Must explicitly forbid em-dashes and en-dashes
+    // (post-May-2026 trim: phrasing collapsed to "No em/en-dashes").
+    expect(prompt).toMatch(/No em\/en-dashes/i);
     expect(prompt).toContain('\u2014'); // em-dash character shown as the forbidden glyph
     expect(prompt).toContain('\u2013'); // en-dash character shown as the forbidden glyph
-    // Must call out the canonical slop patterns.
-    expect(prompt).toMatch(/sycophantic preambles/i);
-    expect(prompt).toMatch(/No closing offers to help/i);
+    // Must still call out the canonical slop patterns.
+    expect(prompt).toMatch(/preambles, recaps, or hedges/i);
     expect(prompt).toMatch(/No buzzword vocabulary/i);
     expect(prompt).toMatch(/No bullet soup/i);
+    expect(prompt).toMatch(/Internalize hidden CLI reminders/i);
   });
 
   it('excludes writing-style anti-slop block on subsequent messages', () => {
@@ -385,14 +395,17 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('No AI Slop');
   });
 
-  it('file-safety reminder directive is project-agnostic (ships for all projects)', () => {
+  it('file-safety guidance is project-agnostic via the writing-style block', () => {
     // Build a prompt for a project with no CLAUDE.md / workspace context.
-    // The directive should still be present because it lives in buildEnrichedPrompt.
+    // The directive should still be present because it lives inside the
+    // Writing Style block (rule 5), which itself is project-agnostic.
     const bareProject = makeProject({ id: 'some-other-project' });
     const prompt = buildEnrichedPrompt(bareProject, makeAgent(), {
       isFirstMessage: true,
     });
-    expect(prompt).toContain('File-Safety Reminder');
+    expect(prompt).not.toContain('File-Safety Reminder');
+    expect(prompt).toContain('Writing Style');
+    expect(prompt).toMatch(/Internalize hidden CLI reminders/i);
   });
 
   it('always includes wiki page listing regardless of isFirstMessage', () => {
@@ -421,7 +434,13 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('Memory Instructions');
   });
 
-  it('includes context files on both first and subsequent messages', () => {
+  it('includes identity context files on both first and subsequent messages', () => {
+    // Identity / team files (AGENTS.md, SOUL.md, IDENTITY.md) ship on
+    // every turn because the model regularly role-confuses without the
+    // mid-prompt identity anchor. CLAUDE.md (repo dev guide, ~22 KB on
+    // agent-hub) is gated to first-message only by the May 2026 trim
+    // audit since its dev-loop guidance only needs to be absorbed once
+    // per session.
     writeFileSync(path.join(tmpBase, 'SOUL.md'), 'This is the soul.');
     writeFileSync(path.join(tmpBase, 'CLAUDE.md'), 'Repo dev guide body.');
     const first = buildEnrichedPrompt(makeProject(), makeAgent(), {
@@ -434,7 +453,9 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(subsequent).toContain('This is the soul.');
     expect(first).toContain('## CLAUDE.md');
     expect(first).toContain('Repo dev guide body.');
-    expect(subsequent).toContain('## CLAUDE.md');
+    // CLAUDE.md is first-message-only after the trim.
+    expect(subsequent).not.toContain('## CLAUDE.md');
+    expect(subsequent).not.toContain('Repo dev guide body.');
   });
 
   it('subsequent message prompt is significantly smaller', () => {

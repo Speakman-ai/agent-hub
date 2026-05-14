@@ -279,9 +279,14 @@ export function searchPages(projectId: string, query: string, limit = 10): WikiS
  * `<agenthub:react>` `wiki` action) cover the long tail on demand, so the
  * prompt only needs the most-recent slice to keep "what's new" awareness.
  *
+ * Lowered from 25 to 10 in the May 2026 prompt-trim audit: at 25 the
+ * listing still cost ~3 KB/turn for a 148-page wiki, and operationally
+ * the agent uses `wiki_search` rather than scanning the inline list, so
+ * the trim is neutral for retrieval and saves ~1.8 KB/turn.
+ *
  * Exported so tests pin the constant.
  */
-export const WIKI_CONTEXT_PAGE_CAP = 25;
+export const WIKI_CONTEXT_PAGE_CAP = 10;
 
 type WikiContextPage = Pick<WikiPageRow, 'title' | 'category' | 'updated_at'>;
 

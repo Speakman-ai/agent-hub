@@ -19,9 +19,24 @@ function yesterday(): string {
   return localDateStr(d);
 }
 
-export function getMemoryContext(workspace: string | undefined): string {
+/**
+ * Options for {@link getMemoryContext}. `includeYesterday` is a per-turn
+ * gate that callers (see `buildEnrichedPrompt`) flip off after the first
+ * message in a session — yesterday's notes are useful for fresh context
+ * but rarely informative on every follow-up turn, and skipping them on
+ * follow-ups saves ~1.5 KB per turn.
+ */
+export interface GetMemoryContextOptions {
+  includeYesterday?: boolean;
+}
+
+export function getMemoryContext(
+  workspace: string | undefined,
+  options: GetMemoryContextOptions = {},
+): string {
   if (!workspace) return '';
 
+  const { includeYesterday = true } = options;
   const parts: string[] = [];
 
   const memoryPath = path.join(workspace, 'MEMORY.md');
@@ -54,18 +69,20 @@ export function getMemoryContext(workspace: string | undefined): string {
     }
   }
 
-  const yesterdayPath = path.join(workspace, 'memory', `${yesterday()}.md`);
-  if (existsSync(yesterdayPath)) {
-    try {
-      let content = readFileSync(yesterdayPath, 'utf-8');
-      if (content.length > 1500) {
-        content = '...(truncated)\n' + content.slice(-1500);
+  if (includeYesterday) {
+    const yesterdayPath = path.join(workspace, 'memory', `${yesterday()}.md`);
+    if (existsSync(yesterdayPath)) {
+      try {
+        let content = readFileSync(yesterdayPath, 'utf-8');
+        if (content.length > 1500) {
+          content = '...(truncated)\n' + content.slice(-1500);
+        }
+        if (content.trim()) {
+          parts.push(`## Yesterday's Notes (${yesterday()})\n${content}`);
+        }
+      } catch {
+        /* skip */
       }
-      if (content.trim()) {
-        parts.push(`## Yesterday's Notes (${yesterday()})\n${content}`);
-      }
-    } catch {
-      /* skip */
     }
   }
 
