@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createSession } from './helpers.js';
+import { getRequest, createAgent, createSession } from './helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // Zod schema validation for session routes
@@ -15,11 +15,44 @@ import { getRequest, createSession } from './helpers.js';
 
 let request: supertest.Agent;
 let sessionId: string;
+let agentId: string;
 
 beforeAll(async () => {
   request = await getRequest();
-  const session = (await createSession()) as { id: string };
+  const agent = (await createAgent()) as { id: string };
+  agentId = agent.id;
+  const session = (await createSession({ agentId })) as { id: string };
   sessionId = session.id;
+});
+
+describe('Schema validation — POST /api/agents/:agentId/sessions', () => {
+  it('rejects non-boolean use_worktree (string) (400)', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ use_worktree: 'true' })
+      .expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+
+  it('rejects non-boolean ask_mode (number) (400)', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ ask_mode: 1 })
+      .expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+
+  it('accepts empty body (200)', async () => {
+    await request.post(`/api/agents/${agentId}/sessions`).send({}).expect(200);
+  });
+
+  it('accepts valid body with use_worktree + ask_mode (200)', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'test-session', use_worktree: false, ask_mode: false })
+      .expect(200);
+    expect((res.body as { name: string }).name).toBe('test-session');
+  });
 });
 
 describe('Schema validation — PUT /api/sessions/:sessionId/ask-mode', () => {

@@ -336,7 +336,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Switch the model for a session',
   description:
-    "Cross-field validation: `model` must be in the session engine's `engineValidModels` list. Returns 400 otherwise.",
+    "Two-stage validation: `model` must first be in `allValidModels` (union across all engines), then in the session engine's `engineValidModels` allowlist. Returns 400 if either check fails.",
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(PutSessionModelRequestSchema) },

@@ -4,6 +4,8 @@ import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
 import {
+  CreateSessionRequestSchema,
+  PatchSessionRequestSchema,
   ToggleEnabledRequestSchema,
   PutSessionEngineRequestSchema,
   PutSessionModelRequestSchema,
@@ -289,19 +291,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
+    const parsed = parseBody(CreateSessionRequestSchema, req, res);
+    if (!parsed) return;
     const id = uuidv4();
-    const name = req.body.name || `Session ${new Date().toLocaleString()}`;
     const found = findAgent(req.params.agentId as string);
-    const engine = req.body.engine || found?.agent?.engine || 'claude-code';
-    const model = req.body.model || found?.agent?.model || defaultModelForEngine(engine);
+    const name = parsed.name || `Session ${new Date().toLocaleString()}`;
+    const engine = parsed.engine || found?.agent?.engine || 'claude-code';
+    const model = parsed.model || found?.agent?.model || defaultModelForEngine(engine);
     let useWorktree =
-      req.body.use_worktree !== undefined
-        ? req.body.use_worktree
+      parsed.use_worktree !== undefined
+        ? parsed.use_worktree
           ? 1
           : 0
         : defaultSessionUseWorktreeFlag(found?.project);
     if (getProjectMode(found?.project) === 'workflow') useWorktree = 0;
-    const askMode = req.body.ask_mode ? 1 : 0;
+    const askMode = parsed.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
     setSessionOwner(id, resolveOwnerUserId(req as AuthenticatedRequest));
     const session = stmts.getSession.get(id) as SessionRow;
@@ -668,8 +672,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.patch('/api/sessions/:sessionId', (req: Request, res: Response) => {
-    if (req.body.name) {
-      stmts.updateSessionName.run(req.body.name, req.params.sessionId);
+    const parsed = parseBody(PatchSessionRequestSchema, req, res);
+    if (!parsed) return;
+    if (parsed.name) {
+      stmts.updateSessionName.run(parsed.name, req.params.sessionId);
     }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(session);

@@ -143,7 +143,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
 
     const parsed = parseBody(UpdateAgentRequestSchema, req, res);
     if (!parsed) return;
-    const body = req.body as Record<string, unknown>;
 
     const allowed = [
       'name',
@@ -171,37 +170,22 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     // applyOptionalAgentNumeric expects the older `'delete'` sentinel for
     // explicit-null. Translate at the boundary so the persistence helper
     // stays unchanged.
-    const translateDim = (
-      v: number | null | undefined,
-      keyPresent: boolean,
-    ): number | 'delete' | undefined => {
-      if (!keyPresent) return undefined;
-      if (v === null) return 'delete';
-      return Math.floor(v as number);
-    };
+    const translateDim = (v: number | null | undefined): number | 'delete' | undefined =>
+      v === undefined ? undefined : v === null ? 'delete' : Math.floor(v);
     applyOptionalAgentNumeric(
       agent,
       'browserViewportWidth',
-      translateDim(
-        parsed.browserViewportWidth,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
-      ),
+      translateDim(parsed.browserViewportWidth),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserViewportHeight',
-      translateDim(
-        parsed.browserViewportHeight,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
-      ),
+      translateDim(parsed.browserViewportHeight),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserPageLoadTimeoutMs',
-      translateDim(
-        parsed.browserPageLoadTimeoutMs,
-        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
-      ),
+      translateDim(parsed.browserPageLoadTimeoutMs),
     );
     saveProjects();
     res.json(getEnrichedAgent(agent.id));
@@ -210,7 +194,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   router.post('/api/agents', (req: Request, res: Response) => {
     const parsed = parseBody(CreateAgentRequestSchema, req, res);
     if (!parsed) return;
-    const body = req.body as Record<string, unknown>;
 
     const {
       id,
@@ -254,37 +237,22 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled;
     }
-    const translateDim = (
-      v: number | null | undefined,
-      keyPresent: boolean,
-    ): number | 'delete' | undefined => {
-      if (!keyPresent) return undefined;
-      if (v === null) return 'delete';
-      return Math.floor(v as number);
-    };
+    const translateDim = (v: number | null | undefined): number | 'delete' | undefined =>
+      v === undefined ? undefined : v === null ? 'delete' : Math.floor(v);
     applyOptionalAgentNumeric(
       agent,
       'browserViewportWidth',
-      translateDim(
-        parsed.browserViewportWidth,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
-      ),
+      translateDim(parsed.browserViewportWidth),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserViewportHeight',
-      translateDim(
-        parsed.browserViewportHeight,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
-      ),
+      translateDim(parsed.browserViewportHeight),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserPageLoadTimeoutMs',
-      translateDim(
-        parsed.browserPageLoadTimeoutMs,
-        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
-      ),
+      translateDim(parsed.browserPageLoadTimeoutMs),
     );
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
