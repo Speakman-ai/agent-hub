@@ -316,6 +316,39 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('File-Safety Reminder');
   });
 
+  it('includes writing-style anti-slop block on first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    // Section heading present.
+    expect(prompt).toContain('Writing Style');
+    expect(prompt).toContain('No AI Slop');
+    // Must explicitly forbid em-dashes and en-dashes.
+    expect(prompt).toMatch(/No em-dashes or en-dashes/i);
+    expect(prompt).toContain('\u2014'); // em-dash character shown as the forbidden glyph
+    expect(prompt).toContain('\u2013'); // en-dash character shown as the forbidden glyph
+    // Must call out the canonical slop patterns.
+    expect(prompt).toMatch(/sycophantic preambles/i);
+    expect(prompt).toMatch(/No closing offers to help/i);
+    expect(prompt).toMatch(/No buzzword vocabulary/i);
+    expect(prompt).toMatch(/No bullet soup/i);
+  });
+
+  it('excludes writing-style anti-slop block on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('No AI Slop');
+  });
+
+  it('writing-style block ships for all projects (no project context required)', () => {
+    const bareProject = makeProject({ id: 'some-other-project' });
+    const prompt = buildEnrichedPrompt(bareProject, makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('No AI Slop');
+  });
+
   it('file-safety reminder directive is project-agnostic (ships for all projects)', () => {
     // Build a prompt for a project with no CLAUDE.md / workspace context.
     // The directive should still be present because it lives in buildEnrichedPrompt.
