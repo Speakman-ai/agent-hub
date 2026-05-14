@@ -301,6 +301,49 @@ describe('Projects', () => {
     });
   });
 
+  describe('POST /api/projects/onboard', () => {
+    it('persists the GitHub repo string onto the project so Settings shows it linked', async () => {
+      // Regression: the import-from-GitHub wizard sends
+      // `githubRepo: { owner, repo }` to /projects/onboard. Before the fix
+      // the route used that pair to create a webhook config but never wrote
+      // the derived `owner/repo` string back onto the project record, so the
+      // Settings page (which reads `project.githubRepo` as a string)
+      // rendered "No repo linked" for every imported repo.
+      const projId = `onboard-gh-${Date.now()}-${++_uniqueCounter}`;
+      const res = await request
+        .post('/api/projects/onboard')
+        .send({
+          project: {
+            id: projId,
+            name: 'Onboard GH',
+            cwd: '/tmp',
+            githubRepo: { owner: 'acme', repo: 'widget' },
+          },
+        })
+        .expect(201);
+      expect(res.body.githubRepo).toBe('acme/widget');
+      expect(res.body.repoUrl).toBe('https://github.com/acme/widget.git');
+
+      // GET round-trip — confirms the link survived `saveProjects()` and
+      // resurfaces on the read path the Settings page uses.
+      const reload = await request.get(`/api/projects/${projId}`).expect(200);
+      expect(reload.body.githubRepo).toBe('acme/widget');
+      expect(reload.body.repoUrl).toBe('https://github.com/acme/widget.git');
+    });
+
+    it('does not set githubRepo when the GitHub block is omitted', async () => {
+      const projId = `onboard-no-gh-${Date.now()}-${++_uniqueCounter}`;
+      const res = await request
+        .post('/api/projects/onboard')
+        .send({
+          project: { id: projId, name: 'Onboard No GH', cwd: '/tmp' },
+        })
+        .expect(201);
+      expect(res.body.githubRepo).toBeUndefined();
+      expect(res.body.repoUrl).toBeUndefined();
+    });
+  });
+
   describe('GET /api/projects', () => {
     it('lists all projects', async () => {
       const res = await request.get('/api/projects').expect(200);

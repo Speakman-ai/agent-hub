@@ -2230,6 +2230,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
     if (projectData.githubRepo?.owner && projectData.githubRepo?.repo) {
       const { owner, repo } = projectData.githubRepo;
       const repoUrl = `https://github.com/${owner}/${repo}`;
+      // Persist the repo link onto the project itself so the Settings page
+      // (which reads `project.githubRepo` as an `owner/repo` string) renders
+      // the green dot + slug instead of "No repo linked", and so the worktree
+      // manager can auto-clone via `project.repoUrl` on session spawn.
+      (project as Record<string, unknown>).githubRepo = `${owner}/${repo}`;
+      (project as Record<string, unknown>).repoUrl = `${repoUrl}.git`;
       const defaultEvents = JSON.stringify([
         'pull_request.opened',
         'pull_request.closed',
