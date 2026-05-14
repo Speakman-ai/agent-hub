@@ -297,6 +297,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const id = uuidv4();
     const name = parsed.name || `Session ${new Date().toLocaleString()}`;
     const found = findAgent(req.params.agentId as string);
+    // Reviewer agents are spawned exclusively by the GitHub webhook
+    // handler (one session per PR, named "Review: PR #N"). Users may
+    // not start ad-hoc sessions with a reviewer — the thread is a
+    // shared, read-only artifact tied to a specific PR.
+    if (found?.agent?.role === 'reviewer') {
+      return res.status(403).json({
+        error:
+          'Reviewer agent sessions are spawned by the GitHub webhook; they cannot be started manually.',
+      });
+    }
     const engine = parsed.engine || found?.agent?.engine || 'claude-code';
     const model = parsed.model || found?.agent?.model || defaultModelForEngine(engine);
     // Agent Hub is worktree-only for user-facing session creation.
@@ -368,6 +378,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     const found = findAgent(agentId);
     if (!found) return res.status(404).json({ error: `Unknown agent: ${agentId}` });
+    // Same gate as POST /api/agents/:agentId/sessions — reviewer agents
+    // are not user-startable, including via the background-task path.
+    if (found.agent?.role === 'reviewer') {
+      return res.status(403).json({
+        error:
+          'Reviewer agent sessions are spawned by the GitHub webhook; they cannot be started manually.',
+      });
+    }
 
     const taskId = uuidv4();
     const sessionId = uuidv4();

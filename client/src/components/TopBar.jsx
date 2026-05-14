@@ -627,13 +627,18 @@ export default function TopBar({
             </svg>
           </button>
         )}
-        <button
-          onClick={onNewSession}
-          disabled={!agent}
-          className="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 hidden sm:block"
-        >
-          + New
-        </button>
+        {/* Reviewer agents are webhook-spawned only — hide the "+ New"
+            affordance so users don't try to start a thread the server
+            will refuse to create. */}
+        {agent?.role !== 'reviewer' && (
+          <button
+            onClick={onNewSession}
+            disabled={!agent}
+            className="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 hidden sm:block"
+          >
+            + New
+          </button>
+        )}
         <button
           onClick={() => onNavigate('settings')}
           className="text-gray-400 hover:text-white p-2 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"

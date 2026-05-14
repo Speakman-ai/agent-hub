@@ -163,3 +163,16 @@ describe('<TopBar /> engine picker', () => {
     expect(screen.queryByText(/^Auto$/)).toBeNull();
   });
 });
+
+describe('<TopBar /> reviewer-agent "+ New" gating', () => {
+  it('hides the "+ New" button when the active agent has role=reviewer', () => {
+    renderTopBar({ agent: { ...baseAgent, role: 'reviewer' } });
+    // The "+ New" button is the only button whose visible label is "+ New".
+    expect(screen.queryByRole('button', { name: '+ New' })).toBeNull();
+  });
+
+  it('renders the "+ New" button for non-reviewer agents', () => {
+    renderTopBar({ agent: { ...baseAgent, role: 'lead' } });
+    expect(screen.getByRole('button', { name: '+ New' })).toBeTruthy();
+  });
+});

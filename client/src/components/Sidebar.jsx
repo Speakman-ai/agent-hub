@@ -604,12 +604,19 @@ export default function Sidebar({
                                     {!agentCollapsed && (
                                       <>
                                         <div className="flex items-center gap-1 mt-1">
-                                          <button
-                                            onClick={onNewSession}
-                                            className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                                          >
-                                            + New Session
-                                          </button>
+                                          {/* Reviewer agents are spawned exclusively by the
+                                              GitHub PR webhook. The server rejects manual
+                                              POST /api/agents/:id/sessions with role=reviewer,
+                                              so we hide the affordance instead of letting it
+                                              error out. */}
+                                          {agent.role !== 'reviewer' && (
+                                            <button
+                                              onClick={onNewSession}
+                                              className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                            >
+                                              + New Session
+                                            </button>
+                                          )}
                                           {sessions.length > 0 && (
                                             <div className="ml-auto flex items-center gap-0.5 pr-1">
                                               <button

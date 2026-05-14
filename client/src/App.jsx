@@ -2555,6 +2555,18 @@ export default function App() {
 
   const handleNewSession = async () => {
     if (!activeAgentId) return;
+    // Reviewer agents are spawned exclusively by the GitHub PR webhook.
+    // The server rejects manual session creation with role=reviewer; we
+    // short-circuit here so the keyboard shortcut / swipe handler /
+    // other indirect call sites don't produce a noisy 403.
+    if (activeAgent?.role === 'reviewer') {
+      showToast(
+        'Reviewer agents only run from the GitHub PR webhook — sessions cannot be started manually.',
+        'info',
+        4000,
+      );
+      return;
+    }
     const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
     setSessions((prev) => prependSessionDeduped(prev, session));
     setActiveSessionId(session.id);
