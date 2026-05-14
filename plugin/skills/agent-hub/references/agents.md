@@ -37,7 +37,7 @@ Notable columns (see `#tag/Agents` for the full shape):
 - `id` — stable slug. Used by every other endpoint.
 - `project_id` — owning project.
 - `name`, `description`, `role` — human-readable identity.
-- `engine` — `claude-code` | `cursor-agent` | `gemini-cli` | `codex`.
+- `engine` — `claude-code` | `cursor-agent` | `gemini-cli` | `codex-cli`.
 - `model` — default model for new sessions; can be overridden per-card
   or per-session.
 - `cwd` — absolute workspace directory. The agent's tools, context
