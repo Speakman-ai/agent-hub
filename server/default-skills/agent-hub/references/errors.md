@@ -6,9 +6,10 @@ two or three recovery steps that usually unstick the common failures.
 
 Back to [SKILL.md](../SKILL.md).
 
-**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Audit>
-(the future tool-error aggregation endpoint stub lives under the `Audit`
-tag). This page is the *how*.
+**Note:** `GET /api/projects/:projectId/tool-errors` is not yet
+registered in the OpenAPI spec — the `#tag/Audit` page covers the
+post-scaffold audit and roster surfaces, not tool-error self-reporting.
+This page is the *how* for the error-logging format itself.
 
 ## Contents
 

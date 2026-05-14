@@ -102,13 +102,16 @@ is per-agent, but the request/response shape lives under `Sessions`.
 
 The **project roster** is a separate surface from the global agent
 registry. It's the curated list of agents a project actively uses and
-lives under the `Projects` tag, not `Agents`:
+lives under the `Audit` tag, not `Agents`:
 
 - `GET /api/projects/{projectId}/roster` — current roster.
 - `GET /api/projects/{projectId}/roster/suggest` — heuristic suggestions
   based on the project's stack, code structure, and existing agents.
 - `GET /api/projects/{projectId}/audit` — post-scaffold audit run that
   feeds the suggest endpoint.
+
+See <https://speakman-ai.github.io/agent-hub/#tag/Audit> for the full
+request/response shapes.
 
 Wiki page: `post-scaffold-audit-agent-roster-act-iv` covers the
 scaffolding loop.

@@ -98,8 +98,9 @@ Full reference: **[references/agents.md](references/agents.md)**.
 
 The `agents` table is the per-project agent registry: identity, engine,
 default model, workspace `cwd`, and context-file paths. Endpoints under
-`#tag/Agents` cover CRUD plus the session-creation surface that other
-sub-skills (`agent-hub-sessions`, `agent-hub-kanban`) build on. Spawn
+`#tag/Agents` cover CRUD plus the session-creation surface that
+`agent-hub-sessions` builds on; kanban cards reference sessions via
+`session_id`, not via the agent-session API. Spawn
 identity (`owner_user_id`), workspace resolution, and the reviewer-lock
 contract live in the reference.
 
