@@ -1136,6 +1136,28 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN last_dispatched_review_id INTEGER DEFAULT NULL');
   }
 
+  // Persistent dedup for `pollForMissedReviews`' CI-failure probe. Stores the
+  // highest GitHub check_run id we have already dispatched a CI-fix message
+  // for. Same restart-safety reasoning as `last_dispatched_review_id` above.
+  try {
+    db.prepare('SELECT last_dispatched_check_run_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE kanban_cards ADD COLUMN last_dispatched_check_run_id INTEGER DEFAULT NULL',
+    );
+  }
+
+  // Persistent dedup for `pollForMissedReviews`' inline-comment probe. Stores
+  // the highest GitHub pull-request review comment id we have already
+  // dispatched author feedback for. Restart-safe like the siblings above.
+  try {
+    db.prepare('SELECT last_dispatched_review_comment_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE kanban_cards ADD COLUMN last_dispatched_review_comment_id INTEGER DEFAULT NULL',
+    );
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -2381,6 +2403,12 @@ function initDb(dataDir: string): void {
     ),
     setCardLastDispatchedReviewId: db.prepare(
       "UPDATE kanban_cards SET last_dispatched_review_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setCardLastDispatchedCheckRunId: db.prepare(
+      "UPDATE kanban_cards SET last_dispatched_check_run_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setCardLastDispatchedReviewCommentId: db.prepare(
+      "UPDATE kanban_cards SET last_dispatched_review_comment_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Used by <handoff> delivery to re-point a card from the source session
     // to the newly-created target session and update the assignee to the
