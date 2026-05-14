@@ -36,3 +36,22 @@ describe('createApiDocsRoutes', () => {
     expect(res.text).toContain('/api/docs/openapi.yaml');
   });
 });
+
+describe('createApiDocsRoutes fallback (spec not bundled)', () => {
+  // Pass a nonexistent path to exercise the Electron / missing-spec branches.
+  const app = express();
+  app.use(createApiDocsRoutes('/nonexistent/path/openapi.yaml'));
+  const request = supertest(app);
+
+  it('returns 404 plain-text when the YAML is missing', async () => {
+    const res = await request.get('/api/docs/openapi.yaml');
+    expect(res.status).toBe(404);
+    expect(res.text).toContain('openapi.yaml not bundled');
+  });
+
+  it('returns 404 fallback HTML when the spec is missing', async () => {
+    const res = await request.get('/api/docs/');
+    expect(res.status).toBe(404);
+    expect(res.text).toContain('API docs not bundled');
+  });
+});
