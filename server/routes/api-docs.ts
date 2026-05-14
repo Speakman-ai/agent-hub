@@ -41,9 +41,7 @@ const FALLBACK_HTML = `<!DOCTYPE html>
  *
  * @param openapiYamlPath Override the spec path (primarily for tests).
  */
-export function createApiDocsRoutes(
-  openapiYamlPath = DEFAULT_OPENAPI_YAML_PATH,
-): Router {
+export function createApiDocsRoutes(openapiYamlPath = DEFAULT_OPENAPI_YAML_PATH): Router {
   // Read the spec once at router-creation time. A single try/catch collapses
   // the existsSync→readFileSync TOCTOU race into one syscall and avoids
   // disk I/O on every request to /api/docs/openapi.yaml.
