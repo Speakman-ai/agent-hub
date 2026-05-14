@@ -19,8 +19,13 @@ on:
       - 'docs/api/**'
       - 'server/openapi/**'
       - 'server/openapi-filter.ts'
+      - 'server/openapi-coverage.ts'
+      - 'server/openapi-coverage.test.ts'
       - 'server/routes/**'
       - 'scripts/build-openapi-public.ts'
+      - 'scripts/check-openapi-coverage.ts'
+      - 'scripts/check-openapi-freshness.ts'
+      - 'scripts/openapi-coverage-baseline.json'
       - '.github/workflows/api-docs.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -32,8 +37,13 @@ on:
       - 'docs/api/**'
       - 'server/openapi/**'
       - 'server/openapi-filter.ts'
+      - 'server/openapi-coverage.ts'
+      - 'server/openapi-coverage.test.ts'
       - 'server/routes/**'
       - 'scripts/build-openapi-public.ts'
+      - 'scripts/check-openapi-coverage.ts'
+      - 'scripts/check-openapi-freshness.ts'
+      - 'scripts/openapi-coverage-baseline.json'
       - '.github/workflows/api-docs.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -70,10 +80,36 @@ jobs:
         run: cd server && npm ci --ignore-scripts --include=dev
 
       - name: Run filter unit tests
-        run: cd server && npx vitest run openapi-filter.test.ts openapi/registry.test.ts
+        run: cd server && npx vitest run openapi-filter.test.ts openapi-coverage.test.ts openapi/registry.test.ts
+
+      # Coverage ratchet — fails the build when a new route handler lands
+      # without a `registry.registerPath(...)` (or when the per-file baseline
+      # in `scripts/openapi-coverage-baseline.json` is exceeded).
+      # Acceptance criterion (a) of card 3ed3bfc9.
+      - name: Check OpenAPI schema coverage (per-file ratchet)
+        run: npm run check:openapi-coverage
 
       - name: Generate OpenAPI spec from Zod registry
         run: npm run generate:openapi
+
+      # Freshness gate — fails the build when the committed
+      # `docs/api/openapi.yaml` doesn't match the generator's output.
+      # Forces contributors who change a Zod schema or route to regenerate
+      # the spec in the same PR. Acceptance criterion (b) of card 3ed3bfc9.
+      #
+      # We rely on `git diff --exit-code` (rather than re-running the
+      # freshness script) because the previous step has already regenerated
+      # the file in place — a diff against HEAD is the cheapest check.
+      - name: Check committed openapi.yaml is up to date
+        run: |
+          if ! git diff --exit-code --stat -- docs/api/openapi.yaml; then
+            echo ""
+            echo "OpenAPI spec is STALE — docs/api/openapi.yaml does not match the generator output."
+            echo "Run \`npm run generate:openapi\` locally and commit the result."
+            echo ""
+            git --no-pager diff -- docs/api/openapi.yaml | head -100
+            exit 1
+          fi
 
       - name: Build filtered bundle (strip x-internal)
         run: cd server && npx tsx ../scripts/build-openapi-public.ts --out ../docs/api/_site

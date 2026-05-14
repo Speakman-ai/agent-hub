@@ -37,7 +37,10 @@
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
     "test:e2e:headed": "cd e2e && npx playwright test --headed",
     "test:e2e:report": "cd e2e && npx playwright show-report",
-    "generate:openapi": "cd server && npx tsx openapi/generate.ts"
+    "generate:openapi": "cd server && npx tsx openapi/generate.ts",
+    "check:openapi-coverage": "npx tsx scripts/check-openapi-coverage.ts",
+    "check:openapi-freshness": "npx tsx scripts/check-openapi-freshness.ts",
+    "check:openapi": "npm run check:openapi-coverage && npm run check:openapi-freshness"
   },
   "engines": {
     "node": ">=22.14.0 <23.0.0"

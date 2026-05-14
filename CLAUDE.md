@@ -250,6 +250,31 @@ Server tests must never spawn the real `claude`, `cursor-agent`, `gemini`, or `c
 - Simple CRUD wiring with no logic (e.g., a route that just calls a prepared statement and returns the result)
 - UI layout/styling (that's E2E territory)
 
+## OpenAPI Schema Coverage — Every Route Needs a Zod Registration
+
+The published REST surface is auto-documented from Zod schemas registered at module load. The committed `docs/api/openapi.yaml` is the output of `npm run generate:openapi`, which imports every `server/routes/*.ts` and walks the singleton `OpenAPIRegistry`. Two CI gates keep this honest:
+
+1. **Coverage ratchet** — `scripts/check-openapi-coverage.ts` (`npm run check:openapi-coverage`).
+   Counts `router.<verb>(...)` handlers vs. `registry.registerPath(...)` calls per file (inline + `<name>.openapi.ts` companion). Per-file allowances live in `scripts/openapi-coverage-baseline.json`; any file exceeding its allowance fails CI. New files default to **0 allowed** — they must come with schemas.
+2. **Freshness gate** — `scripts/check-openapi-freshness.ts` (`npm run check:openapi-freshness`) regenerates the spec into a tmp file and diffs against the committed `docs/api/openapi.yaml`. CI also runs `git diff --exit-code` on the same path after `generate:openapi` in `.github/workflows/api-docs.yml`. Any drift fails the build with instructions to run `npm run generate:openapi`.
+
+### Workflow when adding or changing a route
+
+1. Add the `router.<verb>(path, handler)` mount in `server/routes/<name>.ts`.
+2. Add `registry.registerPath({ method, path, ... })` either inline (small files) or in the sibling `server/routes/<name>.openapi.ts` companion (preferred for larger files — keeps the route file readable).
+3. Run `npm run generate:openapi` to refresh `docs/api/openapi.yaml`.
+4. Commit both the route change and the regenerated YAML.
+
+### Migrating a legacy route file
+
+If a file is still listed in `scripts/openapi-coverage-baseline.json` with `allowed_unregistered > 0`, lowering the number is welcome in any PR. Run `npm run check:openapi-coverage` — when a file dips below its baseline the script prints a `Suggested baseline patch:` block you can paste into the JSON.
+
+### When the lint check fires falsely
+
+`router.use(...)` mounts (middleware) do not match the handler regex (`get|post|put|delete|patch`), so adding middleware is unaffected. If you add a new HTTP verb (e.g., `options`) the matcher must be extended in `server/openapi-coverage.ts`.
+
+Wiki page with full context: `openapi-coverage-enforcement-zod-schema-lint`.
+
 ## Development Notes
 
 - The server is **TypeScript** (strict mode) running via `tsx` — no build/dist step needed
