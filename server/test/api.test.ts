@@ -835,7 +835,11 @@ describe('Sessions', () => {
       expect(res.body.name).toBe('My Session');
     });
 
-    it('defaults use_worktree to 0 when the project is in workflow mode', async () => {
+    it('forces use_worktree=1 on user-facing session creation, even in workflow mode', async () => {
+      // Agent Hub is now worktree-only for all user-facing session
+      // creation, regardless of project mode. The `use_worktree` column
+      // survives on the row for legacy data + internal callers (e.g.,
+      // preview-wizard) but cannot be toggled off via this route.
       const proj = await createProject();
       await request.patch(`/api/projects/${proj.id}`).send({ mode: 'workflow' }).expect(200);
       const agent = await createAgent({ projectId: String(proj.id) });
@@ -843,15 +847,16 @@ describe('Sessions', () => {
         .post(`/api/agents/${agent.id}/sessions`)
         .send({ name: 'Workflow session' })
         .expect(200);
-      expect(res.body.use_worktree).toBe(0);
+      expect(res.body.use_worktree).toBe(1);
     });
 
-    it('returns 403 when enabling worktree on a workflow-mode project', async () => {
-      const proj = await createProject();
-      await request.patch(`/api/projects/${proj.id}`).send({ mode: 'workflow' }).expect(200);
-      const agent = await createAgent({ projectId: String(proj.id) });
+    it('returns 404 for the legacy PUT /sessions/:id/worktree endpoint', async () => {
+      // The user-facing worktree toggle was removed when Agent Hub
+      // locked to worktree-only sessions. Express returns 404 because
+      // no handler is mounted at this path anymore.
+      const agent = await createAgent();
       const session = await createSession({ agentId: agent.id as string, name: 'S' });
-      await request.put(`/api/sessions/${session.id}/worktree`).send({ enabled: true }).expect(403);
+      await request.put(`/api/sessions/${session.id}/worktree`).send({ enabled: true }).expect(404);
     });
   });
 

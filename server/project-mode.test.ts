@@ -14,8 +14,15 @@ describe('project-mode', () => {
     expect(getProjectMode({ mode: 'workflow' } as Project)).toBe('workflow');
   });
 
-  it('defaultSessionUseWorktreeFlag is 0 in workflow mode', () => {
-    expect(defaultSessionUseWorktreeFlag({ mode: 'workflow' } as Project)).toBe(0);
+  it('defaultSessionUseWorktreeFlag is 1 for every project (worktree-only)', () => {
+    // Agent Hub is now worktree-only for user-facing session flows. The
+    // project-mode coupling was removed; internal callers that need a
+    // shared-checkout session (preview-wizard) bypass this helper and
+    // write directly to `stmts.createSession`.
+    expect(defaultSessionUseWorktreeFlag({ mode: 'workflow' } as Project)).toBe(1);
+    expect(defaultSessionUseWorktreeFlag({ mode: 'dev' } as Project)).toBe(1);
     expect(defaultSessionUseWorktreeFlag({} as Project)).toBe(1);
+    expect(defaultSessionUseWorktreeFlag(undefined)).toBe(1);
+    expect(defaultSessionUseWorktreeFlag(null)).toBe(1);
   });
 });

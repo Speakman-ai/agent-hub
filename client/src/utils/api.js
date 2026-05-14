@@ -165,11 +165,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
-  setSessionWorktree: (sessionId, enabled) =>
-    fetchJSON(`/sessions/${sessionId}/worktree`, {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
+  // `setSessionWorktree` was removed when Agent Hub locked to
+  // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
+  // endpoint no longer exists.
+
   // No client fetch timeout: commit/push/gh + hooks can exceed a minute while
   // the server streams progress over the WebSocket; aborting early produced
   // false "timed out" errors even when the PR succeeded.

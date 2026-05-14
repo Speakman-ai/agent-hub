@@ -298,13 +298,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const found = findAgent(req.params.agentId as string);
     const engine = parsed.engine || found?.agent?.engine || 'claude-code';
     const model = parsed.model || found?.agent?.model || defaultModelForEngine(engine);
-    let useWorktree =
-      parsed.use_worktree !== undefined
-        ? parsed.use_worktree
-          ? 1
-          : 0
-        : defaultSessionUseWorktreeFlag(found?.project);
-    if (getProjectMode(found?.project) === 'workflow') useWorktree = 0;
+    // Agent Hub is worktree-only for user-facing session creation.
+    // `defaultSessionUseWorktreeFlag` returns 1 unconditionally; internal
+    // callers that need a shared-checkout session (preview-wizard) bypass
+    // this route and write directly to `stmts.createSession`.
+    const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     const askMode = parsed.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
     setSessionOwner(id, resolveOwnerUserId(req as AuthenticatedRequest));
@@ -364,8 +362,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const engine = found.agent.engine || 'claude-code';
     const model = found.agent.model || defaultModelForEngine(engine);
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
-    const wt = getProjectMode(found.project) === 'workflow' ? 0 : 1;
-    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
+    // Worktree-only — see note above.
+    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0, 1);
     setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
     stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
@@ -731,22 +729,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(updated);
   });
 
-  router.put('/api/sessions/:sessionId/worktree', (req: Request, res: Response) => {
-    const parsed = parseBody(ToggleEnabledRequestSchema, req, res);
-    if (!parsed) return;
-    const { enabled } = parsed;
-    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    const agentLookup = findAgent(session.agent_id);
-    if (enabled && agentLookup && getProjectMode(agentLookup.project) === 'workflow') {
-      return res.status(403).json({
-        error: 'Per-session worktrees are disabled while this project is in workflow mode',
-      });
-    }
-    stmts.updateSessionWorktree.run(enabled ? 1 : 0, req.params.sessionId);
-    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(updated);
-  });
+  // NOTE: `PUT /api/sessions/:sessionId/worktree` was removed when Agent
+  // Hub locked to worktree-only sessions. The `use_worktree` column is
+  // kept on the row for legacy data + internal callers (preview-wizard
+  // spawns shared-checkout sessions) but is no longer user-toggleable.
 
   router.put('/api/sessions/:sessionId/ask-mode', (req: Request, res: Response) => {
     const parsed = parseBody(ToggleEnabledRequestSchema, req, res);

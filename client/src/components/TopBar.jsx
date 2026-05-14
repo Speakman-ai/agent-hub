@@ -55,16 +55,12 @@ export default function TopBar({
   modelConfig,
   messages,
   activeSessionId,
-  sessionWorktree,
-  gitWorktreeDetected,
-  onWorktreeChange,
   sessionAskMode,
   onAskModeChange,
   projectId,
   showToast,
   onOpenForward,
   canForward,
-  workflowProject = false,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
@@ -145,95 +141,6 @@ export default function TopBar({
         )}
       </div>
       <div className="flex items-center gap-1.5 md:gap-3">
-        {/* Desktop: Worktree Toggle + Detection Badge */}
-        {agent && !workflowProject && (
-          <div className="hidden sm:flex items-center gap-1">
-            <button
-              onClick={() => onWorktreeChange(!sessionWorktree)}
-              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-colors border ${
-                sessionWorktree
-                  ? 'bg-emerald-900/30 border-emerald-700/50 text-emerald-400 hover:bg-emerald-900/50'
-                  : 'bg-gray-800 border-gray-700 text-gray-500 hover:bg-gray-700'
-              }`}
-              title={`Git worktree isolation: ${sessionWorktree ? 'ON — each session uses its own branch' : 'OFF — working directly in the project directory'}`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-3.5 w-3.5"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M7.707 3.293a1 1 0 010 1.414L5.414 7H11a7 7 0 017 7v2a1 1 0 11-2 0v-2a5 5 0 00-5-5H5.414l2.293 2.293a1 1 0 11-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              <span>{sessionWorktree ? 'Isolated' : 'Shared'}</span>
-            </button>
-            {gitWorktreeDetected != null && (
-              <span
-                className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                  gitWorktreeDetected
-                    ? 'bg-emerald-900/40 text-emerald-400 border border-emerald-700/40'
-                    : sessionWorktree
-                      ? 'bg-amber-900/40 text-amber-400 border border-amber-700/40'
-                      : 'bg-gray-800 text-gray-500 border border-gray-700'
-                }`}
-                title={
-                  gitWorktreeDetected
-                    ? 'CLI confirmed: running inside a git worktree'
-                    : sessionWorktree
-                      ? 'Warning: worktree mode is ON but CLI is not in a git worktree'
-                      : 'CLI confirmed: not in a git worktree'
-                }
-              >
-                {gitWorktreeDetected ? (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-2.5 w-2.5"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                ) : sessionWorktree ? (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-2.5 w-2.5"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                ) : (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-2.5 w-2.5"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                )}
-                <span>{gitWorktreeDetected ? 'WT' : sessionWorktree ? '!' : '—'}</span>
-              </span>
-            )}
-          </div>
-        )}
-
         {/* Desktop: Ask Mode Toggle */}
         {agent && (
           <button
@@ -440,45 +347,6 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
-                  {!workflowProject && (
-                    <>
-                      <div className="border-t border-gray-700 my-1" />
-                      <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
-                        Worktree
-                      </div>
-                      <button
-                        onClick={() => {
-                          onWorktreeChange(!sessionWorktree);
-                          setMobileMenuOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
-                          sessionWorktree ? 'text-emerald-400' : 'text-gray-400'
-                        }`}
-                      >
-                        <span>
-                          {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
-                        </span>
-                        {sessionWorktree && <span className="text-emerald-400 text-xs">✓</span>}
-                      </button>
-                      {gitWorktreeDetected != null && (
-                        <div
-                          className={`mx-3 mb-1 px-2 py-1 rounded text-xs ${
-                            gitWorktreeDetected
-                              ? 'bg-emerald-900/30 text-emerald-400'
-                              : sessionWorktree
-                                ? 'bg-amber-900/30 text-amber-400'
-                                : 'bg-gray-800 text-gray-500'
-                          }`}
-                        >
-                          {gitWorktreeDetected
-                            ? '✓ CLI confirmed worktree'
-                            : sessionWorktree
-                              ? '⚠ CLI not in worktree'
-                              : '— CLI not in worktree'}
-                        </div>
-                      )}
-                    </>
-                  )}
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
                     Mode

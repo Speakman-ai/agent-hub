@@ -52,13 +52,12 @@ describe('Schema validation — PUT /api/sessions/:sessionId/react-loop', () => 
   });
 });
 
-describe('Schema validation — PUT /api/sessions/:sessionId/worktree', () => {
-  it('rejects non-boolean enabled (400)', async () => {
-    const res = await request
-      .put(`/api/sessions/${sessionId}/worktree`)
-      .send({ enabled: 'false' })
-      .expect(400);
-    expect((res.body as { error: string }).error).toMatch(/enabled must be a boolean/i);
+describe('Schema validation — legacy PUT /api/sessions/:sessionId/worktree', () => {
+  it('returns 404 — endpoint removed in the worktree-only refactor', async () => {
+    // The user-facing worktree toggle was removed when Agent Hub locked
+    // to worktree-only sessions. Express has no handler at this path,
+    // so even a well-shaped body responds 404 (not 400).
+    await request.put(`/api/sessions/${sessionId}/worktree`).send({ enabled: true }).expect(404);
   });
 });
 
@@ -161,13 +160,17 @@ describe('Schema validation — POST /api/agents/:agentId/sessions', () => {
     expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
   });
 
-  it('rejects non-boolean use_worktree (400)', async () => {
+  it('ignores legacy use_worktree on create (200; field is not in schema)', async () => {
+    // Agent Hub is worktree-only — `use_worktree` was removed from the
+    // create-session request schema. The Zod schema is non-strict, so
+    // legacy clients can keep sending the field; it's silently dropped
+    // and the server always provisions a worktree.
     const agent = (await createAgent()) as { id: string };
     const res = await request
       .post(`/api/agents/${agent.id}/sessions`)
-      .send({ use_worktree: 'yes' })
-      .expect(400);
-    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+      .send({ use_worktree: false })
+      .expect(200);
+    expect((res.body as { use_worktree: number }).use_worktree).toBe(1);
   });
 
   it('accepts empty body (200)', async () => {

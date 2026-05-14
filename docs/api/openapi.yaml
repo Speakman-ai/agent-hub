@@ -837,7 +837,7 @@ components:
         - ask_mode
         - created_at
         - updated_at
-      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`.
+      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
     Message:
       type: object
       properties:
@@ -5439,7 +5439,7 @@ paths:
       tags:
         - Sessions
       summary: Create a new session for an agent
-      description: Defaults the engine and model to the agent's configured engine/model. `use_worktree` is forced to false when the project is in workflow mode.
+      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
       parameters:
         - schema:
             type: string
@@ -5460,8 +5460,6 @@ paths:
                   type: string
                 model:
                   type: string
-                use_worktree:
-                  type: boolean
                 ask_mode:
                   type: boolean
       responses:
@@ -5789,55 +5787,6 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Validation failed or model not valid for the current engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/worktree:
-    put:
-      tags:
-        - Sessions
-      summary: Toggle per-session git worktree
-      description: Returns 403 when the project is in workflow mode and `enabled=true` is requested.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "403":
-          description: Disabled by workflow-mode project.
           content:
             application/json:
               schema:

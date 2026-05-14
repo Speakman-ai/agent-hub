@@ -86,11 +86,7 @@ import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
 } from './utils/authModelEngines.js';
-import {
-  isSessionAskModeEnabled,
-  isSessionWorktreeEnabled,
-  prependSessionDeduped,
-} from './utils/sessionDerivedState.js';
+import { isSessionAskModeEnabled, prependSessionDeduped } from './utils/sessionDerivedState.js';
 import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
 
 export default function App() {
@@ -131,8 +127,8 @@ export default function App() {
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
   const [modelConfig, setModelConfig] = useState(null);
-  const [sessionWorktree, setSessionWorktree] = useState(true);
-  const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown, true/false from CLI
+  // Worktree state was removed when Agent Hub locked to worktree-only sessions.
+  // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
   const [sessionAskMode, setSessionAskMode] = useState(false);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
@@ -552,10 +548,6 @@ export default function App() {
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
               'claude-opus-4-7',
           );
-          setSessionWorktree(isSessionWorktreeEnabled(target));
-          setGitWorktreeDetected(
-            target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
-          );
           setSessionAskMode(isSessionAskModeEnabled(target));
         } else {
           setActiveSessionId(null);
@@ -564,8 +556,6 @@ export default function App() {
             agentsRef.current.find((a) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
           setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
-          setSessionWorktree(true);
-          setGitWorktreeDetected(null);
           setSessionAskMode(false);
         }
       }
@@ -983,7 +973,9 @@ export default function App() {
           );
           break;
         case 'session-worktree-detected':
-          // Update the session's git_worktree_detected flag from CLI status line
+          // Worktree-only mode: keep the session-row flag in sync for any
+          // debugging surfaces / future tooling, but the user-facing
+          // detection badge was removed.
           setSessions((prev) =>
             prev.map((s) =>
               s.id === data.sessionId
@@ -991,9 +983,6 @@ export default function App() {
                 : s,
             ),
           );
-          if (forActiveSession) {
-            setGitWorktreeDetected(data.gitWorktree);
-          }
           break;
         case 'error':
           if (data.sessionId) {
@@ -2081,10 +2070,6 @@ export default function App() {
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
               'claude-opus-4-7',
           );
-          setSessionWorktree(isSessionWorktreeEnabled(target));
-          setGitWorktreeDetected(
-            target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
-          );
           setSessionAskMode(isSessionAskModeEnabled(target));
         } else {
           setActiveSessionId(null);
@@ -2092,8 +2077,6 @@ export default function App() {
           const fallbackEngine = agents.find((a) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
           setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
-          setSessionWorktree(true);
-          setGitWorktreeDetected(null);
           setSessionAskMode(false);
         }
       })
@@ -2140,10 +2123,6 @@ export default function App() {
     if (session?.model) {
       setSessionModel(session.model);
     }
-    setSessionWorktree(isSessionWorktreeEnabled(session));
-    setGitWorktreeDetected(
-      session?.git_worktree_detected != null ? session.git_worktree_detected === 1 : null,
-    );
     setSessionAskMode(isSessionAskModeEnabled(session));
   }, [activeSessionId, sessions]);
 
@@ -2587,8 +2566,6 @@ export default function App() {
         ] ||
         'claude-opus-4-7',
     );
-    setSessionWorktree(session.use_worktree !== 0);
-    setGitWorktreeDetected(null); // New session, not yet detected
     setSessionAskMode(isSessionAskModeEnabled(session));
     setMessages([]);
     setCurrentView('chat');
@@ -2627,16 +2604,6 @@ export default function App() {
       const updated = await api.setSessionModel(activeSessionId, model);
       setSessions((prev) =>
         prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s)),
-      );
-    }
-  };
-
-  const handleWorktreeChange = async (enabled) => {
-    setSessionWorktree(enabled);
-    if (activeSessionId) {
-      const updated = await api.setSessionWorktree(activeSessionId, enabled);
-      setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, use_worktree: updated.use_worktree } : s)),
       );
     }
   };
@@ -3246,9 +3213,6 @@ export default function App() {
                 modelConfig={modelConfig}
                 messages={messages}
                 activeSessionId={activeSessionId}
-                sessionWorktree={sessionWorktree}
-                gitWorktreeDetected={gitWorktreeDetected}
-                onWorktreeChange={handleWorktreeChange}
                 sessionAskMode={sessionAskMode}
                 onAskModeChange={handleAskModeChange}
                 projectId={
@@ -3264,7 +3228,6 @@ export default function App() {
                 canForward={
                   !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
                 }
-                workflowProject={!!chatProjectIsWorkflow}
               />
 
               {currentView.startsWith('kanban:') ? (
