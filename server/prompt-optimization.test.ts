@@ -820,3 +820,114 @@ describe('getMemoryContext — reduced truncation limits', () => {
     expect(getMemoryContext('')).toBe('');
   });
 });
+
+// ──────────────────────────────────────────────────────────────────
+// Enriched prompt size observability
+//
+// Pairs with the May 14 2026 audit. The argv soft cap at 100 KB was the
+// only existing signal for prompt bloat; anything smaller was invisible.
+// `logEnrichedPromptSize` now emits the final byte size once per build,
+// suppressed under vitest so test runs stay clean.
+// ──────────────────────────────────────────────────────────────────
+
+import { logEnrichedPromptSize } from './chat.js';
+
+describe('logEnrichedPromptSize', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalForce = process.env.PROMPT_SIZE_LOG_FORCE;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.PROMPT_SIZE_LOG_FORCE;
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+    if (originalForce === undefined) {
+      delete process.env.PROMPT_SIZE_LOG_FORCE;
+    } else {
+      process.env.PROMPT_SIZE_LOG_FORCE = originalForce;
+    }
+  });
+
+  it('returns the UTF-8 byte length (not character count) of the prompt', () => {
+    // 'é' is two bytes in UTF-8; the byte count must reflect that.
+    const prompt = 'hello é';
+    expect(prompt.length).toBe(7);
+    expect(logEnrichedPromptSize(prompt, 'agent-x', false, null)).toBe(8);
+  });
+
+  it('stays silent under NODE_ENV=test by default', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      logEnrichedPromptSize('hello world', 'agent-x', true, 'sess-1');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('emits one structured line when PROMPT_SIZE_LOG_FORCE=1', () => {
+    process.env.PROMPT_SIZE_LOG_FORCE = '1';
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const bytes = logEnrichedPromptSize('hello world', 'hub-lead', true, 'sess-1');
+      expect(bytes).toBe(11);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = spy.mock.calls[0][0] as string;
+      expect(line).toContain('[enriched-prompt]');
+      expect(line).toContain('bytes=11');
+      expect(line).toContain('agent=hub-lead');
+      expect(line).toContain('firstMessage=true');
+      expect(line).toContain('session=sess-1');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('omits the session= suffix when sessionId is null', () => {
+    process.env.PROMPT_SIZE_LOG_FORCE = '1';
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      logEnrichedPromptSize('xx', 'a', false, null);
+      const line = spy.mock.calls[0][0] as string;
+      expect(line).not.toContain('session=');
+      expect(line).toContain('firstMessage=false');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('emits a log when NODE_ENV is not "test" (e.g. production)', () => {
+    process.env.NODE_ENV = 'production';
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      logEnrichedPromptSize('hello', 'a', true, null);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('buildEnrichedPrompt — wiki context cap', () => {
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('still injects the wiki section header when the mocked context returns one', () => {
+    // The module-level mock (`vi.mock('./wiki.js', ...)`) returns a two-page
+    // fixture for any non-empty projectId. This regression guards against
+    // accidentally dropping the wiki block entirely when refactoring the
+    // cap logic — the header must still appear in the enriched prompt.
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('## Project Wiki (2 pages)');
+  });
+});
