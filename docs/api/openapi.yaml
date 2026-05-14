@@ -187,6 +187,55 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    AuditErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for audit/roster routes.
+    AuditReport:
+      type: object
+      properties: {}
+      additionalProperties:
+        nullable: true
+      description: Post-scaffold audit report. Concrete shape lives in `server/audit/audit-service.ts`.
+    TrackSuggestion:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        agentId:
+          type: string
+          nullable: true
+        score:
+          type: number
+      required:
+        - id
+        - label
+        - agentId
+      additionalProperties:
+        nullable: true
+      description: Keyword-matched track → agent suggestion.
     ErrorResponse:
       type: object
       properties:
@@ -849,6 +898,652 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    BugReportsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for bug-report intake.
+    BugReportFormFields:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        severity:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          default: medium
+        description:
+          type: string
+        sourceUrl:
+          type: string
+        userAgent:
+          type: string
+        appVersion:
+          type: string
+        clientType:
+          type: string
+          enum:
+            - web
+            - electron
+            - mobile
+        currentProjectId:
+          type: string
+        currentAgentId:
+          type: string
+        screenshot:
+          type: string
+          format: binary
+          description: Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.
+      required:
+        - title
+      description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
+    CapturesErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for captures routes.
+    PrCapture:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        pr_number:
+          type: integer
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+        branch:
+          type: string
+        commit_sha:
+          type: string
+          nullable: true
+        repo_url:
+          type: string
+        status:
+          anyOf:
+            - type: string
+              enum:
+                - queued
+                - running
+                - done
+                - error
+            - type: string
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        artifacts:
+          type: array
+          items:
+            nullable: true
+      required:
+        - id
+        - project_id
+        - pr_number
+        - pr_url
+        - branch
+        - commit_sha
+        - repo_url
+        - status
+      additionalProperties:
+        nullable: true
+      description: A single Playwright PR-capture row.
+    CapturesStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        playwrightAvailable:
+          type: boolean
+      required:
+        - enabled
+        - playwrightAvailable
+      description: Captures feature flag + Playwright availability.
+    ConfigErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for config / github routes.
+    AppConfig:
+      type: object
+      properties:
+        claudeBin:
+          type: string
+        cursorBin:
+          type: string
+        geminiBin:
+          type: string
+        codexBin:
+          type: string
+        defaultModel:
+          type: string
+        defaultCwd:
+          type: string
+        port:
+          type: integer
+        publicUrl:
+          type: string
+        apiKey:
+          type: string
+        authRequired:
+          type: boolean
+        githubApp:
+          type: object
+          nullable: true
+          properties:
+            appId:
+              type: string
+            appSlug:
+              type: string
+              nullable: true
+            hasInstallation:
+              type: boolean
+            installations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  account:
+                    type: string
+                  accountType:
+                    type: string
+                required:
+                  - id
+                  - account
+                  - accountType
+          required:
+            - appId
+            - appSlug
+            - hasInstallation
+            - installations
+        personalOAuth:
+          type: object
+          properties:
+            configured:
+              type: boolean
+            clientId:
+              type: string
+              nullable: true
+          required:
+            - configured
+            - clientId
+        botGithubToken:
+          type: string
+        botGithubTokenSet:
+          type: boolean
+        botGithubUser:
+          type: string
+          nullable: true
+        anthropicApiKey:
+          type: string
+        anthropicApiKeySet:
+          type: boolean
+        _file:
+          type: object
+          properties:
+            claudeBin:
+              type: string
+              nullable: true
+            cursorBin:
+              type: string
+              nullable: true
+            geminiBin:
+              type: string
+              nullable: true
+            codexBin:
+              type: string
+              nullable: true
+          required:
+            - claudeBin
+            - cursorBin
+            - geminiBin
+            - codexBin
+        features:
+          type: object
+          properties:
+            prEnv:
+              type: boolean
+          required:
+            - prEnv
+      required:
+        - claudeBin
+        - defaultCwd
+        - port
+        - publicUrl
+        - apiKey
+        - authRequired
+        - githubApp
+        - personalOAuth
+        - botGithubToken
+        - botGithubTokenSet
+        - botGithubUser
+        - anthropicApiKey
+        - anthropicApiKeySet
+        - _file
+        - features
+      additionalProperties:
+        nullable: true
+      description: Aggregated server configuration. Sensitive fields are masked (`••••••••`); `_file` reflects what is actually persisted to `config.json`.
+    ModelsConfig:
+      type: object
+      properties: {}
+      additionalProperties:
+        nullable: true
+      description: Per-engine model availability. Shape owned by `buildAuthenticatedModelConfig`.
+    SpawnPath:
+      type: object
+      properties:
+        path:
+          type: string
+          nullable: true
+        source:
+          type: string
+        capturedAt:
+          anyOf:
+            - type: string
+            - type: number
+            - nullable: true
+        entries:
+          type: array
+          items:
+            type: string
+        ok:
+          type: boolean
+      required:
+        - path
+        - source
+        - entries
+      description: Cached login-shell PATH used when spawning agent processes. `entries` is the colon-split form for convenience.
+    PersonalOAuthStatus:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        clientId:
+          type: string
+          nullable: true
+      required:
+        - configured
+        - clientId
+      description: Personal GitHub OAuth App status (the OAuth client used for human-identity actions, distinct from the reviewer GitHub App).
+    GithubAppManifest:
+      type: object
+      properties:
+        manifest:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+        githubUrl:
+          type: string
+        redirectUrl:
+          type: string
+      required:
+        - manifest
+        - githubUrl
+        - redirectUrl
+      description: GitHub App manifest payload — POST to `githubUrl` with the manifest in a hidden form to register.
+    GithubAppInstallUrl:
+      type: object
+      properties:
+        installUrl:
+          type: string
+      required:
+        - installUrl
+      description: Install-this-app URL for the configured GitHub App.
+    GithubAppInstallationList:
+      type: object
+      properties:
+        installed:
+          type: boolean
+        installationId:
+          anyOf:
+            - type: integer
+            - type: string
+        installations:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              account:
+                type: string
+              accountType:
+                type: string
+            required:
+              - id
+              - account
+              - accountType
+        message:
+          type: string
+      required:
+        - installed
+      description: Result of refreshing GitHub App installations.
+    GithubAppStatus:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        appId:
+          type: string
+        appSlug:
+          type: string
+          nullable: true
+        hasInstallation:
+          type: boolean
+        installationId:
+          anyOf:
+            - type: integer
+            - type: string
+            - nullable: true
+        installations:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              account:
+                type: string
+              accountType:
+                type: string
+            required:
+              - id
+              - account
+              - accountType
+        appName:
+          type: string
+          nullable: true
+        valid:
+          type: boolean
+      required:
+        - configured
+      additionalProperties:
+        nullable: true
+      description: Live GitHub App status (cached up to 5 min).
+    GithubAppConnectResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        appId:
+          type: string
+        appSlug:
+          type: string
+        installationId:
+          anyOf:
+            - type: integer
+            - type: string
+      required:
+        - ok
+        - appId
+        - appSlug
+        - installationId
+      description: Echoed identity of the freshly-connected GitHub App.
+    GithubStatus:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        user:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        githubApp:
+          type: object
+          nullable: true
+          properties:
+            appId:
+              type: string
+            appSlug:
+              type: string
+              nullable: true
+            hasInstallation:
+              type: boolean
+            installations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  account:
+                    type: string
+                  accountType:
+                    type: string
+                required:
+                  - id
+                  - account
+                  - accountType
+          required:
+            - appId
+            - appSlug
+            - hasInstallation
+            - installations
+        botUser:
+          type: string
+          nullable: true
+        error:
+          type: string
+      required:
+        - authenticated
+      description: "`gh` CLI auth status plus the configured GitHub App / bot identity, if any."
+    DetectRepoResponse:
+      type: object
+      properties:
+        hasRemote:
+          type: boolean
+        owner:
+          type: string
+          nullable: true
+        repo:
+          type: string
+          nullable: true
+        url:
+          type: string
+        defaultBranch:
+          type: string
+      required:
+        - hasRemote
+      description: "Result of `git remote get-url origin` against `cwd`. `hasRemote: false` if the repo has no origin or git failed."
+    TestConnectionResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        repoInfo:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+        error:
+          type: string
+      required:
+        - ok
+      description: "Result of `gh api repos/{owner}/{repo}` — `ok: true` with `repoInfo` on success; `ok: false` with `error` if `gh` rejects."
+    ProjectExportEnvelope:
+      type: object
+      properties:
+        version:
+          anyOf:
+            - type: number
+              enum:
+                - 3
+            - type: integer
+        type:
+          type: string
+        exportedAt:
+          type: string
+        project:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+        crons:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        rooms:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        webhooks:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        wiki:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        kanban:
+          type: object
+          nullable: true
+          properties: {}
+          additionalProperties:
+            nullable: true
+      required:
+        - version
+      additionalProperties:
+        nullable: true
+      description: V3 project export envelope. Sub-objects (project, crons, rooms, …) are passed through to the import handler verbatim.
+    ConfigExportEnvelope:
+      type: object
+      properties:
+        version:
+          anyOf:
+            - type: number
+              enum:
+                - 1
+            - type: number
+              enum:
+                - 2
+            - type: integer
+        exportedAt:
+          type: string
+        config:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+        projects:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        agents:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        crons:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        rooms:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+        slack:
+          type: object
+          properties:
+            accounts:
+              type: array
+              items:
+                type: object
+                properties: {}
+                additionalProperties:
+                  nullable: true
+          additionalProperties:
+            nullable: true
+      required:
+        - version
+      additionalProperties:
+        nullable: true
+      description: V1/V2 server-wide export envelope (config, projects/agents, crons, rooms, slack).
+    ImportResult:
+      type: object
+      properties:
+        message:
+          type: string
+        results:
+          type: object
+          additionalProperties:
+            anyOf:
+              - type: string
+              - type: boolean
+        project:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+      required:
+        - message
+        - results
+      description: Per-section result map — each entry is either `true`/`false` or a human-readable summary like `"3 new, 5 skipped"`.
     Cron:
       type: object
       properties:
@@ -992,6 +1687,204 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    DashboardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        activeOrgId:
+          type: string
+      required:
+        - error
+      description: Error envelope for dashboard route.
+    DashboardResponse:
+      type: object
+      properties:
+        orgId:
+          type: string
+        orgName:
+          type: string
+        isActive:
+          type: boolean
+        headline:
+          type: object
+          properties:
+            projects:
+              type: integer
+            agents:
+              type: integer
+            sessions:
+              type: integer
+            activeSessions:
+              type: integer
+            openCards:
+              type: integer
+            openPRs:
+              type: integer
+            escalations:
+              type: integer
+          required:
+            - projects
+            - agents
+            - sessions
+            - activeSessions
+            - openCards
+            - openPRs
+            - escalations
+        kanban:
+          type: object
+          properties:
+            totalBoards:
+              type: integer
+            totalCards:
+              type: integer
+            byColumn:
+              type: array
+              items:
+                type: object
+                properties:
+                  columnName:
+                    type: string
+                  count:
+                    type: integer
+                required:
+                  - columnName
+                  - count
+            byPriority:
+              type: object
+              properties:
+                urgent:
+                  type: integer
+                high:
+                  type: integer
+                medium:
+                  type: integer
+                low:
+                  type: integer
+              required:
+                - urgent
+                - high
+                - medium
+                - low
+          required:
+            - totalBoards
+            - totalCards
+            - byColumn
+            - byPriority
+        recentActivity:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum:
+                  - card_created
+                  - card_updated
+                  - session_created
+                  - escalation
+                  - pr_created
+              id:
+                type: string
+              title:
+                type: string
+              timestamp:
+                type: string
+              meta:
+                type: object
+                additionalProperties:
+                  anyOf:
+                    - type: string
+                    - type: number
+                    - nullable: true
+            required:
+              - type
+              - id
+              - title
+              - timestamp
+      required:
+        - orgId
+        - orgName
+        - isActive
+        - headline
+        - kanban
+        - recentActivity
+      description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
+    EscalationsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for escalation routes.
+    Escalation:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - merge_conflict
+            - ci_failure
+            - review_needed
+            - blocker
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        pr_number:
+          type: integer
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+        card_id:
+          type: string
+          nullable: true
+        source:
+          type: string
+          nullable: true
+        acknowledged_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - type
+        - title
+        - description
+        - pr_number
+        - pr_url
+        - card_id
+        - source
+        - acknowledged_at
+        - created_at
+      additionalProperties:
+        nullable: true
+      description: A single escalation row.
     HeartbeatConfig:
       type: object
       properties:
@@ -1171,6 +2064,401 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    HooksErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for hook routes.
+    McpServersErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for MCP server routes.
+    McpServer:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        name:
+          type: string
+        catalogId:
+          type: string
+          nullable: true
+        transport:
+          type: string
+          enum:
+            - stdio
+            - http
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - userId
+        - name
+        - catalogId
+        - transport
+        - command
+        - args
+        - url
+        - env
+        - headers
+        - enabled
+      additionalProperties:
+        nullable: true
+      description: A single MCP server registry row. Sensitive `env` / `headers` values are masked on list reads.
+    McpCatalogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        transport:
+          type: string
+          enum:
+            - stdio
+            - http
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+      required:
+        - id
+        - name
+        - transport
+      additionalProperties:
+        nullable: true
+      description: Well-known MCP catalog template.
+    MemoryErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for memory routes.
+    NoteProcessing:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        date:
+          type: string
+        excerpt:
+          type: string
+        target:
+          type: string
+          enum:
+            - auto
+            - wiki
+            - memory
+            - plan
+        session_id:
+          type: string
+        status:
+          anyOf:
+            - type: string
+              enum:
+                - queued
+                - running
+                - success
+                - error
+            - type: string
+        result:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - date
+        - excerpt
+        - target
+        - session_id
+        - status
+      additionalProperties:
+        nullable: true
+      description: A single note-processing run row.
+    MiscErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for misc routes.
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        version:
+          type: string
+        gitHash:
+          type: string
+        uptime:
+          type: number
+        projects:
+          type: integer
+        agents:
+          type: integer
+        authRequired:
+          type: boolean
+        apiKeyAuthEnabled:
+          type: boolean
+        jwtAuthEnabled:
+          type: boolean
+      required:
+        - status
+        - version
+        - gitHash
+        - uptime
+        - projects
+        - agents
+        - authRequired
+        - apiKeyAuthEnabled
+        - jwtAuthEnabled
+      description: Liveness + runtime info for the server.
+    BrowseResponse:
+      type: object
+      properties:
+        path:
+          type: string
+        parent:
+          type: string
+          nullable: true
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+                enum:
+                  - directory
+              path:
+                type: string
+            required:
+              - name
+              - type
+              - path
+      required:
+        - path
+        - parent
+        - entries
+      description: Directory listing under $HOME (the only allowed root). Hidden entries sorted last.
+    DeviceTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        platform:
+          type: string
+        enabledEvents:
+          type: array
+          nullable: true
+          items:
+            type: string
+        supportedEvents:
+          type: array
+          items:
+            type: string
+      required:
+        - token
+        - platform
+        - enabledEvents
+        - supportedEvents
+      description: Push-token preferences and supported event list.
+    UsageResponse:
+      type: object
+      properties:
+        totals:
+          type: object
+          properties:
+            sessions:
+              type: integer
+            messages:
+              type: integer
+            tokens:
+              type: integer
+            cost_usd:
+              type: number
+          additionalProperties:
+            nullable: true
+        byAgent:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id:
+                type: string
+              agent_name:
+                type: string
+              agent_color:
+                type: string
+            required:
+              - agent_id
+              - agent_name
+              - agent_color
+            additionalProperties:
+              nullable: true
+        byDay:
+          type: array
+          items:
+            type: object
+            properties:
+              day:
+                type: string
+            required:
+              - day
+            additionalProperties:
+              nullable: true
+        recentSessions:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id:
+                type: string
+              agent_name:
+                type: string
+              agent_color:
+                type: string
+            required:
+              - agent_id
+              - agent_name
+              - agent_color
+            additionalProperties:
+              nullable: true
+      required:
+        - totals
+        - byAgent
+        - byDay
+        - recentSessions
+      description: Aggregated usage rollup. Cost de-dup of the Claude CLI cumulative `total_cost_usd` happens in `usage-aggregation.ts`.
+    NotesErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for notes routes.
+    Note:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - title
+        - content
+        - created_at
+        - updated_at
+      description: A single project note row.
     WikiPage:
       type: object
       properties:
@@ -1644,6 +2932,242 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentErrorResponse"
+  /api/projects/{projectId}/audit:
+    get:
+      tags:
+        - Audit
+      summary: Read the latest persisted audit report
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Audit report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditReport"
+        "404":
+          description: No audit yet — POST /audit/refresh to generate one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "500":
+          description: Stored report is corrupt JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/audit/refresh:
+    post:
+      tags:
+        - Audit
+      summary: Regenerate the audit report and persist it
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Fresh audit report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditReport"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "500":
+          description: Audit run failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/roster/suggest:
+    get:
+      tags:
+        - Audit
+      summary: Suggest a track → agent roster
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Suggested tracks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrackSuggestion"
+                required:
+                  - tracks
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/roster:
+    get:
+      tags:
+        - Audit
+      summary: Read back the persisted roster
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Persisted roster.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        label:
+                          type: string
+                        agentId:
+                          type: string
+                        custom:
+                          type: boolean
+                      required:
+                        - id
+                        - label
+                        - agentId
+                        - custom
+                  updatedAt:
+                    type: string
+                required:
+                  - tracks
+                  - updatedAt
+        "404":
+          description: Roster not set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "500":
+          description: Stored roster is corrupt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+    post:
+      tags:
+        - Audit
+      summary: Persist the user-chosen roster (and create custom agents)
+      description: "Custom tracks (`custom: true`) get a freshly-created agent row id `<projectId>-<trackId>`. Idempotent: re-running with the same custom track refreshes label/role rather than colliding. AGENTS.md in the project workspace is rewritten between roster markers."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tracks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        minLength: 1
+                      label:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      custom:
+                        type: boolean
+                    required:
+                      - id
+                  minItems: 1
+                  description: "Each track must have **either** a non-empty `agentId` XOR `custom: true` (not both, not neither)."
+              required:
+                - tracks
+      responses:
+        "200":
+          description: Persisted roster (echoes resolved tracks).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        label:
+                          type: string
+                        agentId:
+                          type: string
+                        custom:
+                          type: boolean
+                      required:
+                        - id
+                        - label
+                        - agentId
+                        - custom
+                  updatedAt:
+                    type: string
+                required:
+                  - tracks
+                  - updatedAt
+        "400":
+          description: Invalid payload (XOR violation, unknown agentId, etc.).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
   /api/auth/status:
     get:
       tags:
@@ -4530,6 +6054,322 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/bug-reports:
+    options:
+      tags:
+        - Bug Reports
+      summary: CORS preflight (returns 204)
+      responses:
+        "204":
+          description: CORS preflight OK.
+    post:
+      tags:
+        - Bug Reports
+      summary: Public bug-report intake (multipart)
+      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Optional `screenshot` is a PNG or JPEG up to 5 MB. Spawns a session for `agent-hub-intake` to land a kanban card under the `user-request` epic.
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/BugReportFormFields"
+      responses:
+        "202":
+          description: Dispatched.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - dispatched
+                required:
+                  - sessionId
+                  - status
+                description: The intake session has been spawned. Result is the session id; the kanban card lands when the session completes.
+        "400":
+          description: Validation failed (missing title, bad severity, malformed multipart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BugReportsErrorResponse"
+        "413":
+          description: Screenshot exceeds 5 MB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BugReportsErrorResponse"
+        "429":
+          description: Per-IP rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BugReportsErrorResponse"
+        "500":
+          description: Intake agent missing or handler threw.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BugReportsErrorResponse"
+  /api/captures/status:
+    get:
+      tags:
+        - Captures
+      summary: Captures feature flag + Playwright availability
+      responses:
+        "200":
+          description: Status payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesStatus"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+  /api/projects/{projectId}/captures:
+    get:
+      tags:
+        - Captures
+      summary: List captures for a project
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Capture rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PrCapture"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+    post:
+      tags:
+        - Captures
+      summary: Create a new capture
+      description: Persists a row immediately and runs Playwright async. The response is the queued row; poll the GET endpoint for status transitions. Refuses if captures are disabled or Playwright is missing.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prNumber:
+                  anyOf:
+                    - type: integer
+                    - type: string
+                branch:
+                  type: string
+                  minLength: 1
+                  pattern: ^(?!-)[A-Za-z0-9._/-]{1,255}$
+                commitSha:
+                  type: string
+                  nullable: true
+                  pattern: ^[a-f0-9]{7,64}$/i
+                repoUrl:
+                  type: string
+                  pattern: ^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?$
+                prUrl:
+                  type: string
+              required:
+                - prNumber
+                - branch
+      responses:
+        "201":
+          description: Queued capture.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrCapture"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "403":
+          description: Captures are disabled on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "503":
+          description: Playwright/Chromium is not available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+  /api/projects/{projectId}/captures/{id}:
+    get:
+      tags:
+        - Captures
+      summary: Read a single capture (with artifacts)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Capture row + artifacts list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrCapture"
+        "404":
+          description: Capture not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+    delete:
+      tags:
+        - Captures
+      summary: Delete a capture and its on-disk artifacts
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          description: Capture not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "409":
+          description: Cannot delete while capture is in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+  /api/projects/{projectId}/captures/{id}/rerun:
+    post:
+      tags:
+        - Captures
+      summary: Re-run a capture (clones the original config)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "201":
+          description: Newly-queued capture.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrCapture"
+        "403":
+          description: Captures are disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "404":
+          description: Capture not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+  /api/projects/{projectId}/captures/{id}/comment:
+    post:
+      tags:
+        - Captures
+      summary: Post the rendered capture screenshots as a PR comment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Posted comment URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commentUrl:
+                    type: string
+                required:
+                  - commentUrl
+        "400":
+          description: Capture not yet completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "404":
+          description: Capture not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
+        "500":
+          description: Failed to post PR comment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapturesErrorResponse"
   /api/config/claude-auth:
     get:
       tags:
@@ -5061,6 +6901,601 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
+  /api/config:
+    get:
+      tags:
+        - Config
+      summary: Read aggregated server config (with masked secrets)
+      responses:
+        "200":
+          description: Server config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppConfig"
+    patch:
+      tags:
+        - Config
+      summary: Update one or more config fields
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                claudeBin:
+                  type: string
+                cursorBin:
+                  type: string
+                geminiBin:
+                  type: string
+                codexBin:
+                  type: string
+                defaultModel:
+                  type: string
+                defaultCwd:
+                  type: string
+                port:
+                  type: integer
+                apiKey:
+                  type: string
+                  nullable: true
+                publicUrl:
+                  type: string
+                botGithubToken:
+                  type: string
+                  nullable: true
+              additionalProperties:
+                nullable: true
+              description: Partial config update. Unknown keys are ignored. At least one allowed key must be present, otherwise the handler returns 400.
+      responses:
+        "200":
+          description: Updated keys (masked where applicable).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  updated:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - ok
+                  - updated
+        "400":
+          description: No valid config fields provided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/models:
+    get:
+      tags:
+        - Config
+      summary: List engines + per-engine authenticated models
+      responses:
+        "200":
+          description: Model availability map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelsConfig"
+  /api/config/spawn-path:
+    get:
+      tags:
+        - Config
+      summary: Read the cached login-shell PATH used when spawning agents
+      responses:
+        "200":
+          description: Spawn-PATH snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpawnPath"
+  /api/config/refresh-spawn-path:
+    post:
+      tags:
+        - Config
+      summary: Re-run the login shell to pick up newly installed CLIs
+      description: Idempotent — refreshes the cached PATH that `buildSpawnEnv` merges into every spawn.
+      responses:
+        "200":
+          description: Refreshed spawn-PATH snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpawnPath"
+        "500":
+          description: Login shell failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/personal-oauth:
+    get:
+      tags:
+        - Config
+      summary: Read personal GitHub OAuth App configuration status
+      responses:
+        "200":
+          description: Personal OAuth status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalOAuthStatus"
+    put:
+      tags:
+        - Config
+      summary: Set personal GitHub OAuth App credentials
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clientId:
+                  type: string
+                  minLength: 1
+                clientSecret:
+                  type: string
+                  minLength: 1
+              required:
+                - clientId
+                - clientSecret
+              description: GitHub OAuth App client credentials. Both fields are required.
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  configured:
+                    type: boolean
+                    enum:
+                      - true
+                  clientId:
+                    type: string
+                required:
+                  - ok
+                  - configured
+                  - clientId
+        "400":
+          description: clientId and clientSecret are both required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    delete:
+      tags:
+        - Config
+      summary: Clear personal GitHub OAuth App credentials
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+  /api/github-app/manifest:
+    get:
+      tags:
+        - GitHub App
+      summary: Build the GitHub App manifest for the manifest-flow registration
+      responses:
+        "200":
+          description: Manifest payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppManifest"
+        "400":
+          description: Public URL is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github-app/register:
+    get:
+      tags:
+        - GitHub App
+      summary: Render an HTML form that auto-POSTs the manifest to GitHub
+      responses:
+        "200":
+          description: HTML form (auto-submits).
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Public URL is not configured.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/github-app/callback:
+    get:
+      tags:
+        - GitHub App
+      summary: GitHub manifest-flow callback — exchanges code for app credentials and redirects
+      parameters:
+        - schema:
+            type: string
+            description: Manifest exchange code returned by GitHub.
+          required: true
+          description: Manifest exchange code returned by GitHub.
+          name: code
+          in: query
+      responses:
+        "302":
+          description: Redirect to install URL or the settings page.
+        "400":
+          description: Missing `code` query param.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/github-app/install-url:
+    get:
+      tags:
+        - GitHub App
+      summary: Build the install-this-app URL for the configured GitHub App
+      responses:
+        "200":
+          description: Install URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppInstallUrl"
+        "400":
+          description: No GitHub App configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github-app/refresh-installation:
+    post:
+      tags:
+        - GitHub App
+      summary: Re-fetch GitHub App installations and update the config
+      responses:
+        "200":
+          description: Installations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppInstallationList"
+        "400":
+          description: No GitHub App configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: GitHub API call failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github-app/setup-complete:
+    get:
+      tags:
+        - GitHub App
+      summary: GitHub install-callback landing page (auto-detects installation, redirects)
+      responses:
+        "302":
+          description: Redirect to settings (`?githubApp=ready` / `?githubApp=no-install`).
+  /api/github-app/status:
+    get:
+      tags:
+        - GitHub App
+      summary: Read live GitHub App status (cached up to 5 min)
+      responses:
+        "200":
+          description: GitHub App status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppStatus"
+  /api/github-app:
+    delete:
+      tags:
+        - GitHub App
+      summary: Disconnect the configured GitHub App
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+  /api/github-app/connect:
+    post:
+      tags:
+        - GitHub App
+      summary: Connect an existing GitHub App by appId + private key + installation id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                appId:
+                  type: string
+                  minLength: 1
+                privateKey:
+                  type: string
+                  minLength: 1
+                installationId:
+                  type: string
+                  minLength: 1
+              required:
+                - appId
+                - privateKey
+                - installationId
+              description: Connect an existing GitHub App by appId + private key + installation id.
+      responses:
+        "200":
+          description: Connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppConnectResponse"
+        "400":
+          description: Missing fields or invalid GitHub App credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github/status:
+    get:
+      tags:
+        - GitHub
+      summary: Read `gh` CLI auth status + configured app / bot identity
+      responses:
+        "200":
+          description: GitHub status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubStatus"
+  /api/github/detect-repo:
+    post:
+      tags:
+        - GitHub
+      summary: Detect the GitHub remote in a working directory
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cwd:
+                  type: string
+                  minLength: 1
+              required:
+                - cwd
+              description: Working directory to inspect with `git remote get-url origin`.
+      responses:
+        "200":
+          description: Remote detection result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetectRepoResponse"
+        "400":
+          description: cwd is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github/test-connection:
+    post:
+      tags:
+        - GitHub
+      summary: Probe `gh api repos/{owner}/{repo}` to verify connectivity
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                owner:
+                  type: string
+                  minLength: 1
+                repo:
+                  type: string
+                  minLength: 1
+              required:
+                - owner
+                - repo
+              description: GitHub repo coords. Both fields must match `^[a-zA-Z0-9._-]+$`; the handler enforces the regex.
+      responses:
+        "200":
+          description: Connection probe result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestConnectionResponse"
+        "400":
+          description: Missing or invalid owner/repo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/projects/{projectId}/export:
+    get:
+      tags:
+        - Projects
+      summary: Export a project (project + crons + rooms + webhooks + wiki + kanban)
+      description: Returns a V3 export envelope as a downloadable JSON attachment. Webhook secrets are redacted; session-id linkages on kanban cards are stripped.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project export.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectExportEnvelope"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: Export failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/projects/{projectId}/import:
+    post:
+      tags:
+        - Projects
+      summary: Merge a V3 project export into an existing project
+      description: Per-section idempotent merge — duplicate names/slugs are skipped. Errors are tagged with the offending section (`crons`, `wiki`, `kanban`, etc.) for debuggability.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectExportEnvelope"
+      responses:
+        "200":
+          description: Per-section merge results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          description: Invalid envelope (wrong version/type).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "404":
+          description: Target project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: Import failed (response includes `section` when applicable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/projects/import:
+    post:
+      tags:
+        - Projects
+      summary: Create a new project from a V3 export
+      description: Materialises a fresh project record (and its data dir) from the embedded `project` block, then runs the same merge logic as the per-project endpoint. Generates a unique slug if the exported id collides.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectExportEnvelope"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          description: Invalid envelope or missing `project` block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: Import failed (response includes `section` when applicable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/export:
+    get:
+      tags:
+        - Config
+      summary: Export server-wide config (config + projects + crons + rooms + slack)
+      description: Returns a V2 export envelope as a downloadable JSON attachment. Slack bot/app tokens are redacted.
+      responses:
+        "200":
+          description: Config export.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigExportEnvelope"
+        "500":
+          description: Export failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/import:
+    post:
+      tags:
+        - Config
+      summary: Import a V1 or V2 server-wide config export
+      description: Writes `config.json`, replaces `projects.json` (or upgrades a V1 `agents` array), merges crons + rooms by name, and writes `slack-config.json` only if real (non-redacted) tokens are present.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigExportEnvelope"
+      responses:
+        "200":
+          description: Per-section import results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          description: Invalid export format (expected version 1 or 2).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: Import failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
   /api/crons:
     get:
       tags:
@@ -5489,6 +7924,220 @@ paths:
                 required:
                   - ok
                   - output
+  /api/orgs/{id}/dashboard:
+    get:
+      tags:
+        - Dashboard
+      summary: Org-wide dashboard counters + recent activity
+      description: Aggregates project/agent/session/kanban/PR counters for the **active** org. Use `:id = "active"` to ask for the current org without knowing its real id (used by remote-mode clients). Returns 409 if the requested org is not the active one.
+      parameters:
+        - schema:
+            type: string
+            description: Org id, or the literal string `active`.
+          required: true
+          description: Org id, or the literal string `active`.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Dashboard payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardErrorResponse"
+        "404":
+          description: Org not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardErrorResponse"
+        "409":
+          description: Org is not the active one — switch first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/escalations:
+    get:
+      tags:
+        - Escalations
+      summary: List active escalations across every project
+      responses:
+        "200":
+          description: Active escalations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Escalation"
+  /api/projects/{projectId}/escalations:
+    get:
+      tags:
+        - Escalations
+      summary: List escalations for a project
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+            description: When `true`, only unacknowledged rows.
+          required: false
+          description: When `true`, only unacknowledged rows.
+          name: active
+          in: query
+      responses:
+        "200":
+          description: Escalation rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Escalation"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationsErrorResponse"
+    post:
+      tags:
+        - Escalations
+      summary: Create an escalation
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - merge_conflict
+                    - ci_failure
+                    - review_needed
+                    - blocker
+                title:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                prNumber:
+                  type: integer
+                prUrl:
+                  type: string
+                cardId:
+                  type: string
+                source:
+                  type: string
+              required:
+                - type
+                - title
+      responses:
+        "201":
+          description: Created escalation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Escalation"
+        "400":
+          description: Invalid type or missing title.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationsErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationsErrorResponse"
+  /api/escalations/{id}/acknowledge:
+    post:
+      tags:
+        - Escalations
+      summary: Mark an escalation acknowledged
+      parameters:
+        - schema:
+            type: string
+            description: Escalation id.
+          required: true
+          description: Escalation id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Acknowledged escalation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Escalation"
+        "404":
+          description: Escalation not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationsErrorResponse"
+  /api/escalations/{id}:
+    delete:
+      tags:
+        - Escalations
+      summary: Dismiss / delete an escalation
+      parameters:
+        - schema:
+            type: string
+            description: Escalation id.
+          required: true
+          description: Escalation id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Dismissed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "404":
+          description: Escalation not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationsErrorResponse"
   /api/config/gemini-auth:
     get:
       tags:
@@ -5984,6 +8633,892 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HeartbeatErrorResponse"
+  /api/hooks/stop:
+    post:
+      tags:
+        - Hooks
+      summary: CLI session-stop hook
+      description: Invoked by the Claude Code CLI when a session ends. The actual auto-commit / changes_ready logic runs from `chat.ts` proc.on("close"); this endpoint exists for the CLI contract and is informational only.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                  minLength: 1
+              required:
+                - sessionId
+      responses:
+        "200":
+          description: Hook acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  sessionId:
+                    type: string
+                required:
+                  - ok
+                  - sessionId
+                description: Acknowledgment that the stop hook was received.
+        "400":
+          description: Missing sessionId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HooksErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HooksErrorResponse"
+  /api/mcp-catalog:
+    get:
+      tags:
+        - MCP Servers
+      summary: Read the well-known MCP catalog templates
+      responses:
+        "200":
+          description: Catalog entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/McpCatalogEntry"
+                required:
+                  - entries
+  /api/mcp-servers:
+    get:
+      tags:
+        - MCP Servers
+      summary: List the calling user's MCP servers (masked)
+      responses:
+        "200":
+          description: Masked MCP server rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/McpServer"
+                required:
+                  - servers
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+    post:
+      tags:
+        - MCP Servers
+      summary: Create an MCP server entry
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                transport:
+                  type: string
+                  enum:
+                    - stdio
+                    - http
+                  description: stdio (subprocess) or http (remote URL).
+                catalogId:
+                  type: string
+                  nullable: true
+                command:
+                  type: string
+                url:
+                  type: string
+                args:
+                  type: array
+                  items:
+                    type: string
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                headers:
+                  type: object
+                  additionalProperties:
+                    type: string
+                enabled:
+                  type: boolean
+              required:
+                - name
+                - transport
+      responses:
+        "201":
+          description: Created server (with secrets — only returned at creation).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server:
+                    $ref: "#/components/schemas/McpServer"
+                required:
+                  - server
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+  /api/mcp-servers/{id}:
+    put:
+      tags:
+        - MCP Servers
+      summary: Update an MCP server entry (partial)
+      parameters:
+        - schema:
+            type: string
+            description: MCP server id.
+          required: true
+          description: MCP server id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                catalogId:
+                  type: string
+                  nullable: true
+                transport:
+                  type: string
+                  enum:
+                    - stdio
+                    - http
+                command:
+                  type: string
+                url:
+                  type: string
+                args:
+                  type: array
+                  items:
+                    type: string
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                headers:
+                  type: object
+                  additionalProperties:
+                    type: string
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server:
+                    $ref: "#/components/schemas/McpServer"
+                required:
+                  - server
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+        "404":
+          description: MCP server not found (or not owned by caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+    delete:
+      tags:
+        - MCP Servers
+      summary: Delete an MCP server entry
+      parameters:
+        - schema:
+            type: string
+            description: MCP server id.
+          required: true
+          description: MCP server id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+        "404":
+          description: MCP server not found (or not owned by caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServersErrorResponse"
+  /api/memory/reconcile:
+    post:
+      tags:
+        - Memory
+      summary: Manually trigger the wiki ↔ memory reconciliation sweep
+      responses:
+        "200":
+          description: Sweep started (runs async).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - running
+                required:
+                  - status
+  /api/projects/{projectId}/notes/{date}/process:
+    post:
+      tags:
+        - Memory
+      summary: Hand a daily note to the project's docs agent for processing
+      description: Spawns a session for the project's docs agent with a target-specific prompt. The session id is included in the response so callers can stream the result.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            pattern: ^\d{4}-\d{2}-\d{2}$
+          required: true
+          name: date
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target:
+                  type: string
+                  enum:
+                    - auto
+                    - wiki
+                    - memory
+                    - plan
+                  description: Where to write the extracted knowledge. Defaults to `auto`.
+                excerpt:
+                  type: string
+                  description: Override the note content with an explicit excerpt (used when the user has already trimmed the note).
+      responses:
+        "201":
+          description: Processing row created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteProcessing"
+        "400":
+          description: Invalid date or target, or empty note.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+        "404":
+          description: Project / note / docs agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+        "500":
+          description: Failed to read note from disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+  /api/projects/{projectId}/notes/processings:
+    get:
+      tags:
+        - Memory
+      summary: List recent note-processing runs for a project
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Max rows (default 50, cap 200).
+          required: false
+          description: Max rows (default 50, cap 200).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Processing rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NoteProcessing"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+  /api/projects/{projectId}/notes/{date}/processings:
+    get:
+      tags:
+        - Memory
+      summary: List processing runs for a specific daily note
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            pattern: ^\d{4}-\d{2}-\d{2}$
+          required: true
+          name: date
+          in: path
+      responses:
+        "200":
+          description: Processing rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NoteProcessing"
+        "400":
+          description: Invalid date format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+  /api/projects/{projectId}/notes/processings/{processingId}:
+    get:
+      tags:
+        - Memory
+      summary: Read a single note-processing run
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: processingId
+          in: path
+      responses:
+        "200":
+          description: Processing row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteProcessing"
+        "404":
+          description: Processing not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryErrorResponse"
+  /api/health:
+    get:
+      tags:
+        - Health
+      summary: Liveness + runtime info
+      responses:
+        "200":
+          description: Health payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /api/server-logs:
+    get:
+      tags:
+        - Health
+      summary: Tail of the in-memory server log buffer
+      responses:
+        "200":
+          description: Recent log entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    ts:
+                      type: string
+                    level:
+                      type: string
+                    msg:
+                      type: string
+                  additionalProperties:
+                    nullable: true
+  /api/browse:
+    get:
+      tags:
+        - Misc
+      summary: Directory browser scoped to $HOME
+      description: Lists immediate subdirectories of `path` (default $HOME). Refuses any path outside $HOME with 403; refuses non-directories with 400.
+      parameters:
+        - schema:
+            type: string
+            description: Directory under $HOME. `~` and `~/foo` expand.
+          required: false
+          description: Directory under $HOME. `~` and `~/foo` expand.
+          name: path
+          in: query
+      responses:
+        "200":
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowseResponse"
+        "400":
+          description: Path is not a directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+        "403":
+          description: Path escapes $HOME.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+        "404":
+          description: Path does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+  /api/devices:
+    post:
+      tags:
+        - Devices
+      summary: Register an APNs / FCM push token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                platform:
+                  type: string
+              required:
+                - token
+      responses:
+        "200":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: token is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+  /api/devices/{token}:
+    delete:
+      tags:
+        - Devices
+      summary: Remove a push token
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+    get:
+      tags:
+        - Devices
+      summary: Read a push token's preferences + supported events
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      responses:
+        "200":
+          description: Token row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceTokenResponse"
+        "404":
+          description: Token not registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+  /api/devices/{token}/preferences:
+    put:
+      tags:
+        - Devices
+      summary: Update per-event push preferences
+      description: '`enabledEvents: null` clears the preference (legacy "all events" behaviour). Unknown event names are stripped server-side.'
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabledEvents:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                    enum:
+                      - session_complete
+                      - changes_ready
+                      - pr_creation_stale
+                      - card_started
+                      - card_review
+                      - pr_merged
+                      - thread_created
+                      - thread_entry
+                      - dispatch_failure
+                      - cron
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  enabledEvents:
+                    type: array
+                    nullable: true
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - enabledEvents
+        "400":
+          description: enabledEvents must be an array or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+        "404":
+          description: Token not registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+  /api/usage:
+    get:
+      tags:
+        - Usage
+      summary: Aggregated usage stats (totals, per-agent, per-day, recent sessions)
+      responses:
+        "200":
+          description: Usage payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageResponse"
+        "500":
+          description: Aggregation query failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MiscErrorResponse"
+  /api/projects/{projectId}/notes:
+    get:
+      tags:
+        - Notes
+      summary: List notes (or FTS search) for a project
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: FTS search query.
+          required: false
+          description: FTS search query.
+          name: q
+          in: query
+        - schema:
+            type: string
+            description: Max results when searching (default 20).
+          required: false
+          description: Max results when searching (default 20).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Note rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Note"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+    post:
+      tags:
+        - Notes
+      summary: Create a note
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                content:
+                  type: string
+              required:
+                - title
+      responses:
+        "201":
+          description: Created note.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          description: Title is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+        "409":
+          description: Slug collision or constraint violation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+  /api/projects/{projectId}/notes/{noteId}:
+    get:
+      tags:
+        - Notes
+      summary: Read a single note
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: noteId
+          in: path
+      responses:
+        "200":
+          description: Note row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "404":
+          description: Note not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+    put:
+      tags:
+        - Notes
+      summary: Update a note
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: noteId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+      responses:
+        "200":
+          description: Updated note.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "404":
+          description: Note not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+        "500":
+          description: Update failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+    delete:
+      tags:
+        - Notes
+      summary: Delete a note
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: noteId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "404":
+          description: Note not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:
