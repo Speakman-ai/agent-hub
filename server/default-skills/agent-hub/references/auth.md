@@ -9,6 +9,9 @@ automation).
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Auth>
+(request/response shapes, every field). This page is the *how*.
+
 ## Contents
 
 - [Role hierarchy](#role-hierarchy)

@@ -6,6 +6,10 @@ two or three recovery steps that usually unstick the common failures.
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Audit>
+(the future tool-error aggregation endpoint stub lives under the `Audit`
+tag). This page is the *how*.
+
 ## Contents
 
 - [TOOL_ERROR self-reporting](#tool_error-self-reporting)
