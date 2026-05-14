@@ -48,6 +48,7 @@ const WIKI_CATEGORIES = [
 
 const WikiCategoryEnum = z.enum(WIKI_CATEGORIES);
 
+// Full wiki page row — includes `content`. Used for single-page GET responses.
 export const WikiPageComponent = registerComponent(
   'WikiPage',
   z
@@ -62,19 +63,40 @@ export const WikiPageComponent = registerComponent(
       created_at: z.string(),
       updated_at: z.string(),
     })
-    .openapi({ description: 'A wiki page row.' }),
+    .openapi({ description: 'A wiki page row (includes full content).' }),
 );
 
-// Returned by `searchPages` (legacy FTS5 path on `GET /wiki?q=`). Same row
-// shape with optional `snippet` (FTS5 highlight) and `rank` (bm25-ish score).
+// List-item shape — no `content`. The list SQL (`getWikiPages`,
+// `getWikiPagesByCategory`) never projects content to keep payload size down.
+export const WikiPageListItemComponent = registerComponent(
+  'WikiPageListItem',
+  z
+    .object({
+      id: z.string(),
+      project_id: z.string(),
+      title: z.string(),
+      slug: z.string(),
+      category: z.string(),
+      updated_by: z.string(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    })
+    .openapi({
+      description:
+        'A wiki page list item (content omitted for payload size). Returned by `GET /wiki` bare and `?category=` paths.',
+    }),
+);
+
+// Returned by `searchPages` (legacy FTS5 path on `GET /wiki?q=`). Extends the
+// list-item shape (no `content`) with FTS5 `snippet` and bm25-ish `rank`.
 export const WikiSearchHitComponent = registerComponent(
   'WikiSearchHit',
-  WikiPageComponent.extend({
+  WikiPageListItemComponent.extend({
     snippet: z.string().optional(),
     rank: z.number().optional(),
   }).openapi({
     description:
-      'A wiki page returned from the legacy FTS5 search path (`GET /wiki?q=`). Adds the highlighted `snippet` and bm25-ish `rank`.',
+      'A wiki page returned from the legacy FTS5 search path (`GET /wiki?q=`). Adds the highlighted `snippet` and bm25-ish `rank`. Content is not included.',
   }),
 );
 
@@ -233,10 +255,11 @@ registerPath({
   tags: ['Wiki'],
   summary: 'List wiki pages (optionally filtered or FTS-searched)',
   description: [
-    'When `?q=` is set, returns FTS5 hits in the legacy shape (page row + `snippet` + `rank`).',
-    'When `?category=` is set, returns pages in that category.',
-    'Otherwise returns every page in the project (content omitted for list payload size).',
+    'When `?q=` is set, returns FTS5 hits (`WikiSearchHit[]` — list-item fields + `snippet` + `rank`, no `content`).',
+    'When `?category=` is set, returns pages in that category (`WikiPageListItem[]`, no `content`).',
+    'Otherwise returns every page in the project (`WikiPageListItem[]`, no `content`).',
     '`limit` only applies to the `?q=` path; the bare and category responses are unpaginated.',
+    'Invalid `?limit=` values (non-numeric) and other schema violations return 400.',
   ].join(' '),
   request: {
     params: projectIdParams,
@@ -244,9 +267,10 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Wiki pages (shape depends on the query params).',
-      content: jsonContent(z.array(WikiSearchHitComponent)),
+      description: 'Wiki pages (shape depends on the query params — see description).',
+      content: jsonContent(z.array(WikiPageListItemComponent)),
     },
+    400: errorResponse('Query parameter validation failed.'),
     404: errorResponse('Project not found.'),
   },
 });
@@ -258,7 +282,7 @@ registerPath({
   tags: ['Wiki'],
   summary: 'Search wiki pages (hybrid / semantic / fts)',
   description:
-    'Defaults to hybrid mode. Falls back to pure FTS when the Gemini API key is missing or the query embedding fails. Returns an empty `results` array for blank queries so the caller can branch on configuration without a separate health probe.',
+    'Defaults to hybrid mode. Falls back to pure FTS when the Gemini API key is missing or the query embedding fails. Returns an empty `results` array for blank queries so the caller can branch on configuration without a separate health probe. Invalid `?limit=` values (non-numeric) and unknown `?mode=` values return 400.',
   request: {
     params: projectIdParams,
     query: SearchWikiQuerySchema,
@@ -268,6 +292,7 @@ registerPath({
       description: 'Search envelope.',
       content: jsonContent(WikiSearchResponseComponent),
     },
+    400: errorResponse('Query parameter validation failed.'),
     404: errorResponse('Project not found.'),
     500: errorResponse('Underlying search or embedding error.'),
   },

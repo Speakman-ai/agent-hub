@@ -70,11 +70,6 @@ function parseQuery<T extends z.ZodTypeAny>(
   return result.data;
 }
 
-function parseMode(raw: unknown): SearchMode {
-  if (raw === 'semantic' || raw === 'fts' || raw === 'hybrid') return raw;
-  return 'hybrid';
-}
-
 export default function createWikiRoutes({ findProject, broadcast, stmts }: RouteDeps): Router {
   const router = Router({ mergeParams: true });
 
@@ -112,7 +107,7 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
     if (!q)
       return res.json({ mode: 'hybrid', results: [], geminiConfigured: isGeminiConfigured() });
 
-    const mode = parseMode(parsed.mode);
+    const mode: SearchMode = parsed.mode ?? 'hybrid';
     const rawLimit = parsed.limit ?? 10;
     const limit = Math.min(Math.max(rawLimit, 1), 50);
 
