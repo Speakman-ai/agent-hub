@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
+import type { z } from 'zod';
 import { defaultModelForEngine } from '../config.js';
 import { getDb } from '../db.js';
 import { unscheduleHeartbeat } from '../heartbeat.js';
@@ -8,6 +9,37 @@ import { resolveProjectPaths, contextFilePath, ALL_CONTEXT_FILES } from '../proj
 import { updateMemory, getMemoryData } from '../memory.js';
 import { HOOK_EVENTS } from '../hooks.js';
 import type { RouteDeps, Agent, HookConfig } from '../types.js';
+import {
+  CreateAgentRequestSchema,
+  UpdateAgentRequestSchema,
+  BulkEngineRequestSchema,
+  UpdateAgentMemoryRequestSchema,
+} from './agents.openapi.js';
+
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * Mirrors the helper in `board.ts` / `wiki.ts` / `sessions.ts` so the wire
+ * shape of validation failures is identical across route groups.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
+}
 
 interface McpServerInput {
   command?: string;
@@ -17,57 +49,16 @@ interface McpServerInput {
   cwd?: string;
 }
 
-/** JSON booleans only — rejects strings/numbers so `Boolean("false")` is never applied. */
-function validateOptionalBrowserToolsEnabled(body: Record<string, unknown>):
-  | {
-      ok: true;
-    }
-  | {
-      ok: false;
-      error: string;
-    } {
-  const v = body.browserToolsEnabled;
-  if (v === undefined) return { ok: true };
-  if (v === true || v === false) return { ok: true };
-  return { ok: false, error: 'browserToolsEnabled must be a boolean' };
-}
-
-function validateBrowserDim(
-  body: Record<string, unknown>,
-  key: string,
-  min: number,
-  max: number,
-): { ok: true; value: number | 'delete' | undefined } | { ok: false; error: string } {
-  if (!Object.prototype.hasOwnProperty.call(body, key)) return { ok: true, value: undefined };
-  const v = body[key];
-  if (v === null) return { ok: true, value: 'delete' };
-  if (typeof v !== 'number' || !Number.isFinite(v)) {
-    return { ok: false, error: `${key} must be a finite number or null` };
-  }
-  const i = Math.floor(v);
-  if (i < min || i > max) {
-    return { ok: false, error: `${key} must be between ${min} and ${max}` };
-  }
-  return { ok: true, value: i };
-}
-
-function validateBrowserPageLoadTimeout(
-  body: Record<string, unknown>,
-): { ok: true; value: number | 'delete' | undefined } | { ok: false; error: string } {
-  const key = 'browserPageLoadTimeoutMs';
-  if (!Object.prototype.hasOwnProperty.call(body, key)) return { ok: true, value: undefined };
-  const v = body[key];
-  if (v === null) return { ok: true, value: 'delete' };
-  if (typeof v !== 'number' || !Number.isFinite(v)) {
-    return { ok: false, error: `${key} must be a finite number or null` };
-  }
-  const i = Math.floor(v);
-  if (i < 1000 || i > 120_000) {
-    return { ok: false, error: `${key} must be between 1000 and 120000` };
-  }
-  return { ok: true, value: i };
-}
-
+/**
+ * Apply a Zod-parsed browser-numeric dim to the agent record.
+ *
+ * `value` is the `'delete' | number | undefined` tristate used by the
+ * PATCH / POST handlers (translated from the schema's `number | null |
+ * undefined`):
+ *   - `undefined`  — key was omitted; preserve the existing value.
+ *   - `'delete'`   — caller sent `null`; remove the key from the record.
+ *   - `number`     — caller sent a numeric value; store it.
+ */
 function applyOptionalAgentNumeric(
   agent: Agent,
   key: 'browserViewportWidth' | 'browserViewportHeight' | 'browserPageLoadTimeoutMs',
@@ -92,16 +83,18 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   router.post('/api/agents/bulk-engine', (req: Request, res: Response) => {
-    const { engine, model } = req.body as { engine?: string; model?: string };
+    const parsed = parseBody(BulkEngineRequestSchema, req, res);
+    if (!parsed) return;
+    const { engine, model } = parsed;
     const engines = Object.keys(deps.config.engineValidModels);
-    if (!engine || !engines.includes(engine)) {
+    if (!engines.includes(engine)) {
       return res.status(400).json({
         error: `Invalid or missing engine. Must be one of: ${engines.join(', ')}`,
       });
     }
     const allowed = deps.config.engineValidModels[engine] || [];
     let resolved = defaultModelForEngine(engine);
-    if (model && typeof model === 'string' && allowed.includes(model)) {
+    if (model && allowed.includes(model)) {
       resolved = model;
     }
     let updated = 0;
@@ -147,15 +140,10 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const { agent } = found;
+
+    const parsed = parseBody(UpdateAgentRequestSchema, req, res);
+    if (!parsed) return;
     const body = req.body as Record<string, unknown>;
-    const btValid = validateOptionalBrowserToolsEnabled(body);
-    if (!btValid.ok) return res.status(400).json({ error: btValid.error });
-    const bw = validateBrowserDim(body, 'browserViewportWidth', 320, 3840);
-    if (!bw.ok) return res.status(400).json({ error: bw.error });
-    const bh = validateBrowserDim(body, 'browserViewportHeight', 240, 2160);
-    if (!bh.ok) return res.status(400).json({ error: bh.error });
-    const bto = validateBrowserPageLoadTimeout(body);
-    if (!bto.ok) return res.status(400).json({ error: bto.error });
 
     const allowed = [
       'name',
@@ -172,38 +160,57 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'delegationEnabled',
     ] as const;
     for (const key of allowed) {
-      if (body[key] !== undefined) (agent as Record<string, unknown>)[key] = body[key];
+      if ((parsed as Record<string, unknown>)[key] !== undefined) {
+        (agent as Record<string, unknown>)[key] = (parsed as Record<string, unknown>)[key];
+      }
     }
-    if (body.browserToolsEnabled !== undefined) {
-      agent.browserToolsEnabled = body.browserToolsEnabled as boolean;
+    if (parsed.browserToolsEnabled !== undefined) {
+      agent.browserToolsEnabled = parsed.browserToolsEnabled;
     }
-    applyOptionalAgentNumeric(agent, 'browserViewportWidth', bw.value);
-    applyOptionalAgentNumeric(agent, 'browserViewportHeight', bh.value);
-    applyOptionalAgentNumeric(agent, 'browserPageLoadTimeoutMs', bto.value);
+    // Zod schema yields `number | null | undefined` for the browser dims;
+    // applyOptionalAgentNumeric expects the older `'delete'` sentinel for
+    // explicit-null. Translate at the boundary so the persistence helper
+    // stays unchanged.
+    const translateDim = (
+      v: number | null | undefined,
+      keyPresent: boolean,
+    ): number | 'delete' | undefined => {
+      if (!keyPresent) return undefined;
+      if (v === null) return 'delete';
+      return Math.floor(v as number);
+    };
+    applyOptionalAgentNumeric(
+      agent,
+      'browserViewportWidth',
+      translateDim(
+        parsed.browserViewportWidth,
+        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
+      ),
+    );
+    applyOptionalAgentNumeric(
+      agent,
+      'browserViewportHeight',
+      translateDim(
+        parsed.browserViewportHeight,
+        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
+      ),
+    );
+    applyOptionalAgentNumeric(
+      agent,
+      'browserPageLoadTimeoutMs',
+      translateDim(
+        parsed.browserPageLoadTimeoutMs,
+        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
+      ),
+    );
     saveProjects();
     res.json(getEnrichedAgent(agent.id));
   });
 
   router.post('/api/agents', (req: Request, res: Response) => {
+    const parsed = parseBody(CreateAgentRequestSchema, req, res);
+    if (!parsed) return;
     const body = req.body as Record<string, unknown>;
-    const btValid = validateOptionalBrowserToolsEnabled(body);
-    if (!btValid.ok) return res.status(400).json({ error: btValid.error });
-    const bw = validateBrowserDim(
-      body as Record<string, unknown>,
-      'browserViewportWidth',
-      320,
-      3840,
-    );
-    if (!bw.ok) return res.status(400).json({ error: bw.error });
-    const bh = validateBrowserDim(
-      body as Record<string, unknown>,
-      'browserViewportHeight',
-      240,
-      2160,
-    );
-    if (!bh.ok) return res.status(400).json({ error: bh.error });
-    const bto = validateBrowserPageLoadTimeout(body as Record<string, unknown>);
-    if (!bto.ok) return res.status(400).json({ error: bto.error });
 
     const {
       id,
@@ -216,35 +223,69 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       heartbeat,
       role,
       browserToolsEnabled,
-    } = body;
-    if (!id || !/^[a-zA-Z0-9-]+$/.test(id as string)) {
-      return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
-    }
-    if (!projectId) {
-      return res.status(400).json({ error: 'projectId is required' });
-    }
-    const project = findProject(projectId as string);
+    } = parsed;
+    const project = findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (findAgent(id as string)) {
+    if (findAgent(id)) {
       return res.status(409).json({ error: 'Agent id already exists' });
     }
-    const agentEngine = (engine as string) || 'claude-code';
+    const agentEngine = engine || 'claude-code';
+    // The schema is partial — fields like `interval` / `prompt` on the
+    // heartbeat config are optional. Build a fully-populated record so
+    // downstream readers (heartbeat scheduler, settings UI) don't have to
+    // gate every field.
+    const heartbeatConfig: Agent['heartbeat'] = heartbeat
+      ? {
+          enabled: heartbeat.enabled ?? false,
+          interval: heartbeat.interval ?? '',
+          prompt: heartbeat.prompt ?? '',
+        }
+      : { enabled: false, interval: '', prompt: '' };
     const agent: Agent = {
-      id: id as string,
-      name: (name as string) || (id as string),
+      id,
+      name: name || id,
       engine: agentEngine,
-      model: (model as string) || defaultModelForEngine(agentEngine),
-      systemPrompt: (systemPrompt as string) || '',
-      color: (color as string) || project.color || '#6b7280',
-      heartbeat: (heartbeat as Agent['heartbeat']) || { enabled: false, interval: '', prompt: '' },
+      model: model || defaultModelForEngine(agentEngine),
+      systemPrompt: systemPrompt || '',
+      color: color || project.color || '#6b7280',
+      heartbeat: heartbeatConfig,
     };
-    if (role) agent.role = role as string;
+    if (role) agent.role = role;
     if (browserToolsEnabled !== undefined) {
-      agent.browserToolsEnabled = browserToolsEnabled as boolean;
+      agent.browserToolsEnabled = browserToolsEnabled;
     }
-    applyOptionalAgentNumeric(agent, 'browserViewportWidth', bw.value);
-    applyOptionalAgentNumeric(agent, 'browserViewportHeight', bh.value);
-    applyOptionalAgentNumeric(agent, 'browserPageLoadTimeoutMs', bto.value);
+    const translateDim = (
+      v: number | null | undefined,
+      keyPresent: boolean,
+    ): number | 'delete' | undefined => {
+      if (!keyPresent) return undefined;
+      if (v === null) return 'delete';
+      return Math.floor(v as number);
+    };
+    applyOptionalAgentNumeric(
+      agent,
+      'browserViewportWidth',
+      translateDim(
+        parsed.browserViewportWidth,
+        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
+      ),
+    );
+    applyOptionalAgentNumeric(
+      agent,
+      'browserViewportHeight',
+      translateDim(
+        parsed.browserViewportHeight,
+        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
+      ),
+    );
+    applyOptionalAgentNumeric(
+      agent,
+      'browserPageLoadTimeoutMs',
+      translateDim(
+        parsed.browserPageLoadTimeoutMs,
+        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
+      ),
+    );
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
     saveProjects();
@@ -540,11 +581,10 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     if (!found.project.ahw) return res.status(400).json({ error: 'No workspace configured' });
 
-    const { content } = req.body as { content: unknown };
-    if (typeof content !== 'string')
-      return res.status(400).json({ error: 'content must be a string' });
+    const parsed = parseBody(UpdateAgentMemoryRequestSchema, req, res);
+    if (!parsed) return;
 
-    updateMemory(found.project.ahw, content);
+    updateMemory(found.project.ahw, parsed.content);
     res.json({ ok: true });
   });
 

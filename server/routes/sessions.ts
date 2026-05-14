@@ -1,7 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
+import type { z } from 'zod';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
+import {
+  ToggleEnabledRequestSchema,
+  PutSessionEngineRequestSchema,
+  PutSessionModelRequestSchema,
+  RewindRequestSchema,
+  PatchCheckpointRequestSchema,
+} from './sessions.openapi.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { getDb } from '../db.js';
 import { manualCommitAndPR } from '../auto-git.js';
@@ -51,6 +59,31 @@ function safeParse(s: string): Record<string, unknown> {
   } catch {
     return { type: 'unknown', text: s };
   }
+}
+
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * Mirrors the helper in `agents.ts` / `board.ts` / `wiki.ts` so the wire
+ * shape of validation failures is identical across route groups.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
 }
 
 function closeBrowserBestEffort(sessionId: string): void {
@@ -643,12 +676,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/sessions/:sessionId/engine', (req: Request, res: Response) => {
-    const { engine } = req.body;
-    if (!engine || !['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'].includes(engine)) {
-      return res.status(400).json({
-        error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, or codex-cli',
-      });
-    }
+    const parsed = parseBody(PutSessionEngineRequestSchema, req, res);
+    if (!parsed) return;
+    const { engine } = parsed;
     // Load the session BEFORE updating the engine so we can check whether
     // the current model is still valid for the new engine. If not, reset
     // the model to the engine's default. Without this step, the session
@@ -671,10 +701,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/sessions/:sessionId/model', (req: Request, res: Response) => {
-    const { model } = req.body;
+    const parsed = parseBody(PutSessionModelRequestSchema, req, res);
+    if (!parsed) return;
+    const { model } = parsed;
     const ALL_VALID_MODELS = config.allValidModels;
     const ENGINE_VALID_MODELS = config.engineValidModels;
-    if (!model || !ALL_VALID_MODELS.includes(model)) {
+    if (!ALL_VALID_MODELS.includes(model)) {
       return res
         .status(400)
         .json({ error: `Invalid model. Must be one of: ${ALL_VALID_MODELS.join(', ')}` });
@@ -694,10 +726,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/sessions/:sessionId/worktree', (req: Request, res: Response) => {
-    const { enabled } = req.body;
-    if (typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: 'enabled must be a boolean' });
-    }
+    const parsed = parseBody(ToggleEnabledRequestSchema, req, res);
+    if (!parsed) return;
+    const { enabled } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     const agentLookup = findAgent(session.agent_id);
@@ -712,10 +743,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/sessions/:sessionId/ask-mode', (req: Request, res: Response) => {
-    const { enabled } = req.body;
-    if (typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: 'enabled must be a boolean' });
-    }
+    const parsed = parseBody(ToggleEnabledRequestSchema, req, res);
+    if (!parsed) return;
+    const { enabled } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionAskMode.run(enabled ? 1 : 0, req.params.sessionId);
@@ -724,10 +754,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/sessions/:sessionId/react-loop', (req: Request, res: Response) => {
-    const { enabled } = req.body;
-    if (typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: 'enabled must be a boolean' });
-    }
+    const parsed = parseBody(ToggleEnabledRequestSchema, req, res);
+    if (!parsed) return;
+    const { enabled } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
@@ -965,8 +994,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/sessions/:sessionId/rewind', (req: Request, res: Response) => {
-    const { uuid } = req.body || {};
-    if (!uuid) return res.status(400).json({ error: 'uuid is required' });
+    const parsed = parseBody(RewindRequestSchema, req, res);
+    if (!parsed) return;
+    const { uuid } = parsed;
 
     try {
       const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
@@ -1080,8 +1110,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.patch('/api/sessions/:sessionId/checkpoints/:uuid', (req: Request, res: Response) => {
-    const { label } = req.body || {};
-    if (label === undefined) return res.status(400).json({ error: 'label is required' });
+    const parsed = parseBody(PatchCheckpointRequestSchema, req, res);
+    if (!parsed) return;
+    const { label } = parsed;
 
     try {
       const checkpoint = stmts.getCheckpointByUuid.get(req.params.uuid) as
