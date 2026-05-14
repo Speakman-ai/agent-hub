@@ -647,17 +647,46 @@ components:
         - updated_by
         - created_at
         - updated_at
-      description: A wiki page row.
+      description: A wiki page row (includes full content).
+    WikiPageListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        category:
+          type: string
+        updated_by:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - title
+        - slug
+        - category
+        - updated_by
+        - created_at
+        - updated_at
+      description: A wiki page list item (content omitted for payload size). Returned by `GET /wiki` bare and `?category=` paths.
     WikiSearchHit:
       allOf:
-        - $ref: "#/components/schemas/WikiPage"
+        - $ref: "#/components/schemas/WikiPageListItem"
         - type: object
           properties:
             snippet:
               type: string
             rank:
               type: number
-      description: A wiki page returned from the legacy FTS5 search path (`GET /wiki?q=`). Adds the highlighted `snippet` and bm25-ish `rank`.
+      description: A wiki page returned from the legacy FTS5 search path (`GET /wiki?q=`). Adds the highlighted `snippet` and bm25-ish `rank`. Content is not included.
     WikiHybridSearchResult:
       type: object
       properties:
@@ -4031,7 +4060,7 @@ paths:
       tags:
         - Wiki
       summary: List wiki pages (optionally filtered or FTS-searched)
-      description: When `?q=` is set, returns FTS5 hits in the legacy shape (page row + `snippet` + `rank`). When `?category=` is set, returns pages in that category. Otherwise returns every page in the project (content omitted for list payload size). `limit` only applies to the `?q=` path; the bare and category responses are unpaginated.
+      description: When `?q=` is set, returns FTS5 hits (`WikiSearchHit[]` — list-item fields + `snippet` + `rank`, no `content`). When `?category=` is set, returns pages in that category (`WikiPageListItem[]`, no `content`). Otherwise returns every page in the project (`WikiPageListItem[]`, no `content`). `limit` only applies to the `?q=` path; the bare and category responses are unpaginated. Invalid `?limit=` values (non-numeric) and other schema violations return 400.
       parameters:
         - schema:
             type: string
@@ -4059,13 +4088,19 @@ paths:
           in: query
       responses:
         "200":
-          description: Wiki pages (shape depends on the query params).
+          description: Wiki pages (shape depends on the query params — see description).
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/WikiSearchHit"
+                  $ref: "#/components/schemas/WikiPageListItem"
+        "400":
+          description: Query parameter validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
         "404":
           description: Project not found.
           content:
@@ -4132,7 +4167,7 @@ paths:
       tags:
         - Wiki
       summary: Search wiki pages (hybrid / semantic / fts)
-      description: Defaults to hybrid mode. Falls back to pure FTS when the Gemini API key is missing or the query embedding fails. Returns an empty `results` array for blank queries so the caller can branch on configuration without a separate health probe.
+      description: Defaults to hybrid mode. Falls back to pure FTS when the Gemini API key is missing or the query embedding fails. Returns an empty `results` array for blank queries so the caller can branch on configuration without a separate health probe. Invalid `?limit=` values (non-numeric) and unknown `?mode=` values return 400.
       parameters:
         - schema:
             type: string
@@ -4169,6 +4204,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WikiSearchResponse"
+        "400":
+          description: Query parameter validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
         "404":
           description: Project not found.
           content:
