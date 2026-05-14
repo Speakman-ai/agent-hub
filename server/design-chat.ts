@@ -304,12 +304,12 @@ export async function handleDesignChat(
     let spawnErrored = false;
     let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
 
-    const spawnEnv = {
-      ...buildSpawnEnv(config),
-      AGENT_HUB_SESSION_ID: `design:${designId}`,
-    } as NodeJS.ProcessEnv;
     const designOwnerId =
       getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+    const spawnEnv = {
+      ...buildSpawnEnv(config, { userId: designOwnerId }),
+      AGENT_HUB_SESSION_ID: `design:${designId}`,
+    } as NodeJS.ProcessEnv;
     const linkedProject = design.linkedProjects?.[0];
     if (linkedProject && designOwnerId) {
       mergeSkillCredentialSpawnEnv(spawnEnv, {

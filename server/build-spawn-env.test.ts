@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { mkdtempSync, statSync, existsSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } from './config.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
+import { perUserHomePath } from './per-user-home.js';
 
 describe('buildSpawnEnv — PATH propagation', () => {
   beforeEach(() => {
@@ -327,6 +331,63 @@ describe('buildSpawnEnv — AGENT_HUB_API_KEY injection', () => {
       if (prev === undefined) delete process.env.AGENT_HUB_API_KEY;
       else process.env.AGENT_HUB_API_KEY = prev;
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-user HOME pin — Cursor/Codex/Gemini CLI caches under `.cursor`,
+// `.codex`, etc. are isolated per Hub user when the spawn carries a
+// userId. See server/per-user-home.ts for the directory contract and
+// the "Per-user browser-button auth for Cursor & Codex" card.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildSpawnEnv — per-user HOME pin', () => {
+  let tmpDataDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-perusrhome-'));
+  });
+
+  it('preserves the host HOME when no userId is supplied (legacy global-apiKey path)', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir });
+    expect(env.HOME).toBe(process.env.HOME);
+  });
+
+  it('redirects HOME to <dataDir>/per-user-creds/<userId>/home when userId is set', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'user-abc' });
+    expect(env.HOME).toBe(perUserHomePath('user-abc', tmpDataDir));
+    expect(env.HOME).toMatch(/\/per-user-creds\/user-abc\/home$/);
+  });
+
+  it('creates the per-user HOME directory tree on demand', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'user-create' });
+    expect(existsSync(env.HOME as string)).toBe(true);
+  });
+
+  it('per-user HOME is created with mode 0700 (no other user can read CLI tokens)', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'user-perms' });
+    const mode = statSync(env.HOME as string).mode & 0o777;
+    expect(mode).toBe(0o700);
+  });
+
+  it('treats whitespace-only userId as "not provided" (falls back to host HOME)', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '   ' });
+    expect(env.HOME).toBe(process.env.HOME);
+  });
+
+  it('different userIds get different HOME paths', () => {
+    const envA = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'user-A' });
+    const envB = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'user-B' });
+    expect(envA.HOME).not.toBe(envB.HOME);
+    expect(envA.HOME).toMatch(/user-A\/home$/);
+    expect(envB.HOME).toMatch(/user-B\/home$/);
+  });
+
+  it('rejects userId containing path-traversal segments by falling back to host HOME', () => {
+    // The per-user-home module throws on bad ids; buildSpawnEnv swallows the
+    // throw so a malformed id can never block a spawn.
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '../escape' });
+    expect(env.HOME).toBe(process.env.HOME);
   });
 });
 

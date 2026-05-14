@@ -2375,7 +2375,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
           );
         }
-        const base = buildSpawnEnv(config, { userOverride });
+        const base = buildSpawnEnv(config, { userOverride, userId: ownerId });
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
         // We always perform the lookup so non-reviewer spawns get the
         // human-identity path; the reviewer policy in

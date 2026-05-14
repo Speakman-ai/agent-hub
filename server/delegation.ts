@@ -570,8 +570,8 @@ export async function handleDelegation(
 
           const timeout = cfg.conferenceTimeoutMs || 600000;
 
-          const spawnEnv = buildSpawnEnv(cfg);
           const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+          const spawnEnv = buildSpawnEnv(cfg, { userId: credOwnerId });
           mergeSkillCredentialSpawnEnv(spawnEnv, {
             ownerId: credOwnerId,
             agentId: subAgent.id,
@@ -934,8 +934,8 @@ export async function synthesizeResults(
       let stdout = '';
       let stderr = '';
 
-      const synthEnv = buildSpawnEnv(cfg);
       const synthOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+      const synthEnv = buildSpawnEnv(cfg, { userId: synthOwnerId });
       mergeSkillCredentialSpawnEnv(synthEnv, {
         ownerId: synthOwnerId,
         agentId: enrichedAgent.id,

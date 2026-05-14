@@ -362,9 +362,9 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
         let errorOutput = '';
         const timeout = config.conferenceTimeoutMs;
 
-        const roomEnv = { ...buildSpawnEnv(config) };
         const roomOwnerId =
           getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+        const roomEnv = { ...buildSpawnEnv(config, { userId: roomOwnerId }) };
         if (room.project_id && roomOwnerId) {
           const proj = getProjects().find((p) => p.id === room.project_id);
           if (proj) {

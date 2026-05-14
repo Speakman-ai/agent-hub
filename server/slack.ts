@@ -248,8 +248,8 @@ function runAgent(
     let output = '';
     let errorOutput = '';
 
-    const spawnEnv = { ...buildSpawnEnv(config) };
     const slackOwnerId = getOrgOwnerUserId();
+    const spawnEnv = { ...buildSpawnEnv(config, { userId: slackOwnerId }) };
     if (slackAgent && slackOwnerId) {
       const proj = getProjects().find((p) => p.id === slackAgent.projectId);
       if (proj) {
