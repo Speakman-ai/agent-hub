@@ -40,11 +40,6 @@ import {
   setBroadcast,
   runClaude,
 } from './heartbeat.js';
-import {
-  setChatDispatcher as setWatchdogChatDispatcher,
-  setBroadcast as setWatchdogBroadcast,
-  startWatchdogCron,
-} from './session-watchdog.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { appendDailyNote } from './memory.js';
@@ -120,7 +115,6 @@ import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
 import createPrResolveRoutes from './routes/pr-resolve.js';
 import createPrNudgeReviewerRoutes from './routes/pr-nudge-reviewer.js';
-import createWatchdogRoutes from './routes/watchdog.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
@@ -728,7 +722,6 @@ app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
 app.use(createPrNudgeReviewerRoutes(routeDeps));
-app.use(createWatchdogRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(
   createAuthRoutes({
@@ -1121,23 +1114,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       broadcast(info);
     });
     setBroadcast(broadcast);
-
-    // Server-side stall detector. See server/session-watchdog.ts. Wires
-    // the chat dispatcher first so nudges (incl. the manual PR Nudge
-    // button) reuse the existing handleChat pipeline.
-    setWatchdogChatDispatcher(async (msg) => {
-      if (!handleChat) return;
-      await handleChat(null, {
-        type: 'chat',
-        agentId: msg.agentId,
-        sessionId: msg.sessionId,
-        content: msg.content,
-      } as unknown as ChatMessage);
-    });
-    setWatchdogBroadcast(broadcast);
-    if (process.env.NODE_ENV !== 'test') {
-      startWatchdogCron();
-    }
 
     startSlack(allAgents(), stmts!).catch((err: Error) => {
       console.error('Failed to start Slack bots:', err.message);
