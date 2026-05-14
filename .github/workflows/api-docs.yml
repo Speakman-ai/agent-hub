@@ -92,8 +92,17 @@ jobs:
       # file"), and the emitted spec ends up missing ~half of the
       # registered paths/schemas. Mirrors ci.yml's "Rebuild native
       # modules" step.
-      - name: Rebuild better-sqlite3 native binding
+      #
+      # NOTE: we have to rebuild in BOTH locations. `server/package.json`
+      # declares `better-sqlite3` separately from root, so it gets its own
+      # `server/node_modules/better-sqlite3` tree that npm won't dedupe to
+      # the root copy. The route modules resolve from `server/` first, so
+      # a root-only rebuild leaves them looking at an empty `build/` dir.
+      - name: Rebuild better-sqlite3 native binding (root)
         run: npm rebuild better-sqlite3
+
+      - name: Rebuild better-sqlite3 native binding (server)
+        run: cd server && npm rebuild better-sqlite3
 
       - name: Run filter unit tests
         run: cd server && npx vitest run openapi-filter.test.ts openapi-coverage.test.ts openapi/registry.test.ts
