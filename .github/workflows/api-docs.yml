@@ -93,7 +93,7 @@ jobs:
       # registered paths/schemas. Mirrors ci.yml's "Rebuild native
       # modules" step.
       - name: Rebuild better-sqlite3 native binding
-        run: npm rebuild better-sqlite3
+        run: cd server && npm rebuild better-sqlite3
 
       - name: Run filter unit tests
         run: cd server && npx vitest run openapi-filter.test.ts openapi-coverage.test.ts openapi/registry.test.ts
