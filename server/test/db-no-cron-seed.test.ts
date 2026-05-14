@@ -11,6 +11,11 @@ import { tmpdir } from 'os';
 
 var _cronSeedTmp = '';
 
+// Redirect `dataDir` into a per-test tmp so we get a virgin SQLite file and
+// don't collide with the developer's real ~/.agent-hub database. Nothing
+// else in `config` needs to be overridden — the old `defaultCwd` Proxy trap
+// was load-bearing only while db.ts seeded crons based on it, and was
+// dropped along with the seed.
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
   const base = actual.default;
@@ -18,7 +23,6 @@ vi.mock('../config.js', async () => {
     default: new Proxy(base, {
       get(t, prop, recv) {
         if (prop === 'dataDir') return _cronSeedTmp || Reflect.get(t, 'dataDir', recv);
-        if (prop === 'defaultCwd') return undefined as never;
         return Reflect.get(t, prop, recv);
       },
     }),
