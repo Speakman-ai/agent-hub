@@ -270,12 +270,48 @@ export function searchPages(projectId: string, query: string, limit = 10): WikiS
   }
 }
 
+/**
+ * Cap on how many wiki page titles we paste into the enriched system prompt.
+ *
+ * Before this cap, `getWikiContext` listed every page (148+ on mature
+ * projects) every turn, costing 12 to 20 KB of metadata for a list the
+ * agent rarely scans linearly. The `wiki_search` skill (and the
+ * `<agenthub:react>` `wiki` action) cover the long tail on demand, so the
+ * prompt only needs the most-recent slice to keep "what's new" awareness.
+ *
+ * Exported so tests pin the constant.
+ */
+export const WIKI_CONTEXT_PAGE_CAP = 25;
+
+type WikiContextPage = Pick<WikiPageRow, 'title' | 'category' | 'updated_at'>;
+
+/**
+ * Pure formatter for the wiki context block. Split out from
+ * `getWikiContext` so it can be unit-tested without booting the SQLite
+ * statements registry.
+ *
+ * Pages are expected to arrive sorted most-recent-first (matches
+ * `getWikiPages`). When the list exceeds `cap`, only the top `cap`
+ * entries are rendered and a single trailing line points at
+ * `wiki_search` for the remainder.
+ */
+export function formatWikiContext(pages: WikiContextPage[], cap = WIKI_CONTEXT_PAGE_CAP): string {
+  if (pages.length === 0) return '';
+  const total = pages.length;
+  const safeCap = Math.max(0, Math.floor(cap));
+  const visible = safeCap > 0 ? pages.slice(0, safeCap) : [];
+  const lines = visible.map((p) => `- **${p.title}** (${p.category}) — updated ${p.updated_at}`);
+  const hiddenCount = total - visible.length;
+  const header =
+    hiddenCount > 0
+      ? `## Project Wiki (${total} pages; ${visible.length} most-recent shown)\nUse the \`wiki_search\` skill (or the \`<agenthub:react>\` \`wiki\` action) to retrieve any of the remaining ${hiddenCount} pages on demand.`
+      : `## Project Wiki (${total} pages)\nUse the \`wiki_search\` skill to query relevant pages.`;
+  return lines.length > 0 ? `${header}\n${lines.join('\n')}` : header;
+}
+
 export function getWikiContext(projectId: string): string {
   const pages = listPages(projectId);
-  if (pages.length === 0) return '';
-
-  const lines = pages.map((p) => `- **${p.title}** (${p.category}) — updated ${p.updated_at}`);
-  return `## Project Wiki (${pages.length} pages)\nUse the \`wiki_search\` skill to query relevant pages.\n${lines.join('\n')}`;
+  return formatWikiContext(pages);
 }
 
 export { CATEGORIES };

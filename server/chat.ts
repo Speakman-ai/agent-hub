@@ -847,7 +847,44 @@ A pull request is already open for this worktree's branch: ${options.branchPrUrl
 Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Push new commits to the existing branch; the server will route them to the existing PR. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
   }
 
+  logEnrichedPromptSize(prompt, agent.id, isFirstMessage, options.sessionId ?? null);
   return prompt;
+}
+
+/**
+ * Total enriched-prompt byte size observability.
+ *
+ * The audit (May 14 2026) found that the only existing signal for prompt
+ * bloat fires at the argv soft cap (100 KB, `SAFE_ARG_STRLEN_BYTES`), which
+ * means anything between 0 and 100 KB was invisible. This log emits the
+ * final byte size once per build so growth is graphable below the
+ * tripwire. `console.log` is intentional (matches the rest of chat.ts's
+ * structured logs); suppressed under vitest so test runs stay clean.
+ *
+ * Visible for tests via `__resetEnrichedPromptSizeForTest` and the
+ * `PROMPT_SIZE_LOG_FORCE` env var.
+ */
+const ENRICHED_PROMPT_SIZE_LOG_PREFIX = '[enriched-prompt]';
+
+function shouldEmitEnrichedPromptSizeLog(): boolean {
+  if (process.env.PROMPT_SIZE_LOG_FORCE === '1') return true;
+  return process.env.NODE_ENV !== 'test';
+}
+
+export function logEnrichedPromptSize(
+  prompt: string,
+  agentId: string,
+  isFirstMessage: boolean,
+  sessionId: string | null,
+): number {
+  const bytes = Buffer.byteLength(prompt, 'utf8');
+  if (shouldEmitEnrichedPromptSizeLog()) {
+    const sessionSuffix = sessionId ? ` session=${sessionId}` : '';
+    console.log(
+      `${ENRICHED_PROMPT_SIZE_LOG_PREFIX} bytes=${bytes} agent=${agentId} firstMessage=${isFirstMessage}${sessionSuffix}`,
+    );
+  }
+  return bytes;
 }
 
 /**
