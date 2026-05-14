@@ -147,18 +147,18 @@ describe('Projects', () => {
       expect(res.body.githubRepo).toBeUndefined();
     });
 
-    it('scaffolds a workflow project with board, single dev agent, conference room, and context files', async () => {
+    it('scaffolds a workflow project with board, primary agent + docs + intake, conference room, and context files', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
       //   - kanban board with the 4 default columns (To Do → Done)
-      //   - exactly ONE dev agent (flat-agent model — sub-agents deprecated)
-      //   - the project's conference room (containing the seeded dev agent)
+      //   - the primary "<Project> Agent" (role: 'dev', id: '<id>-agent')
+      //   - a Docs agent (role: 'docs') — seeded for every project
+      //   - a Ticket Intake agent (role: 'intake') — seeded for every project
+      //   - the project's conference room (containing the seeded agents)
       //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
-      // and explicitly NOT seed an Intake / Docs / Reviewer agent
-      // (deprecated as auto-seeds — users add additional dev agents on demand).
-      // ID combines `Date.now()` + a per-test counter so the test stays
-      // collision-free even under file-parallel vitest execution.
+      // and explicitly NOT seed a Reviewer agent — Reviewer is GitHub-only
+      // (`ensureReviewerAgents()` gates on `githubRepo` / webhook configs).
       const projectId = `wf-scaffold-${Date.now()}-${++_uniqueCounter}`;
       const res = await request
         .post('/api/projects')
@@ -171,29 +171,41 @@ describe('Projects', () => {
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
       expect(columnNames).toEqual(['To Do', 'In Progress', 'Review', 'Done']);
 
-      // Project now carries a single seeded dev agent — sub-agents
-      // (Intake / Docs / Reviewer) are no longer auto-seeded.
+      // Project carries the primary "<Project> Agent" plus Docs + Intake.
+      // Reviewer is deliberately absent (no `githubRepo` on workflow projects).
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
       const agents =
-        (proj.body.agents as Array<{ id: string; role?: string; engine?: string }>) || [];
+        (proj.body.agents as Array<{
+          id: string;
+          name?: string;
+          role?: string;
+          engine?: string;
+        }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
-      expect(agents).toHaveLength(1);
       expect(roles).toContain('dev');
+      expect(roles).toContain('docs');
+      expect(roles).toContain('intake');
       expect(roles).not.toContain('lead');
-      expect(roles).not.toContain('intake');
-      expect(roles).not.toContain('docs');
       expect(roles).not.toContain('reviewer');
-      expect(agents.some((a) => a.id === `${projectId}-dev`)).toBe(true);
+      // Workflow projects: the primary agent is named "<Project> Agent" with
+      // id `<projectId>-agent` (not `-dev`) — workflow workspaces have no
+      // git repo, so the "Dev" label is reserved for coding projects.
+      const primary = agents.find((a) => a.id === `${projectId}-agent`);
+      expect(primary).toBeTruthy();
+      expect(primary?.role).toBe('dev');
+      expect(primary?.name).toBe('WF Scaffold Agent');
       // Default engine when no override is supplied = claude-code.
-      const dev = agents.find((a) => a.id === `${projectId}-dev`);
-      expect(dev?.engine).toBe('claude-code');
+      expect(primary?.engine).toBe('claude-code');
 
-      // Conference room exists for the workspace and contains the dev agent.
+      // Conference room exists for the workspace and contains the primary
+      // agent (Docs/Intake are auto-added to the room by ensureProjectRoom's
+      // subsequent refresh logic when invoked — at minimum the primary
+      // anchor must be present).
       const room = await request.get(`/api/projects/${projectId}/room`).expect(200);
       expect(room.body).toBeTruthy();
       expect(room.body.project_id).toBe(projectId);
       const roomAgentIds = (room.body.agents as Array<{ id: string }>).map((a) => a.id);
-      expect(roomAgentIds).toContain(`${projectId}-dev`);
+      expect(roomAgentIds).toContain(`${projectId}-agent`);
 
       // Top-level context files (`ensureContextFiles`) are seeded immediately,
       // not deferred to the next server restart.
@@ -205,9 +217,9 @@ describe('Projects', () => {
       }
     });
 
-    it('honours an optional `engine` override on the seeded workflow dev agent', async () => {
+    it('honours an optional `engine` override on the seeded workflow primary agent', async () => {
       // Cursor-only installs (or any non-Claude default) should be able to
-      // pass `engine: 'cursor-agent'` on POST and have the seeded dev
+      // pass `engine: 'cursor-agent'` on POST and have the seeded primary
       // agent come up with that engine — no follow-up PATCH required.
       const projectId = `wf-engine-${Date.now()}-${++_uniqueCounter}`;
       await request
@@ -221,13 +233,13 @@ describe('Projects', () => {
         })
         .expect(201);
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
-      const dev = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
-        (a) => a.id === `${projectId}-dev`,
+      const primary = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-agent`,
       );
-      expect(dev?.engine).toBe('cursor-agent');
+      expect(primary?.engine).toBe('cursor-agent');
     });
 
-    it('honours `engine: codex-cli` on the seeded workflow dev agent', async () => {
+    it('honours `engine: codex-cli` on the seeded workflow primary agent', async () => {
       // Validates that 'codex-cli' (the canonical identifier used throughout
       // the server) is accepted — a typo in VALID_ENGINES ('codex') would
       // reject this with a 400 even though the caller is correct.
@@ -243,10 +255,10 @@ describe('Projects', () => {
         })
         .expect(201);
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
-      const dev = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
-        (a) => a.id === `${projectId}-dev`,
+      const primary = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-agent`,
       );
-      expect(dev?.engine).toBe('codex-cli');
+      expect(primary?.engine).toBe('codex-cli');
     });
 
     it('rejects an invalid `engine` value with 400', async () => {
@@ -341,6 +353,82 @@ describe('Projects', () => {
         .expect(201);
       expect(res.body.githubRepo).toBeUndefined();
       expect(res.body.repoUrl).toBeUndefined();
+    });
+  });
+
+  describe('POST /api/projects/onboard — role-specialist seeding', () => {
+    // The onboard route owns dev-mode scaffolding (analyzed roster + GitHub
+    // wiring). It must seed Docs + Intake for every project and a Reviewer
+    // for projects with a `githubRepo` set. Reviewer stays out of non-GitHub
+    // onboards.
+    it('seeds Docs + Intake on any onboarded project, and Reviewer when githubRepo is set', async () => {
+      const projectId = `onboard-gh-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects/onboard')
+        .send({
+          project: {
+            id: projectId,
+            name: 'Onboard GH',
+            cwd: '/tmp',
+            githubRepo: { owner: 'octocat', repo: 'hello-world' },
+          },
+          agents: [
+            {
+              id: `${projectId}-dev`,
+              name: 'Onboard GH Dev',
+              role: 'dev',
+              engine: 'claude-code',
+              systemPrompt: 'You are the dev agent.',
+            },
+          ],
+          contextFiles: {},
+        })
+        .expect(201);
+
+      const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      const agents =
+        (proj.body.agents as Array<{ id: string; role?: string; name?: string }>) || [];
+      const roles = agents.map((a) => a.role).filter(Boolean);
+      expect(roles).toContain('dev');
+      expect(roles).toContain('docs');
+      expect(roles).toContain('intake');
+      expect(roles).toContain('reviewer');
+      expect(agents.some((a) => a.id === `${projectId}-docs`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-reviewer`)).toBe(true);
+    });
+
+    it('seeds Docs + Intake but NOT Reviewer when onboarded without a GitHub repo', async () => {
+      const projectId = `onboard-nogh-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects/onboard')
+        .send({
+          project: {
+            id: projectId,
+            name: 'Onboard NoGH',
+            cwd: '/tmp',
+          },
+          agents: [
+            {
+              id: `${projectId}-dev`,
+              name: 'Onboard NoGH Dev',
+              role: 'dev',
+              engine: 'claude-code',
+              systemPrompt: 'You are the dev agent.',
+            },
+          ],
+          contextFiles: {},
+        })
+        .expect(201);
+
+      const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      const agents = (proj.body.agents as Array<{ id: string; role?: string }>) || [];
+      const roles = agents.map((a) => a.role).filter(Boolean);
+      expect(roles).toContain('dev');
+      expect(roles).toContain('docs');
+      expect(roles).toContain('intake');
+      expect(roles).not.toContain('reviewer');
+      expect(agents.some((a) => a.id === `${projectId}-reviewer`)).toBe(false);
     });
   });
 
