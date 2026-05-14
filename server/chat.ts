@@ -210,6 +210,15 @@ interface BuildEnrichedPromptOptions {
   branchPrUrl?: string | null;
   /** Configured base branch for the PR (from card.pr_base_branch). Optional. */
   branchPrBase?: string | null;
+  /**
+   * True when this session is already linked to a kanban card (via
+   * `kanban_cards.session_id`). Suppresses the "create a kanban card"
+   * instructions in the Development Lifecycle, Kanban Self-Reporting, and
+   * Bias to Action sections — picking up card-spawned work shouldn't file a
+   * duplicate card. The agent is instead told to move its existing linked
+   * card through the column lifecycle.
+   */
+  sessionHasLinkedCard?: boolean;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -610,9 +619,12 @@ The host executes actions, appends a compact observation + loaded context, and m
 After significant work, update the wiki to preserve knowledge. Search first (\`GET /api/projects/${projectId}/wiki?q=...\`), update existing pages rather than duplicating. Create via \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy}\`. Update via \`PUT /api/projects/${projectId}/wiki/:slug\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Focus on decisions, patterns, and knowledge that would be lost when the session ends.`;
 
         if (projectMode !== 'workflow') {
+          const linkedCardLine = options.sessionHasLinkedCard
+            ? `**This session is already linked to a kanban card** (the card whose assignment spawned you). Do NOT create another card for this task — pick up the linked card, move it through the column lifecycle (To Do → In Progress → Review → Done), and self-report progress via comments on that card. Only create *new* cards for genuinely separate follow-up work you discover along the way.`
+            : `Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
+When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).`;
           prompt += `\n\n## Kanban Board — Task Self-Reporting
-Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
-When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).
+${linkedCardLine}
 
 ### Auto-closing a card as duplicate / already-done
 If you pick up a card and discover the work is redundant — either covered by an earlier ticket or already shipped — don't just leave the card parked. End your turn with a fenced block like:
@@ -658,14 +670,17 @@ The server moves the session's linked card to Done and appends an explanatory co
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
     if (isGitHubConnected && projectMode !== 'workflow') {
-      prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
-This project is connected to GitHub. Follow this lifecycle for changes:
-
-1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`. Create a card with a **concise title** (under 60 chars, summarizing the problem) and a description that includes:
+      const lifecycleStep1 = options.sessionHasLinkedCard
+        ? `1. **Kanban Card**: Your session is **already linked to a card** — do NOT create a new one. Move that card to "In Progress" if it isn't already, and treat its acceptance criteria as the contract for this work.`
+        : `1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`. Create a card with a **concise title** (under 60 chars, summarizing the problem) and a description that includes:
    - **Problem**: 1-2 sentences on what's wrong or what's needed
    - **Acceptance Criteria**: Bulleted checklist of conditions that must be met for this to be complete
    Include \`session_id: "$AGENT_HUB_SESSION_ID"\` when creating the card — this links it to your session and **auto-renames the sidebar** to the card title.
-   Move to "In Progress" when you begin.
+   Move to "In Progress" when you begin.`;
+      prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
+This project is connected to GitHub. Follow this lifecycle for changes:
+
+${lifecycleStep1}
 2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
@@ -709,6 +724,16 @@ When a user asks a **research or investigation question** about the system (how 
 
 Follow-up **shipping** work can be tracked the way this project prefers; research questions themselves stay in the chat.`;
     } else {
+      const biasToActionSteps = options.sessionHasLinkedCard
+        ? `**Instead, just do the work:**
+1. Move your **already-linked** kanban card to In Progress (do NOT create a new card — this session is already tied to one).
+2. Implement the change on a feature branch.
+3. Commit. The server handles push + PR creation.`
+        : `**Instead, just do the work:**
+1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
+2. Move it to In Progress.
+3. Implement the change on a feature branch.
+4. Commit. The server handles push + PR creation.`;
       prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
 When a user describes a problem, feature, or change, **do not ask permission to create a kanban card, open a PR, or start implementing.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) exists precisely so that you can act now and be corrected cheaply later.
 
@@ -718,11 +743,7 @@ When a user describes a problem, feature, or change, **do not ask permission to 
 - "Want me to open a PR?"
 - "Should I add a test for this?"
 
-**Instead, just do the work:**
-1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
-2. Move it to In Progress.
-3. Implement the change on a feature branch.
-4. Commit. The server handles push + PR creation.
+${biasToActionSteps}
 
 **When to actually ask first** (rare — use \`agenthub:ask\` picker or prose):
 - The request is genuinely ambiguous and multiple reasonable interpretations would produce very different work (e.g. "refactor this" with no direction).
@@ -1655,6 +1676,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: linkedCardForPr?.pr_url ?? null,
           branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
+          sessionHasLinkedCard: !!linkedCardForPr,
           _getEnrichedAgent: getEnrichedAgent,
         },
       );
