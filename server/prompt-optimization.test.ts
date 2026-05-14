@@ -219,6 +219,42 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('auto-renames the sidebar');
   });
 
+  // Regression: when a session is spawned from a kanban-card assignment,
+  // `kanban_cards.session_id` already links the card. The prompt builder
+  // must not instruct the agent to file *another* card — that produces
+  // duplicate cards and breaks the auto-link/auto-PR/auto-Done flow.
+  it('suppresses "create a card" instructions when sessionHasLinkedCard is true', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+      sessionHasLinkedCard: true,
+    });
+    // Section headings still ship — only the wording inside changes.
+    expect(prompt).toContain('Kanban Board');
+    expect(prompt).toContain('Bias to Action');
+    expect(prompt).toContain('Development Lifecycle');
+
+    // The "already linked" reframe must be present, and tell the agent
+    // explicitly NOT to create a card.
+    expect(prompt).toMatch(/already linked to a (kanban )?card/i);
+    expect(prompt).toMatch(/do NOT create a (new |another )?(kanban )?card/i);
+
+    // The create-a-card phrasings used in the default branch must be
+    // absent so the model has only one consistent signal.
+    expect(prompt).not.toMatch(/^1\. Create the kanban card/m);
+    expect(prompt).not.toContain('auto-renames the sidebar');
+  });
+
+  it('keeps "create a card" instructions when sessionHasLinkedCard is false / unset', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    // Default path keeps the canonical wording exercised by other tests.
+    expect(prompt).toContain('auto-renames the sidebar');
+    expect(prompt).toMatch(/^1\. Create the kanban card/m);
+    // And does NOT inject the "already linked" override.
+    expect(prompt).not.toMatch(/already linked to a (kanban )?card/i);
+  });
+
   it('includes memory instructions on first message', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
