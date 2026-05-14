@@ -31,6 +31,15 @@ auth, error self-reporting, and a map to four domain sub-skills.
 > are the single source of truth and already handle base URL, auth, and
 > JSON bodies. If a wrapper is missing, add it.
 
+> **API contract reference.** Every endpoint's request/response shape is
+> published at <https://speakman-ai.github.io/agent-hub/> (auto-generated
+> from the Zod registry, with `x-internal: true` operations stripped, kept
+> fresh by the CI freshness gate). Treat the script wrappers as the *how*
+> and that page as the *what* — `WebFetch` it (or its deep-link anchors
+> like `#tag/Board`, `#tag/Agents`, `#tag/Sessions`) when you need a shape
+> a wrapper doesn't cover. Wrappers stay primary; OpenAPI is the fallback
+> for shape lookup.
+
 ## Domain sub-skills
 
 Load the sub-skill that matches the work you're doing. They each carry
@@ -82,6 +91,18 @@ every org — sub-agents (including you) use it to call the local API.
 The reference also covers per-user `ahub_*` API keys, config-file
 locations, mid-flight `/api/auth/setup` recovery, and the `trust proxy`
 coupling that per-IP rate limiters depend on.
+
+## Agents — config, sessions, dispatch
+
+Full reference: **[references/agents.md](references/agents.md)**.
+
+The `agents` table is the per-project agent registry: identity, engine,
+default model, workspace `cwd`, and context-file paths. Endpoints under
+`#tag/Agents` cover CRUD plus the session-creation surface that
+`agent-hub-sessions` builds on; kanban cards reference sessions via
+`session_id`, not via the agent-session API. Spawn
+identity (`owner_user_id`), workspace resolution, and the reviewer-lock
+contract live in the reference.
 
 ## Errors — self-reporting & common failure modes
 

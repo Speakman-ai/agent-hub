@@ -6,6 +6,11 @@ two or three recovery steps that usually unstick the common failures.
 
 Back to [SKILL.md](../SKILL.md).
 
+**Note:** `GET /api/projects/:projectId/tool-errors` is not yet
+registered in the OpenAPI spec — the `#tag/Audit` page covers the
+post-scaffold audit and roster surfaces, not tool-error self-reporting.
+This page is the *how* for the error-logging format itself.
+
 ## Contents
 
 - [TOOL_ERROR self-reporting](#tool_error-self-reporting)
