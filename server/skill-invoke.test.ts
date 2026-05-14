@@ -256,6 +256,57 @@ describe('skill-invoke', () => {
     expect(out).toContain('### Available scripts');
   });
 
+  it('buildSkillInjection does NOT inline reference bodies (lazy loading)', () => {
+    // Reference body is "reference for lazy-skill" — must appear in
+    // loaded.references[*].body but NEVER in the injection text.
+    makeSkill(projectSkillsDir, 'lazy-skill');
+    const loaded = loadSkillBody('lazy-skill', { skillsDir: projectSkillsDir });
+    expect(loaded).not.toBeNull();
+
+    // Body still populated in the loaded struct (for non-prompt callers).
+    expect(loaded!.references[0]?.body).toContain('reference for lazy-skill');
+
+    const out = buildSkillInjection(loaded!);
+
+    // Body must NOT be inlined.
+    expect(out).not.toContain('reference for lazy-skill');
+    // Old fenced code-block wrapper format must be gone too.
+    expect(out).not.toContain('#### references/about.md');
+    expect(out).not.toMatch(/```text\n[\s\S]*reference for lazy-skill[\s\S]*```/);
+
+    // But the reference must still be discoverable: filename + absolute path
+    // the agent can pass to Read.
+    expect(out).toMatch(/- references\/about\.md/);
+    const absPath = path.join(projectSkillsDir, 'lazy-skill', 'references', 'about.md');
+    expect(out).toContain(absPath);
+  });
+
+  it('buildSkillInjection shows (none) for skills without references', () => {
+    // Flat skill — no references/ directory, references[] is empty.
+    writeFileSync(path.join(projectSkillsDir, 'flat-no-refs.md'), '# flat\n\nbody\n');
+    const loaded = loadSkillBody('flat-no-refs', { skillsDir: projectSkillsDir });
+    const out = buildSkillInjection(loaded!);
+    // Section heading still present, with (none) marker.
+    expect(out).toMatch(/### References\n\(none\)/);
+  });
+
+  it('buildSkillInjection injection stays small even when references are huge', () => {
+    // Build a skill with refs that fill the per-file + total caps. Before
+    // the lazy-loading change, this would produce a ~32KB injection. After,
+    // it should be well under 4KB because only the index is emitted.
+    const skillDir = path.join(projectSkillsDir, 'jumbo');
+    mkdirSync(path.join(skillDir, 'references'), { recursive: true });
+    writeFileSync(path.join(skillDir, 'SKILL.md'), '# jumbo\n');
+    for (let i = 0; i < 6; i++) {
+      writeFileSync(path.join(skillDir, 'references', `f${i}.md`), 'X'.repeat(8 * 1024));
+    }
+    const loaded = loadSkillBody('jumbo', { skillsDir: projectSkillsDir });
+    const injection = buildSkillInjection(loaded!);
+    expect(Buffer.byteLength(injection, 'utf-8')).toBeLessThan(4 * 1024);
+    // None of the reference bodies should leak in.
+    expect(injection).not.toContain('XXXXXXXX');
+  });
+
   it('handleSkillInvoke records loaded/not-found/malformed statuses', () => {
     makeSkill(projectSkillsDir, 'ok-skill');
 

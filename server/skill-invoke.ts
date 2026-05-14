@@ -326,6 +326,34 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
   return null;
 }
 
+/**
+ * Build the prompt injection for a loaded skill.
+ *
+ * Wire format (preserved for downstream parsers/UI):
+ *
+ *   ## Loaded Skill: <name>
+ *   Source: <project|default>
+ *
+ *   <SKILL.md body>
+ *
+ *   ### References
+ *   <lazy index — see below>
+ *
+ *   ### Available scripts
+ *   - <file> [(executable)]
+ *   ...
+ *
+ * Reference bodies are deliberately NOT inlined here. For the `agent-hub`
+ * monolith that loaded ~32KB of reference docs into every trigger — most of
+ * which were unused for any given turn. Agents now get a navigable index
+ * (relative path + absolute path on disk + size) and can `Read` individual
+ * files only when they need them. This is the progressive-disclosure model
+ * the Anthropic Skills guidance recommends.
+ *
+ * Note: `LoadedSkillBody.references[*].body` is still populated (and capped)
+ * so non-prompt callers — tests, future API endpoints — can opt into bodies
+ * without re-reading from disk. Only the prompt-facing injection omits them.
+ */
 export function buildSkillInjection(loaded: LoadedSkillBody): string {
   const skillName = loaded.skillTitle ?? path.basename(loaded.skillDir);
   const lines: string[] = [
@@ -340,11 +368,13 @@ export function buildSkillInjection(loaded: LoadedSkillBody): string {
   if (loaded.references.length === 0) {
     lines.push('(none)');
   } else {
+    lines.push(
+      'Reference docs are NOT bulk-loaded. Use the `Read` tool on the absolute path below only when you need a specific reference:',
+    );
     for (const ref of loaded.references) {
-      lines.push(`#### references/${ref.path}`);
-      lines.push('```text');
-      lines.push(ref.body.trimEnd());
-      lines.push('```');
+      const abs = path.join(loaded.skillDir, 'references', ref.path);
+      const bytes = Buffer.byteLength(ref.body, 'utf-8');
+      lines.push(`- references/${ref.path} — ${bytes} bytes — \`${abs}\``);
     }
   }
 
