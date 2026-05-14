@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import type { z } from 'zod';
 import {
   listPages,
   getPage,
@@ -15,10 +16,58 @@ import {
   type SearchMode,
 } from '../wiki-embeddings.js';
 import type { RouteDeps } from '../types.js';
+import {
+  CreateWikiPageRequestSchema,
+  UpdateWikiPageRequestSchema,
+  ListWikiPagesQuerySchema,
+  SearchWikiQuerySchema,
+} from './wiki.openapi.js';
 
-function parseMode(raw: unknown): SearchMode {
-  if (raw === 'semantic' || raw === 'fts' || raw === 'hybrid') return raw;
-  return 'hybrid';
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * Mirrors the helper in `board.ts` so the wire shape of validation
+ * failures is identical across route groups.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
+}
+
+/**
+ * Same as `parseBody` but for `req.query`. Express delivers query values
+ * as `string | string[] | undefined` so the schema is responsible for any
+ * coercion (see `LimitQuery` in `wiki.openapi.ts`).
+ */
+function parseQuery<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.query);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
 }
 
 export default function createWikiRoutes({ findProject, broadcast, stmts }: RouteDeps): Router {
@@ -29,15 +78,16 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
     const project = findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    if (req.query.q) {
+    const parsed = parseQuery(ListWikiPagesQuerySchema, req, res);
+    if (!parsed) return;
+
+    if (parsed.q) {
       // Legacy `?q=` keeps returning FTS5 results so the wiki-search skill and
       // any existing callers aren't disturbed. New callers should hit the
       // dedicated `/wiki/search` endpoint below for hybrid/semantic modes.
-      res.json(
-        searchPages(projectId, req.query.q as string, parseInt(req.query.limit as string) || 10),
-      );
-    } else if (req.query.category) {
-      res.json(stmts.getWikiPagesByCategory.all(projectId, req.query.category));
+      res.json(searchPages(projectId, parsed.q, parsed.limit ?? 10));
+    } else if (parsed.category) {
+      res.json(stmts.getWikiPagesByCategory.all(projectId, parsed.category));
     } else {
       res.json(listPages(projectId));
     }
@@ -50,12 +100,16 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
     const project = findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const q = (req.query.q as string | undefined)?.trim();
+    const parsed = parseQuery(SearchWikiQuerySchema, req, res);
+    if (!parsed) return;
+
+    const q = parsed.q?.trim();
     if (!q)
       return res.json({ mode: 'hybrid', results: [], geminiConfigured: isGeminiConfigured() });
 
-    const mode = parseMode(req.query.mode);
-    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 50);
+    const mode: SearchMode = parsed.mode ?? 'hybrid';
+    const rawLimit = parsed.limit ?? 10;
+    const limit = Math.min(Math.max(rawLimit, 1), 50);
 
     try {
       const results = await searchWiki(projectId, q, { mode, limit });
@@ -102,16 +156,16 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
     const project = findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const { title, content, category, updatedBy } = req.body as {
-      title?: string;
-      content?: string;
-      category?: string;
-      updatedBy?: string;
-    };
-    if (!title) return res.status(400).json({ error: 'Title is required' });
+    const parsed = parseBody(CreateWikiPageRequestSchema, req, res);
+    if (!parsed) return;
 
     try {
-      const page = createPage(projectId, { title, content, category, updatedBy });
+      const page = createPage(projectId, {
+        title: parsed.title,
+        content: parsed.content,
+        category: parsed.category,
+        updatedBy: parsed.updatedBy,
+      });
       broadcast({ type: 'wiki_update', projectId, page });
       res.status(201).json(page);
     } catch (err) {
@@ -120,18 +174,15 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
   });
 
   router.put('/api/projects/:projectId/wiki/:slug', (req: Request, res: Response) => {
-    const { title, content, category, updatedBy } = req.body as {
-      title?: string;
-      content?: string;
-      category?: string;
-      updatedBy?: string;
-    };
+    const parsed = parseBody(UpdateWikiPageRequestSchema, req, res);
+    if (!parsed) return;
+
     try {
       const page = updatePage(req.params.projectId as string, req.params.slug as string, {
-        title,
-        content,
-        category,
-        updatedBy,
+        title: parsed.title,
+        content: parsed.content,
+        category: parsed.category,
+        updatedBy: parsed.updatedBy,
       });
       broadcast({ type: 'wiki_update', projectId: req.params.projectId, page });
       res.json(page);
