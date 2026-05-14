@@ -1,13 +1,14 @@
 import { Router, Request, Response } from 'express';
+import type { z } from 'zod';
 import { runHeartbeat, rescheduleHeartbeat } from '../heartbeat.js';
 import type {
   RouteDeps,
-  EnrichedAgent,
   HeartbeatLogRow,
   HeartbeatStateRow,
   ThreadRow,
   ThreadEntryRow,
 } from '../types.js';
+import { UpdateHeartbeatRequestSchema } from './heartbeats.openapi.js';
 
 interface HeartbeatOverview {
   agentId: string;
@@ -27,6 +28,31 @@ interface HeartbeatStateInfo {
   last_run_at: string | null;
   overdue: boolean;
   overdue_seconds: number;
+}
+
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * Mirrors the helper in `agents.ts` / `board.ts` / `wiki.ts` / `sessions.ts`
+ * so the wire shape of validation failures is identical across route groups.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
 }
 
 export default function createHeartbeatRoutes(deps: RouteDeps): Router {
@@ -96,12 +122,9 @@ export default function createHeartbeatRoutes(deps: RouteDeps): Router {
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const { agent } = found;
 
-    const { enabled, interval, prompt, model } = req.body as {
-      enabled?: boolean;
-      interval?: string;
-      prompt?: string;
-      model?: string | null;
-    };
+    const parsed = parseBody(UpdateHeartbeatRequestSchema, req, res);
+    if (!parsed) return;
+    const { enabled, interval, prompt, model } = parsed;
 
     // `model` uses an explicit-undefined check so the caller can clear the
     // override by sending `""` or `null` (mapped to undefined) without losing
