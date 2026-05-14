@@ -156,7 +156,7 @@ describe('mintInstallationTokenForOwner', () => {
     const minter = vi.fn(async () => {
       throw new Error('App private key rejected');
     });
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const token = await mintInstallationTokenForOwner(cfg, 'mcsteen', minter);
     expect(token).toBeNull();
     expect(errSpy).toHaveBeenCalled();
@@ -175,6 +175,114 @@ describe('mintInstallationTokenForOwner', () => {
     await mintInstallationTokenForOwner(cfg, 'mcsteen', minter, lister);
     await mintInstallationTokenForOwner(cfg, 'mcsteen', minter, lister);
     expect(lister).toHaveBeenCalledTimes(1);
+  });
+
+  it('regression: a transient lister failure does NOT block subsequent calls for the full success TTL', async () => {
+    // [4/10] from the reviewer on PR #979: the original implementation
+    // primed `installationListRefreshCache` BEFORE awaiting the
+    // lister, so any throw left the (appId, owner) slot capped for
+    // the full 5-minute success window even though no refresh ever
+    // succeeded. After the fix the success TTL is only primed on
+    // success; failures get a short back-off (30s + jitter) instead.
+    const app = makeApp({ installations: [] });
+    const cfg = makeConfig(app);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // First call: lister throws -> failure back-off (NOT success TTL).
+    const listerFail = vi.fn(async () => {
+      throw new Error('transient 503');
+    });
+    const minter = vi.fn(async () => 'never_minted');
+    await mintInstallationTokenForOwner(cfg, 'mcsteen', minter, listerFail);
+    expect(listerFail).toHaveBeenCalledTimes(1);
+
+    // Second call within the failure back-off window with a
+    // *different* (working) lister: still capped, lister NOT called
+    // again. This is by design — we still rate-limit failures, just
+    // not for 5 minutes.
+    const listerSuccess = vi.fn(async () => [
+      { id: 1, account: { login: 'mcsteen', type: 'Organization' } },
+    ]);
+    await mintInstallationTokenForOwner(cfg, 'mcsteen', minter, listerSuccess);
+    expect(listerSuccess).not.toHaveBeenCalled();
+
+    // Manually expire the failure back-off (we don't fake timers
+    // here — instead, clear the resolver caches to simulate the
+    // back-off elapsing) and confirm a third call DOES re-run the
+    // working lister. This is the bug we're guarding against: the
+    // pre-fix code would have kept the working lister blocked for 5
+    // minutes.
+    clearInstallationLookupCache();
+    const token = await mintInstallationTokenForOwner(cfg, 'mcsteen', minter, listerSuccess);
+    expect(listerSuccess).toHaveBeenCalledTimes(1);
+    expect(token).toBe('never_minted');
+    warnSpy.mockRestore();
+  });
+
+  it('regression: a successful refresh only invalidates lookup-cache entries for THIS App', async () => {
+    // [4/10] from the reviewer on PR #979: the original implementation
+    // called `installationLookupCache.clear()` on every successful
+    // refresh, which blew away the entries for every other App's
+    // installations even though their state was unchanged. After
+    // the fix, only `${app.appId}::*` entries are dropped.
+    const appA = makeApp({
+      appId: 'appA',
+      installations: [{ id: 1, account: 'orgA', accountType: 'Organization' }],
+    });
+    const appB = makeApp({
+      appId: 'appB',
+      installations: [{ id: 2, account: 'orgB', accountType: 'Organization' }],
+    });
+
+    // Prime both lookup caches.
+    expect(lookupInstallationIdForOwner(appA, 'orgA')).toBe(1);
+    expect(lookupInstallationIdForOwner(appB, 'orgB')).toBe(2);
+
+    // Trigger a refresh on appA for an unknown owner. The lister
+    // returns an updated installations array for appA.
+    const cfg = makeConfig(appA);
+    const minter = vi.fn(async () => 'ghs_token');
+    const lister = vi.fn(async () => [
+      { id: 1, account: { login: 'orgA', type: 'Organization' } },
+      { id: 99, account: { login: 'orgC', type: 'Organization' } },
+    ]);
+    await mintInstallationTokenForOwner(cfg, 'orgC', minter, lister);
+
+    // appA's lookup cache must have been invalidated so the next call
+    // sees the new orgC entry.
+    expect(lookupInstallationIdForOwner(appA, 'orgC')).toBe(99);
+
+    // appB's lookup cache must still be intact — mutate appB.installations
+    // out from under the cache and confirm the cached value is still
+    // returned (i.e. it wasn't blown away by the appA refresh).
+    appB.installations = [];
+    expect(lookupInstallationIdForOwner(appB, 'orgB')).toBe(2);
+  });
+
+  it('regression: emits TOOL_ERROR via console.warn (not console.error) for soft/recovered events', async () => {
+    // [3/10] from the reviewer on PR #979: sev:"soft" with
+    // resolution:"recovered" was being routed through console.error,
+    // which makes PM2 + dashboards flag the recurring auth-revoked
+    // flap as an error spike. The fix moves it to console.warn.
+    const app = makeApp({
+      installations: [{ id: 1, account: 'mcsteen', accountType: 'Organization' }],
+    });
+    const cfg = makeConfig(app);
+    const minter = vi.fn(async () => {
+      throw new Error('App private key rejected');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const token = await mintInstallationTokenForOwner(cfg, 'mcsteen', minter);
+    expect(token).toBeNull();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(errSpy).not.toHaveBeenCalled();
+    const logLine = String(warnSpy.mock.calls[0]?.[0] ?? '');
+    expect(logLine).toMatch(/TOOL_ERROR/);
+    expect(logLine).toMatch(/"sev":"soft"/);
+    expect(logLine).toMatch(/"resolution":"recovered"/);
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
   });
 });
 
@@ -223,7 +331,7 @@ describe('resolveGithubSpawnToken', () => {
   let errSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
