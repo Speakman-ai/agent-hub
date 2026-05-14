@@ -1,14 +1,17 @@
 // Engine authentication status — single source of truth for "can we spawn
 // any AI agent right now?" used by /api/config/models and /api/setup/status.
 //
-// Auth resolution mirrors `buildSpawnEnv` (server/config.ts): per-user Claude
-// credentials take precedence over host fallback for the Claude engine, and
-// host-level config / env vars / on-disk OAuth are checked in the same order
-// the spawn path uses. Cursor and Codex are host-level only today.
+// Auth resolution mirrors `buildSpawnEnv` (server/config.ts): per-user
+// credentials take precedence over host fallback. Today that covers Claude
+// (anthropic API key / OAuth token) and Cursor (per-user CURSOR_API_KEY in
+// `users.cursor_api_key`). Codex is still host-level only.
 //
 // This module is async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
 // repeated calls inside a single client poll don't multiply CLI invocations.
+// When a per-user Cursor key is present we short-circuit the probe entirely
+// — a stored key is a strong-enough signal that spawning will work, and we
+// don't want the dropdown to lie just because the host has no global login.
 
 import { existsSync, readFileSync } from 'fs';
 import { execFile } from 'child_process';
@@ -18,7 +21,7 @@ import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
-import { getUserClaudeAuth } from './users-store.js';
+import { getUserClaudeAuth, getUserCursorAuth } from './users-store.js';
 
 export interface EngineAuthStatus {
   claude: boolean;
@@ -129,7 +132,22 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
   const codex =
     codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
 
-  const cursor = await getCursorAuthenticatedCached(cursorBin, cursorProbe);
+  // Per-user Cursor credentials win over host probe (see buildSpawnEnv
+  // / chat.ts spawn auth resolution). Without this branch the engine
+  // dropdown hides Cursor for any user who only logged in at the
+  // per-user level, even though their spawn would actually succeed.
+  let userCursor = false;
+  if (userId) {
+    try {
+      const stored = getUserCursorAuth(userId);
+      if (stored && stored.apiKey) userCursor = true;
+    } catch {
+      // users-store schema may be missing on bare bootstraps — treat as no creds.
+      userCursor = false;
+    }
+  }
+
+  const cursor = userCursor || (await getCursorAuthenticatedCached(cursorBin, cursorProbe));
 
   return {
     claude,
