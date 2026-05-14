@@ -1687,7 +1687,6 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
         callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
       ) => {
         const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
-        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
 
         if (cmd.includes('git remote -v'))
           return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
@@ -3389,5 +3388,338 @@ describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
       if (prevGhToken !== undefined) process.env.GH_TOKEN = prevGhToken;
       if (prevGithubToken !== undefined) process.env.GITHUB_TOKEN = prevGithubToken;
     }
+  });
+});
+
+describe('commitPushAndCreatePR — existing-PR base retarget', () => {
+  // Closes the gap where an agent runs `gh pr create` itself (against the
+  // chat.ts prompt) BEFORE the server's auto-PR fires. The server discovers
+  // the existing PR and previously rubber-stamped its base — including the
+  // wrong default (`master`/`main`) when the card/epic specified an
+  // integration branch via `pr_base_branch`. The retarget path now compares
+  // the existing PR's `baseRefName` to the resolved override and runs
+  // `gh pr edit --base <branch>` to fix it.
+  const mockBroadcast = vi.fn();
+
+  function makeStmtsWithCard(card: Record<string, unknown>, epic?: Record<string, unknown> | null) {
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => card) },
+      getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+      setCardPrUrl: { run: vi.fn() },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+      createKanbanCardComment: { run: vi.fn() },
+      getKanbanEpic: { get: vi.fn(() => epic ?? null) },
+    } as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('retargets the existing PR when card.pr_base_branch differs from current base (clean-worktree path)', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-retarget',
+      title: 'Retarget card',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/auto-cad-engine',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        // Clean worktree (no changes) → early-return adoption path.
+        if (cmd.includes('git status --porcelain')) return ok('');
+        if (cmd.includes('git log')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/auto-cad-engine\n');
+        // PR-list (no args): the early-return existence check.
+        if (/^gh pr view --json url,state/.test(cmd))
+          return ok('https://github.com/test/repo/pull/658\n');
+        // PR-detail: retarget helper checks current baseRefName.
+        if (cmd.startsWith('gh pr view https://github.com/test/repo/pull/658 --json baseRefName'))
+          return ok('master\n');
+        if (cmd.startsWith('gh pr edit')) return ok('');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-retarget', 'agent-1', project, agent, '/worktree', '');
+
+    const editCalls = execCalls.filter((c) => c.startsWith('gh pr edit'));
+    expect(editCalls).toHaveLength(1);
+    expect(editCalls[0]).toContain('https://github.com/test/repo/pull/658');
+    expect(editCalls[0]).toContain('--base feature/auto-cad-engine');
+
+    // Audit comment posted on the card explaining the retarget.
+    const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
+    const retargetComments = commentRun.mock.calls.filter((args) =>
+      String(args[3]).toLowerCase().includes('retargeted'),
+    );
+    expect(retargetComments).toHaveLength(1);
+    expect(String(retargetComments[0][3])).toMatch(/master/);
+    expect(String(retargetComments[0][3])).toMatch(/feature\/auto-cad-engine/);
+  });
+
+  it('uses epic.pr_base_branch when card omits an override and PR base differs', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard(
+      {
+        id: 'card-epic-retarget',
+        title: 'Epic-driven retarget',
+        description: 'desc',
+        priority: 'medium',
+        dispatched_by_autonomous: 1,
+        epic_id: 'epic-1',
+        pr_base_branch: null,
+      },
+      { id: 'epic-1', pr_base_branch: 'feature/auto-cad-engine' },
+    );
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        // Dirty worktree → goes through commit/push, pre-check sees existing PR.
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/auto-cad-engine\n');
+        // Pre-check: existing PR on branch.
+        if (cmd.startsWith('gh pr view feature/child --json url,state'))
+          return ok('https://github.com/test/repo/pull/659\n');
+        if (cmd.startsWith('gh pr view https://github.com/test/repo/pull/659 --json baseRefName'))
+          return ok('master\n');
+        if (cmd.startsWith('gh pr edit')) return ok('');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-epic-retarget', 'agent-1', project, agent, '/worktree', '');
+
+    const editCalls = execCalls.filter((c) => c.startsWith('gh pr edit'));
+    expect(editCalls).toHaveLength(1);
+    expect(editCalls[0]).toContain('--base feature/auto-cad-engine');
+    // And the adoption path must NOT invoke `gh pr create` for this branch
+    // (we adopted the existing PR, only retargeting it).
+    expect(execCalls.filter((c) => c.startsWith('gh pr create'))).toHaveLength(0);
+  });
+
+  it('skips retarget when the existing PR already targets the requested base', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-noop-retarget',
+      title: 'Already on the right base',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/auto-cad-engine',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('');
+        if (cmd.includes('git log')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/auto-cad-engine\n');
+        if (/^gh pr view --json url,state/.test(cmd))
+          return ok('https://github.com/test/repo/pull/660\n');
+        // Already on the requested base.
+        if (cmd.startsWith('gh pr view https://github.com/test/repo/pull/660 --json baseRefName'))
+          return ok('feature/auto-cad-engine\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-noop-retarget', 'agent-1', project, agent, '/worktree', '');
+
+    expect(execCalls.filter((c) => c.startsWith('gh pr edit'))).toHaveLength(0);
+    // No audit comment when nothing was changed.
+    const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
+    const retargetComments = commentRun.mock.calls.filter((args) =>
+      String(args[3]).toLowerCase().includes('retargeted'),
+    );
+    expect(retargetComments).toHaveLength(0);
+  });
+
+  it('skips retarget entirely when no card-or-epic base override is configured', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-no-override',
+      title: 'No base override',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('');
+        if (cmd.includes('git log')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (/^gh pr view --json url,state/.test(cmd))
+          return ok('https://github.com/test/repo/pull/661\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-no-override-retarget', 'agent-1', project, agent, '/worktree', '');
+
+    // No base-detail query, no edit. The retarget helper short-circuits on
+    // `resolvedBaseBranch === null` before any `gh` call.
+    expect(execCalls.some((c) => c.includes('--json baseRefName'))).toBe(false);
+    expect(execCalls.filter((c) => c.startsWith('gh pr edit'))).toHaveLength(0);
+  });
+
+  it('posts a warning comment and still moves the card when gh pr edit fails', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-edit-fail',
+      title: 'Retarget fails — warn but proceed',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/auto-cad-engine',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('');
+        if (cmd.includes('git log')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/auto-cad-engine\n');
+        if (/^gh pr view --json url,state/.test(cmd))
+          return ok('https://github.com/test/repo/pull/662\n');
+        if (cmd.startsWith('gh pr view https://github.com/test/repo/pull/662 --json baseRefName'))
+          return ok('master\n');
+        if (cmd.startsWith('gh pr edit')) return fail('forbidden — no permission to edit PR');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-edit-fail', 'agent-1', project, agent, '/worktree', '');
+
+    // gh pr edit was attempted exactly once
+    expect(execCalls.filter((c) => c.startsWith('gh pr edit'))).toHaveLength(1);
+    // Warning comment posted (mentions the failure + the manual recovery command)
+    const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
+    const warnings = commentRun.mock.calls.filter((args) =>
+      String(args[3]).includes('Tried to retarget'),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0][3])).toMatch(
+      /gh pr edit https:\/\/github.com\/test\/repo\/pull\/662/,
+    );
+    // Card still moves to Review (non-fatal).
+    const moveRun = (stmts.moveKanbanCard as { run: ReturnType<typeof vi.fn> }).run;
+    expect(moveRun).toHaveBeenCalledWith('col-review', 0, 'card-edit-fail');
   });
 });

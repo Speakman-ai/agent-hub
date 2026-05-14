@@ -1284,6 +1284,97 @@ async function enableAutoMergeIfNeeded(
   }
 }
 
+/**
+ * If we adopt an existing PR for a branch but the operator requested a
+ * specific base (via `card.pr_base_branch` or `epic.pr_base_branch`),
+ * retarget the PR via `gh pr edit --base <branch>` so adoption never
+ * silently inherits the wrong base.
+ *
+ * Closes the gap where the agent (against the chat.ts prompt) ran
+ * `gh pr create` directly with no `--base` BEFORE the server's auto-PR
+ * fired — the server would then find the existing PR and rubber-stamp it
+ * onto whatever default branch `gh` picked.
+ *
+ * Failures are logged + commented but never block card progression — the
+ * worst case is the operator sees the warning and runs `gh pr edit` by
+ * hand. Returns true when the retarget actually changed the PR.
+ */
+async function retargetExistingPrIfNeeded(
+  existingPrUrl: string,
+  resolvedBaseBranch: string | null,
+  card: KanbanCardRow | undefined,
+  project: Project,
+  cwd: string,
+  githubToken: string | null | undefined,
+): Promise<boolean> {
+  if (!resolvedBaseBranch) return false;
+  const d = getDeps();
+  let currentBase: string;
+  try {
+    const { stdout } = await runGh(
+      ['pr', 'view', existingPrUrl, '--json', 'baseRefName', '--jq', '.baseRefName'],
+      cwd,
+      15000,
+      githubToken,
+    );
+    currentBase = stdout.trim();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[auto-commit] PR base check failed for ${existingPrUrl}; leaving base unchanged: ${msg}`,
+    );
+    return false;
+  }
+  if (!currentBase || currentBase === resolvedBaseBranch) return false;
+
+  try {
+    await runGh(
+      ['pr', 'edit', existingPrUrl, '--base', resolvedBaseBranch],
+      cwd,
+      15000,
+      githubToken,
+    );
+    console.log(
+      `[auto-commit] Retargeted PR ${existingPrUrl}: base ${currentBase} → ${resolvedBaseBranch}`,
+    );
+    if (card) {
+      try {
+        d.stmts.createKanbanCardComment.run(
+          crypto.randomUUID(),
+          card.id,
+          'Agent Hub',
+          `Retargeted PR base from **${currentBase}** → **${resolvedBaseBranch}** to match this card's configured override.`,
+        );
+        d.broadcast({ type: 'kanban_update', projectId: project.id });
+      } catch (commentErr: unknown) {
+        const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+        console.warn(`[auto-commit] Failed to post retarget comment: ${msg}`);
+      }
+    }
+    return true;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[auto-commit] gh pr edit failed for ${existingPrUrl} (${currentBase} → ${resolvedBaseBranch}): ${msg}`,
+    );
+    if (card) {
+      try {
+        d.stmts.createKanbanCardComment.run(
+          crypto.randomUUID(),
+          card.id,
+          'Agent Hub',
+          `⚠️ Tried to retarget this PR's base from **${currentBase}** → **${resolvedBaseBranch}** but \`gh pr edit\` failed: ${msg}. Run \`gh pr edit ${existingPrUrl} --base ${resolvedBaseBranch}\` manually if needed.`,
+        );
+        d.broadcast({ type: 'kanban_update', projectId: project.id });
+      } catch (commentErr: unknown) {
+        const cmsg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+        console.warn(`[auto-commit] Failed to post retarget-failure comment: ${cmsg}`);
+      }
+    }
+    return false;
+  }
+}
+
 async function commitPushAndCreatePR(
   sessionId: string,
   agentId: string,
@@ -1303,6 +1394,70 @@ async function commitPushAndCreatePR(
   // stripped of GitHub credentials.
   const githubToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
 
+  // ── PR base-branch override (hoisted) ─────────────────────────────
+  //
+  // Cards may override the PR base via `card.pr_base_branch` (e.g. for
+  // stacked PRs) or inherit one from their linked epic (`epic.pr_base_branch`,
+  // the integration-branch design). Hoisted above the worktree-changes check
+  // so it applies to all three adoption paths:
+  //   1. clean worktree + existing PR (early return below)
+  //   2. existing-PR pre-check before `gh pr create`
+  //   3. fresh `gh pr create --base <branch>`
+  // Without this, paths 1 and 2 would silently inherit whatever base the
+  // pre-existing PR was opened with — including the repo default when an
+  // agent ran `gh pr create` directly against the chat.ts prompt warning.
+  let resolvedBaseBranch: string | null = null;
+  let baseBranchFellBack = false;
+  let baseBranchFallbackReason: string | null = null;
+  let linkedEpic: KanbanEpicRow | undefined;
+  if (card?.epic_id) {
+    linkedEpic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
+  }
+  const requestedBaseRaw = effectivePrBaseBranch(card, linkedEpic);
+  const requestedBase = requestedBaseRaw?.trim();
+  // Defensive re-validation of the persisted value before we hand it to
+  // `gh`. The PUT route already enforces this regex, but we don't want a
+  // hand-edited DB row to escape into a spawned argv.
+  const isSafeBranch = (s: string) => /^[A-Za-z0-9._/-]+$/.test(s);
+
+  if (requestedBase && isSafeBranch(requestedBase)) {
+    try {
+      const { stdout: lsOut } = await execAsync(
+        `git ls-remote --heads origin ${JSON.stringify(requestedBase)}`,
+        { cwd: effectiveCwd, timeout: 10_000 },
+      );
+      if (lsOut.trim()) {
+        resolvedBaseBranch = requestedBase;
+      } else {
+        baseBranchFellBack = true;
+        baseBranchFallbackReason = `branch "${requestedBase}" no longer exists on origin`;
+      }
+    } catch (err: unknown) {
+      baseBranchFellBack = true;
+      baseBranchFallbackReason = `branch lookup failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
+  } else if (requestedBase && !isSafeBranch(requestedBase)) {
+    baseBranchFellBack = true;
+    baseBranchFallbackReason = `persisted base branch "${requestedBase}" failed validation; ignored`;
+  }
+
+  if (baseBranchFellBack && card) {
+    const defaultBranch = (await resolveDefaultBranch(effectiveCwd)) ?? '(repo default)';
+    const note = `Configured PR base branch override was not used — falling back to **${defaultBranch}**. Reason: ${baseBranchFallbackReason}.`;
+    try {
+      d.stmts.createKanbanCardComment.run(crypto.randomUUID(), card.id, 'Agent Hub', note);
+      d.broadcast({ type: 'kanban_update', projectId: project.id });
+    } catch (commentErr: unknown) {
+      const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+      console.warn(`[auto-commit] Failed to post base-branch fallback comment: ${msg}`);
+    }
+    console.warn(
+      `[auto-commit] PR base branch override ignored for card ${card.id}: ${baseBranchFallbackReason}`,
+    );
+  }
+
   const changes = await checkWorktreeChanges(effectiveCwd);
 
   if (!changes.hasUncommitted && !changes.hasUnpushed) {
@@ -1320,6 +1475,14 @@ async function commitPushAndCreatePR(
       if (existingPrUrl) {
         console.log(
           `[auto-commit] Found existing open PR: ${existingPrUrl} — moving card to Review`,
+        );
+        await retargetExistingPrIfNeeded(
+          existingPrUrl,
+          resolvedBaseBranch,
+          card,
+          project,
+          effectiveCwd,
+          githubToken,
         );
         if (card) moveCardToReview(card, project, existingPrUrl);
         // Re-apply auto-merge intent in case the user flipped the toggle ON
@@ -1597,65 +1760,6 @@ async function commitPushAndCreatePR(
       });
     };
 
-    // ── PR base-branch override ─────────────────────────────────────
-    //
-    // Cards may override the PR base via `card.pr_base_branch` (e.g. for
-    // stacked PRs). When set, validate the branch still exists on `origin`
-    // before passing it to `gh pr create --base`. If it doesn't, fall back
-    // to the repo default and post an explanatory comment on the card so
-    // the user can see why their override didn't apply.
-    let resolvedBaseBranch: string | null = null;
-    let baseBranchFellBack = false;
-    let baseBranchFallbackReason: string | null = null;
-    let linkedEpic: KanbanEpicRow | undefined;
-    if (card?.epic_id) {
-      linkedEpic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
-    }
-    const requestedBaseRaw = effectivePrBaseBranch(card, linkedEpic);
-    const requestedBase = requestedBaseRaw?.trim();
-    // Defensive re-validation of the persisted value before we hand it to
-    // `gh`. The PUT route already enforces this regex, but we don't want a
-    // hand-edited DB row to escape into a spawned argv.
-    const isSafeBranch = (s: string) => /^[A-Za-z0-9._/-]+$/.test(s);
-
-    if (requestedBase && isSafeBranch(requestedBase)) {
-      try {
-        const { stdout: lsOut } = await execAsync(
-          `git ls-remote --heads origin ${JSON.stringify(requestedBase)}`,
-          { cwd: effectiveCwd, timeout: 10_000 },
-        );
-        if (lsOut.trim()) {
-          resolvedBaseBranch = requestedBase;
-        } else {
-          baseBranchFellBack = true;
-          baseBranchFallbackReason = `branch "${requestedBase}" no longer exists on origin`;
-        }
-      } catch (err: unknown) {
-        baseBranchFellBack = true;
-        baseBranchFallbackReason = `branch lookup failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`;
-      }
-    } else if (requestedBase && !isSafeBranch(requestedBase)) {
-      baseBranchFellBack = true;
-      baseBranchFallbackReason = `persisted base branch "${requestedBase}" failed validation; ignored`;
-    }
-
-    if (baseBranchFellBack && card) {
-      const defaultBranch = (await resolveDefaultBranch(effectiveCwd)) ?? '(repo default)';
-      const note = `Configured PR base branch override was not used — falling back to **${defaultBranch}**. Reason: ${baseBranchFallbackReason}.`;
-      try {
-        d.stmts.createKanbanCardComment.run(crypto.randomUUID(), card.id, 'Agent Hub', note);
-        d.broadcast({ type: 'kanban_update', projectId: project.id });
-      } catch (commentErr: unknown) {
-        const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
-        console.warn(`[auto-commit] Failed to post base-branch fallback comment: ${msg}`);
-      }
-      console.warn(
-        `[auto-commit] PR base branch override ignored for card ${card.id}: ${baseBranchFallbackReason}`,
-      );
-    }
-
     // ── Pre-check: existing open PR for this branch ───────────────────
     //
     // Resolve-comment / review-feedback flows push additional commits to
@@ -1701,6 +1805,14 @@ async function commitPushAndCreatePR(
     if (existingPrForBranch) {
       console.log(
         `[auto-commit] Existing open PR for branch "${changes.branch}": ${existingPrForBranch} — pushing additional commits without opening a new PR`,
+      );
+      await retargetExistingPrIfNeeded(
+        existingPrForBranch,
+        resolvedBaseBranch,
+        card,
+        project,
+        effectiveCwd,
+        githubToken,
       );
       await broadcastAndMove(existingPrForBranch);
       return { ok: true, prUrl: existingPrForBranch };
