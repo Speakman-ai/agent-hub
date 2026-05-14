@@ -262,7 +262,8 @@ export default function MyBrowserAuthSection({
             <ExternalLink size={12} /> {loginUrl}
           </a>
           <div className="text-[11px] text-gray-400">
-            Polling for completion… you can close this tab once you&apos;ve finished signing in.
+            A browser tab should have opened. If it was blocked, click the link above to open it
+            manually, then finish signing in.
           </div>
         </div>
       )}

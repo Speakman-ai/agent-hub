@@ -46,7 +46,7 @@
  *   `<userId>/home` dir is kept so the next login can reuse the same
  *   tree without re-creating the path.
  */
-import { mkdirSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, chmodSync, rmSync, existsSync } from 'fs';
 import path from 'path';
 
 const ROOT_SUBDIR = 'per-user-creds';
@@ -85,14 +85,15 @@ export function perUserHomePath(userId: string, dataDir: string): string {
 export function ensurePerUserHome(userId: string, dataDir: string): string {
   const home = perUserHomePath(userId, dataDir);
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  // Lock down the parent <userId> directory too — `recursive: true` on
-  // mkdirSync only applies the mode to leaves it had to create, so the
-  // intermediate may have been left with the default umask. Re-applying
-  // is idempotent.
+  // `mkdirSync({ recursive: true, mode })` only guarantees the mode for
+  // directories it creates in this call — existing intermediates keep
+  // whatever perms they had (Node never re-applies mode to existing dirs).
+  // Explicitly chmod the parent <userId> directory so it's always 0700
+  // regardless of whether it was created here or in a previous call.
   try {
-    mkdirSync(path.dirname(home), { recursive: true, mode: 0o700 });
+    chmodSync(path.dirname(home), 0o700);
   } catch {
-    /* dir already exists with whatever perms it had */
+    /* best-effort — don't block a spawn on a chmod failure */
   }
   return home;
 }

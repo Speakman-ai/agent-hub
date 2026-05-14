@@ -246,14 +246,12 @@ interface RunResult {
 function runCli(
   bin: string,
   args: string[],
-  opts: { home: string; timeout?: number; extraEnv?: Record<string, string> } = {
-    home: '',
-  },
+  opts: { home: string; timeout?: number },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
       cwd: opts.home,
-      env: { ...process.env, HOME: opts.home, ...(opts.extraEnv ?? {}) },
+      env: { ...process.env, HOME: opts.home },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });

@@ -383,6 +383,30 @@ The practical effect: when a user has authenticated `cursor-agent` /
 platform makes on their behalf — including delegated sub-agents and
 synthesis — reads the same per-user token cache without re-prompting.
 
+**Operator upgrade note.** Background jobs (heartbeats, crons, wiki-memory
+sync, Slack bot, room-chat) unconditionally pin HOME to the org-owner's
+per-user path from this version onwards. If an operator previously relied
+on a host-level `cursor login` (token in the system `~/.cursor/`), those
+jobs will lose access until the org owner signs in via **Account → My Auth**.
+
+**Browser sign-in endpoints** (`server/routes/per-user-engine-auth.ts`):
+
+| Method | Path                                              | Purpose                                     |
+| ------ | ------------------------------------------------- | ------------------------------------------- |
+| GET    | `/api/auth/me/cursor-auth/browser`                | Status: binary present, OAuth logged in     |
+| POST   | `/api/auth/me/cursor-auth/browser/login`          | Start Cursor OAuth (`NO_OPEN_BROWSER=1`)    |
+| POST   | `/api/auth/me/cursor-auth/browser/cancel-login`   | Cancel in-flight login                      |
+| DELETE | `/api/auth/me/cursor-auth/browser`                | Sign out + wipe per-user `.cursor/`         |
+| GET    | `/api/auth/me/codex-auth/browser`                 | Status: binary present, device-auth state   |
+| POST   | `/api/auth/me/codex-auth/browser/device-login`    | Start `codex login --device-auth`           |
+| POST   | `/api/auth/me/codex-auth/browser/cancel-login`    | Cancel in-flight login                      |
+| DELETE | `/api/auth/me/codex-auth/browser`                 | Sign out + wipe per-user `.codex/`          |
+
+Every endpoint requires an authenticated caller; `userId` is inferred from
+the JWT. In-flight logins are tracked by `${engine}:${userId}` so two users
+can sign in concurrently. The host-wide Admin-only flows
+(`/api/config/cursor-auth/`, `/api/config/codex-auth/`) are unchanged.
+
 ## Per-user skill credentials
 
 Third-party tokens for **installed skills** (Linear, GitHub PAT, etc.) live
