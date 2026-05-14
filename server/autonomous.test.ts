@@ -501,6 +501,154 @@ describe('runAutonomousLoop — dispatch', () => {
       1,
     );
   });
+
+  // ── Cross-engine model override (regression for "Autonomous model
+  // selection not applied (Composer 2 ignored, runs as Claude Opus)") ─────
+  it('spawns under the model-owning engine when epic autonomous_model is from a different engine', async () => {
+    const card = makeCard();
+    const epicWithModel = {
+      ...ACTIVE_EPIC,
+      autonomous_model: 'composer-2',
+    } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
+        'cursor-agent': ['composer-2'],
+      },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Agent's default engine is claude-code, but the operator picked a
+    // Cursor model. Honour the selection by spawning under cursor-agent
+    // with composer-2 — rather than silently falling back to opus.
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'cursor-agent',
+      'composer-2',
+      1,
+      0,
+      1,
+    );
+  });
+
+  it('spawns under the model-owning engine when card assign_model is from a different engine', async () => {
+    const card = makeCard({ assign_model: 'composer-2' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
+        'cursor-agent': ['composer-2', 'composer-3'],
+      },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Card-level cross-engine override beats both the agent default and
+    // any epic autonomous_model (which is null here).
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'cursor-agent',
+      'composer-2',
+      1,
+      0,
+      1,
+    );
+  });
+
+  it('still falls back to agent default when the model is in no configured engine allowlist', async () => {
+    const card = makeCard();
+    const epicWithModel = {
+      ...ACTIVE_EPIC,
+      autonomous_model: 'ghost-model-not-anywhere',
+    } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: {
+        'claude-code': ['claude-sonnet-4-6'],
+        'cursor-agent': ['composer-2'],
+      },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Model isn't recognised by any engine — keep the agent's engine and
+    // use the agent-default model (defaultModelForEngine returns 'mock-model'
+    // per the top-of-file mock).
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'claude-code',
+      'mock-model',
+      1,
+      0,
+      1,
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  engineForModel — unit
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('engineForModel', () => {
+  it('returns the engine when the model is in its allowlist', async () => {
+    const { engineForModel } = await import('./autonomous.js');
+    expect(
+      engineForModel('composer-2', {
+        'claude-code': ['claude-opus-4-7'],
+        'cursor-agent': ['composer-2'],
+      }),
+    ).toBe('cursor-agent');
+  });
+
+  it('returns null when no engine owns the model', async () => {
+    const { engineForModel } = await import('./autonomous.js');
+    expect(
+      engineForModel('ghost-model', {
+        'claude-code': ['claude-opus-4-7'],
+        'cursor-agent': ['composer-2'],
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null on empty config', async () => {
+    const { engineForModel } = await import('./autonomous.js');
+    expect(engineForModel('any', {})).toBeNull();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
