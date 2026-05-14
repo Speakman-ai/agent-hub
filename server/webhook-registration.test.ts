@@ -56,7 +56,23 @@ vi.mock('./github-app.js', () => ({
 vi.mock('./routes/board.js', () => ({ getOrCreateBoard: vi.fn() }));
 vi.mock('./routes/escalations.js', () => ({ createEscalation: vi.fn() }));
 vi.mock('./capture-engine.js', () => ({ runCapture: vi.fn(), postPrComment: vi.fn() }));
-vi.mock('./db.js', () => ({ getDb: vi.fn() }));
+vi.mock('./db.js', () => ({
+  getDb: vi.fn(),
+  stmts: {
+    upsertWatchdogRow: { run: vi.fn() },
+    markWatchdogAwaiting: { run: vi.fn() },
+    markWatchdogTokenAt: { run: vi.fn() },
+    markWatchdogClean: { run: vi.fn() },
+    markWatchdogCompletedByCard: { run: vi.fn() },
+    markWatchdogCompletedByPrUrl: { run: vi.fn() },
+    setWatchdogState: { run: vi.fn() },
+    incrementWatchdogNudge: { run: vi.fn() },
+    getWatchdogRow: { get: vi.fn() },
+    selectIdleWatchdogs: { all: vi.fn(() => []) },
+    insertWatchdogEvent: { run: vi.fn() },
+    getRecentWatchdogEvents: { all: vi.fn(() => []) },
+  },
+}));
 vi.mock('./check-runs.js', () => ({
   CHECK_RUN_NAME: 'Agent Hub Reviewer',
   DEFAULT_REVIEWER_PHASES: [] as unknown[],

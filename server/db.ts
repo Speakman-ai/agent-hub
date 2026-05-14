@@ -1845,6 +1845,56 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // ── Session watchdog tables ─────────────────────────────────────────
+  // Tracks the in-flight idleness state of individual sessions so the
+  // server-side watchdog (server/session-watchdog.ts) can detect mid-task
+  // stalls and re-engage the agent without an agent-side skill. This
+  // replaces the deprecated `babysit` skill (see
+  // server/test/skills-babysit-removed.test.ts) with a layer outside the
+  // agent's prompt that it cannot opt out of.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_watchdog (
+      session_id TEXT PRIMARY KEY,
+      card_id TEXT,
+      pr_url TEXT,
+      awaiting_response INTEGER NOT NULL DEFAULT 0,
+      last_token_at INTEGER,
+      last_user_message_at INTEGER,
+      nudge_count INTEGER NOT NULL DEFAULT 0,
+      last_nudge_at INTEGER,
+      budget_started_at INTEGER,
+      state TEXT NOT NULL DEFAULT 'active'
+        CHECK(state IN ('active', 'stuck', 'escalated', 'completed', 'disabled')),
+      disabled_reason TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_watchdog_active
+      ON session_watchdog(state, awaiting_response, last_token_at);
+    CREATE INDEX IF NOT EXISTS idx_session_watchdog_card
+      ON session_watchdog(card_id);
+
+    -- Audit log of watchdog decisions. One row per nudge/escalation/state
+    -- change so we can tune thresholds without flying blind and so the UI
+    -- can render a recent-activity feed.
+    CREATE TABLE IF NOT EXISTS watchdog_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      card_id TEXT,
+      tier TEXT NOT NULL,
+      reason TEXT,
+      detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_watchdog_events_session
+      ON watchdog_events(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_watchdog_events_card
+      ON watchdog_events(card_id, created_at DESC);
+  `);
+
   stmts = {
     // Sessions
     createSession: db.prepare(
@@ -3190,6 +3240,111 @@ function initDb(dataDir: string): void {
     ),
     getProjectRoster: db.prepare(
       'SELECT tracks_json, updated_at FROM project_rosters WHERE project_id = ?',
+    ),
+
+    // Session watchdog (server-side stall detector). See server/session-watchdog.ts
+    // for the state machine and tier ladder. Times are stored as ms-epoch ints so
+    // arithmetic in the scan query is straightforward.
+    getWatchdogRow: db.prepare('SELECT * FROM session_watchdog WHERE session_id = ?'),
+    // Upsert: callers always know the session id; card/pr come from the linked
+    // kanban card lookup. Resets nothing on re-up — just makes sure the row
+    // exists so subsequent hook calls have a place to land state.
+    upsertWatchdogRow: db.prepare(
+      `INSERT INTO session_watchdog (session_id, card_id, pr_url, state)
+         VALUES (?, ?, ?, 'active')
+       ON CONFLICT(session_id) DO UPDATE
+         SET card_id = COALESCE(excluded.card_id, session_watchdog.card_id),
+             pr_url  = COALESCE(excluded.pr_url, session_watchdog.pr_url),
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)`,
+    ),
+    // User-message dispatch hook: flip awaiting_response on, capture the
+    // wall-clock for budget calc, and start the per-card budget timer the
+    // first time we see activity for this session.
+    markWatchdogAwaiting: db.prepare(
+      `UPDATE session_watchdog
+         SET awaiting_response = 1,
+             last_user_message_at = ?,
+             budget_started_at = COALESCE(budget_started_at, ?),
+             state = CASE WHEN state IN ('completed','disabled','escalated') THEN state ELSE 'active' END,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    // Stream-token hook: any assistant_text bumps last_token_at. We don't clear
+    // awaiting_response here — only a clean `result` event with isError=false does.
+    markWatchdogTokenAt: db.prepare(
+      `UPDATE session_watchdog
+         SET last_token_at = ?,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    // Clean-stop hook: stream produced a non-error `result` event. Session
+    // delivered a real turn boundary, so it's no longer awaiting us.
+    markWatchdogClean: db.prepare(
+      `UPDATE session_watchdog
+         SET awaiting_response = 0,
+             state = CASE WHEN state IN ('completed','disabled','escalated') THEN state ELSE 'active' END,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    // Card→Done or PR-merged hook: stop nudging this session forever.
+    markWatchdogCompleted: db.prepare(
+      `UPDATE session_watchdog
+         SET state = 'completed',
+             awaiting_response = 0,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    markWatchdogCompletedByCard: db.prepare(
+      `UPDATE session_watchdog
+         SET state = 'completed',
+             awaiting_response = 0,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE card_id = ?`,
+    ),
+    markWatchdogCompletedByPrUrl: db.prepare(
+      `UPDATE session_watchdog
+         SET state = 'completed',
+             awaiting_response = 0,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE pr_url = ?`,
+    ),
+    // Tier ladder advance: bump the nudge counter and timestamp.
+    incrementWatchdogNudge: db.prepare(
+      `UPDATE session_watchdog
+         SET nudge_count = nudge_count + 1,
+             last_nudge_at = ?,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    setWatchdogState: db.prepare(
+      `UPDATE session_watchdog
+         SET state = ?,
+             disabled_reason = ?,
+             updated_at = (CAST(strftime('%s','now') AS INTEGER) * 1000)
+       WHERE session_id = ?`,
+    ),
+    // Cron scan: pick rows that are still active, awaiting us, have produced
+    // at least one token, and have been silent long enough. The cooldown is
+    // checked here too so we don't re-nudge inside the cooldown window.
+    selectIdleWatchdogs: db.prepare(
+      `SELECT * FROM session_watchdog
+        WHERE state = 'active'
+          AND awaiting_response = 1
+          AND last_token_at IS NOT NULL
+          AND (? - last_token_at) >= ?
+          AND (last_nudge_at IS NULL OR (? - last_nudge_at) >= ?)`,
+    ),
+    selectWatchdogsByCard: db.prepare('SELECT * FROM session_watchdog WHERE card_id = ?'),
+    selectWatchdogsByPrUrl: db.prepare('SELECT * FROM session_watchdog WHERE pr_url = ?'),
+    insertWatchdogEvent: db.prepare(
+      `INSERT INTO watchdog_events (session_id, card_id, tier, reason, detail)
+         VALUES (?, ?, ?, ?, ?)`,
+    ),
+    getRecentWatchdogEvents: db.prepare(
+      `SELECT * FROM watchdog_events
+        WHERE session_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?`,
     ),
   } as Stmts;
 
