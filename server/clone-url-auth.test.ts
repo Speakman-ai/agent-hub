@@ -3,6 +3,7 @@ import {
   classifyCloneUrl,
   buildAuthenticatedUrl,
   redactToken,
+  redactAuthHeader,
   SSH_NOT_SUPPORTED_MESSAGE,
 } from './clone-url-auth.js';
 
@@ -120,6 +121,66 @@ describe('redactToken', () => {
     expect(redactToken('hello main world', null)).toBe('hello main world');
     expect(redactToken('hello main world', '')).toBe('hello main world');
     expect(redactToken('hello main world', 'main')).toBe('hello main world');
+  });
+});
+
+describe('redactAuthHeader', () => {
+  it('strips the base64 value from a basic-auth extraheader argv echo', () => {
+    // Real-world shape from the leaked production log at 17:16:40 on
+    // 2026-05-14: `x-access-token:gho_…` base64-encoded after `basic `.
+    const leakedBase64 =
+      'eC1hY2Nlc3MtdG9rZW46Z2hvXzBOZU5jQWtKMU9WV3J4NkxLT1lOM002R2JsNUlTNDBlMlZ0aw==';
+    const input = `Command failed: git -c http.https://github.com/.extraheader=Authorization: basic ${leakedBase64} clone --depth 1 --quiet https://github.com/foo/bar.git /tmp/x`;
+    const out = redactAuthHeader(input);
+    expect(out).not.toContain(leakedBase64);
+    expect(out).toContain('Authorization: basic ***');
+    // Non-secret parts of the command are preserved so the error is still useful.
+    expect(out).toContain('clone --depth 1 --quiet');
+    expect(out).toContain('https://github.com/foo/bar.git');
+  });
+
+  it('strips bearer tokens too', () => {
+    const input = 'request failed: Authorization: bearer ghs_topsecrettoken12345';
+    const out = redactAuthHeader(input);
+    expect(out).not.toContain('ghs_topsecrettoken12345');
+    expect(out).toBe('request failed: Authorization: bearer ***');
+  });
+
+  it('is case-insensitive on the Authorization keyword', () => {
+    const input = 'authorization: Basic ZGVjb2RlZA==';
+    const out = redactAuthHeader(input);
+    expect(out).not.toContain('ZGVjb2RlZA==');
+    expect(out.toLowerCase()).toContain('authorization: basic ***');
+  });
+
+  it('strips every occurrence when multiple headers appear', () => {
+    const input = 'first Authorization: basic AAAA== then Authorization: bearer BBBB done';
+    const out = redactAuthHeader(input);
+    expect(out).not.toContain('AAAA==');
+    expect(out).not.toContain('BBBB');
+    expect(out).toBe('first Authorization: basic *** then Authorization: bearer *** done');
+  });
+
+  it('is a no-op when no Authorization header is present', () => {
+    const input = "fatal: unable to access 'https://github.com/foo/bar.git/': 403";
+    expect(redactAuthHeader(input)).toBe(input);
+  });
+
+  it('handles empty input', () => {
+    expect(redactAuthHeader('')).toBe('');
+  });
+
+  it('composes with redactToken — token-value AND header-shape stripped', () => {
+    // When both the raw token (anywhere in the message) and a base64
+    // header form appear, layering the two helpers removes both.
+    const token = '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';
+    const base64 = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+    const input = `attempt with ${token}: git -c http.https://github.com/.extraheader=Authorization: basic ${base64} clone …`;
+    const out = redactAuthHeader(redactToken(input, token));
+    expect(out).not.toContain(token);
+    expect(out).not.toContain(base64);
+    expect(out).toContain('attempt with ***');
+    expect(out).toContain('Authorization: basic ***');
   });
 });
 

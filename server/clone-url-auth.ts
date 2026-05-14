@@ -113,6 +113,28 @@ export function redactToken(text: string, token: string | null | undefined): str
 }
 
 /**
+ * Strip Authorization header values from a string regardless of the
+ * scheme used. `redactToken` only finds raw token substrings; when git
+ * fails the spawn error echoes the full argv, including
+ * `-c http.https://github.com/.extraheader=Authorization: basic <BASE64>`,
+ * and the base64-encoded `x-access-token:<TOKEN>` form contains none of
+ * the raw token's characters. This helper is shape-based, not value-based:
+ * any `Authorization: <scheme> <value>` substring is rewritten to
+ * `Authorization: <scheme> ***`, so future leak shapes are caught even
+ * if the redactToken caller forgets to pass the matching `token`.
+ *
+ * The match is intentionally permissive on the value (any non-space run)
+ * to cover basic + bearer + token + future schemes; the scheme keyword
+ * itself is kept verbatim so error messages still make sense.
+ */
+export function redactAuthHeader(text: string): string {
+  if (!text) return text;
+  // `i` so `Authorization` / `authorization` / mixed case all match —
+  // git emits lower-case `authorization:` in some error paths.
+  return text.replace(/(Authorization:\s*\S+\s+)\S+/gi, '$1***');
+}
+
+/**
  * Friendly user-facing message for SSH URLs we can't satisfy. Used both
  * for the synchronous 400 response and as a fallback when git itself
  * surfaces `Host key verification failed`.
