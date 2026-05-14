@@ -58,6 +58,7 @@ export default function MessageInput({
   agentColor,
   skills,
   askMode,
+  readOnly,
   draftKey,
   onFileError,
 }) {
@@ -706,6 +707,40 @@ export default function MessageInput({
     },
     [addImageFiles],
   );
+
+  // Read-only sessions (currently reviewer threads spawned from GitHub
+  // webhooks) render only a banner — no composer, no send button, no
+  // drag-drop affordance. Reviewer threads are shared with the whole
+  // org and server-side writes are gated to the system spawn path; this
+  // hides the UX so users don't try to type into a thread they can't
+  // post to.
+  if (readOnly) {
+    return (
+      <div className="border-t border-gray-800 p-3 md:p-4 safe-bottom">
+        <div
+          data-testid="reviewer-readonly-banner"
+          className="flex items-center gap-2 px-3 py-2 bg-purple-900/20 border border-purple-800/40 rounded-lg text-xs text-purple-300"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-3.5 w-3.5 flex-shrink-0"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zM9 9a1 1 0 012 0v4a1 1 0 11-2 0V9zm1-4a1 1 0 100 2 1 1 0 000-2z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span>
+            Reviewer thread, read-only. This conversation is shared with everyone in the org.
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

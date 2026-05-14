@@ -24,6 +24,7 @@ import { getDb } from './db.js';
 import { listUsers, getUserById } from './users-store.js';
 import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
+import { findAgent } from './project-model.js';
 import type { AuthenticatedRequest } from './auth.js';
 
 /**
@@ -177,6 +178,45 @@ export function getSessionOwner(sessionId: string): string | null {
 export function inheritOwnerFromSession(targetSessionId: string, sourceSessionId: string): void {
   const ownerId = getSessionOwner(sourceSessionId) || getOrgOwnerUserId();
   setSessionOwner(targetSessionId, ownerId);
+}
+
+/**
+ * Reviewer sessions are spawned by the GitHub webhook handler when a PR
+ * opens or syncs (see `runReviewerDispatch` in `server/routes/webhooks.ts`).
+ * They are shared across all users in the org: the review thread is a
+ * read-only artifact that anyone with access to the project should be
+ * able to inspect. We detect them by resolving the session's `agent_id`
+ * through the project config and checking `agent.role === 'reviewer'`.
+ *
+ * Returns `false` defensively if the session row, the agent lookup, or
+ * the project model is not available (e.g. mid-boot, test harness
+ * without project-model initialised) — strict ownership then applies.
+ */
+export function isReviewerSession(sessionId: string): boolean {
+  try {
+    const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+      | { agent_id?: string }
+      | undefined;
+    if (!row?.agent_id) return false;
+    const lookup = findAgent(row.agent_id);
+    return lookup?.agent?.role === 'reviewer';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read predicate. Permissive for shared session types (currently only
+ * reviewer sessions). All other reads fall through to strict ownership.
+ *
+ * Use this for GET endpoints and list filters where the goal is "show
+ * everything the caller is allowed to see." Writes (POST/PUT/PATCH/
+ * DELETE, plus WebSocket `chat` / `cancel`) must continue to call
+ * `userOwnsSession` — visibility is broader than mutation rights.
+ */
+export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (isReviewerSession(sessionId)) return true;
+  return userOwnsSession(req, sessionId);
 }
 
 /**

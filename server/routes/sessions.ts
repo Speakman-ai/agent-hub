@@ -50,6 +50,7 @@ import {
   setSessionOwner,
   inheritOwnerFromSession,
   userOwnsSession,
+  userCanReadSession,
   getSessionOwner,
   getOrgOwnerUserId,
 } from '../session-ownership.js';
@@ -283,10 +284,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
     const all = stmts.getSessions.all(req.params.agentId) as SessionRow[];
-    // Strict per-user filter: hide sessions whose owner doesn't match the
-    // caller. NULL-owner rows (pre-Phase-4 legacy / mid-migration) fall
-    // through to `userOwnsSession`, which treats them as org-owner-owned.
-    const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
+    // Per-user read filter. Strict ownership for normal sessions; shared
+    // sessions (reviewer threads spawned from GitHub webhooks) are
+    // visible to everyone so all users can inspect a PR review.
+    const sessions = all.filter((s) => userCanReadSession(req as AuthenticatedRequest, s.id));
     res.json(sessions);
   });
 
@@ -319,15 +320,27 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   /**
-   * Strict per-user gate for everything under `/api/sessions/:sessionId`.
+   * Per-user gate for everything under `/api/sessions/:sessionId`.
    * Returns 404 (not 403) so non-owners can't probe for the existence
    * of another user's sessions. Registered here so the static
    * `/api/sessions/cron` handler above is reached first.
+   *
+   * Reads (GET, HEAD) use the permissive `userCanReadSession` predicate
+   * so shared session types (reviewer threads) are visible to all
+   * users. Mutations (POST/PUT/PATCH/DELETE) stay strict — only the
+   * owner may write. Reviewer sessions have no owner, so non-owner
+   * write attempts hit the NULL-owner branch in `userOwnsSession` and
+   * 404 unless the caller is the org owner. That keeps the frontend
+   * thread read-only for everyone except automation.
    */
   router.use('/api/sessions/:sessionId', (req, res, next) => {
     const sid = (req.params as { sessionId?: string }).sessionId;
     if (!sid || sid === 'cron') return next();
-    if (!userOwnsSession(req as AuthenticatedRequest, sid)) {
+    const isRead = req.method === 'GET' || req.method === 'HEAD';
+    const ok = isRead
+      ? userCanReadSession(req as AuthenticatedRequest, sid)
+      : userOwnsSession(req as AuthenticatedRequest, sid);
+    if (!ok) {
       return res.status(404).json({ error: 'Session not found' });
     }
     return next();

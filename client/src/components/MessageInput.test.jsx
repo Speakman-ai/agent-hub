@@ -601,3 +601,40 @@ describe('MessageInput voice transcription', () => {
     expect(onFileError).not.toHaveBeenCalled();
   });
 });
+
+describe('MessageInput readOnly (reviewer thread) mode', () => {
+  const baseProps = {
+    onSend: () => {},
+    onCancel: () => {},
+    disabled: false,
+    queueLength: 0,
+    agentColor: '#4F46E5',
+    skills: [],
+    askMode: false,
+  };
+
+  it('renders only the read-only banner when readOnly is true', () => {
+    render(<MessageInput {...baseProps} readOnly={true} />);
+    const banner = screen.getByTestId('reviewer-readonly-banner');
+    expect(banner).toBeTruthy();
+    expect(banner.textContent).toMatch(/Reviewer thread/i);
+    expect(banner.textContent).toMatch(/read-only/i);
+    // Composer affordances must NOT render in read-only mode.
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('renders the normal composer when readOnly is false', () => {
+    render(<MessageInput {...baseProps} readOnly={false} />);
+    expect(screen.queryByTestId('reviewer-readonly-banner')).toBeNull();
+    expect(screen.getByRole('textbox')).toBeTruthy();
+  });
+
+  it('readOnly takes precedence over askMode (no composer either way)', () => {
+    // A reviewer agent that is also in ask mode should still surface
+    // the reviewer banner, not the ask-mode composer.
+    render(<MessageInput {...baseProps} readOnly={true} askMode={true} />);
+    expect(screen.getByTestId('reviewer-readonly-banner')).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+});

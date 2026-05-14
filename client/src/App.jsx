@@ -3767,6 +3767,7 @@ export default function App() {
                       agentColor={activeAgent?.color}
                       skills={skills}
                       askMode={sessionAskMode}
+                      readOnly={activeAgent?.role === 'reviewer'}
                       draftKey={activeSessionId || activeAgentId || 'none'}
                       onFileError={(msg) => showToast(msg, 'error', 6000)}
                     />

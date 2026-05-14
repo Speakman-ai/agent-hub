@@ -1330,8 +1330,11 @@ async function runReviewerDispatch(
     0,
     1,
   );
-  // PR review sessions originate from a GitHub webhook (no JWT) → org owner.
-  setSessionOwner(sessionId, getOrgOwnerUserId());
+  // PR review sessions are *shared* across all users in the org — the
+  // review thread is read-only for everyone and we don't want strict
+  // ownership to hide it from non-owners. Leave `owner_user_id` NULL;
+  // `userCanReadSession` / `isReviewerSession` bypass strict ownership
+  // for sessions whose agent has `role === 'reviewer'`.
   {
     const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (row) {
