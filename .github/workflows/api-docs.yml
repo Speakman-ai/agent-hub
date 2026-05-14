@@ -84,6 +84,17 @@ jobs:
       - name: Install server dependencies (for tsx + filter module)
         run: cd server && npm ci --ignore-scripts --include=dev
 
+      # `--ignore-scripts` above skips the root `postinstall` hook
+      # (`npm rebuild better-sqlite3`). Many route modules transitively
+      # import `server/db.ts`, which loads better-sqlite3's native binding
+      # at module-load time. Without the rebuild, the generator's
+      # side-effect imports silently fail ("Could not locate the bindings
+      # file"), and the emitted spec ends up missing ~half of the
+      # registered paths/schemas. Mirrors ci.yml's "Rebuild native
+      # modules" step.
+      - name: Rebuild better-sqlite3 native binding
+        run: npm rebuild better-sqlite3
+
       - name: Run filter unit tests
         run: cd server && npx vitest run openapi-filter.test.ts openapi-coverage.test.ts openapi/registry.test.ts
 
