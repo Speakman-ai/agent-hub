@@ -194,16 +194,21 @@ export default function DrawerContent({ navigation }) {
               </Text>
             </TouchableOpacity>
           ))}
-          <TouchableOpacity
-            style={styles.newSessionButton}
-            onPress={async () => {
-              await handleNewSession();
-              navigation.navigate('Chat');
-              navigation.closeDrawer();
-            }}
-          >
-            <Text style={styles.newSessionText}>+ New Session</Text>
-          </TouchableOpacity>
+          {/* Reviewer agents are GitHub-webhook spawned — hide manual
+              "+ New Session" so the user can't kick a 403 from the
+              POST /api/agents/:id/sessions gate. */}
+          {agent.role !== 'reviewer' && (
+            <TouchableOpacity
+              style={styles.newSessionButton}
+              onPress={async () => {
+                await handleNewSession();
+                navigation.navigate('Chat');
+                navigation.closeDrawer();
+              }}
+            >
+              <Text style={styles.newSessionText}>+ New Session</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Archived (soft-deleted within 7 days) — collapsed by default so
               the drawer stays quiet when nothing is pending recovery. Mirror

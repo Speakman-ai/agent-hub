@@ -433,3 +433,45 @@ describe('Sidebar — org switcher gating (Electron-only)', () => {
     }
   });
 });
+
+describe('Sidebar — reviewer agents do not expose "+ New Session"', () => {
+  it('hides the New Session button under a reviewer agent', () => {
+    const reviewerId = 'reviewer-agent';
+    const props = buildProps({
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Test Project',
+          color: '#22d3ee',
+          agents: [
+            { id: reviewerId, name: 'Reviewer', color: '#a78bfa', role: 'reviewer', active: true },
+          ],
+        },
+      ],
+      activeAgentId: reviewerId,
+      sessions: [{ id: 'rev-1', name: 'Review: PR #1 Fix bug' }],
+    });
+    render(<Sidebar {...props} />);
+    // Existing reviewer sessions still render in the list.
+    expect(screen.getByText('Review: PR #1 Fix bug')).toBeInTheDocument();
+    // But the "+ New Session" affordance is suppressed.
+    expect(screen.queryByText('+ New Session')).not.toBeInTheDocument();
+  });
+
+  it('still shows "+ New Session" for a non-reviewer agent in the same project', () => {
+    const props = buildProps({
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Test Project',
+          color: '#22d3ee',
+          agents: [
+            { id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', role: 'lead', active: true },
+          ],
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+    expect(screen.getByText('+ New Session')).toBeInTheDocument();
+  });
+});

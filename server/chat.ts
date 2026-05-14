@@ -1341,6 +1341,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
       const { project, agent } = found;
+      // Reviewer agents are write-only from the system spawn path
+      // (GitHub webhook → runReviewerDispatch). A client WS message
+      // (ws !== null) targeting a reviewer agent means a user is
+      // trying to chat with a reviewer — refuse. System spawns pass
+      // ws === null and continue through.
+      if (ws && agent.role === 'reviewer') {
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            sessionId,
+            error:
+              'Reviewer agents only run from the GitHub PR webhook; chat sessions cannot be started manually.',
+          }),
+        );
+        return;
+      }
       const enrichedAgent = getEnrichedAgent(agentId);
 
       // ── Bug-report reroute guard ──────────────────────────────────

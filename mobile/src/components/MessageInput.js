@@ -39,7 +39,7 @@ function guessMimeFromName(name, fallback) {
   return map[ext] || fallback;
 }
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode }) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, readOnly }) {
   const [value, setValue] = useState('');
   // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
   // kind ∈ 'image' | 'video' | 'file'
@@ -237,6 +237,28 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     // Keep the slash-popup state consistent if the user pastes mid-slash.
     closeSlash();
   }, [closeSlash]);
+
+  // Read-only sessions (reviewer threads) — render only a banner. The
+  // composer, send button, and keyboard handling are all suppressed
+  // because the thread is a shared artifact and only the server-side
+  // spawn writes to it.
+  if (readOnly) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.askModeBanner}>
+          <Ionicons
+            name="information-circle"
+            size={14}
+            color={colors.blue400}
+            style={{ marginRight: 4 }}
+          />
+          <Text style={styles.askModeBannerText}>
+            Reviewer thread, read-only. Shared with everyone in the org.
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
