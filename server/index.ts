@@ -92,6 +92,7 @@ import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
+import { createApiDocsRoutes } from './routes/api-docs.js';
 import createHookRoutes from './routes/hooks.js';
 import createClaudeAuthRoutes from './routes/claude-auth.js';
 import createGeminiAuthRoutes from './routes/gemini-auth.js';
@@ -445,6 +446,13 @@ app.use(
 );
 
 app.use(createHealthRoute({ allAgents, getProjects, config }));
+
+// Interactive API docs (Swagger UI) at /api/docs. Mounted before
+// authMiddleware so self-hosters and unauthenticated visitors can browse
+// the API surface — the spec is the same one published from CI, so there's
+// nothing private to gate. No client changes required; this is a server-only
+// nice-to-have for local dev and self-hosted instances.
+app.use(createApiDocsRoutes());
 
 initAutoGit({
   stmts: stmts!,
