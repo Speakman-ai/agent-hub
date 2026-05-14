@@ -65,9 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22 matches the project's `engines.node` (>=22.14.0 <23.0.0).
+      # Earlier this workflow ran on Node 20, which silently broke side-effect
+      # imports of several route modules — the generator's try/catch swallowed
+      # the failures and produced a smaller-than-expected spec that drifted
+      # against the committed YAML. Keep this aligned with `package.json`.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: |
             package-lock.json
