@@ -34,6 +34,33 @@ export interface VisibilityGateDeps {
   findProject: (projectId: string) => Project | null;
 }
 
+/**
+ * Resolve the caller's visibility context from an authenticated request.
+ * Centralizes the JWT / apiKey / local-bypass story so every project-scoped
+ * code path sees the same shape — both the gate below and any route that
+ * needs to filter or fetch project-scoped data directly (e.g. the global
+ * `GET /api/agents` list, which doesn't sit under `/api/projects/:projectId`
+ * but must still respect per-project visibility).
+ *
+ * Bypass paths collapse "who is this caller" into "see everything":
+ *   - `authLocalOrgBypass`: single-tenant local-bundled server.
+ *   - `authViaApiKey`: global `x-api-key` break-glass (Owner-forced).
+ *   - No-auth-configured mode: `apiKey` and `authRecord` both unset
+ *     server-side; the auth middleware stamps `authRole='Owner'` but
+ *     leaves `authUserId` undefined. Detected here by the
+ *     `(Owner role, no user id, no JWT user record)` tuple, matching the
+ *     auth middleware's early-return branch.
+ */
+export function resolveVisibilityCaller(req: Request): VisibilityCaller {
+  const areq = req as AuthenticatedRequest;
+  const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
+  return {
+    userId: areq.authUserId ?? null,
+    role: areq.authRole,
+    localBypass: Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured),
+  };
+}
+
 export function createProjectVisibilityGate(
   deps: VisibilityGateDeps,
 ): (req: Request, res: Response, next: NextFunction) => void {
@@ -52,17 +79,7 @@ export function createProjectVisibilityGate(
       next();
       return;
     }
-    const areq = req as AuthenticatedRequest;
-    // Match the bypass logic in routes/projects.ts `resolveVisibilityCaller`:
-    // single-tenant local mode, the global apiKey break-glass, and the
-    // no-auth-configured fresh-install/dev/unit-test mode (Owner role
-    // stamped without any user id) all see every project.
-    const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
-    const caller: VisibilityCaller = {
-      userId: areq.authUserId ?? null,
-      role: areq.authRole,
-      localBypass: Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured),
-    };
+    const caller = resolveVisibilityCaller(req);
     if (!canViewProject(project, caller)) {
       // Two exceptions where we let the request through to its handler
       // and let the handler enforce its own deeper auth:

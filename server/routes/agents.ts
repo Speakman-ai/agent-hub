@@ -8,7 +8,9 @@ import { unscheduleHeartbeat } from '../heartbeat.js';
 import { resolveProjectPaths, contextFilePath, ALL_CONTEXT_FILES } from '../project-paths.js';
 import { updateMemory, getMemoryData } from '../memory.js';
 import { HOOK_EVENTS } from '../hooks.js';
-import type { RouteDeps, Agent, HookConfig } from '../types.js';
+import type { RouteDeps, Agent, Project, HookConfig } from '../types.js';
+import { canViewProject } from '../project-visibility.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
@@ -98,6 +100,36 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     ensureProjectRoom,
   } = deps;
 
+  /**
+   * Agent-scoped equivalent of the `/api/projects/:projectId` visibility
+   * gate: look up the agent, then refuse to admit the caller when they
+   * cannot view the agent's project. Returns the lookup tuple on success,
+   * or `null` after writing a 404 to `res` — handlers can early-return
+   * without re-checking auth themselves.
+   *
+   * We mask the "private project, you can't see this agent" case as
+   * `'Agent not found'` (same shape and status as a genuinely missing
+   * agent) so the endpoint never leaks the existence of agents that live
+   * inside a private project the caller cannot enter.
+   */
+  function findAgentVisible(
+    req: Request,
+    res: Response,
+    agentId: string,
+  ): { project: Project; agent: Agent } | null {
+    const found = findAgent(agentId);
+    if (!found) {
+      res.status(404).json({ error: 'Agent not found' });
+      return null;
+    }
+    const caller = resolveVisibilityCaller(req);
+    if (!canViewProject(found.project, caller)) {
+      res.status(404).json({ error: 'Agent not found' });
+      return null;
+    }
+    return found;
+  }
+
   const router = Router();
 
   router.post('/api/agents/bulk-engine', (req: Request, res: Response) => {
@@ -115,8 +147,14 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (model && allowed.includes(model)) {
       resolved = model;
     }
+    // Visibility scope: only mutate agents in projects the caller can view.
+    // This matches `GET /api/agents` (which only enumerates visible agents)
+    // so a User running "switch all my agents to claude-code" doesn't
+    // silently rewrite the engine on another tenant's private project.
+    const caller = resolveVisibilityCaller(req);
     let updated = 0;
     for (const p of deps.getProjects()) {
+      if (!canViewProject(p, caller)) continue;
       for (const a of p.agents) {
         a.engine = engine;
         a.model = resolved;
@@ -127,36 +165,53 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     res.json({ updated, engine, model: resolved });
   });
 
-  router.get('/api/agents', (_req: Request, res: Response) => {
-    const enriched = allAgents().map((a) => {
-      const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
-      let lastActivity: string | null = null;
-      let lastMessage: { role: string; content: string; created_at: string } | null = null;
-      if (sessions.length > 0) {
-        lastActivity = sessions[0].updated_at;
-        const msg = stmts.getLastMessage.get(sessions[0].id) as
-          | {
-              role: string;
-              content: string;
-              created_at: string;
-            }
-          | undefined;
-        if (msg) {
-          lastMessage = {
-            role: msg.role,
-            content: msg.content.substring(0, 100),
-            created_at: msg.created_at,
-          };
+  router.get('/api/agents', (req: Request, res: Response) => {
+    // Filter to agents whose project the caller can view. `allAgents()`
+    // already enriches each row with `projectId`, but we filter at the
+    // project level for the canonical visibility check (a project's
+    // `visibility` / `ownerUserId` live on the parent record, not the
+    // agent). Under bypass identities (local-bundled server, global
+    // x-api-key break-glass, no-auth-configured dev) `canViewProject`
+    // returns true for every project, so the list shape is unchanged
+    // for those callers.
+    const caller = resolveVisibilityCaller(req);
+    const visibleProjectIds = new Set(
+      deps
+        .getProjects()
+        .filter((p) => canViewProject(p, caller))
+        .map((p) => p.id),
+    );
+    const enriched = allAgents()
+      .filter((a) => visibleProjectIds.has(a.projectId))
+      .map((a) => {
+        const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
+        let lastActivity: string | null = null;
+        let lastMessage: { role: string; content: string; created_at: string } | null = null;
+        if (sessions.length > 0) {
+          lastActivity = sessions[0].updated_at;
+          const msg = stmts.getLastMessage.get(sessions[0].id) as
+            | {
+                role: string;
+                content: string;
+                created_at: string;
+              }
+            | undefined;
+          if (msg) {
+            lastMessage = {
+              role: msg.role,
+              content: msg.content.substring(0, 100),
+              created_at: msg.created_at,
+            };
+          }
         }
-      }
-      return { ...a, lastActivity, lastMessage };
-    });
+        return { ...a, lastActivity, lastMessage };
+      });
     res.json(enriched);
   });
 
   router.patch('/api/agents/:agentId', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
 
     const parsed = parseBody(UpdateAgentRequestSchema, req, res);
@@ -221,6 +276,14 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     } = parsed;
     const project = findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
+    // Visibility scope: refuse to add an agent to a project the caller
+    // cannot view. Mask as 'Project not found' to keep parity with the
+    // `/api/projects/:projectId` gate — we don't want this endpoint to
+    // become an enumeration oracle for private projects.
+    const caller = resolveVisibilityCaller(req);
+    if (!canViewProject(project, caller)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
     if (findAgent(id)) {
       return res.status(409).json({ error: 'Agent id already exists' });
     }
@@ -279,8 +342,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // directory at <project.ahw>/agents/<agentId>/ is also removed so a
   // re-created agent with the same id starts clean.
   router.delete('/api/agents/:agentId', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { project, agent } = found;
     const agentId = agent.id;
 
@@ -337,8 +400,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // ─── Hooks configuration ────────────────────────────────────────────
 
   router.get('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
     res.json({
       hooks: agent.hooks || {},
@@ -347,8 +410,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
 
     const { hooks } = req.body as { hooks?: Record<string, HookConfig[]> };
@@ -393,8 +456,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
     delete agent.hooks;
     saveProjects();
@@ -404,14 +467,14 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // ─── MCP Server configuration ────────────────────────────────────────
 
   router.get('/api/agents/:agentId/mcp-servers', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     res.json({ mcpServers: found.agent.mcpServers || {} });
   });
 
   router.put('/api/agents/:agentId/mcp-servers', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
 
     const { mcpServers } = req.body as { mcpServers?: Record<string, McpServerInput> };
@@ -446,8 +509,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/mcp-servers/:serverName', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
     const serverName = req.params.serverName as string;
     const server = req.body as McpServerInput;
@@ -483,8 +546,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/mcp-servers/:serverName', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { agent } = found;
     const serverName = req.params.serverName as string;
 
@@ -503,8 +566,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // ─── Context endpoints ─────────────────────────────────────────────
 
   router.get('/api/agents/:agentId/context', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { project, agent } = found;
     if (!project.ahw) return res.json({});
 
@@ -524,8 +587,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/context/:filename', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     const { project, agent } = found;
     if (!project.ahw) return res.status(400).json({ error: 'No workspace configured' });
     if (!ALL_CONTEXT_FILES.includes(req.params.filename as string)) {
@@ -547,16 +610,16 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // ─── Memory API ────────────────────────────────────────────────────
 
   router.get('/api/agents/:agentId/memory', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     if (!found.project.ahw) return res.status(400).json({ error: 'No workspace configured' });
 
     res.json(getMemoryData(found.project.ahw));
   });
 
   router.put('/api/agents/:agentId/memory', (req: Request, res: Response) => {
-    const found = findAgent(req.params.agentId as string);
-    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const found = findAgentVisible(req, res, req.params.agentId as string);
+    if (!found) return;
     if (!found.project.ahw) return res.status(400).json({ error: 'No workspace configured' });
 
     const parsed = parseBody(UpdateAgentMemoryRequestSchema, req, res);
