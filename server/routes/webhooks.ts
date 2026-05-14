@@ -30,6 +30,7 @@ import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup
 import { buildResolvePrompt } from './pr-resolve.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
+import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
 import type {
   AppConfig,
   RouteDeps,
@@ -887,6 +888,36 @@ export async function dispatchReviewFeedback(
   }
 }
 
+/**
+ * Wrap `dispatchReviewFeedback` with the autofix round-counter + observability
+ * banner. Every webhook / poll site that previously called
+ * `dispatchReviewFeedback(deps, card, project, body)` should go through this
+ * helper so the agent sees an explicit "Autofix round N" frame and the
+ * structured `[Autofix] event=dispatch round=N ...` log row gets emitted.
+ *
+ * The helper is local to this module — autonomous.ts has its own thin
+ * adapter against `dispatchAutofixFeedback` to avoid pulling `RouteDeps` into
+ * the poller. Both adapters delegate to the same wrapper in
+ * `autofix-dispatch.ts`.
+ */
+async function dispatchReviewAutofix(
+  deps: RouteDeps,
+  card: KanbanCardRow,
+  project: Project,
+  kind: AutofixDispatchKind,
+  body: string,
+): Promise<DispatchReviewFeedbackResult & { round: number }> {
+  const result = await dispatchAutofixFeedback(
+    { stmts: deps.stmts },
+    card,
+    project,
+    kind,
+    body,
+    (c, p, content) => dispatchReviewFeedback(deps, c, p, content),
+  );
+  return result;
+}
+
 // ─── Per-webhook author allowlist ────────────────────────────────
 //
 // When two Agent Hub instances are both installed on the same repo (e.g. Kevin's
@@ -1497,10 +1528,11 @@ gh api repos/${repoFullName}/pulls/${prNumber}/comments -f body="<!-- agent-hub-
 Your response here"
 \`\`\``;
 
-  const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+  const { sessionId, userMessagePersisted } = await dispatchReviewAutofix(
     deps,
     card,
     project,
+    'review-batch-comments',
     feedbackContent,
   );
   if (sessionId && userMessagePersisted) {
@@ -1897,10 +1929,11 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
       broadcast({ type: 'kanban_update', projectId: project.id });
     }
 
-    const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+    const { sessionId, userMessagePersisted } = await dispatchReviewAutofix(
       deps,
       card,
       project,
+      'review-changes-requested',
       feedbackMessage,
     );
     console.log(
@@ -1966,10 +1999,11 @@ ${reviewBody}
 
 **Important:** Always prefix your comment body with \`<!-- agent-hub-bot -->\` so the system knows it was posted by an agent.`;
 
-    const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+    const { sessionId, userMessagePersisted } = await dispatchReviewAutofix(
       deps,
       card,
       project,
+      'review-commented',
       feedbackMessage,
     );
     console.log(
@@ -2244,7 +2278,7 @@ export async function fanOutMergeConflictAutofix(
     };
     const prompt = buildResolvePrompt(prRecord, [], [], [], repoFullName, ['conflict']);
     try {
-      const dispatch = await dispatchReviewFeedback(deps, card, project, prompt);
+      const dispatch = await dispatchReviewAutofix(deps, card, project, 'conflict-resolve', prompt);
       result.dispatched.push({ prNumber: sib.number, sessionId: dispatch.sessionId });
       console.log(
         `[Webhook/FanOut] PR #${sib.number} dirty after #${mergedPrNumber} merged → dispatched conflict autofix to session ${

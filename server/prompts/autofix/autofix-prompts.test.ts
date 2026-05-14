@@ -82,4 +82,40 @@ describe('autofix prompt templates', () => {
       expect(prompt).toMatch(/@ts-ignore|eslint-disable|\.skip/);
     }
   });
+
+  // ── Anti-disengagement framing ────────────────────────────────────
+  //
+  // The autofix-stall conversation (see today's notes + the round-counter
+  // PR) identified the dev session deciding "I've been here three times,
+  // must be a real blocker" as the most likely cause of stalled PRs. Each
+  // template now carries an "iteration is normal" section that explicitly
+  // names this failure mode. These assertions pin that framing so a future
+  // edit can't quietly delete it.
+  it('every template tells the agent that iteration is normal', () => {
+    for (const kind of AUTOFIX_KINDS) {
+      const prompt = loadAutofixTemplate(kind);
+      expect(prompt.toLowerCase()).toMatch(/iteration is normal/);
+    }
+  });
+
+  it('every template forbids silent disengagement', () => {
+    for (const kind of AUTOFIX_KINDS) {
+      const prompt = loadAutofixTemplate(kind);
+      expect(prompt.toLowerCase()).toMatch(/disengage|silently/);
+    }
+  });
+
+  it('every template directs the agent to comment on the PR when truly blocked', () => {
+    for (const kind of AUTOFIX_KINDS) {
+      const prompt = loadAutofixTemplate(kind);
+      expect(prompt.toLowerCase()).toMatch(/pr comment|comment on the pr|post a (pr )?comment/);
+    }
+  });
+
+  it('ci-autofix introduces the pr-caused / preexisting-infra / flaky triage taxonomy', () => {
+    const prompt = loadAutofixTemplate('ci');
+    expect(prompt.toLowerCase()).toContain('pr-caused');
+    expect(prompt.toLowerCase()).toContain('preexisting-infra');
+    expect(prompt.toLowerCase()).toContain('flaky');
+  });
 });

@@ -7,6 +7,7 @@ import type { Database } from 'better-sqlite3';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
+import { dispatchAutofixFeedback } from './autofix-dispatch.js';
 import { createEscalation } from './routes/escalations.js';
 import {
   lastDispatchedReviewId,
@@ -1467,11 +1468,13 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
             d.broadcast({ type: 'kanban_update', projectId: project.id });
           }
 
-          const result = await dispatchReviewFeedback(
-            webhookHandlerDeps,
+          const result = await dispatchAutofixFeedback(
+            { stmts: d.stmts },
             card,
             project,
+            'review-missed-poll',
             feedbackMessage,
+            (c, p, content) => dispatchReviewFeedback(webhookHandlerDeps, c, p, content),
           );
           if (result.userMessagePersisted) {
             const latestId = Math.max(...newReviews.map((r) => r.id));
@@ -1600,11 +1603,13 @@ The CI will re-run automatically once you push.`;
               d.broadcast({ type: 'kanban_update', projectId: project.id });
             }
 
-            const result = await dispatchReviewFeedback(
-              webhookHandlerDeps,
+            const result = await dispatchAutofixFeedback(
+              { stmts: d.stmts },
               card,
               project,
+              'ci-failure',
               feedbackMessage,
+              (c, p, content) => dispatchReviewFeedback(webhookHandlerDeps, c, p, content),
             );
             if (result.userMessagePersisted) {
               const latestId = Math.max(...newFailed.map((r) => r.id));
@@ -1703,11 +1708,13 @@ ${commentSummary}${newComments.length > 5 ? `\n…and ${newComments.length - 5} 
             d.broadcast({ type: 'kanban_update', projectId: project.id });
           }
 
-          const result = await dispatchReviewFeedback(
-            webhookHandlerDeps,
+          const result = await dispatchAutofixFeedback(
+            { stmts: d.stmts },
             card,
             project,
+            'inline-comment-poll',
             feedbackMessage,
+            (c, p, content) => dispatchReviewFeedback(webhookHandlerDeps, c, p, content),
           );
           if (result.userMessagePersisted) {
             const latestId = Math.max(...newComments.map((c) => c.id));

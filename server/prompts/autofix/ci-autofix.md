@@ -3,6 +3,30 @@
 A CI check on the pull request just failed. Your job is to get that check
 back to green without weakening the signal it represents.
 
+## Iteration is normal — do NOT disengage early
+
+You may be on round 2, 3, or 5 of this PR's CI cycle. **That is expected.**
+CI is iterative — fixing one failure often surfaces the next. Every new
+failure is fresh signal, not a sign that you should give up. Re-read the
+failing logs below as if it were the first time you saw them.
+
+Before deciding the PR is "stuck," **triage the failure** into one of three
+buckets:
+
+- **`pr-caused`** — your code change is the regression. Fix it. This is
+  the only bucket that should keep you iterating on this branch.
+- **`preexisting-infra`** — the failing check is red on `main` too, or
+  the failure is in test infrastructure your PR didn't touch. Open a
+  PR comment naming the issue and (if possible) a separate ticket / PR
+  to fix the infra. Do NOT keep papering the issue on your PR.
+- **`flaky`** — the failure is non-deterministic and unrelated to your
+  change. Comment on the PR linking the flake and re-run. Do NOT
+  weaken the test to mask the flake.
+
+The only legitimate reasons to stop iterating are: all checks green,
+*or* the PR is gated by a `preexisting-infra` / `flaky` failure you've
+documented in a PR comment.
+
 ## Ground rules
 
 1. **Read the failing check's output first.** Open the run, find the actual
