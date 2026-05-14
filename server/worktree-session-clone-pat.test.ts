@@ -378,4 +378,60 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     const surfacedMessage: string = onFailure.mock.calls[0][1];
     expect(surfacedMessage).not.toContain(USER_PAT);
   });
+
+  // Production-incident regression (2026-05-14 17:16:40). When the user's
+  // stored OAuth token has no access to the target repo, GitHub returns
+  // 403 and node's `execFile` builds a `Command failed: …` error string
+  // that echoes the full argv — including the `-c http.<host>.extraheader=
+  // Authorization: basic <BASE64>` arg synthesized by
+  // `gitAuthArgsForGithubPat`. The secret in that echo is the
+  // base64-encoded `x-access-token:<TOKEN>` form, NOT the raw token, so
+  // the value-based `redactToken` pass cannot find it. Before the
+  // shape-based `redactAuthHeader` helper was layered into every clone /
+  // fetch catch site in `worktree.ts` (#991), a live `gho_` user OAuth
+  // token landed in `console.error` and the WebSocket `onFailure`
+  // payload. This integration test exercises the full
+  // `ensureSessionWorkspace` path with the real-world argv echo + GitHub
+  // 403 body so any future regression of the layered redaction shows up
+  // here, not in production logs.
+  it('redacts the base64 Authorization header from real-world argv-echo errors', async () => {
+    const USER_PAT = 'gho_REAL_user_oauth_token_MUST_NOT_LEAK_xyz';
+    mockGetGithubPatForUser.mockReturnValue(USER_PAT);
+    currentRemoteUrl = 'https://github.com/Speakman-ai/agent-hub.git';
+
+    const basicPayload = Buffer.from(`x-access-token:${USER_PAT}`, 'utf8').toString('base64');
+    // Shape matches the actual 17:16:40 production failure: `Command
+    // failed: git -c http.…extraheader=Authorization: basic <BASE64>
+    // clone …` followed by the GitHub 403 body.
+    cloneFailMessage =
+      `Command failed: git -c http.https://github.com/.extraheader=Authorization: basic ${basicPayload} ` +
+      `clone --depth 1 --quiet https://github.com/Speakman-ai/agent-hub.git ` +
+      `/home/node/.agent-hub/workspaces/agent-hub/session-test\n` +
+      `remote: Write access to repository not granted.\n` +
+      `fatal: unable to access 'https://github.com/Speakman-ai/agent-hub.git/': ` +
+      `The requested URL returned error: 403`;
+
+    const onFailure = vi.fn();
+    await ensureSessionWorkspace(
+      makeSession(uniqueSessionId(), 'user-1'),
+      sourceDir,
+      'agent-1',
+      vi.fn(),
+      undefined,
+      onFailure,
+    );
+
+    expect(onFailure).toHaveBeenCalledOnce();
+    const surfacedMessage: string = onFailure.mock.calls[0][1];
+
+    // Neither the raw token nor its base64-wrapped form may survive.
+    expect(surfacedMessage).not.toContain(USER_PAT);
+    expect(surfacedMessage).not.toContain(basicPayload);
+    // The redacted header shape should appear instead so operators
+    // still see WHERE the leak would have been.
+    expect(surfacedMessage).toContain('Authorization: basic ***');
+    // Diagnostic context — the GitHub 403 — must still surface.
+    expect(surfacedMessage).toContain('Write access to repository not granted');
+    expect(surfacedMessage).toContain('returned error: 403');
+  });
 });
