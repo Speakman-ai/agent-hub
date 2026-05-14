@@ -1,11 +1,14 @@
 {
   "id": "move-card",
-  "description": "Agent advances an existing card through the pipeline (In Progress → Review) after opening a PR. Verifies it uses the move-by-column-name wrapper and adds a comment with the PR URL rather than stuffing everything into a description update.",
-  "skills": ["agent-hub", "kanban"],
+  "description": "Agent advances an existing card through the pipeline (In Progress \u2192 Review) after opening a PR. Verifies it uses the move-by-column-name wrapper and adds a comment with the PR URL rather than stuffing everything into a description update.",
+  "skills": [
+    "agent-hub",
+    "kanban"
+  ],
   "query": "I just opened PR #512 for card 8a4f21de. Move that card to Review and leave a comment on it with the PR URL so the reviewer can find it.",
   "files": [
     "server/default-skills/agent-hub/SKILL.md",
-    "server/default-skills/agent-hub/references/kanban.md",
+    "server/default-skills/agent-hub-kanban/references/kanban.md",
     "server/default-skills/agent-hub/scripts/kanban-move-card.sh",
     "server/default-skills/agent-hub/scripts/board.sh"
   ],
@@ -13,7 +16,7 @@
     {
       "type": "mentions_script",
       "value": "scripts/kanban-move-card.sh",
-      "rationale": "Deterministic wrapper for column moves — preferred over raw curl."
+      "rationale": "Deterministic wrapper for column moves \u2014 preferred over raw curl."
     },
     {
       "type": "contains",
@@ -22,13 +25,19 @@
     },
     {
       "type": "contains_any",
-      "value": ["Review", "\"Review\""],
+      "value": [
+        "Review",
+        "\"Review\""
+      ],
       "rationale": "Target column name must be in the command string."
     },
     {
       "type": "mentions_any_script",
-      "value": ["scripts/board.sh comment", "scripts/board.sh"],
-      "rationale": "Comment is a separate subcommand — not squeezed into the move call."
+      "value": [
+        "scripts/board.sh comment",
+        "scripts/board.sh"
+      ],
+      "rationale": "Comment is a separate subcommand \u2014 not squeezed into the move call."
     },
     {
       "type": "regex",

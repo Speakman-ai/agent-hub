@@ -1,11 +1,14 @@
 {
   "id": "search-wiki",
   "description": "Agent is asked a project-conventions question and should reach for the wiki FTS search before fabricating an answer. Verifies wiki-search.sh is preferred and that the agent favours updating an existing page over creating a new one.",
-  "skills": ["agent-hub", "wiki-search"],
-  "query": "A teammate asked: 'what's our policy on authentication — JWT or session cookies?'. Find the authoritative answer in the project wiki and tell me the slug, then outline the steps you'd take to update that page if the policy drifted.",
+  "skills": [
+    "agent-hub",
+    "wiki-search"
+  ],
+  "query": "A teammate asked: 'what's our policy on authentication \u2014 JWT or session cookies?'. Find the authoritative answer in the project wiki and tell me the slug, then outline the steps you'd take to update that page if the policy drifted.",
   "files": [
     "server/default-skills/agent-hub/SKILL.md",
-    "server/default-skills/agent-hub/references/wiki.md",
+    "server/default-skills/agent-hub-wiki/references/wiki.md",
     "server/default-skills/agent-hub/scripts/wiki-search.sh",
     "server/default-skills/agent-hub/scripts/wiki-upsert.sh"
   ],
@@ -17,17 +20,27 @@
     },
     {
       "type": "mentions_any_script",
-      "value": ["scripts/wiki-upsert.sh", "scripts/wiki.sh read"],
+      "value": [
+        "scripts/wiki-upsert.sh",
+        "scripts/wiki.sh read"
+      ],
       "rationale": "Update flow goes through wiki-upsert.sh; read flow via wiki.sh read. Either is acceptable for the outline."
     },
     {
       "type": "contains_any",
-      "value": ["update", "Update", "updating"],
+      "value": [
+        "update",
+        "Update",
+        "updating"
+      ],
       "rationale": "Agent should talk about UPDATING existing pages, not creating duplicates."
     },
     {
       "type": "not_contains_any",
-      "value": ["create a new page", "create a brand-new page"],
+      "value": [
+        "create a new page",
+        "create a brand-new page"
+      ],
       "rationale": "Creating a new duplicate page is the exact anti-pattern the skill warns against."
     },
     {

@@ -16,6 +16,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
+import { loadSkillBody } from '../skill-invoke.js';
 import {
   chmodSync,
   cpSync,
@@ -32,11 +33,49 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_SKILL_DIR = path.join(__dirname, '..', 'default-skills', 'agent-hub');
+const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
+const DEFAULT_SKILL_DIR = path.join(DEFAULT_SKILLS_DIR, 'agent-hub');
 const PLUGIN_SKILL_DIR = path.join(__dirname, '..', '..', 'plugin', 'skills', 'agent-hub');
 const PLUGIN_ROOT = path.join(__dirname, '..', '..', 'plugin');
 const DEFAULT_EVALS = path.join(DEFAULT_SKILL_DIR, 'evals');
 const PLUGIN_EVALS = path.join(PLUGIN_SKILL_DIR, 'evals');
+
+// Domain sub-skills introduced by the agent-hub skill split. The core
+// `agent-hub` skill is the navigational entry point; each sub-skill owns
+// one domain's reference doc and fires only on that domain's vocabulary.
+// Shared scripts/ tree lives in the core skill — sub-skills do NOT ship
+// their own scripts dir.
+const SUB_SKILLS = [
+  {
+    id: 'agent-hub-kanban',
+    dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-kanban'),
+    reference: 'kanban.md',
+    /** Domain-specific markers that MUST appear in this sub-skill's markdown. */
+    domainMarkers: [/kanban/i, /board/i, /Done-state contract/i],
+  },
+  {
+    id: 'agent-hub-wiki',
+    dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-wiki'),
+    reference: 'wiki.md',
+    domainMarkers: [/wiki/i, /FTS5/, /categor/i],
+  },
+  {
+    id: 'agent-hub-sessions',
+    dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-sessions'),
+    reference: 'sessions.md',
+    // delegate/handoff/close-card/ask-mode markers consolidate here after
+    // the split. Coverage assertion below (REQUIRED_MARKERS) is updated
+    // to scan the agent-hub family, but this sub-skill is where the
+    // session-flavoured surface should live first.
+    domainMarkers: [/<delegate>/, /<handoff>/, /<agenthub:close-card>/, /ask[_ ]?mode/i],
+  },
+  {
+    id: 'agent-hub-heartbeats-crons',
+    dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-heartbeats-crons'),
+    reference: 'heartbeats-crons.md',
+    domainMarkers: [/heartbeat/i, /cron/i, /thread/i, /node-cron/i],
+  },
+] as const;
 
 // --- shared fs helpers --------------------------------------------------
 
@@ -113,8 +152,17 @@ const REQUIRED_MARKERS: Array<{ surface: string; patterns: RegExp[] }> = [
   },
 ];
 
-function assertAllMarkersPresent(skillDir: string, label: string): void {
-  const corpus = readAllSkillMarkdown(skillDir);
+function assertAllMarkersPresent(skillDirs: string[], label: string): void {
+  // Coverage is measured across the WHOLE agent-hub skill family — the
+  // core skill + every domain sub-skill — because the split moved the
+  // session-flavoured surfaces (delegate / handoff / close-card /
+  // ask-mode) out of the core's references/ into agent-hub-sessions'.
+  // Concatenating the markdown for the family keeps the assertion
+  // honest without requiring every marker to live in the core.
+  const corpus = skillDirs
+    .filter((d) => existsSync(d))
+    .map((d) => readAllSkillMarkdown(d))
+    .join('\n\n');
   const missing: Array<{ surface: string; unmatched: string[] }> = [];
   for (const { surface, patterns } of REQUIRED_MARKERS) {
     const unmatched = patterns.filter((rx) => !rx.test(corpus)).map((rx) => rx.toString());
@@ -126,14 +174,19 @@ function assertAllMarkersPresent(skillDir: string, label: string): void {
 }
 
 describe('agent-hub skill — required surface coverage', () => {
-  it('server/default-skills/agent-hub/ mentions every required surface', () => {
+  it('server/default-skills/agent-hub family mentions every required surface', () => {
     expect(existsSync(DEFAULT_SKILL_DIR)).toBe(true);
-    assertAllMarkersPresent(DEFAULT_SKILL_DIR, 'default-skills');
+    // Scan the core + all sub-skills as one corpus.
+    const family = [DEFAULT_SKILL_DIR, ...SUB_SKILLS.map((s) => s.dir)];
+    assertAllMarkersPresent(family, 'default-skills family');
   });
 
   it('plugin/skills/agent-hub/ mentions every required surface (if shipped)', () => {
     if (!existsSync(PLUGIN_SKILL_DIR)) return;
-    assertAllMarkersPresent(PLUGIN_SKILL_DIR, 'plugin skill');
+    // Plugin still ships the legacy monolithic agent-hub skill. Scan
+    // just that dir for now — when the plugin mirror gets the same
+    // split, change this to scan the family.
+    assertAllMarkersPresent([PLUGIN_SKILL_DIR], 'plugin skill');
   });
 
   it('coverage markers are specific enough to fail on accidental deletion', () => {
@@ -576,5 +629,135 @@ describe('agent-hub SKILL.md — discovery rewrite shape', () => {
     assertSkillShape(PLUGIN_SKILL_DIR, 'plugin skill');
     assertScriptsPresent(PLUGIN_SKILL_DIR, 'plugin skill');
     assertReferencesPresent(PLUGIN_SKILL_DIR, 'plugin skill');
+  });
+});
+
+// =====================================================================
+// 6) Sub-skills — domain split shape + loader smoke + reference layout
+// =====================================================================
+
+// Sub-skills share the core skill's scripts/ tree and are intentionally
+// thinner than the core SKILL.md. They DON'T need to enumerate all the
+// core trigger terms (the core skill keeps that 8+ term invariant); they
+// DO need a kebab-case name, a folded description ≤1024 chars, a body
+// ≤200 lines, a reference to their local domain doc, and zero raw curl.
+
+function assertSubSkillShape(
+  skillDir: string,
+  expectedName: string,
+  reference: string,
+  label: string,
+): void {
+  expect(existsSync(skillDir), `${label}: skill dir missing`).toBe(true);
+  const { name, description, body, bodyLines } = parseSkill(skillDir);
+
+  expect(name, `${label}: name mismatch`).toBe(expectedName);
+  expect(name.length, `${label}: name longer than ${MAX_NAME} chars`).toBeLessThanOrEqual(MAX_NAME);
+  expect(name, `${label}: name must be kebab-case`).toMatch(/^[a-z][a-z0-9-]*$/);
+
+  expect(
+    description.length,
+    `${label}: description longer than ${MAX_DESCRIPTION} chars (got ${description.length})`,
+  ).toBeLessThanOrEqual(MAX_DESCRIPTION);
+  expect(description.length, `${label}: description should be non-trivial`).toBeGreaterThan(80);
+
+  // Sub-skills must articulate at least one DO NOT TRIGGER guardrail so
+  // their narrow trigger surface holds against neighboring vocabulary
+  // (Linear, Notion, system crontab, etc.).
+  expect(description, `${label}: description missing DO NOT TRIGGER guardrail`).toMatch(
+    /DO NOT TRIGGER/,
+  );
+
+  expect(
+    bodyLines,
+    `${label}: body is ${bodyLines} lines; keep it under ${MAX_BODY_LINES}`,
+  ).toBeLessThan(MAX_BODY_LINES);
+
+  // Local reference link must point at the domain doc that travels with
+  // this sub-skill (sub-skills own their reference, the core does not).
+  expect(body, `${label}: body must link to references/${reference}`).toMatch(
+    new RegExp(`references/${reference.replace(/\./g, '\\.')}`),
+  );
+
+  // No raw curl inside fenced bash blocks — same rule as the core skill.
+  const fenceRe = /```(bash|sh|shell)?\n([\s\S]*?)```/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = fenceRe.exec(body)) !== null) {
+    const lang = (fm[1] || '').toLowerCase();
+    const inner = fm[2];
+    const looksShellish =
+      lang === 'bash' || lang === 'sh' || lang === 'shell' || /curl\s/.test(inner);
+    if (!looksShellish) continue;
+    expect(
+      /\bcurl\b/.test(inner),
+      `${label}: body contains raw curl outside scripts/ wrappers`,
+    ).toBe(false);
+  }
+
+  // Cross-link back to the core skill so navigators can climb up.
+  expect(body, `${label}: body must point readers back to the core skill`).toMatch(/agent-hub/i);
+}
+
+describe('agent-hub sub-skills — domain split', () => {
+  it.each(SUB_SKILLS.map((s) => [s.id, s.dir, s.reference] as const))(
+    '%s: SKILL.md frontmatter + body pass sub-skill shape invariants',
+    (id, dir, reference) => {
+      assertSubSkillShape(dir, id, reference, id);
+    },
+  );
+
+  it.each(SUB_SKILLS.map((s) => [s.id, s.dir, s.reference] as const))(
+    '%s: ships its domain reference doc under references/',
+    (_id, dir, reference) => {
+      const refPath = path.join(dir, 'references', reference);
+      expect(existsSync(refPath), `${reference} missing under ${dir}/references/`).toBe(true);
+      const body = readFileSync(refPath, 'utf8');
+      expect(body.length, `${refPath} should not be empty`).toBeGreaterThan(200);
+    },
+  );
+
+  it.each(SUB_SKILLS.map((s) => [s.id, s.dir, s.domainMarkers] as const))(
+    '%s: SKILL.md + reference contain the domain markers',
+    (_id, dir, markers) => {
+      const corpus = readAllSkillMarkdown(dir);
+      const missing = markers.filter((rx) => !rx.test(corpus)).map((rx) => rx.toString());
+      expect(missing, `domain markers missing from ${dir}: ${missing.join(', ')}`).toEqual([]);
+    },
+  );
+
+  it.each(SUB_SKILLS.map((s) => [s.id] as const))(
+    '%s: loadSkillBody resolves it under default-skills/',
+    (id) => {
+      const loaded = loadSkillBody(id, { skillsDir: '' });
+      expect(loaded, `loadSkillBody returned null for ${id}`).not.toBeNull();
+      expect(loaded!.source).toBe('default');
+      // Directory-loaded skills don't populate `skillTitle` (that's the
+      // flat-markdown loader's job); the resolved dir's basename is the
+      // canonical identifier the injection falls back to.
+      expect(path.basename(loaded!.skillDir), `${id}: skillDir basename mismatch`).toBe(id);
+      // The lazy-load PR removed eager reference inlining; references are
+      // listed in the injection by absolute path, not body. The loaded
+      // body should still carry the SKILL.md prose.
+      expect(loaded!.skillMd, `${id}: skillMd should contain heading`).toMatch(/^#\s+/m);
+    },
+  );
+
+  it('sub-skills DO NOT ship their own scripts/ — scripts live in the core tree', () => {
+    // Architectural invariant: the split keeps the script tree under the
+    // core `agent-hub` skill. If a sub-skill grows its own scripts/, the
+    // split contract breaks and the loader will duplicate listings.
+    for (const { id, dir } of SUB_SKILLS) {
+      expect(
+        existsSync(path.join(dir, 'scripts')),
+        `${id}: scripts/ should NOT be shipped (lives in core agent-hub/)`,
+      ).toBe(false);
+    }
+  });
+
+  it('sub-skills carry no forbidden production-infrastructure strings', () => {
+    for (const { id, dir } of SUB_SKILLS) {
+      const hits = scanSkillDir(dir);
+      expect(hits, `${id}: forbidden strings:\n${JSON.stringify(hits, null, 2)}`).toEqual([]);
+    }
   });
 });
