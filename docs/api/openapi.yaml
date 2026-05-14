@@ -616,6 +616,164 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
+    WikiPage:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        content:
+          type: string
+        category:
+          type: string
+        updated_by:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - title
+        - slug
+        - content
+        - category
+        - updated_by
+        - created_at
+        - updated_at
+      description: A wiki page row.
+    WikiSearchHit:
+      allOf:
+        - $ref: "#/components/schemas/WikiPage"
+        - type: object
+          properties:
+            snippet:
+              type: string
+            rank:
+              type: number
+      description: A wiki page returned from the legacy FTS5 search path (`GET /wiki?q=`). Adds the highlighted `snippet` and bm25-ish `rank`.
+    WikiHybridSearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        category:
+          type: string
+        updated_by:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        score:
+          type: number
+        ftsScore:
+          type: number
+        semanticScore:
+          type: number
+        matchedChunk:
+          type: string
+        snippet:
+          type: string
+      required:
+        - id
+        - project_id
+        - title
+        - slug
+        - category
+        - updated_by
+        - created_at
+        - updated_at
+        - score
+      description: A hit from the hybrid/semantic/fts wiki search. `score` is the blended ranking; `ftsScore` / `semanticScore` are the per-mode components; `matchedChunk` is the highest-scoring chunk on the page (semantic / hybrid only).
+    WikiSearchResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - hybrid
+            - semantic
+            - fts
+        query:
+          type: string
+        geminiConfigured:
+          type: boolean
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/WikiHybridSearchResult"
+      required:
+        - mode
+        - geminiConfigured
+        - results
+      description: Envelope returned by `GET /wiki/search`. `geminiConfigured` reports whether the server has a Gemini API key (semantic + hybrid modes fall back to FTS when false).
+    WikiBackfillResult:
+      type: object
+      properties:
+        projectId:
+          type: string
+        total:
+          type: integer
+        embedded:
+          type: integer
+        skipped:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              pageId:
+                type: string
+              error:
+                type: string
+            required:
+              - pageId
+              - error
+      required:
+        - projectId
+        - total
+        - embedded
+        - skipped
+        - errors
+      description: Result of a project-wide wiki re-embedding pass. `total` is the count of pages scanned; `embedded` increments per successfully chunk-and-embed; `skipped` counts pages skipped because the embed client could not be invoked; `errors` lists per-page failures.
+    WikiErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
   parameters: {}
 paths:
   /api/auth/status:
@@ -3868,3 +4026,360 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/{projectId}/wiki:
+    get:
+      tags:
+        - Wiki
+      summary: List wiki pages (optionally filtered or FTS-searched)
+      description: When `?q=` is set, returns FTS5 hits in the legacy shape (page row + `snippet` + `rank`). When `?category=` is set, returns pages in that category. Otherwise returns every page in the project (content omitted for list payload size). `limit` only applies to the `?q=` path; the bare and category responses are unpaginated.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: category
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Wiki pages (shape depends on the query params).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WikiSearchHit"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+    post:
+      tags:
+        - Wiki
+      summary: Create a wiki page
+      description: Slug is derived from `title` via lowercase + non-alphanumeric squash. Returns 409 when the resulting slug collides with an existing page on the same project.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                content:
+                  type: string
+                category:
+                  type: string
+                updatedBy:
+                  type: string
+              required:
+                - title
+      responses:
+        "201":
+          description: New page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "409":
+          description: Slug collision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki/search:
+    get:
+      tags:
+        - Wiki
+      summary: Search wiki pages (hybrid / semantic / fts)
+      description: Defaults to hybrid mode. Falls back to pure FTS when the Gemini API key is missing or the query embedding fails. Returns an empty `results` array for blank queries so the caller can branch on configuration without a separate health probe.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+            enum:
+              - hybrid
+              - semantic
+              - fts
+          required: false
+          name: mode
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Search envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiSearchResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "500":
+          description: Underlying search or embedding error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki/reembed:
+    post:
+      tags:
+        - Wiki
+      summary: Re-embed every page in the project
+      description: "Idempotent: re-runs the chunk + embed pipeline for every page in the project. Useful after provisioning the Gemini API key for the first time or after changing the embedding model."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Backfill report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiBackfillResult"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "500":
+          description: Backfill failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "503":
+          description: Gemini API key not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki/categories:
+    get:
+      tags:
+        - Wiki
+      summary: List known wiki categories
+      description: Returns the in-code list of categories (`general`, `api-docs`, `architecture`, `conventions`, `test-patterns`, `troubleshooting`, `onboarding`). The persistence layer accepts any string today; this list is purely a UI hint.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Known categories.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - general
+                    - api-docs
+                    - architecture
+                    - conventions
+                    - test-patterns
+                    - troubleshooting
+                    - onboarding
+  /api/projects/{projectId}/wiki/{slug}:
+    get:
+      tags:
+        - Wiki
+      summary: Get a single wiki page by slug
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Wiki page slug (URL-safe).
+          required: true
+          description: Wiki page slug (URL-safe).
+          name: slug
+          in: path
+      responses:
+        "200":
+          description: Page row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "404":
+          description: Page not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+    put:
+      tags:
+        - Wiki
+      summary: Update a wiki page
+      description: Partial update. Omitted fields keep their current value. Renaming `title` may change the slug; collisions return 409.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Wiki page slug (URL-safe).
+          required: true
+          description: Wiki page slug (URL-safe).
+          name: slug
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                content:
+                  type: string
+                category:
+                  type: string
+                updatedBy:
+                  type: string
+      responses:
+        "200":
+          description: Updated page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Page not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "409":
+          description: Slug collision after rename.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+    delete:
+      tags:
+        - Wiki
+      summary: Delete a wiki page
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Wiki page slug (URL-safe).
+          required: true
+          description: Wiki page slug (URL-safe).
+          name: slug
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "404":
+          description: Page not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
