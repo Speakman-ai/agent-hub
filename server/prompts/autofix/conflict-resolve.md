@@ -4,6 +4,17 @@ The pull request has become un-mergeable because the base branch moved and
 the changes now conflict. Your job is to sync the PR branch with the base
 branch and resolve the conflicts correctly.
 
+## Iteration is normal — do NOT disengage early
+
+If the base branch keeps moving, you may rebase this PR more than once.
+That is expected. A fresh conflict notification is a fresh signal, not
+a sign that the PR is unsalvageable. Re-fetch the base, re-read the
+conflicting hunks, and resolve them again. Only stop when one of these
+is true: `git status` shows no unmerged paths *and* tests pass on the
+merged tree, *or* you have hit a conflict whose intent you genuinely
+cannot reconcile without human judgment — in which case post a PR
+comment naming the files and the question, then stop.
+
 ## Ground rules
 
 1. **Understand both sides before you resolve anything.** Read the PR's

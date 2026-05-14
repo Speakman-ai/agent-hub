@@ -1158,6 +1158,26 @@ function initDb(dataDir: string): void {
     );
   }
 
+  // Total number of autofix feedback dispatches sent to this card's session
+  // (across review-feedback, CI-failure, inline-comment, and conflict kinds).
+  // Used to:
+  //   1. Stamp a "Autofix round N" banner into each dispatched message so the
+  //      agent doesn't lose count and decide it's "been here too many times"
+  //      after 3 rounds — a real, observed failure mode (see wiki:
+  //      `Delegation — Lead Takeover When Sub-Agents Are Cancelled` and the
+  //      autofix-stall conversation in today's notes).
+  //   2. Emit structured log lines (`[Autofix] event=dispatch round=N ...`) so
+  //      we can mine production logs for the dispatches-fired-vs-pushes-produced
+  //      ratio and confirm whether iteration-3 stalls are structural or a
+  //      prompt-drift artifact.
+  try {
+    db.prepare('SELECT autofix_dispatch_count FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE kanban_cards ADD COLUMN autofix_dispatch_count INTEGER NOT NULL DEFAULT 0',
+    );
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -2409,6 +2429,19 @@ function initDb(dataDir: string): void {
     ),
     setCardLastDispatchedReviewCommentId: db.prepare(
       "UPDATE kanban_cards SET last_dispatched_review_comment_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Atomically bump autofix_dispatch_count and return the new value via
+    // RETURNING. `better-sqlite3` supports RETURNING on UPDATE since v9, so a
+    // single round-trip serves the increment + read.
+    bumpCardAutofixDispatchCount: db.prepare(
+      `UPDATE kanban_cards
+         SET autofix_dispatch_count = autofix_dispatch_count + 1,
+             updated_at = datetime('now')
+       WHERE id = ?
+   RETURNING autofix_dispatch_count`,
+    ),
+    getCardAutofixDispatchCount: db.prepare(
+      'SELECT autofix_dispatch_count FROM kanban_cards WHERE id = ?',
     ),
     // Used by <handoff> delivery to re-point a card from the source session
     // to the newly-created target session and update the assignee to the

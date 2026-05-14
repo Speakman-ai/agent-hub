@@ -398,6 +398,15 @@ export interface KanbanCardRow {
    *  Highest GitHub pull-request review comment id already dispatched as
    *  author feedback. NULL = no inline comment has been dispatched yet. */
   last_dispatched_review_comment_id?: number | null;
+  /** Total number of autofix feedback dispatches sent to this card's session
+   *  across all kinds (review, ci, inline-comments, conflict). Drives the
+   *  "Autofix round N" banner injected into each dispatched message and the
+   *  structured `[Autofix] event=dispatch round=N` log lines. Always 0 for
+   *  brand-new rows; incremented atomically via `bumpCardAutofixDispatchCount`.
+   *  Optional in the type so legacy test fixtures (built before the column
+   *  existed) still satisfy the row shape — the DB column itself is NOT NULL
+   *  with DEFAULT 0 and always reads back a number. */
+  autofix_dispatch_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1038,6 +1047,8 @@ export interface Stmts {
   setCardLastDispatchedReviewId: Stmt;
   setCardLastDispatchedCheckRunId: Stmt;
   setCardLastDispatchedReviewCommentId: Stmt;
+  bumpCardAutofixDispatchCount: Stmt;
+  getCardAutofixDispatchCount: Stmt;
   reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
   getKanbanCardByPrUrl: Stmt;
