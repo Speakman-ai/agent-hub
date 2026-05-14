@@ -6,6 +6,7 @@ import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
 import { getActualPort } from './server-port.js';
+import { ensurePerUserHome } from './per-user-home.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -410,6 +411,20 @@ export interface SpawnEnvOverride {
 export interface BuildSpawnEnvOptions {
   /** Per-user override; takes precedence over `cfg` for the matching fields. */
   userOverride?: SpawnEnvOverride | null;
+  /**
+   * Owning user id. When set, the spawn runs with HOME pinned to
+   * `<dataDir>/per-user-creds/<userId>/home` so CLI engines that
+   * authenticate via HOME (`cursor-agent`, `codex`, Gemini OAuth) write
+   * their caches to a per-user subtree instead of the shared operator
+   * HOME. See `server/per-user-home.ts` for the directory contract.
+   *
+   * Filesystem errors creating the directory are swallowed — the spawn
+   * falls back to the host HOME so a transient FS error cannot block a
+   * chat. When `userId` is null / undefined the spawn keeps the host
+   * HOME inherited from `process.env`, preserving today's behavior for
+   * the legacy global-apiKey path.
+   */
+  userId?: string | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -511,6 +526,23 @@ export function buildSpawnEnv(
   // back to the home-dir path and miss the per-session creds file written by
   // `/api/auth/setup` recovery.
   env.AGENT_HUB_DATA_DIR = cfg.dataDir;
+
+  // Per-user HOME — isolates `.cursor`, `.codex`, etc. CLI caches per
+  // Hub user so each user's "Sign in with browser" / device-auth flow
+  // writes tokens under their own subtree, and every downstream spawn
+  // owned by that user reads the same cache. When `userId` is unset we
+  // intentionally leave HOME alone (the host operator's HOME) so the
+  // legacy global-apiKey path and Admin host-wide auth flows keep
+  // working untouched.
+  const ownerUserId = presentString(opts.userId);
+  if (ownerUserId) {
+    try {
+      env.HOME = ensurePerUserHome(ownerUserId, cfg.dataDir);
+    } catch {
+      // Best-effort: a transient FS error must never block a spawn.
+      // Fall through to the host HOME inherited via process.env.
+    }
+  }
 
   return env;
 }

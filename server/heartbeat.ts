@@ -218,7 +218,9 @@ export function runClaude(
     let errorOutput = '';
     const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
-    const heartbeatEnv = buildSpawnEnv(config);
+    const heartbeatEnv = buildSpawnEnv(config, {
+      userId: options.skillCredentialMerge?.ownerId ?? null,
+    });
     if (options.skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
     }
@@ -369,10 +371,11 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       preferred: preferredEngine,
       preferredModel: heartbeatModel,
     });
-    const heartbeatEnv = buildSpawnEnv(config);
+    const heartbeatOwnerId = getOrgOwnerUserId();
+    const heartbeatEnv = buildSpawnEnv(config, { userId: heartbeatOwnerId });
     if (hbProject) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, {
-        ownerId: getOrgOwnerUserId(),
+        ownerId: heartbeatOwnerId,
         agentId: agent.id,
         project: hbProject,
       });
@@ -556,10 +559,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       preferred: 'claude-code',
       preferredModel: requestedModel,
     });
-    const cronEnv = buildSpawnEnv(config);
+    const cronOwnerId = getOrgOwnerUserId();
+    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
     if (cronProject && cronSkillAgentId) {
       mergeSkillCredentialSpawnEnv(cronEnv, {
-        ownerId: getOrgOwnerUserId(),
+        ownerId: cronOwnerId,
         agentId: cronSkillAgentId,
         project: cronProject,
       });
@@ -940,9 +944,10 @@ export async function runWikiMemorySync(): Promise<void> {
   // it works whenever any engine is authed (Claude / Cursor / Codex /
   // Gemini), not just Claude Code. NoEnginesAvailableError surfaces as a
   // clear "skipping sync" log via reconcileMemoryFromWiki's catch block.
+  const wikiSyncOwnerId = getOrgOwnerUserId();
   const opts = {
     cfg: config,
-    spawnEnv: buildSpawnEnv(config),
+    spawnEnv: buildSpawnEnv(config, { userId: wikiSyncOwnerId }),
   };
 
   for (const project of projects) {

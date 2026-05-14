@@ -14,6 +14,7 @@ import {
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
 import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
+import MyBrowserAuthSection from './MyBrowserAuthSection.jsx';
 import { api } from '../utils/api.js';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
@@ -212,6 +213,19 @@ export default function AccountSection() {
       )}
 
       {me && (
+        <MyBrowserAuthSection
+          engine="cursor"
+          engineLabel="Cursor"
+          hostSettingHint="Settings → Cursor Auth"
+          loginMode="oauth"
+          getStatus={() => api.getMyCursorBrowserAuth()}
+          startLogin={() => api.startMyCursorBrowserLogin()}
+          cancelLogin={() => api.cancelMyCursorBrowserLogin()}
+          logout={() => api.logoutMyCursorBrowser()}
+        />
+      )}
+
+      {me && (
         <MySingleKeyAuthSection
           engineLabel="Gemini"
           Icon={Sparkles}
@@ -230,6 +244,19 @@ export default function AccountSection() {
           hostSettingHint="Settings → Codex Auth"
           getter={() => api.getMyCodexAuth()}
           setter={(body) => api.putMyCodexAuth(body)}
+        />
+      )}
+
+      {me && (
+        <MyBrowserAuthSection
+          engine="codex"
+          engineLabel="Codex"
+          hostSettingHint="Settings → Codex Auth"
+          loginMode="device"
+          getStatus={() => api.getMyCodexBrowserAuth()}
+          startLogin={() => api.startMyCodexBrowserDeviceLogin()}
+          cancelLogin={() => api.cancelMyCodexBrowserDeviceLogin()}
+          logout={() => api.logoutMyCodexBrowser()}
         />
       )}
 

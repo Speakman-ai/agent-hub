@@ -568,6 +568,32 @@ export const api = {
     }),
   cancelCodexDeviceLogin: () => fetchJSON('/config/codex-auth/cancel-login', { method: 'POST' }),
 
+  // Per-user "Sign in with browser" — same UX as the host-wide endpoints
+  // above but pinned at a per-user HOME so each Hub user can sign in
+  // under their own account (`server/routes/per-user-engine-auth.ts`).
+  getMyCursorBrowserAuth: () => fetchJSON('/auth/me/cursor-auth/browser'),
+  startMyCursorBrowserLogin: () =>
+    fetchJSON('/auth/me/cursor-auth/browser/login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 22000,
+    }),
+  cancelMyCursorBrowserLogin: () =>
+    fetchJSON('/auth/me/cursor-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyCursorBrowser: () =>
+    fetchJSON('/auth/me/cursor-auth/browser', { method: 'DELETE', timeout: 35000 }),
+  getMyCodexBrowserAuth: () => fetchJSON('/auth/me/codex-auth/browser'),
+  startMyCodexBrowserDeviceLogin: () =>
+    fetchJSON('/auth/me/codex-auth/browser/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 50000,
+    }),
+  cancelMyCodexBrowserDeviceLogin: () =>
+    fetchJSON('/auth/me/codex-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyCodexBrowser: () =>
+    fetchJSON('/auth/me/codex-auth/browser', { method: 'DELETE', timeout: 65000 }),
+
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>
