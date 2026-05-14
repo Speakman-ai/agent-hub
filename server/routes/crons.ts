@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import type { z } from 'zod';
 import { rescheduleCron, runCronJob } from '../heartbeat.js';
 import config from '../config.js';
 import { getProjects } from '../project-model.js';
@@ -10,6 +11,7 @@ import type {
   ThreadRow,
   ThreadEntryRow,
 } from '../types.js';
+import { CreateCronRequestSchema, UpdateCronRequestSchema } from './crons.openapi.js';
 
 /**
  * Coerce a `model` request value into the DB-friendly form: a non-empty
@@ -66,6 +68,54 @@ export function assertCronSkillPrincipalMatchesProject(
   }
 }
 
+/**
+ * Validate `req.body` against a Zod schema. On failure, writes a 400 with
+ * `{error, details}` and returns `undefined`; the handler must `return`
+ * immediately. On success, returns the parsed data (typed).
+ *
+ * Mirrors the helper in `agents.ts` / `board.ts` / `wiki.ts` / `sessions.ts`
+ * so the wire shape of validation failures is identical across route groups.
+ */
+function parseBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response,
+): z.infer<T> | undefined {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? 'Validation failed',
+      details: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+    });
+    return undefined;
+  }
+  return result.data;
+}
+
+/**
+ * Coerce the loose `notify_on_run` accept (boolean / 0 / 1 / "0" / "1" /
+ * "true" / "false") into the strict 0/1 the DB column wants.
+ *
+ * The Zod schema gates the wire shape; this just folds the union into the
+ * single canonical form. Any value not in the accept set never reaches
+ * here — Zod has already returned 400.
+ */
+function coerceNotifyOnRun(raw: boolean | 0 | 1 | '0' | '1' | 'true' | 'false'): 0 | 1 {
+  if (raw === true || raw === 1 || raw === '1' || raw === 'true') return 1;
+  return 0;
+}
+
+/**
+ * Coerce the parsed `timeout_ms` (number | null | "" | undefined) into the
+ * DB-friendly `number | null` form. `undefined` (omitted) is the caller's
+ * problem to handle; this only translates the present-key shapes.
+ */
+function coerceTimeoutMs(raw: number | null | ''): number | null {
+  if (raw === null || raw === '') return null;
+  return raw;
+}
+
 export default function createCronRoutes(deps: RouteDeps): Router {
   const { stmts } = deps;
   const router = Router();
@@ -75,66 +125,35 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     res.json(crons);
   });
 
-  /**
-   * Coerce a `timeout_ms` value from a request body into the DB-friendly
-   * form: either a positive integer (the override) or null (use default).
-   * Throws on non-numeric or non-positive input so the API returns 400
-   * instead of silently persisting garbage that would bypass the timeout.
-   */
-  function normalizeTimeoutMs(raw: unknown): number | null {
-    if (raw === null || raw === undefined || raw === '') return null;
-    // Explicitly reject booleans — `Number(true)` is 1, which would otherwise
-    // sneak through as a valid 1 ms timeout and silently kill every run.
-    if (typeof raw === 'boolean') {
-      throw new Error('timeout_ms must be a positive integer (milliseconds)');
-    }
-    const n = typeof raw === 'number' ? raw : Number(raw);
-    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-      throw new Error('timeout_ms must be a positive integer (milliseconds)');
-    }
-    return n;
-  }
-
-  /**
-   * Coerce a `notify_on_run` request value into the DB-friendly 0/1 form.
-   * Accepts boolean, 0/1, "0"/"1", "true"/"false". Anything else throws so
-   * the API returns 400 instead of silently storing nonsense.
-   */
-  function normalizeNotifyOnRun(raw: unknown): 0 | 1 {
-    if (raw === true || raw === 1 || raw === '1' || raw === 'true') return 1;
-    if (raw === false || raw === 0 || raw === '0' || raw === 'false') return 0;
-    throw new Error('notify_on_run must be a boolean');
-  }
-
   router.post('/api/crons', (req: Request, res: Response) => {
-    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model } =
-      req.body;
-    if (!name || !schedule || !prompt) {
-      return res.status(400).json({ error: 'name, schedule, and prompt are required' });
-    }
-    let normalizedTimeout: number | null;
-    try {
-      normalizedTimeout = normalizeTimeoutMs(timeout_ms);
-    } catch (err) {
-      return res.status(400).json({ error: (err as Error).message });
-    }
-    let normalizedNotify: 0 | 1 = 0;
-    if (notify_on_run !== undefined) {
-      try {
-        normalizedNotify = normalizeNotifyOnRun(notify_on_run);
-      } catch (err) {
-        return res.status(400).json({ error: (err as Error).message });
-      }
-    }
+    const parsed = parseBody(CreateCronRequestSchema, req, res);
+    if (!parsed) return;
+    const {
+      name,
+      schedule,
+      prompt,
+      cwd,
+      enabled,
+      project_id,
+      timeout_ms,
+      notify_on_run,
+      model,
+      skill_principal_agent_id,
+    } = parsed;
+
+    const normalizedTimeout = timeout_ms !== undefined ? coerceTimeoutMs(timeout_ms) : null;
+    const normalizedNotify = notify_on_run !== undefined ? coerceNotifyOnRun(notify_on_run) : 0;
+
     let normalizedModel: string | null;
     try {
       normalizedModel = normalizeCronModel(model);
     } catch (err) {
       return res.status(400).json({ error: (err as Error).message });
     }
+
     let normalizedSkillPrincipal: string | null;
     try {
-      normalizedSkillPrincipal = normalizeCronSkillPrincipal(req.body.skill_principal_agent_id);
+      normalizedSkillPrincipal = normalizeCronSkillPrincipal(skill_principal_agent_id);
       assertCronSkillPrincipalMatchesProject(
         project_id || null,
         normalizedSkillPrincipal,
@@ -143,6 +162,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     } catch (err) {
       return res.status(400).json({ error: (err as Error).message });
     }
+
     const result = stmts.createCron.run(
       name,
       schedule,
@@ -164,24 +184,34 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const existing = stmts.getCron.get(parseInt(req.params.id as string)) as CronRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Cron not found' });
 
-    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model } =
-      req.body;
+    const parsed = parseBody(UpdateCronRequestSchema, req, res);
+    if (!parsed) return;
+    const {
+      name,
+      schedule,
+      prompt,
+      cwd,
+      enabled,
+      project_id,
+      timeout_ms,
+      notify_on_run,
+      model,
+      skill_principal_agent_id,
+    } = parsed;
+
     let nextTimeout: number | null = existing.timeout_ms;
     if (Object.prototype.hasOwnProperty.call(req.body, 'timeout_ms')) {
-      try {
-        nextTimeout = normalizeTimeoutMs(timeout_ms);
-      } catch (err) {
-        return res.status(400).json({ error: (err as Error).message });
-      }
+      nextTimeout = timeout_ms === undefined ? null : coerceTimeoutMs(timeout_ms);
     }
+
     let nextNotify: 0 | 1 = (existing.notify_on_run ? 1 : 0) as 0 | 1;
-    if (Object.prototype.hasOwnProperty.call(req.body, 'notify_on_run')) {
-      try {
-        nextNotify = normalizeNotifyOnRun(notify_on_run);
-      } catch (err) {
-        return res.status(400).json({ error: (err as Error).message });
-      }
+    if (
+      Object.prototype.hasOwnProperty.call(req.body, 'notify_on_run') &&
+      notify_on_run !== undefined
+    ) {
+      nextNotify = coerceNotifyOnRun(notify_on_run);
     }
+
     let nextModel: string | null = existing.model;
     if (Object.prototype.hasOwnProperty.call(req.body, 'model')) {
       try {
@@ -190,13 +220,14 @@ export default function createCronRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: (err as Error).message });
       }
     }
+
     const nextProjectId =
       project_id !== undefined ? project_id : (existing.project_id as string | null) || null;
 
     let nextSkillPrincipal: string | null = existing.skill_principal_agent_id ?? null;
     if (Object.prototype.hasOwnProperty.call(req.body, 'skill_principal_agent_id')) {
       try {
-        nextSkillPrincipal = normalizeCronSkillPrincipal(req.body.skill_principal_agent_id);
+        nextSkillPrincipal = normalizeCronSkillPrincipal(skill_principal_agent_id);
       } catch (err) {
         return res.status(400).json({ error: (err as Error).message });
       }

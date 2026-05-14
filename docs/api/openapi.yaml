@@ -849,6 +849,328 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    Cron:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        schedule:
+          type: string
+        prompt:
+          type: string
+        cwd:
+          type: string
+        enabled:
+          type: integer
+        last_run:
+          type: string
+          nullable: true
+        last_result:
+          type: string
+          nullable: true
+        next_run_at:
+          type: string
+          nullable: true
+        project_id:
+          type: string
+          nullable: true
+        timeout_ms:
+          type: integer
+          nullable: true
+        notify_on_run:
+          type: integer
+        model:
+          type: string
+          nullable: true
+        skill_principal_agent_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - name
+        - schedule
+        - prompt
+        - cwd
+        - enabled
+        - last_run
+        - last_result
+        - next_run_at
+        - project_id
+        - timeout_ms
+        - notify_on_run
+        - model
+        - skill_principal_agent_id
+        - created_at
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id` are nullable to mean "use default".
+    CronLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        cron_id:
+          type: integer
+        timestamp:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - success
+            - error
+        result:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - cron_id
+        - timestamp
+        - status
+        - result
+        - duration_ms
+      description: A single cron run log row.
+    CronThreadResponse:
+      type: object
+      properties:
+        thread:
+          nullable: true
+        entries:
+          type: array
+          items:
+            nullable: true
+      required:
+        - entries
+      description: Cron thread (persistent output log). Both `thread` and `entries` come back null/empty when the cron has no project association or no run has produced a thread yet.
+    CronRunAck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - running
+      required:
+        - status
+      description: Acknowledgment from POST /api/crons/:id/run.
+    CronDeleteAck:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+      required:
+        - ok
+      description: Delete acknowledgment.
+    CronErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    HeartbeatConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        interval:
+          type: string
+        prompt:
+          type: string
+        model:
+          type: string
+      required:
+        - enabled
+        - interval
+        - prompt
+      description: Per-agent heartbeat configuration. `interval` is a cron expression (empty = no schedule); `model` overrides the engine default at run time.
+    HeartbeatLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        agent_id:
+          type: string
+        timestamp:
+          type: string
+        prompt:
+          type: string
+        result:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - success
+            - error
+      required:
+        - id
+        - agent_id
+        - timestamp
+        - prompt
+        - result
+        - status
+      description: A single heartbeat run row.
+    HeartbeatState:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        enabled:
+          type: integer
+        interval:
+          type: string
+          nullable: true
+        next_run_at:
+          type: string
+          nullable: true
+        last_run_at:
+          type: string
+          nullable: true
+      required:
+        - agent_id
+        - enabled
+        - interval
+        - next_run_at
+        - last_run_at
+      additionalProperties:
+        nullable: true
+      description: Heartbeat scheduler state row.
+    HeartbeatOverview:
+      type: object
+      properties:
+        agentId:
+          type: string
+        agentName:
+          type: string
+        color:
+          type: string
+        heartbeat:
+          $ref: "#/components/schemas/HeartbeatConfig"
+        latestLog:
+          allOf:
+            - $ref: "#/components/schemas/HeartbeatLog"
+            - nullable: true
+        state:
+          allOf:
+            - $ref: "#/components/schemas/HeartbeatState"
+            - nullable: true
+      required:
+        - agentId
+        - agentName
+        - heartbeat
+        - latestLog
+        - state
+      description: Per-agent heartbeat overview returned by GET /api/heartbeats.
+    HeartbeatStateInfo:
+      type: object
+      properties:
+        agentId:
+          type: string
+        agentName:
+          type: string
+        enabled:
+          type: boolean
+        interval:
+          type: string
+          nullable: true
+        next_run_at:
+          type: string
+          nullable: true
+        last_run_at:
+          type: string
+          nullable: true
+        overdue:
+          type: boolean
+        overdue_seconds:
+          type: integer
+      required:
+        - agentId
+        - agentName
+        - enabled
+        - interval
+        - next_run_at
+        - last_run_at
+        - overdue
+        - overdue_seconds
+      description: Live heartbeat state with overdue calculation, returned by GET /api/heartbeats/state.
+    HeartbeatThreadResponse:
+      type: object
+      properties:
+        thread:
+          nullable: true
+        entries:
+          type: array
+          items:
+            nullable: true
+      required:
+        - entries
+      description: Heartbeat thread (persistent output log) for one agent. `thread` is null when no run has produced one yet.
+    HeartbeatRunResponse:
+      type: object
+      properties:
+        logId:
+          anyOf:
+            - type: integer
+            - type: string
+        status:
+          type: string
+          enum:
+            - running
+      required:
+        - logId
+        - status
+      description: Acknowledgment from POST /api/heartbeats/:agentId/run.
+    HeartbeatErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
     WikiPage:
       type: object
       properties:
@@ -4739,6 +5061,289 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
+  /api/crons:
+    get:
+      tags:
+        - Crons
+      summary: List every cron job
+      responses:
+        "200":
+          description: Array of cron jobs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cron"
+    post:
+      tags:
+        - Crons
+      summary: Create a new cron job
+      description: "`schedule` must be a valid cron expression. `model` is validated against the `claude-code` engine allowlist. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                schedule:
+                  type: string
+                prompt:
+                  type: string
+                  minLength: 1
+                cwd:
+                  type: string
+                enabled:
+                  type: boolean
+                project_id:
+                  type: string
+                  nullable: true
+                timeout_ms:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - ""
+                    - nullable: true
+                    - type: integer
+                      minimum: 0
+                      exclusiveMinimum: true
+                notify_on_run:
+                  anyOf:
+                    - type: boolean
+                    - type: number
+                      enum:
+                        - 0
+                    - type: number
+                      enum:
+                        - 1
+                    - type: string
+                      enum:
+                        - "0"
+                    - type: string
+                      enum:
+                        - "1"
+                    - type: string
+                      enum:
+                        - "true"
+                    - type: string
+                      enum:
+                        - "false"
+                model:
+                  type: string
+                  nullable: true
+                skill_principal_agent_id:
+                  type: string
+                  nullable: true
+              required:
+                - name
+                - schedule
+                - prompt
+      responses:
+        "200":
+          description: Created cron.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cron"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronErrorResponse"
+  /api/crons/{id}:
+    put:
+      tags:
+        - Crons
+      summary: Update a cron job
+      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear).
+      parameters:
+        - schema:
+            type: string
+            description: Cron job numeric id (URL string).
+          required: true
+          description: Cron job numeric id (URL string).
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                schedule:
+                  type: string
+                prompt:
+                  type: string
+                cwd:
+                  type: string
+                enabled:
+                  type: boolean
+                project_id:
+                  type: string
+                  nullable: true
+                timeout_ms:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - ""
+                    - nullable: true
+                    - type: integer
+                      minimum: 0
+                      exclusiveMinimum: true
+                notify_on_run:
+                  anyOf:
+                    - type: boolean
+                    - type: number
+                      enum:
+                        - 0
+                    - type: number
+                      enum:
+                        - 1
+                    - type: string
+                      enum:
+                        - "0"
+                    - type: string
+                      enum:
+                        - "1"
+                    - type: string
+                      enum:
+                        - "true"
+                    - type: string
+                      enum:
+                        - "false"
+                model:
+                  type: string
+                  nullable: true
+                skill_principal_agent_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated cron.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cron"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronErrorResponse"
+        "404":
+          description: Cron not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronErrorResponse"
+    delete:
+      tags:
+        - Crons
+      summary: Delete a cron job
+      description: Disables the in-memory schedule and removes the row.
+      parameters:
+        - schema:
+            type: string
+            description: Cron job numeric id (URL string).
+          required: true
+          description: Cron job numeric id (URL string).
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Delete ack.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronDeleteAck"
+  /api/crons/{id}/logs:
+    get:
+      tags:
+        - Crons
+      summary: List recent run logs for a cron
+      parameters:
+        - schema:
+            type: string
+            description: Cron job numeric id (URL string).
+          required: true
+          description: Cron job numeric id (URL string).
+          name: id
+          in: path
+        - schema:
+            type: string
+            description: Max rows (default 3, capped at 50).
+          required: false
+          description: Max rows (default 3, capped at 50).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Array of log rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CronLog"
+  /api/crons/{id}/run:
+    post:
+      tags:
+        - Crons
+      summary: Trigger an immediate one-shot cron run
+      description: Returns immediately; the job runs asynchronously.
+      parameters:
+        - schema:
+            type: string
+            description: Cron job numeric id (URL string).
+          required: true
+          description: Cron job numeric id (URL string).
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Run ack.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronRunAck"
+        "404":
+          description: Cron not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronErrorResponse"
+  /api/crons/{id}/thread:
+    get:
+      tags:
+        - Crons
+      summary: Fetch the persistent output thread for a cron
+      parameters:
+        - schema:
+            type: string
+            description: Cron job numeric id (URL string).
+          required: true
+          description: Cron job numeric id (URL string).
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Thread + entries (both null/empty when no run has produced a thread yet).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronThreadResponse"
+        "404":
+          description: Cron not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronErrorResponse"
   /api/config/cursor-auth:
     get:
       tags:
@@ -5214,6 +5819,171 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/heartbeats:
+    get:
+      tags:
+        - Heartbeats
+      summary: List heartbeat overview for every agent
+      responses:
+        "200":
+          description: Array of per-agent heartbeat overviews.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HeartbeatOverview"
+  /api/heartbeats/state:
+    get:
+      tags:
+        - Heartbeats
+      summary: Live heartbeat state with overdue calculation
+      description: Filters out agents with no heartbeat configured. `overdue` flips true once `next_run_at` is in the past.
+      responses:
+        "200":
+          description: Array of live heartbeat states.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HeartbeatStateInfo"
+  /api/heartbeats/{agentId}/logs:
+    get:
+      tags:
+        - Heartbeats
+      summary: List recent heartbeat run rows for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+        - schema:
+            type: string
+            description: Max rows (default 50).
+          required: false
+          description: Max rows (default 50).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Array of heartbeat log rows (newest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HeartbeatLog"
+  /api/heartbeats/{agentId}/thread:
+    get:
+      tags:
+        - Heartbeats
+      summary: Fetch the persistent heartbeat thread for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Thread + entries (both null/empty when no thread exists yet).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatThreadResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatErrorResponse"
+  /api/heartbeats/{agentId}:
+    put:
+      tags:
+        - Heartbeats
+      summary: Update an agent's heartbeat configuration
+      description: Omitted keys preserve the existing value. `model` accepts `null`/`""` to clear the per-heartbeat model override. `interval` must be a valid cron expression (empty string is also accepted to leave the schedule unset).
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                interval:
+                  type: string
+                prompt:
+                  type: string
+                model:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated heartbeat config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatConfig"
+        "400":
+          description: Validation failed (e.g. invalid cron expression).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatErrorResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatErrorResponse"
+  /api/heartbeats/{agentId}/run:
+    post:
+      tags:
+        - Heartbeats
+      summary: Trigger an immediate one-shot heartbeat run
+      description: Inserts a "running" log row and starts the heartbeat asynchronously — the response returns immediately with the new log id.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Run acknowledgment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatRunResponse"
+        "400":
+          description: No heartbeat prompt configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatErrorResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:
