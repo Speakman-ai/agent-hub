@@ -6,6 +6,10 @@ grouped into categories.
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Wiki>
+(request/response shapes, search params, category enum). This page is the
+*how*.
+
 ## Categories
 
 `general`, `api-docs`, `architecture`, `conventions`, `test-patterns`,

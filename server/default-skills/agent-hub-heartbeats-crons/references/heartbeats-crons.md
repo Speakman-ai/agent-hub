@@ -11,6 +11,11 @@ and emit into a live thread.
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:**
+<https://speakman-ai.github.io/agent-hub/#tag/Heartbeats> and
+<https://speakman-ai.github.io/agent-hub/#tag/Crons> (request/response
+shapes for schedule, run, logs, thread). This page is the *how*.
+
 ## Heartbeats
 
 ```bash

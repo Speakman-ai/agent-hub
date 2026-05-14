@@ -7,6 +7,10 @@ Every project has a board. Default columns (by name; IDs are per-project):
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Board>
+(request/response shapes for every kanban / epic / blocker endpoint). This
+page is the *how*.
+
 ## Board shape
 
 ```bash

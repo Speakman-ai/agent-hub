@@ -8,6 +8,10 @@ three fenced JSON blocks the server parses after your turn closes.
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Sessions>
+(request/response shapes for session CRUD, messages, ask-mode, dispatch).
+This page is the *how*.
+
 ## Contents
 
 - [Listing sessions & messages](#listing-sessions--messages)
