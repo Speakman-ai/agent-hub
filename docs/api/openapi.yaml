@@ -73,6 +73,120 @@ components:
       name: agent_hub_session
       description: Session cookie issued by `POST /api/auth/login`.
   schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        engine:
+          type: string
+        model:
+          type: string
+        systemPrompt:
+          type: string
+        color:
+          type: string
+        avatar:
+          type: string
+        role:
+          type: string
+        reviewer:
+          type: string
+        canReview:
+          type: boolean
+        active:
+          type: boolean
+        delegationEnabled:
+          type: boolean
+        browserToolsEnabled:
+          type: boolean
+        browserViewportWidth:
+          type: integer
+        browserViewportHeight:
+          type: integer
+        browserPageLoadTimeoutMs:
+          type: integer
+        heartbeat:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            interval:
+              type: string
+            prompt:
+              type: string
+          required:
+            - enabled
+            - interval
+            - prompt
+      required:
+        - id
+        - name
+        - engine
+      description: An agent. Many additional optional fields exist on the row (subAgents, hooks, mcpServers, …) — only the stable, documented surface is enumerated here.
+    AgentEnriched:
+      allOf:
+        - $ref: "#/components/schemas/Agent"
+        - type: object
+          properties:
+            lastActivity:
+              type: string
+              nullable: true
+            lastMessage:
+              type: object
+              nullable: true
+              properties:
+                role:
+                  type: string
+                content:
+                  type: string
+                created_at:
+                  type: string
+              required:
+                - role
+                - content
+                - created_at
+      description: Agent shape + the most-recent session timestamp and a truncated last message.
+    AgentsBulkEngineResponse:
+      type: object
+      properties:
+        updated:
+          type: integer
+        engine:
+          type: string
+        model:
+          type: string
+      required:
+        - updated
+        - engine
+        - model
+      description: Result of POST /api/agents/bulk-engine.
+    AgentErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
     ErrorResponse:
       type: object
       properties:
@@ -616,6 +730,125 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        name:
+          type: string
+        engine:
+          type: string
+        model:
+          type: string
+        use_worktree:
+          type: integer
+        ask_mode:
+          type: integer
+        react_loop_enabled:
+          type: integer
+          nullable: true
+        worktree_path:
+          type: string
+          nullable: true
+        worktree_branch:
+          type: string
+          nullable: true
+        engine_session_id:
+          type: string
+          nullable: true
+        cron_id:
+          type: integer
+          nullable: true
+        deleted_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        owner_user_id:
+          type: string
+          nullable: true
+        orchestration_phase:
+          type: string
+          nullable: true
+        orchestration_meta:
+          type: string
+          nullable: true
+      required:
+        - id
+        - agent_id
+        - name
+        - engine
+        - model
+        - use_worktree
+        - ask_mode
+        - created_at
+        - updated_at
+      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`.
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+            - system
+        content:
+          type: string
+        engine:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        attachments:
+          type: string
+          nullable: true
+        metadata:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - session_id
+        - role
+        - content
+        - created_at
+      description: A single message row inside a session.
+    SessionErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
     WikiPage:
       type: object
       properties:
@@ -805,6 +1038,290 @@ components:
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
   parameters: {}
 paths:
+  /api/agents:
+    get:
+      tags:
+        - Agents
+      summary: List all agents (enriched with last-activity / last-message)
+      responses:
+        "200":
+          description: Array of agents enriched with last-activity metadata.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentEnriched"
+    post:
+      tags:
+        - Agents
+      summary: Create a new agent under an existing project
+      description: Returns 400 for missing/invalid id (must be alphanumeric + hyphens) or missing projectId, 404 if the project does not exist, 409 if the id collides with an existing agent.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                  pattern: ^[a-zA-Z0-9-]+$
+                projectId:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                engine:
+                  type: string
+                model:
+                  type: string
+                systemPrompt:
+                  type: string
+                color:
+                  type: string
+                avatar:
+                  type: string
+                role:
+                  type: string
+                heartbeat:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    interval:
+                      type: string
+                    prompt:
+                      type: string
+                browserToolsEnabled:
+                  type: boolean
+                browserViewportWidth:
+                  type: number
+                  nullable: true
+                browserViewportHeight:
+                  type: number
+                  nullable: true
+                browserPageLoadTimeoutMs:
+                  type: number
+                  nullable: true
+              required:
+                - id
+                - projectId
+      responses:
+        "201":
+          description: Created agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentEnriched"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "409":
+          description: Agent id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+  /api/agents/{agentId}:
+    patch:
+      tags:
+        - Agents
+      summary: Partially update an agent
+      description: Omitted keys preserve the existing value. `browserViewportWidth` / `browserViewportHeight` / `browserPageLoadTimeoutMs` accept `null` to clear the override.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                engine:
+                  type: string
+                model:
+                  type: string
+                systemPrompt:
+                  type: string
+                color:
+                  type: string
+                avatar:
+                  type: string
+                heartbeat:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    interval:
+                      type: string
+                    prompt:
+                      type: string
+                active:
+                  type: boolean
+                reviewer:
+                  type: string
+                role:
+                  type: string
+                canReview:
+                  type: boolean
+                delegationEnabled:
+                  type: boolean
+                browserToolsEnabled:
+                  type: boolean
+                browserViewportWidth:
+                  type: number
+                  nullable: true
+                browserViewportHeight:
+                  type: number
+                  nullable: true
+                browserPageLoadTimeoutMs:
+                  type: number
+                  nullable: true
+      responses:
+        "200":
+          description: Updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentEnriched"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+    delete:
+      tags:
+        - Agents
+      summary: Hard-delete an agent and its dependent rows
+      description: Stops the in-memory heartbeat, transactionally clears every child store keyed by `agent_id` (sessions cascade messages/delegations/handoffs/skill_invocations/background_tasks/message_queue/checkpoints via FK ON DELETE CASCADE), drops the agent from `projects.json`, refreshes the project room, and best-effort removes the on-disk agent workspace. Returns 204 on success.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "204":
+          description: Agent and dependent rows removed.
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "500":
+          description: Internal cleanup failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+  /api/agents/bulk-engine:
+    post:
+      tags:
+        - Agents
+      summary: Bulk-set engine (and optionally model) on every agent in every project
+      description: Falls back to the engine's default model when `model` is missing or not in the engine's allowlist. Returns the count of agents updated.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+              required:
+                - engine
+      responses:
+        "200":
+          description: Bulk-engine result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentsBulkEngineResponse"
+        "400":
+          description: Validation failed or unknown engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+  /api/agents/{agentId}/memory:
+    put:
+      tags:
+        - Agents
+      summary: Replace the agent memory file (MEMORY.md) contents
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+              required:
+                - content
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Validation failed or workspace not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
   /api/auth/status:
     get:
       tags:
@@ -3049,6 +3566,648 @@ paths:
                       - true
                 required:
                   - ok
+  /api/agents/{agentId}/sessions:
+    get:
+      tags:
+        - Sessions
+      summary: List sessions for an agent (owner-filtered)
+      description: Returns only sessions the caller owns. Pre-Phase-4 NULL-owner rows fall through to org-owner ownership.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Array of sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      tags:
+        - Sessions
+      summary: Create a new session for an agent
+      description: Defaults the engine and model to the agent's configured engine/model. `use_worktree` is forced to false when the project is in workflow mode.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                engine:
+                  type: string
+                model:
+                  type: string
+                use_worktree:
+                  type: boolean
+                ask_mode:
+                  type: boolean
+      responses:
+        "200":
+          description: New session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every session for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/agents/{agentId}/sessions/inactive:
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every *inactive* session for an agent
+      description: Skips sessions with an active in-flight CLI process.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get a single session by id
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Session row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    patch:
+      tags:
+        - Sessions
+      summary: Rename a session
+      description: Currently only `name` is updated; unknown keys are silently ignored.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Archive (soft-delete) a single session
+      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Archive ack.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - archived
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/messages:
+    get:
+      tags:
+        - Sessions
+      summary: List every message in a session (oldest first)
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Array of messages.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/restore:
+    post:
+      tags:
+        - Sessions
+      summary: Restore an archived session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Restored session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is not archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/engine:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the engine for a session
+      description: Resets the model to the new engine's default if the current model isn't valid for the chosen engine. Clears the `engine_session_id` so the next chat starts a fresh CLI side.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - gemini-cli
+                    - codex-cli
+              required:
+                - engine
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or invalid engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/model:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the model for a session
+      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+              required:
+                - model
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or model not valid for the current engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/worktree:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle per-session git worktree
+      description: Returns 403 when the project is in workflow mode and `enabled=true` is requested.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Disabled by workflow-mode project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/ask-mode:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle ask-mode (read-only / plan-mode) on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/react-loop:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle the host-mediated ReAct loop on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/rewind:
+    post:
+      tags:
+        - Sessions
+      summary: Rewind a Claude Code session to a checkpoint UUID
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                uuid:
+                  type: string
+                  minLength: 1
+              required:
+                - uuid
+      responses:
+        "200":
+          description: Rewind kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - rewind_started
+                  uuid:
+                    type: string
+                  sessionId:
+                    type: string
+                required:
+                  - status
+                  - uuid
+                  - sessionId
+        "400":
+          description: Validation failed or engine not claude-code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is actively running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/checkpoints/{uuid}:
+    patch:
+      tags:
+        - Sessions
+      summary: Rename a checkpoint label
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Checkpoint UUID.
+          required: true
+          description: Checkpoint UUID.
+          name: uuid
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+              required:
+                - label
+      responses:
+        "200":
+          description: Updated checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  uuid:
+                    type: string
+                  label:
+                    type: string
+                required:
+                  - session_id
+                  - uuid
+                  - label
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/config/claude-auth:
     get:
       tags:
