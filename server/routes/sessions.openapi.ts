@@ -18,18 +18,21 @@
  *
  * Design notes:
  *
- * - **Boolean toggles** (`ask-mode`, `react-loop`, `worktree`) all share
- *   the same `{ enabled: boolean }` shape. We keep three separate
- *   schemas anyway so the OpenAPI doc reads naturally per-endpoint.
+ * - **Boolean toggles** (`ask-mode`, `react-loop`) share the same
+ *   `{ enabled: boolean }` shape. The legacy `worktree` toggle was
+ *   removed when Agent Hub locked to worktree-only sessions; the
+ *   `use_worktree` column survives on rows for legacy data + internal
+ *   shared-checkout callers (e.g., preview-wizard) but is no longer
+ *   user-toggleable.
  *
  * - **Engine / model coupling** is left in the handler: validating that
  *   `model` is in `engineValidModels[engine]` needs the request-time
  *   config object, which Zod has no access to. The schema gates that
  *   `model` is a non-empty string; the cross-field check fires after.
  *
- * - **`use_worktree` / `ask_mode` on create** stay snake_case to match
- *   what the React client + the legacy intake endpoint send. We
- *   document the snake_case wire form and don't try to fold them in.
+ * - **`ask_mode` on create** stays snake_case to match what the React
+ *   client + the legacy intake endpoint send. We document the snake_case
+ *   wire form and don't try to fold it in.
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
@@ -61,7 +64,7 @@ export const SessionComponent = registerComponent(
     })
     .openapi({
       description:
-        'A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`.',
+        'A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).',
     }),
 );
 
@@ -117,7 +120,6 @@ export const CreateSessionRequestSchema = z.object({
   name: z.string().optional(),
   engine: z.string().optional(),
   model: z.string().optional(),
-  use_worktree: z.boolean().optional(),
   ask_mode: z.boolean().optional(),
 });
 
@@ -188,7 +190,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Create a new session for an agent',
   description:
-    "Defaults the engine and model to the agent's configured engine/model. `use_worktree` is forced to false when the project is in workflow mode.",
+    "Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).",
   request: {
     params: agentIdParams,
     body: { content: jsonContent(CreateSessionRequestSchema) },
@@ -348,24 +350,8 @@ registerPath({
   },
 });
 
-// PUT /api/sessions/:sessionId/worktree
-registerPath({
-  method: 'put',
-  path: '/api/sessions/{sessionId}/worktree',
-  tags: ['Sessions'],
-  summary: 'Toggle per-session git worktree',
-  description: 'Returns 403 when the project is in workflow mode and `enabled=true` is requested.',
-  request: {
-    params: sessionIdParams,
-    body: { content: jsonContent(ToggleEnabledRequestSchema) },
-  },
-  responses: {
-    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
-    400: errorResponse('Validation failed.'),
-    403: errorResponse('Disabled by workflow-mode project.'),
-    404: errorResponse('Session not found.'),
-  },
-});
+// NOTE: `PUT /api/sessions/{sessionId}/worktree` was removed when Agent
+// Hub locked to worktree-only sessions.
 
 // PUT /api/sessions/:sessionId/ask-mode
 registerPath({

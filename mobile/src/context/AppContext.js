@@ -12,7 +12,7 @@ import {
   shouldShowWizard,
 } from '../utils/setupState';
 import { hydrateChangesReady } from '../utils/changesReady';
-import { resolveSessionWorktree, applyDetectedFlag } from '../utils/worktreeState';
+import { applyDetectedFlag } from '../utils/worktreeState';
 import { isWorkflowProject } from '../utils/project-mode';
 import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
@@ -49,10 +49,10 @@ export function AppProvider({ children }) {
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
   const [modelConfig, setModelConfig] = useState(null);
-  // Git-worktree isolation toggle + CLI-confirmed detection flag. Mirrors the
-  // web client's `sessionWorktree` / `gitWorktreeDetected` state (App.jsx).
-  const [sessionWorktree, setSessionWorktree] = useState(true);
-  const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown
+  // The legacy worktree toggle (`sessionWorktree`) and CLI-detection
+  // signal (`gitWorktreeDetected`) were removed when Agent Hub locked to
+  // worktree-only sessions. All user-facing session creation now uses a
+  // per-session worktree unconditionally.
   // Ask Mode (read-only session) — when true, the server spawns the CLI with
   // `--permission-mode plan` so the agent can read files but can't make edits
   // or run destructive commands. Mirrors the web client's `sessionAskMode`.
@@ -280,13 +280,10 @@ export function AppProvider({ children }) {
         );
         break;
       case 'session-worktree-detected':
-        // CLI status line confirmed whether the session's cwd is a git
-        // worktree. Persist the flag onto the session row so session switches
-        // pick it up, and update the active-session badge immediately.
+        // Keep the per-session row flag in sync for debugging / future
+        // tooling. The user-facing badge was removed when Agent Hub
+        // locked to worktree-only sessions.
         setSessions((prev) => applyDetectedFlag(prev, data.sessionId, data.gitWorktree));
-        if (forActiveSession) {
-          setGitWorktreeDetected(!!data.gitWorktree);
-        }
         break;
       case 'error':
         if (data.sessionId) {
@@ -969,9 +966,6 @@ export function AppProvider({ children }) {
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(target.engine || agent?.engine || 'claude-code');
         setSessionModel(target.model || defaultModelForEngine(target.engine || agent?.engine || 'claude-code'));
-        const wt = resolveSessionWorktree(target);
-        setSessionWorktree(wt.enabled);
-        setGitWorktreeDetected(wt.detected);
         setSessionAskMode(target.ask_mode !== 0 && !!target.ask_mode);
       } else {
         setActiveSessionId(null);
@@ -979,8 +973,6 @@ export function AppProvider({ children }) {
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(agent?.engine || 'claude-code');
         setSessionModel(defaultModelForEngine(agent?.engine || 'claude-code'));
-        setSessionWorktree(true);
-        setGitWorktreeDetected(null);
         setSessionAskMode(false);
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
@@ -1020,9 +1012,6 @@ export function AppProvider({ children }) {
     if (session?.engine) setSessionEngine(session.engine);
     if (session?.model) setSessionModel(session.model);
     if (session) {
-      const wt = resolveSessionWorktree(session);
-      setSessionWorktree(wt.enabled);
-      setGitWorktreeDetected(wt.detected);
       setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
     }
   }, [activeSessionId, sessions]);
@@ -1179,8 +1168,6 @@ export function AppProvider({ children }) {
     setCronSessions([]);
     setChangesReady({});
     setSessionHandoffs([]);
-    setSessionWorktree(true);
-    setGitWorktreeDetected(null);
     setSessionAskMode(false);
     // Reconnect WebSocket to new org
     reconnect();
@@ -1217,53 +1204,13 @@ export function AppProvider({ children }) {
     const agent = agents.find((a) => a.id === activeAgentId);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
     setSessionModel(session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'));
-    const wt = resolveSessionWorktree(session);
-    setSessionWorktree(wt.enabled);
-    setGitWorktreeDetected(null); // Fresh session — CLI hasn't reported yet
     setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
     setMessages([]);
   }, [activeAgentId, agents, sessionAskMode]);
 
-  // Toggle git-worktree isolation for the active session. Optimistically
-  // updates local state; reverts on server error. Mirrors the web client's
-  // `handleWorktreeChange` in App.jsx.
-  const handleWorktreeChange = useCallback(
-    async (enabled) => {
-      const agent = agentsRef.current.find((a) => a.id === activeAgentIdRef.current);
-      const project = projectsRef.current.find((p) => p.id === agent?.projectId);
-      if (isWorkflowProject(project)) {
-        Alert.alert(
-          'Workflow mode',
-          'Per-session worktrees are disabled while this project is in workflow mode.',
-        );
-        return;
-      }
-      const sid = activeSessionIdRef.current;
-      const prevEnabled = sessionWorktree;
-      setSessionWorktree(enabled);
-      if (!sid) return;
-      try {
-        const updated = await api.setSessionWorktree(sid, enabled);
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === updated.id
-              ? {
-                  ...s,
-                  use_worktree: updated.use_worktree,
-                  worktree_path: updated.worktree_path,
-                  worktree_branch: updated.worktree_branch,
-                  git_worktree_detected: updated.git_worktree_detected,
-                }
-              : s,
-          ),
-        );
-      } catch (err) {
-        console.warn('setSessionWorktree failed; reverting toggle:', err);
-        setSessionWorktree(prevEnabled);
-      }
-    },
-    [sessionWorktree],
-  );
+  // `handleWorktreeChange` was removed when Agent Hub locked to
+  // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
+  // endpoint no longer exists.
 
   // Toggle Ask Mode for the active session. Optimistically updates local
   // state; reverts on server error. Mirrors the web client's
@@ -1633,9 +1580,6 @@ export function AppProvider({ children }) {
     sessionEngine,
     sessionModel,
     modelConfig,
-    sessionWorktree,
-    gitWorktreeDetected,
-    handleWorktreeChange,
     sessionAskMode,
     handleAskModeChange,
     connected,

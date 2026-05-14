@@ -40,7 +40,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({
         name,
-        ...(options.use_worktree != null ? { use_worktree: options.use_worktree } : {}),
+        // `use_worktree` is no longer accepted on session creation —
+        // Agent Hub is worktree-only for user-facing session flows.
         ...(options.askMode != null ? { ask_mode: !!options.askMode } : {}),
       }),
     }),
@@ -73,14 +74,9 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
-  // Toggle git-worktree isolation for a session. Returns the updated session
-  // row with `use_worktree`, `worktree_path`, `worktree_branch`, and
-  // `git_worktree_detected` fields so callers can hydrate UI state.
-  setSessionWorktree: (sessionId, enabled) =>
-    fetchJSON(`/sessions/${sessionId}/worktree`, {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
+  // `setSessionWorktree` was removed when Agent Hub locked to
+  // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
+  // endpoint no longer exists.
   // Toggle Ask Mode (read-only session). Server enforces this by spawning the
   // CLI with `--permission-mode plan` instead of `bypassPermissions`. Returns
   // the updated session row so callers can hydrate `ask_mode` in local state.

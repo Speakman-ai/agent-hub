@@ -9,9 +9,12 @@ export function getProjectMode(project: Project | null | undefined): ProjectMode
 }
 
 /**
- * `sessions.use_worktree` default for new rows: workflow projects skip
- * per-session worktrees; dev mode defaults to isolated sessions.
+ * `sessions.use_worktree` default for new rows. Agent Hub is now
+ * worktree-only for all user-facing session flows, so this always
+ * returns 1 regardless of project mode. The flag is kept on the
+ * row so internal callers (e.g., preview-wizard) can still spawn
+ * shared-checkout sessions when they need to.
  */
-export function defaultSessionUseWorktreeFlag(project: Project | null | undefined): 0 | 1 {
-  return getProjectMode(project) === 'workflow' ? 0 : 1;
+export function defaultSessionUseWorktreeFlag(_project: Project | null | undefined): 0 | 1 {
+  return 1;
 }
