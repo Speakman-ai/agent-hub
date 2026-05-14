@@ -352,6 +352,37 @@ implemented atop a generic `getSingleKeyAuth` / `setSingleKeyAuth`
 pair. The DB columns (`<engine>_api_key`, `<engine>_auth_updated_at`)
 are added via idempotent `ensureColumn` migrations on boot.
 
+**"Sign in with browser" — per-user HOME isolation.** Cursor Agent,
+Codex CLI, and Gemini OAuth all authenticate via files in `$HOME`
+(`~/.cursor`, `~/.codex`, `~/.config/gcloud`, …) rather than an
+environment variable. Sharing the operator's HOME across all Hub users
+would leak login state between accounts. To prevent that,
+`buildSpawnEnv(cfg, { userId })` (`server/config.ts`) pins the spawn's
+`HOME` to `<dataDir>/per-user-creds/<userId>/home` whenever a session
+owner is known. The directory is materialized on demand by
+`ensurePerUserHome` (`server/per-user-home.ts`); FS errors fall back to
+the host HOME so a transient failure never blocks a chat. When
+`userId` is unset (legacy global-apiKey path, Admin host-wide flows)
+HOME is left as the operator inherited it.
+
+Every spawn site that previously called `buildSpawnEnv(cfg)` now
+resolves a `credOwnerId` (`getSessionOwner(sessionId) || getOrgOwnerUserId()`)
+and threads it through as `{ userId: credOwnerId }`, so the per-user
+HOME and engine creds reach the right child:
+
+- `server/chat.ts` — interactive chat sessions.
+- `server/heartbeat.ts` — scheduled heartbeat runs.
+- `server/room-chat.ts` — conference-room turns.
+- `server/design-chat.ts` — Design Studio sessions.
+- `server/slack.ts` — Slack-bot mediated runs.
+- `server/delegation.ts` — both `<delegate>` sub-agent spawns and
+  the synthesis pass that summarizes their results.
+
+The practical effect: when a user has authenticated `cursor-agent` /
+`codex` via "Sign in with browser" once, every downstream spawn the
+platform makes on their behalf — including delegated sub-agents and
+synthesis — reads the same per-user token cache without re-prompting.
+
 ## Per-user skill credentials
 
 Third-party tokens for **installed skills** (Linear, GitHub PAT, etc.) live
