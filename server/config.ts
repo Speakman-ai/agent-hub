@@ -372,8 +372,8 @@ const config: AppConfig = {
 
   // ── Session watchdog ──────────────────────────────────────────
   // Server-side watchdog that catches sessions stalling mid-task. Defaults:
-  //   • idleThresholdMs    5 min  — first nudge fires after 5 min of silence
-  //   • nudgeCooldownMs    3 min  — minimum gap between nudges per session
+  //   • idleThresholdMs   20 min  — first nudge fires after 20 min of silence
+  //   • nudgeCooldownMs   10 min  — minimum gap between nudges per session
   //   • checkIntervalMs    60 s   — how often the scan cron ticks
   //   • maxSoftNudges      2      — soft (T1) nudges before T2/T3/T4 escalate
   //   • cardBudgetMs       1 h    — hard escalation if the linked card lingers
@@ -390,13 +390,13 @@ const config: AppConfig = {
           ),
     idleThresholdMs: clampFiniteInt(
       (fileConfig.watchdog as Record<string, unknown> | undefined)?.idleThresholdMs,
-      5 * 60 * 1000,
+      20 * 60 * 1000,
       30_000,
       6 * 60 * 60 * 1000,
     ),
     nudgeCooldownMs: clampFiniteInt(
       (fileConfig.watchdog as Record<string, unknown> | undefined)?.nudgeCooldownMs,
-      3 * 60 * 1000,
+      10 * 60 * 1000,
       30_000,
       60 * 60 * 1000,
     ),

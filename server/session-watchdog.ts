@@ -13,8 +13,8 @@
  *   2. The last event we saw was an assistant token (we're not at a clean
  *      turn boundary — no `result` with `isError=false` since the last
  *      user message went in).
- *   3. `now - last_token_at >= idleThresholdMs` (default 5 min).
- *   4. We have not nudged inside `nudgeCooldownMs` (default 3 min).
+ *   3. `now - last_token_at >= idleThresholdMs` (default 20 min).
+ *   4. We have not nudged inside `nudgeCooldownMs` (default 10 min).
  *
  * Tier ladder (hard stop at T4 — never loops forever):
  *   T1 (≤ maxSoftNudges) — soft re-prompt: "you stopped mid-task, continue
