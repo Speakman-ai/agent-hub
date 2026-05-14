@@ -37,8 +37,9 @@ import {
   applyGithubSpawnCredentials,
   applyReviewerSpawnIsolation,
   applyReviewerRoleLock,
-  selectGithubSpawnToken,
 } from './spawn-github-credentials.js';
+import { resolveGithubSpawnToken } from './github-spawn-token-resolver.js';
+import { getRepoOwnerForCwd } from './github-remote-owner.js';
 import type { DelegationResult } from './delegation.js';
 import {
   detectHandoffBlock,
@@ -2427,27 +2428,61 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
         }
         // Pick the credential to inject. The policy lives in
-        // `selectGithubSpawnToken` so reviewer/non-reviewer behaviour is
-        // testable in isolation and chat.ts can't drift from it:
-        //   - reviewer role → bot installation token only (no per-user
-        //     fallback, which historically mis-attributed reviews to the
-        //     org owner's human GitHub account).
+        // `resolveGithubSpawnToken` (org-aware chain) so the reviewer /
+        // non-reviewer / autonomous-dispatch behaviour stays testable in
+        // isolation and chat.ts can't drift from it:
+        //   - **App installation token for the repo's org (preferred)** —
+        //     `ghs_…` minted via the GitHub App's private key. Bound to
+        //     the org, not a human, so it does not re-introduce the
+        //     autonomous-dispatch identity leak. Pre-validated against
+        //     the repo with `GET /repos/:owner/:repo` so a stale
+        //     installation falls through instead of poisoning the spawn.
+        //     Closes the recurring "Write access to repository not
+        //     granted" failures where the org owner's per-user OAuth
+        //     had lost mcsteen/<repo> access.
+        //   - reviewer role → bot installation token only when the App
+        //     path didn't produce one. No per-user fallback (which
+        //     historically mis-attributed reviews to the org owner's
+        //     human GitHub account).
         //   - non-reviewer, interactive → per-user OAuth token so
-        //     `gh`/`git push` authenticate as the human at the keyboard.
-        //   - non-reviewer, autonomous-dispatch origin → no token at
-        //     all. Autonomous sessions are system-spawned and attributed
-        //     to the org owner; if we injected the owner's OAuth the
-        //     agent could call `gh api repos/.../reviews -X POST`
-        //     directly and post formal PR reviews under the human's
-        //     identity, bypassing the `gh-pr.sh` wrapper guard
-        //     (`AGENT_HUB_REVIEWER_LOCK`). The server-side auto-PR push
-        //     (`auto-git.ts`) runs out-of-process so PR creation is
-        //     unaffected. See card 395e044c-… for the wrapper-bypass
-        //     rationale.
-        const tokenToInject = selectGithubSpawnToken({
+        //     `gh`/`git push` authenticate as the human at the keyboard
+        //     when no App is installed for the repo.
+        //   - non-reviewer, autonomous-dispatch origin → no per-user
+        //     fallback. Autonomous sessions are system-spawned and
+        //     attributed to the org owner; if we injected the owner's
+        //     OAuth the agent could call `gh api
+        //     repos/.../reviews -X POST` directly and post formal PR
+        //     reviews under the human's identity, bypassing the
+        //     `gh-pr.sh` wrapper guard (`AGENT_HUB_REVIEWER_LOCK`). The
+        //     server-side auto-PR push (`auto-git.ts`) runs
+        //     out-of-process so PR creation is unaffected. See card
+        //     395e044c-… for the wrapper-bypass rationale.
+        // Resolve the repo's `{owner, repo}` from the project's git
+        // `origin` remote. When available, this lets the credential
+        // resolver below prefer a GitHub-App installation token bound
+        // to the repo's org over the session owner's personal OAuth
+        // token — which is the structural fix for the recurring
+        // "Write access to repository not granted" failures on
+        // webhook-triggered clones of org-owned repos. A missing or
+        // non-GitHub remote silently falls back to the historical
+        // per-user OAuth path.
+        let repoOwner: string | null = null;
+        let repoName: string | null = null;
+        try {
+          const owner = await getRepoOwnerForCwd(project.cwd);
+          if (owner) {
+            repoOwner = owner.owner;
+            repoName = owner.repo;
+          }
+        } catch {
+          /* best-effort — resolver falls back to user OAuth */
+        }
+        const tokenToInject = await resolveGithubSpawnToken({
           role: agent.role,
-          botGithubToken: config.botGithubToken,
+          config,
           userGhToken,
+          repoOwner,
+          repoName,
           autonomousOrigin: msg._fromAutonomousDispatch === true,
         });
         // Universal reviewer-spawn isolation (option A in card
