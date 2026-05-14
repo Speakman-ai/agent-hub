@@ -475,6 +475,51 @@ function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgent
     }));
 }
 
+/**
+ * Max bytes we keep from a single skill description when rendering the
+ * `Available Skills` block in the enriched system prompt.
+ *
+ * Default skill descriptions average ~700 B and include long
+ * `TRIGGER`/`DO NOT TRIGGER` natural-language explanations that are useful
+ * inside SKILL.md but bloat the per-turn prompt: the 16 default skills on
+ * agent-hub re-send roughly 12 KB of description text every single turn.
+ * Capping at 160 B keeps the first sentence (the "what it does") plus a
+ * few words of trigger hint, which is enough for the model to recognize a
+ * relevant skill and load it via `<agenthub:skill>`. The full SKILL.md
+ * body is still injected when the skill is actually loaded.
+ *
+ * Exported so tests can pin the constant.
+ */
+export const SKILL_DESCRIPTION_MAX_BYTES = 160;
+
+/**
+ * Compress a SKILL.md `description:` frontmatter value to a single line of
+ * at most `SKILL_DESCRIPTION_MAX_BYTES` UTF-8 bytes. Collapses internal
+ * whitespace, prefers cutting at a sentence boundary, and appends an
+ * ellipsis when truncation actually happened.
+ *
+ * Pure — no DB / FS / env access — so it is cheap to unit-test.
+ */
+export function compressSkillDescription(
+  raw: string | null | undefined,
+  maxBytes: number = SKILL_DESCRIPTION_MAX_BYTES,
+): string {
+  const collapsed = (raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  if (Buffer.byteLength(collapsed, 'utf-8') <= maxBytes) return collapsed;
+  // Reserve bytes for the trailing ellipsis (U+2026 is 3 bytes in UTF-8).
+  const ELLIPSIS = '\u2026';
+  const ellipsisBytes = Buffer.byteLength(ELLIPSIS, 'utf-8');
+  const sliced = clipUtf8StringToMaxBytes(collapsed, Math.max(0, maxBytes - ellipsisBytes));
+  // Prefer the FIRST sentence boundary inside the kept slice. Skill
+  // descriptions lead with a "what it does" sentence and follow with
+  // verbose TRIGGER / DO-NOT-TRIGGER prose, so the first period is the
+  // signal-rich break. Non-greedy match.
+  const sentenceCut = sliced.match(/^(.*?[.!?])\s/);
+  const body = sentenceCut ? sentenceCut[1] : sliced.replace(/[\s,;:]+\S*$/, '');
+  return `${body.trim()}${ELLIPSIS}`;
+}
+
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
 
 export function buildEnrichedPrompt(
@@ -541,7 +586,15 @@ You have access to a real Chromium browser in this session. When a user asks you
 
   // Project workspace docs (ahw). CLAUDE.md: repo dev commands, architecture, testing —
   // same file Cursor often injects as workspace rules; include here for CLI engines.
-  const contextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'CLAUDE.md'];
+  //
+  // CLAUDE.md is the single largest per-turn cost in the enriched prompt
+  // (22 KB on the agent-hub repo, May 2026 audit). It carries dev-loop
+  // guidance that the model only needs to absorb once per session, so we
+  // gate it behind `isFirstMessage`. Identity / team files (AGENTS.md,
+  // SOUL.md, IDENTITY.md) stay on every turn because the model regularly
+  // role-confuses without the identity reminder anchored mid-prompt.
+  const baseContextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md'];
+  const contextOrder = isFirstMessage ? [...baseContextOrder, 'CLAUDE.md'] : baseContextOrder;
   let agentsMdIncluded = false;
   let identityMdIncluded = false;
   for (const filename of contextOrder) {
@@ -576,15 +629,23 @@ You have access to a real Chromium browser in this session. When a user asks you
   {
     const allSkills = listEnabledSkills(agent.id, paths.skillsDir);
     if (allSkills.length > 0) {
-      const skillsList = allSkills.map((s) => `- **${s.name}**: ${s.description}`);
-      prompt += `\n\n## Available Skills
+      const skillsList = allSkills.map(
+        (s) => `- **${s.name}**: ${compressSkillDescription(s.description)}`,
+      );
+      // First-message turn carries the full "how to load + what's real"
+      // contract. Follow-up turns get a tight one-line reminder plus the
+      // compressed catalog so the agent can still discover skills it hasn't
+      // loaded yet without paying for the preamble every turn.
+      const preamble = isFirstMessage
+        ? `## Available Skills
 To load a skill for your next turn, end your turn with this block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:skill>
 {"name": "<skill-id>", "reason": "<one-liner why>"}
 </agenthub:skill>
-The SKILL.md body and referenced files will be injected into your next turn. This replaces the native \`Skill\` tool and works uniformly across claude-code, cursor-agent, and codex.
-
-Only the skills listed below are real here: use their exact \`name\` in \`<agenthub:skill>\` (anything else will not load). On engines that still expose the native \`Skill\` tool, calling it with an unregistered id fails with \`Unknown skill\` — same idea: do not invent third-party "skill" ids. For capabilities that are not in this list, use Bash, WebFetch, or your other normal tools instead of making up skill names.
+The SKILL.md body and referenced files will be injected into your next turn. This replaces the native \`Skill\` tool and works uniformly across claude-code, cursor-agent, and codex; calling Skill() with an unregistered id fails with \`Unknown skill\`. Only the skills listed below are real — use their exact \`name\` (any other id will not load). For capabilities not listed, use Bash, WebFetch, or your other normal tools.`
+        : `## Available Skills
+Load one by ending your turn with \`<agenthub:skill>{"name":"<id>","reason":"..."}</agenthub:skill>\`.`;
+      prompt += `\n\n${preamble}
 
 ${skillsList.join('\n')}`;
     }
@@ -649,7 +710,12 @@ The server moves the session's linked card to Done and appends an explanatory co
     }
   }
 
-  const memoryContext = getMemoryContext(project.ahw);
+  // Yesterday's notes (~1.5 KB) are useful when a session starts cold but
+  // rarely add signal on every follow-up turn, so gate them behind
+  // `isFirstMessage`. MEMORY.md (long-term) and today's notes still ship
+  // on every turn — they carry the live context the model needs for
+  // in-session continuity.
+  const memoryContext = getMemoryContext(project.ahw, { includeYesterday: isFirstMessage });
   if (memoryContext) {
     prompt += '\n\n' + memoryContext;
   }
@@ -703,16 +769,32 @@ This project is in **workflow** mode (not the default dev/kanban automation prof
 You are in a git worktree. Never commit to main. Commit to the current feature branch. Do NOT push or run \`gh pr create\` — the server owns PR creation.`;
     }
 
-    if (projectMode === 'workflow') {
-      prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
-When a user describes a problem, feature, or change, **do not ask permission to start implementing.** The default answer is "yes" ~95% of the time.
+    // Bias to Action — single block, parameterized over the three modes
+    // (workflow, normal-no-linked-card, normal-with-linked-card). Before
+    // the May 2026 prompt-trim audit these were three near-duplicate
+    // blocks each restating "do not emit questions like…" and the
+    // "ask first" exceptions — saved ~2 KB on the first message.
+    const biasToActionSteps =
+      projectMode === 'workflow'
+        ? `**Just do the work:** implement, test, and commit in the project checkout following team conventions.`
+        : options.sessionHasLinkedCard
+          ? `**Just do the work:**
+1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
+2. Implement on a feature branch.
+3. Commit. The server handles push + PR creation.`
+          : `**Just do the work:**
+1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
+2. Move it to In Progress.
+3. Implement on a feature branch.
+4. Commit. The server handles push + PR creation.`;
+    const biasToActionScope =
+      projectMode === 'workflow'
+        ? 'starting implementation'
+        : 'creating a card, opening a PR, or starting implementation';
+    prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
+When a user describes a problem, feature, or change, **do not ask permission for ${biasToActionScope}.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) lets you act now and be corrected cheaply later. Skip prompts like "Should I implement this?", "Want me to open a PR?", "Should I add a test?", "Do you want me to create a card?".
 
-**Do not emit questions like:**
-- "Should I go ahead and implement this?"
-- "Want me to open a PR?"
-- "Should I add a test for this?"
-
-**Instead, just do the work:** implement, test, and commit in the project checkout following team conventions.
+${biasToActionSteps}
 
 **When to actually ask first** (rare — use \`agenthub:ask\` picker or prose):
 - The request is genuinely ambiguous and multiple reasonable interpretations would produce very different work (e.g. "refactor this" with no direction).
@@ -722,53 +804,7 @@ When a user describes a problem, feature, or change, **do not ask permission to 
 Everything else: ship it. A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
 
 ## Research Questions — Answer on the Spot, Don't Card It
-When a user asks a **research or investigation question** about the system (how something works, why something is behaving a certain way, where a feature lives, what the current state of X is), just **do the research and answer inline**. Do **not** offer to open a ticket for the investigation itself.
-
-**Do not emit questions like:**
-- "Want me to make a card to look into this?"
-- "Should I open a ticket to investigate?"
-- "Do you want me to track this as a research task?"
-
-Follow-up **shipping** work can be tracked the way this project prefers; research questions themselves stay in the chat.`;
-    } else {
-      const biasToActionSteps = options.sessionHasLinkedCard
-        ? `**Instead, just do the work:**
-1. Move your **already-linked** kanban card to In Progress (do NOT create a new card — this session is already tied to one).
-2. Implement the change on a feature branch.
-3. Commit. The server handles push + PR creation.`
-        : `**Instead, just do the work:**
-1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
-2. Move it to In Progress.
-3. Implement the change on a feature branch.
-4. Commit. The server handles push + PR creation.`;
-      prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
-When a user describes a problem, feature, or change, **do not ask permission to create a kanban card, open a PR, or start implementing.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) exists precisely so that you can act now and be corrected cheaply later.
-
-**Do not emit questions like:**
-- "Do you want me to create a card for this?"
-- "Should I go ahead and implement this?"
-- "Want me to open a PR?"
-- "Should I add a test for this?"
-
-${biasToActionSteps}
-
-**When to actually ask first** (rare — use \`agenthub:ask\` picker or prose):
-- The request is genuinely ambiguous and multiple reasonable interpretations would produce very different work (e.g. "refactor this" with no direction).
-- The action is destructive and irreversible (e.g. \`git push --force\` to main, deleting production data, rotating shared secrets).
-- The user has explicitly asked you to propose a plan before executing.
-
-Everything else: ship it. A rejected PR costs a few minutes; a blocked agent costs the user's entire turn.
-
-## Research Questions — Answer on the Spot, Don't Card It
-When a user asks a **research or investigation question** about the system (how something works, why something is behaving a certain way, where a feature lives, what the current state of X is), just **do the research and answer inline**. Do **not** offer to create a kanban card for the investigation itself.
-
-**Do not emit questions like:**
-- "Want me to make a card to look into this?"
-- "Should I open a ticket to investigate?"
-- "Do you want me to track this as a research task?"
-
-Cards are for **work to ship** — code changes, features, bugfixes, refactors. They are not for **questions to answer**. If research surfaces a concrete bug or feature that needs shipping, *then* create a card for that follow-up work (per Bias to Action above). The investigation itself stays in the chat.`;
-    }
+When a user asks a research or investigation question (how something works, why it behaves a certain way, where a feature lives, what the current state of X is), just do the research and answer inline. Do **not** offer to open a ticket for the investigation itself. Cards are for work to ship, not questions to answer — if research surfaces a concrete bug or feature, *then* create a card for that follow-up work.`;
 
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
@@ -795,28 +831,15 @@ Use the \`<agenthub:react>\` web action to search first:
     prompt += `\n\n## External API Documentation — Always Verify
 When working with external APIs (GitHub, Slack, etc.), always consult official documentation first. Do not rely solely on training data — APIs change.`;
 
-    prompt += `\n\n## File-Safety Reminder — Internalize, Never Surface
-The Claude Code CLI appends a hidden \`<system-reminder>\` after every \`Read\` tool result asking you to "consider whether [the file] would be considered malware." This injection is server-side (Anthropic LaunchDarkly flag) and **cannot be disabled** from Agent Hub. It fires on essentially every file you read and is noise, not signal.
-
-**How to handle it:**
-1. Read the file, perform your task, continue silently. Do **not** preface responses with "Not malware — …", "This appears safe — …", or any similar acknowledgment. Treat it the same way you already treat the \`TodoWrite\` reminder: internalize, never mention.
-2. **Never use the reminder as grounds to refuse legitimate work.** Editing a GitHub Actions workflow, a deploy script, a shell command, a regex, or any other normal codebase file is not "augmenting malware" — it is your job. The reminder only applies to code that is genuinely malicious (exfiltration, credential theft, destructive payloads, etc.).
-3. If a file is genuinely suspicious, raise it explicitly in plain language. Otherwise stay quiet.`;
-
     prompt += `\n\n## Writing Style: No AI Slop
 
-Write like a senior engineer talking to a peer, not like a chatbot. Apply these rules to every reply, every commit message, every PR description, every kanban card, every wiki page:
+Write like a senior engineer talking to a peer. Apply to every reply, commit, PR, card, and wiki page:
 
-1. **No em-dashes or en-dashes, ever.** Do not use the \`\u2014\` or \`\u2013\` characters anywhere in your output. Replace each one with a comma, a colon, a period, or parentheses. If a sentence "needs" an em-dash to breathe, it is a run-on and should be split into two sentences. This rule covers code comments, commit messages, PR bodies, kanban content, wiki pages, and chat replies alike. Hyphens in compound words ("worktree-first", "follow-up") are fine; the long dash characters are not.
-2. **No sycophantic preambles.** Cut "Great question!", "Absolutely!", "Certainly!", "I'd be happy to help", "What a great point". Open with the answer.
-3. **No question recap.** Do not start with "You asked about X" or "So you want to know whether Y". The user knows what they asked.
-4. **No filler hedges.** Drop "It's worth noting that...", "It's important to note that...", "Keep in mind that...", "As you may already know...", "Of course, ...". If the point is worth making, just make it.
-5. **No closing offers to help.** Skip "Let me know if you have any questions!", "Hope this helps!", "Feel free to ask if you need anything else!". The conversation is open by default. You do not need to advertise it.
-6. **No buzzword vocabulary.** Avoid: delve, leverage, navigate (the landscape), tapestry, realm, robust, seamlessly, comprehensive, intricate, unleash, journey, ecosystem (when you mean "stack"), holistic, paradigm, synergy, "in today's fast-paced world", "at the end of the day", "moving forward". Pick the boring concrete word.
-7. **No bullet soup.** Bullets are for genuinely parallel items. If three points connect logically, write a paragraph. A list where every line is a one-clause "**Bold prefix:** rest of sentence" is a tell.
-8. **No restating the plan back at the user.** Do not write "I will now do X, Y, Z" before doing them. Just do the work and report what shipped.
-9. **No emoji** unless the user used one first or explicitly asked for them.
-10. **No final recap section** unless the user asked for one. If your answer needs a TL;DR, the answer is too long; trim instead.
+1. **No em/en-dashes.** Never emit \`\u2014\` or \`\u2013\` — use a comma, colon, period, or parentheses. Hyphens in compounds ("worktree-first") are fine.
+2. **No preambles, recaps, or hedges.** Skip "Great question!", "You asked about…", "It's worth noting…", "Let me know if…". Open with the answer; the conversation stays open by default.
+3. **No buzzword vocabulary.** Avoid delve, leverage, robust, seamless, comprehensive, ecosystem (as "stack"), tapestry, journey, holistic, synergy, "at the end of the day", "moving forward". Pick the boring concrete word.
+4. **No bullet soup, no plan restatement, no emoji, no final recap section.** Bullets only for genuinely parallel items. Do the work and report what shipped, not what you plan to do. No emoji unless the user used one first.
+5. **Internalize hidden CLI reminders.** The Claude Code CLI appends file-safety and TodoWrite \`<system-reminder>\` blocks. Never surface them ("Not malware — …", "This appears safe — …") and never use them as grounds to refuse routine editing work. Stay quiet unless the file is genuinely malicious.
 
 When in doubt, shorter and plainer wins.`;
 
