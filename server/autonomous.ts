@@ -415,19 +415,57 @@ function getDeps(): AutonomousDeps {
   return deps;
 }
 
-/** Model for a new autonomous session: epic override when valid for the agent's engine, else agent default. */
-function sessionModelForAutonomousDispatch(
+/**
+ * Reverse lookup: which engine owns this model id? Returns null when the
+ * model isn't in any configured engine's allowlist. Used to honour a
+ * cross-engine model override at dispatch time (e.g. an operator picks
+ * `composer-2`, a Cursor model, for an autonomous epic whose dispatchable
+ * agents default to `claude-code` — without this we'd silently drop the
+ * override and fall back to the agent's default model).
+ *
+ * Exported for unit testing.
+ */
+export function engineForModel(
+  model: string,
+  engineValidModels: Record<string, string[]>,
+): string | null {
+  for (const [engine, models] of Object.entries(engineValidModels)) {
+    if (Array.isArray(models) && models.includes(model)) return engine;
+  }
+  return null;
+}
+
+/**
+ * Engine + model for a new autonomous session, derived from (in priority
+ * order):
+ *   1. `epic.autonomous_model`, if valid for the agent's default engine →
+ *      keep the agent engine, use the model.
+ *   2. `epic.autonomous_model`, if valid for SOME OTHER configured engine →
+ *      switch the spawn to that engine + model. This is the cross-engine
+ *      override path: the agent's identity (id, workspace, skills) is
+ *      preserved, but the CLI spawn runs under the engine that actually
+ *      owns the model. `chat.ts` reads `session.engine` from the DB row
+ *      when spawning, so the override flows end-to-end.
+ *   3. Otherwise → agent default engine + (agent.model || defaultModelForEngine(engine)).
+ *
+ * Card-level `assign_model` follows the same precedence but is resolved by
+ * the dispatch loop directly (the function used to handle only the epic
+ * level, but the card path now shares the cross-engine logic too).
+ */
+function sessionEngineAndModelForAutonomousDispatch(
   epic: KanbanEpicRow,
   agent: Agent,
   engineValidModels: Record<string, string[]>,
-): string {
-  const engine = agent.engine || 'claude-code';
+): { engine: string; model: string } {
+  const agentEngine = agent.engine || 'claude-code';
   const raw = typeof epic.autonomous_model === 'string' ? epic.autonomous_model.trim() : '';
   if (raw) {
-    const allowed = engineValidModels[engine] || [];
-    if (allowed.includes(raw)) return raw;
+    const agentAllowed = engineValidModels[agentEngine] || [];
+    if (agentAllowed.includes(raw)) return { engine: agentEngine, model: raw };
+    const otherEngine = engineForModel(raw, engineValidModels);
+    if (otherEngine) return { engine: otherEngine, model: raw };
   }
-  return agent.model || defaultModelForEngine(engine);
+  return { engine: agentEngine, model: agent.model || defaultModelForEngine(agentEngine) };
 }
 
 export function initAutonomous(d: AutonomousDeps): void {
@@ -844,18 +882,47 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       console.log(`[Autonomous] Assigning "${card.title}" to ${agent.name}`);
 
       const sessionId = crypto.randomUUID();
-      const engine = agent.engine || 'claude-code';
       const cfg = d.getConfig();
       const engineValidModels = cfg.engineValidModels || {};
-      const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
+      const agentEngine = agent.engine || 'claude-code';
+
+      // Resolve the (engine, model) pair for the spawn. Card-level
+      // `assign_model` wins over epic-level `autonomous_model`; either may
+      // cross engines (e.g. operator picks `composer-2` for an agent whose
+      // default engine is `claude-code`), in which case we spawn under the
+      // engine that owns the model so the operator's selection isn't
+      // silently dropped.
+      //
+      // Falls back to the epic-level resolver (and ultimately the agent's
+      // default model + engine) when no override is set or the override
+      // isn't recognised by any configured engine.
+      let engine: string;
       let model: string;
+      const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
       if (cardRaw) {
-        const allowed = engineValidModels[engine] || [];
-        model = allowed.includes(cardRaw)
-          ? cardRaw
-          : sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
+        const agentAllowed = engineValidModels[agentEngine] || [];
+        if (agentAllowed.includes(cardRaw)) {
+          engine = agentEngine;
+          model = cardRaw;
+        } else {
+          const otherEngine = engineForModel(cardRaw, engineValidModels);
+          if (otherEngine) {
+            engine = otherEngine;
+            model = cardRaw;
+          } else {
+            ({ engine, model } = sessionEngineAndModelForAutonomousDispatch(
+              epic,
+              agent,
+              engineValidModels,
+            ));
+          }
+        }
       } else {
-        model = sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
+        ({ engine, model } = sessionEngineAndModelForAutonomousDispatch(
+          epic,
+          agent,
+          engineValidModels,
+        ));
       }
       const projRow = d.findProject(projectId);
       const wt = defaultSessionUseWorktreeFlag(projRow);
