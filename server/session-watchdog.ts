@@ -166,7 +166,7 @@ export function onProcExit(sessionId: string, opts: { clean: boolean }): void {
     stmts.insertWatchdogEvent.run(
       sessionId,
       lookupCardForSession(sessionId)?.id ?? null,
-      'proc_unclean_exit',
+      'diag:proc_unclean_exit',
       'process exited without a clean result',
       null,
     );
@@ -220,6 +220,9 @@ export async function forceNudge(
       // No row yet — create one then proceed.
       stmts.upsertWatchdogRow.run(sessionId, null, null);
     }
+    if (row?.state === 'escalated') {
+      return { dispatched: false, reason: 'already escalated' };
+    }
     await dispatchTier(sessionId, tier, 'manual_force');
     return { dispatched: true };
   } catch (err) {
@@ -246,15 +249,6 @@ function lookupSession(sessionId: string): SessionRow | null {
   } catch {
     return null;
   }
-}
-
-function cardIsActive(card: KanbanCardRow | null): boolean {
-  if (!card) return false;
-  // The card row in our schema carries `column_id`; column *names* require a
-  // join. We pessimistically treat any non-completed watchdog row as active
-  // (the cron only selects rows whose state is 'active' anyway). The Done
-  // hook is what flips the watchdog state to 'completed'.
-  return true;
 }
 
 // ── Tier dispatcher ────────────────────────────────────────────────
@@ -466,6 +460,9 @@ export function startWatchdogCron(): void {
     console.log('[watchdog] disabled by config; not scheduling cron');
     return;
   }
+  // Supported intervals: whole-second divisors of 60 (15, 20, 30 s) or
+  // whole-minute multiples (60, 120, 300 s). Non-divisors round and may
+  // produce irregular gaps (e.g. 90s → */2 * * * * fires every 2 min, not 1.5).
   const intervalSec = Math.max(15, Math.round(config.watchdog.checkIntervalMs / 1000));
   // node-cron only supports >=1s; for sub-minute intervals we use the
   // 6-field form (seconds * * * * *).
@@ -533,8 +530,3 @@ export function getRecentWatchdogEvents(
     return [];
   }
 }
-
-// `cardIsActive` is a helper retained for future expansion (column-name
-// based active checks once we join through `kanban_columns`); the cron
-// scan currently filters on `state` so the helper is unused.
-void cardIsActive;
