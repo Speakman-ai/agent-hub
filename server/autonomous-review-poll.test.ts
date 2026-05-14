@@ -49,6 +49,8 @@ beforeEach(() => {
 interface CardOverride {
   review_status?: KanbanCardRow['review_status'];
   last_dispatched_review_id?: number | null;
+  last_dispatched_check_run_id?: number | null;
+  last_dispatched_review_comment_id?: number | null;
 }
 
 function makeDeps(overrides: {
@@ -56,12 +58,18 @@ function makeDeps(overrides: {
   inProgressCardIds?: string[];
   moveKanbanCardRun?: Mock;
   setCardLastDispatchedReviewId?: Mock;
+  setCardLastDispatchedCheckRunId?: Mock;
+  setCardLastDispatchedReviewCommentId?: Mock;
+  getGhBotUser?: Mock;
   /** Per-card property overrides keyed by card id. */
   cardOverrides?: Record<string, CardOverride>;
 }): Parameters<typeof initAutonomous>[0] {
   const reviewId = 'col-review';
   const inProgressId = 'col-progress';
   const setCardLastDispatchedReviewIdRun = overrides.setCardLastDispatchedReviewId || vi.fn();
+  const setCardLastDispatchedCheckRunIdRun = overrides.setCardLastDispatchedCheckRunId || vi.fn();
+  const setCardLastDispatchedReviewCommentIdRun =
+    overrides.setCardLastDispatchedReviewCommentId || vi.fn();
   const stmts = {
     getKanbanColumns: {
       all: vi.fn(() => [
@@ -82,6 +90,8 @@ function makeDeps(overrides: {
               pr_url: 'https://github.com/o/r/pull/99',
               review_status: extra.review_status ?? null,
               last_dispatched_review_id: extra.last_dispatched_review_id ?? null,
+              last_dispatched_check_run_id: extra.last_dispatched_check_run_id ?? null,
+              last_dispatched_review_comment_id: extra.last_dispatched_review_comment_id ?? null,
             } as KanbanCardRow);
           }
         }
@@ -95,6 +105,8 @@ function makeDeps(overrides: {
               pr_url: 'https://github.com/o/r/pull/99',
               review_status: extra.review_status ?? null,
               last_dispatched_review_id: extra.last_dispatched_review_id ?? null,
+              last_dispatched_check_run_id: extra.last_dispatched_check_run_id ?? null,
+              last_dispatched_review_comment_id: extra.last_dispatched_review_comment_id ?? null,
             } as KanbanCardRow);
           }
         }
@@ -103,6 +115,8 @@ function makeDeps(overrides: {
     },
     moveKanbanCard: { run: overrides.moveKanbanCardRun || vi.fn() },
     setCardLastDispatchedReviewId: { run: setCardLastDispatchedReviewIdRun },
+    setCardLastDispatchedCheckRunId: { run: setCardLastDispatchedCheckRunIdRun },
+    setCardLastDispatchedReviewCommentId: { run: setCardLastDispatchedReviewCommentIdRun },
   };
   return {
     stmts: stmts as never,
@@ -115,7 +129,7 @@ function makeDeps(overrides: {
     getProjects: vi.fn(() => [{ id: 'p1', name: 'P', cwd: '/tmp', ahw: '', agents: [] }] as never),
     getConfig: vi.fn(() => ({}) as never),
     getGhAuthenticatedUser: vi.fn(() => 'human'),
-    getGhBotUser: vi.fn(() => null),
+    getGhBotUser: overrides.getGhBotUser || vi.fn(() => null),
     getGhAppSlug: vi.fn(() => null),
     getWebhookHandlerDeps: vi.fn(
       () =>
@@ -342,5 +356,254 @@ describe('pollForMissedReviews', () => {
 
     expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
     expect(lastDispatchedReviewId.get('c-r')).toBeUndefined();
+  });
+});
+
+// ─── Secondary probes added by the babysit-gap closure ───────────────────────
+//
+// `pollForMissedReviews` now also covers (a) failed check runs and (b) inline
+// review comments where the GitHub webhook delivery was missed. These tests
+// exercise the new paths via the same shared `execFile` mock used above.
+
+/**
+ * Helper to wire a multi-endpoint gh mock with one switch per GitHub URL path.
+ * Each handler receives the full argv and should call cb(null, json, '').
+ * Anything not matched returns an empty array string so the probe is a no-op.
+ */
+function wireGhMock(handlers: {
+  reviews?: (argv: readonly string[]) => string;
+  prSnapshot?: (argv: readonly string[]) => string;
+  checkRuns?: (argv: readonly string[]) => string;
+  prComments?: (argv: readonly string[]) => string;
+}): void {
+  vi.mocked(execFileImport).mockImplementation(((
+    _cmd: string,
+    args: readonly string[] | null | undefined,
+    _opts: unknown,
+    cb: (err: Error | null, stdout: string, stderr: string) => void,
+  ) => {
+    const argv = args ?? [];
+    const path = String(argv[1] ?? '');
+    if (argv[0] !== 'api') {
+      cb(new Error('unexpected non-api gh call'), '', '');
+      return undefined as never;
+    }
+    // Order matters: match the most specific suffix first so `/pulls/99/...`
+    // doesn't match the PR-snapshot path.
+    if (path.includes('/pulls/99/reviews')) {
+      cb(null, handlers.reviews ? handlers.reviews(argv) : '[]', '');
+    } else if (path.includes('/pulls/99/comments')) {
+      cb(null, handlers.prComments ? handlers.prComments(argv) : '[]', '');
+    } else if (path.includes('/check-runs')) {
+      // gh --jq projection collapses the envelope; default is an empty array.
+      cb(null, handlers.checkRuns ? handlers.checkRuns(argv) : '[]', '');
+    } else if (/\/pulls\/99(?:$|\?)/.test(path)) {
+      cb(
+        null,
+        handlers.prSnapshot
+          ? handlers.prSnapshot(argv)
+          : JSON.stringify({ state: 'open', head_sha: 'sha-deadbeef' }),
+        '',
+      );
+    } else {
+      cb(new Error(`unexpected gh path: ${path}`), '', '');
+    }
+    return undefined as never;
+  }) as unknown as typeof execFileImport);
+}
+
+describe('pollForMissedReviews — CI failure probe', () => {
+  it('dispatches CI fix when a new failed check run appears', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-1' }),
+      checkRuns: () =>
+        JSON.stringify([
+          { id: 1001, name: 'lint', conclusion: 'success' },
+          { id: 1002, name: 'unit-tests', conclusion: 'failure' },
+          { id: 1003, name: 'e2e', conclusion: 'timed_out' },
+        ]),
+    });
+
+    const setCheckRun = vi.fn();
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-ci'],
+        setCardLastDispatchedCheckRunId: setCheckRun,
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
+    const [, , , content] = mockDispatchReviewFeedback.mock.calls[0] as [
+      unknown,
+      unknown,
+      unknown,
+      string,
+    ];
+    expect(content).toMatch(/Missed CI Failure/);
+    expect(content).toMatch(/unit-tests/);
+    expect(content).toMatch(/e2e/);
+    // Latest of the two failing ids → 1003.
+    expect(setCheckRun).toHaveBeenCalledWith(1003, 'c-ci');
+  });
+
+  it('respects last_dispatched_check_run_id to avoid re-firing the same failure', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-2' }),
+      // Same failure (id 2000) we already dispatched last cycle.
+      checkRuns: () => JSON.stringify([{ id: 2000, name: 'unit-tests', conclusion: 'failure' }]),
+    });
+
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-ci-dedup'],
+        cardOverrides: { 'c-ci-dedup': { last_dispatched_check_run_id: 2000 } },
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).not.toHaveBeenCalled();
+  });
+
+  it('skips secondary probes entirely when PR is closed', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    const checkRunsHandler = vi.fn(() => '[]');
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'closed', head_sha: 'sha-3' }),
+      checkRuns: checkRunsHandler,
+    });
+
+    initAutonomous(makeDeps({ reviewCardIds: ['c-closed'] }) as never);
+
+    await pollForMissedReviews();
+
+    expect(checkRunsHandler).not.toHaveBeenCalled();
+    expect(mockDispatchReviewFeedback).not.toHaveBeenCalled();
+  });
+
+  it('does not advance check-run dedup when dispatch drops the user message', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-4' }),
+      checkRuns: () => JSON.stringify([{ id: 4242, name: 'lint', conclusion: 'failure' }]),
+    });
+    mockDispatchReviewFeedback.mockResolvedValueOnce({
+      sessionId: 'sess-x',
+      userMessagePersisted: false,
+    });
+
+    const setCheckRun = vi.fn();
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-ci-drop'],
+        setCardLastDispatchedCheckRunId: setCheckRun,
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
+    expect(setCheckRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('pollForMissedReviews — inline review comment probe', () => {
+  it('dispatches author feedback when a new non-bot inline comment appears', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-c1' }),
+      prComments: () =>
+        JSON.stringify([
+          {
+            id: 5005,
+            body: 'this needs a null check',
+            path: 'server/foo.ts',
+            line: 42,
+            user: 'reviewer-jane',
+          },
+        ]),
+    });
+
+    const setCommentId = vi.fn();
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-cmt'],
+        setCardLastDispatchedReviewCommentId: setCommentId,
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
+    const [, , , content] = mockDispatchReviewFeedback.mock.calls[0] as [
+      unknown,
+      unknown,
+      unknown,
+      string,
+    ];
+    expect(content).toMatch(/Missed Inline Review Comment/);
+    expect(content).toMatch(/server\/foo\.ts/);
+    expect(content).toMatch(/reviewer-jane/);
+    expect(setCommentId).toHaveBeenCalledWith(5005, 'c-cmt');
+  });
+
+  it('filters out bot, self, and agent-hub-bot-marked comments', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-c2' }),
+      prComments: () =>
+        JSON.stringify([
+          { id: 1, body: 'CI says hi', path: '.', line: 1, user: 'github-actions[bot]' },
+          { id: 2, body: 'self note', path: '.', line: 1, user: 'human' }, // = ghAuthenticatedUser
+          { id: 3, body: 'bot reply', path: '.', line: 1, user: 'agent-hub-bot' },
+          {
+            id: 4,
+            body: '<!-- agent-hub-bot --> already addressed',
+            path: '.',
+            line: 1,
+            user: 'someone-else',
+          },
+        ]),
+    });
+
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-cmt-filter'],
+        getGhBotUser: vi.fn(() => 'agent-hub-bot'),
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).not.toHaveBeenCalled();
+  });
+
+  it('respects last_dispatched_review_comment_id to avoid re-firing', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    wireGhMock({
+      prSnapshot: () => JSON.stringify({ state: 'open', head_sha: 'sha-c3' }),
+      prComments: () =>
+        JSON.stringify([
+          // Old comment we already dispatched.
+          { id: 100, body: 'old', path: 'a.ts', line: 1, user: 'reviewer' },
+          // Same id — should be skipped because dedup is by `>`.
+          { id: 100, body: 'old again', path: 'a.ts', line: 1, user: 'reviewer' },
+        ]),
+    });
+
+    initAutonomous(
+      makeDeps({
+        reviewCardIds: ['c-cmt-dedup'],
+        cardOverrides: { 'c-cmt-dedup': { last_dispatched_review_comment_id: 100 } },
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).not.toHaveBeenCalled();
   });
 });

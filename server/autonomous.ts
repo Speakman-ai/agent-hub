@@ -1318,6 +1318,28 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
 }
 
 /**
+ * Conclusions on a GitHub check_run that mean "this CI run failed and the
+ * author needs to fix something". Matches the set used by the webhook-driven
+ * `handleWebhookCheckSuiteCompleted` path so the poller and the event path
+ * agree on what counts as a failure.
+ */
+const CI_FAIL_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'cancelled']);
+
+/**
+ * Bot login names whose review comments should never trigger an author-side
+ * dispatch — mirrors the webhook handler's filter in
+ * `handleWebhookReviewComment` so poll-detected comments behave the same way.
+ */
+const COMMENT_BOT_LOGINS = new Set(['github-actions[bot]', 'github-actions']);
+
+/**
+ * Magic marker the agent injects when *it* leaves a PR comment, so we never
+ * re-dispatch our own bot comments back to the session. Same string used by
+ * the webhook path; kept in sync intentionally.
+ */
+const AGENT_HUB_BOT_COMMENT_MARKER = '<!-- agent-hub-bot -->';
+
+/**
  * Catch `changes_requested` reviews where the GitHub webhook was missed.
  * Scans cards in **Review** and **In Progress** (author work often lives there
  * after a `changes_requested` webhook moves the card). For each card with a
@@ -1325,6 +1347,20 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
  * `lastDispatchedReviewId` (also updated when the webhook path dispatches and
  * the user message is actually persisted). New ids are pushed through
  * `dispatchReviewFeedback`.
+ *
+ * Also covers the two failure modes where the webhook delivery can quietly
+ * drop and the original "missed reviews" probe wouldn't notice:
+ *
+ *   • **Failed check runs** — `gh api repos/:o/:r/commits/:sha/check-runs`
+ *     for the PR's head SHA, filtered to `CI_FAIL_CONCLUSIONS`, deduped via
+ *     `last_dispatched_check_run_id`.
+ *   • **Inline review comments** — `gh api repos/:o/:r/pulls/:n/comments`,
+ *     filtered to non-bot / non-self / no `<!-- agent-hub-bot -->` marker,
+ *     deduped via `last_dispatched_review_comment_id`.
+ *
+ * Both reuse `dispatchReviewFeedback` for delivery so the session-routing
+ * rules (worktree owner, owner_user_id, queue handling) are identical to the
+ * event-driven path.
  *
  * Exported for Vitest; production only schedules this via `startReviewPollingFallback`.
  */
@@ -1456,6 +1492,237 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
         }
       } catch {
         // gh CLI not available or API error — skip silently
+      }
+
+      // ── Missed CI failures + inline review comments ────────────────────
+      //
+      // The GitHub event delivery for `check_run.completed` and
+      // `pull_request_review_comment.created` is the primary path; this is a
+      // safety net for deliveries that never reached us (network blip,
+      // server restart, webhook secret rotation, etc.). Resolving PR head
+      // SHA and open-state first lets us skip closed PRs entirely.
+      let prSnapshot: { state: string | null; head_sha: string | null } | null = null;
+      try {
+        const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+          execFile(
+            'gh',
+            [
+              'api',
+              `repos/${repoFullName}/pulls/${prNumber}`,
+              '--jq',
+              '{state: .state, head_sha: .head.sha}',
+            ],
+            { timeout: 15000 },
+            (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            },
+          );
+        });
+        const trimmed = stdout.trim();
+        if (trimmed) {
+          prSnapshot = JSON.parse(trimmed) as { state: string | null; head_sha: string | null };
+        }
+      } catch {
+        // PR fetch failed — skip the secondary probes for this card.
+      }
+
+      if (!prSnapshot || prSnapshot.state !== 'open') {
+        continue;
+      }
+
+      // ── CI failure probe ────────────────────────────────────────────────
+      if (prSnapshot.head_sha) {
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            execFile(
+              'gh',
+              [
+                'api',
+                `repos/${repoFullName}/commits/${prSnapshot!.head_sha}/check-runs`,
+                '--jq',
+                '[.check_runs[] | {id: .id, name: .name, conclusion: .conclusion}]',
+              ],
+              { timeout: 15000 },
+              (err, stdout, _stderr) => {
+                if (err) reject(err);
+                else resolve({ stdout });
+              },
+            );
+          });
+          const runs = JSON.parse(stdout.trim() || '[]') as Array<{
+            id: number;
+            name: string;
+            conclusion: string | null;
+          }>;
+          const failed = runs.filter(
+            (r) => r.conclusion !== null && CI_FAIL_CONCLUSIONS.has(r.conclusion),
+          );
+
+          const lastDispatched =
+            card.last_dispatched_check_run_id != null
+              ? Number(card.last_dispatched_check_run_id)
+              : undefined;
+          const newFailed =
+            lastDispatched !== undefined ? failed.filter((r) => r.id > lastDispatched) : failed;
+
+          if (newFailed.length > 0) {
+            console.log(
+              `[ReviewPoll] Card "${card.title}" has ${newFailed.length} new failed check run(s) — dispatching CI fix`,
+            );
+
+            const checkSummary = newFailed
+              .slice(0, 5)
+              .map((r) => `- **${r.name}** (${r.conclusion})`)
+              .join('\n');
+            const feedbackMessage = `# Missed CI Failure Detected (Polling)
+
+Your PR #${prNumber} has **${newFailed.length}** failing check run(s) that may not have been addressed yet.
+
+## Failing checks
+${checkSummary}${newFailed.length > 5 ? `\n…and ${newFailed.length - 5} more.` : ''}
+
+## What to do
+1. Read the failing logs: \`gh pr checks ${prNumber}\`
+2. Drill into specific failures: \`gh run view <run-id> --log-failed\`
+3. Fix the issues in your code
+4. Commit and push:
+   \`\`\`bash
+   git add -A
+   git commit -m "Fix CI failures"
+   git push
+   \`\`\`
+
+The CI will re-run automatically once you push.`;
+
+            if (inProgressCol && card.column_id !== inProgressCol.id) {
+              d.stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+              d.broadcast({ type: 'kanban_update', projectId: project.id });
+            }
+
+            const result = await dispatchReviewFeedback(
+              webhookHandlerDeps,
+              card,
+              project,
+              feedbackMessage,
+            );
+            if (result.userMessagePersisted) {
+              const latestId = Math.max(...newFailed.map((r) => r.id));
+              try {
+                d.stmts.setCardLastDispatchedCheckRunId?.run(latestId, card.id);
+              } catch (persistErr) {
+                console.warn(
+                  `[ReviewPoll] Failed to persist last_dispatched_check_run_id for card ${card.id}:`,
+                  (persistErr as Error).message,
+                );
+              }
+            }
+          }
+        } catch {
+          // check-runs API error — skip silently and try again next poll.
+        }
+      }
+
+      // ── Inline review comment probe ─────────────────────────────────────
+      try {
+        const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+          execFile(
+            'gh',
+            [
+              'api',
+              `repos/${repoFullName}/pulls/${prNumber}/comments`,
+              '--jq',
+              '[.[] | {id: .id, body: .body, path: .path, line: .line, user: .user.login}]',
+            ],
+            { timeout: 15000 },
+            (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            },
+          );
+        });
+        const comments = JSON.parse(stdout.trim() || '[]') as Array<{
+          id: number;
+          body: string | null;
+          path: string | null;
+          line: number | null;
+          user: string | null;
+        }>;
+
+        const ghBotUser = d.getGhBotUser?.() ?? null;
+        const eligible = comments.filter((c) => {
+          if (!c.user) return false;
+          if (COMMENT_BOT_LOGINS.has(c.user)) return false;
+          if (ghAuthenticatedUser && c.user === ghAuthenticatedUser) return false;
+          if (ghBotUser && c.user === ghBotUser) return false;
+          if (c.body && c.body.includes(AGENT_HUB_BOT_COMMENT_MARKER)) return false;
+          return true;
+        });
+
+        const lastDispatched =
+          card.last_dispatched_review_comment_id != null
+            ? Number(card.last_dispatched_review_comment_id)
+            : undefined;
+        const newComments =
+          lastDispatched !== undefined ? eligible.filter((c) => c.id > lastDispatched) : eligible;
+
+        if (newComments.length > 0) {
+          console.log(
+            `[ReviewPoll] Card "${card.title}" has ${newComments.length} new inline review comment(s) — dispatching`,
+          );
+
+          const commentSummary = newComments
+            .slice(0, 5)
+            .map((c) => {
+              const loc = c.path ? `\`${c.path}\`${c.line ? `:${c.line}` : ''}` : '(general)';
+              const preview = (c.body || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+              return `- **${c.user}** on ${loc}: ${preview || '(empty body)'}`;
+            })
+            .join('\n');
+          const feedbackMessage = `# Missed Inline Review Comment(s) Detected (Polling)
+
+Your PR #${prNumber} has **${newComments.length}** unaddressed inline review comment(s).
+
+## Comments
+${commentSummary}${newComments.length > 5 ? `\n…and ${newComments.length - 5} more.` : ''}
+
+## What to do
+1. Read all comments: \`gh api repos/${repoFullName}/pulls/${prNumber}/comments\`
+2. For each comment, either:
+   - Fix the code in the referenced file/line, OR
+   - Reply with rationale (prefix the body with \`<!-- agent-hub-bot -->\`).
+3. Commit and push:
+   \`\`\`bash
+   git add -A
+   git commit -m "Address inline review feedback"
+   git push
+   \`\`\``;
+
+          if (inProgressCol && card.column_id !== inProgressCol.id) {
+            d.stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+            d.broadcast({ type: 'kanban_update', projectId: project.id });
+          }
+
+          const result = await dispatchReviewFeedback(
+            webhookHandlerDeps,
+            card,
+            project,
+            feedbackMessage,
+          );
+          if (result.userMessagePersisted) {
+            const latestId = Math.max(...newComments.map((c) => c.id));
+            try {
+              d.stmts.setCardLastDispatchedReviewCommentId?.run(latestId, card.id);
+            } catch (persistErr) {
+              console.warn(
+                `[ReviewPoll] Failed to persist last_dispatched_review_comment_id for card ${card.id}:`,
+                (persistErr as Error).message,
+              );
+            }
+          }
+        }
+      } catch {
+        // pulls/comments API error — skip silently and try again next poll.
       }
     }
   }

@@ -390,6 +390,14 @@ export interface KanbanCardRow {
    *  can restore its dedup state after a server restart without re-sending
    *  stale "Missed Review Feedback" messages. NULL = never dispatched. */
   last_dispatched_review_id?: number | null;
+  /** Persistent dedup key for the poller's CI-failure probe. Highest GitHub
+   *  check_run id already dispatched a "CI fix needed" message for. NULL =
+   *  no failed check has been dispatched yet for this card. */
+  last_dispatched_check_run_id?: number | null;
+  /** Persistent dedup key for the poller's inline review-comment probe.
+   *  Highest GitHub pull-request review comment id already dispatched as
+   *  author feedback. NULL = no inline comment has been dispatched yet. */
+  last_dispatched_review_comment_id?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1028,6 +1036,8 @@ export interface Stmts {
   moveKanbanCard: Stmt;
   setCardPrUrl: Stmt;
   setCardLastDispatchedReviewId: Stmt;
+  setCardLastDispatchedCheckRunId: Stmt;
+  setCardLastDispatchedReviewCommentId: Stmt;
   reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
   getKanbanCardByPrUrl: Stmt;
