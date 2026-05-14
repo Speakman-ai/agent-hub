@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createSession } from './helpers.js';
+import { getRequest, createAgent, createSession } from './helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // Zod schema validation for session routes
@@ -143,5 +143,35 @@ describe('Schema validation — PATCH /api/sessions/:sessionId', () => {
       .send({ name: `Renamed ${Date.now()}` })
       .expect(200);
     expect((res.body as { name: string }).name).toMatch(/^Renamed /);
+  });
+
+  it('rejects non-string name (400)', async () => {
+    const res = await request.patch(`/api/sessions/${sessionId}`).send({ name: 42 }).expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+});
+
+describe('Schema validation — POST /api/agents/:agentId/sessions', () => {
+  it('rejects non-string name (400)', async () => {
+    const agent = (await createAgent()) as { id: string };
+    const res = await request
+      .post(`/api/agents/${agent.id}/sessions`)
+      .send({ name: 42 })
+      .expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+
+  it('rejects non-boolean use_worktree (400)', async () => {
+    const agent = (await createAgent()) as { id: string };
+    const res = await request
+      .post(`/api/agents/${agent.id}/sessions`)
+      .send({ use_worktree: 'yes' })
+      .expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+
+  it('accepts empty body (200)', async () => {
+    const agent = (await createAgent()) as { id: string };
+    await request.post(`/api/agents/${agent.id}/sessions`).send({}).expect(200);
   });
 });

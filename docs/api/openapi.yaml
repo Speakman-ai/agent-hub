@@ -3914,7 +3914,7 @@ paths:
       tags:
         - Sessions
       summary: Switch the model for a session
-      description: "Cross-field validation: `model` must be in the session engine's `engineValidModels` list. Returns 400 otherwise."
+      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
       parameters:
         - schema:
             type: string

@@ -50,11 +50,29 @@ interface McpServerInput {
 }
 
 /**
+ * Translate a Zod-parsed browser-numeric dim (`number | null | undefined`)
+ * to the `'delete' | number | undefined` tristate consumed by
+ * `applyOptionalAgentNumeric`:
+ *
+ *   - `undefined` (key omitted)   → `undefined` ("preserve existing value")
+ *   - `null`      (explicit clear) → `'delete'`  ("remove the key")
+ *   - `number`    (explicit set)   → `Math.floor(value)`
+ *
+ * The schema has already validated that any explicit value is an integer
+ * in the allowed range, so we only need to round-trip Zod's null sentinel
+ * back to the legacy `'delete'` token.
+ */
+function translateDim(v: number | null | undefined): number | 'delete' | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return 'delete';
+  return Math.floor(v);
+}
+
+/**
  * Apply a Zod-parsed browser-numeric dim to the agent record.
  *
- * `value` is the `'delete' | number | undefined` tristate used by the
- * PATCH / POST handlers (translated from the schema's `number | null |
- * undefined`):
+ * `value` is the `'delete' | number | undefined` tristate produced by
+ * `translateDim` from the schema's `number | null | undefined`:
  *   - `undefined`  — key was omitted; preserve the existing value.
  *   - `'delete'`   — caller sent `null`; remove the key from the record.
  *   - `number`     — caller sent a numeric value; store it.
@@ -143,7 +161,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
 
     const parsed = parseBody(UpdateAgentRequestSchema, req, res);
     if (!parsed) return;
-    const body = req.body as Record<string, unknown>;
 
     const allowed = [
       'name',
@@ -167,41 +184,20 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (parsed.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = parsed.browserToolsEnabled;
     }
-    // Zod schema yields `number | null | undefined` for the browser dims;
-    // applyOptionalAgentNumeric expects the older `'delete'` sentinel for
-    // explicit-null. Translate at the boundary so the persistence helper
-    // stays unchanged.
-    const translateDim = (
-      v: number | null | undefined,
-      keyPresent: boolean,
-    ): number | 'delete' | undefined => {
-      if (!keyPresent) return undefined;
-      if (v === null) return 'delete';
-      return Math.floor(v as number);
-    };
     applyOptionalAgentNumeric(
       agent,
       'browserViewportWidth',
-      translateDim(
-        parsed.browserViewportWidth,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
-      ),
+      translateDim(parsed.browserViewportWidth),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserViewportHeight',
-      translateDim(
-        parsed.browserViewportHeight,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
-      ),
+      translateDim(parsed.browserViewportHeight),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserPageLoadTimeoutMs',
-      translateDim(
-        parsed.browserPageLoadTimeoutMs,
-        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
-      ),
+      translateDim(parsed.browserPageLoadTimeoutMs),
     );
     saveProjects();
     res.json(getEnrichedAgent(agent.id));
@@ -210,7 +206,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   router.post('/api/agents', (req: Request, res: Response) => {
     const parsed = parseBody(CreateAgentRequestSchema, req, res);
     if (!parsed) return;
-    const body = req.body as Record<string, unknown>;
 
     const {
       id,
@@ -254,37 +249,20 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled;
     }
-    const translateDim = (
-      v: number | null | undefined,
-      keyPresent: boolean,
-    ): number | 'delete' | undefined => {
-      if (!keyPresent) return undefined;
-      if (v === null) return 'delete';
-      return Math.floor(v as number);
-    };
     applyOptionalAgentNumeric(
       agent,
       'browserViewportWidth',
-      translateDim(
-        parsed.browserViewportWidth,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportWidth'),
-      ),
+      translateDim(parsed.browserViewportWidth),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserViewportHeight',
-      translateDim(
-        parsed.browserViewportHeight,
-        Object.prototype.hasOwnProperty.call(body, 'browserViewportHeight'),
-      ),
+      translateDim(parsed.browserViewportHeight),
     );
     applyOptionalAgentNumeric(
       agent,
       'browserPageLoadTimeoutMs',
-      translateDim(
-        parsed.browserPageLoadTimeoutMs,
-        Object.prototype.hasOwnProperty.call(body, 'browserPageLoadTimeoutMs'),
-      ),
+      translateDim(parsed.browserPageLoadTimeoutMs),
     );
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
