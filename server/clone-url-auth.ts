@@ -113,6 +113,43 @@ export function redactToken(text: string, token: string | null | undefined): str
 }
 
 /**
+ * Redact the credential portion of any `Authorization: <scheme> <value>`
+ * substring inside `text`. Used as a defence-in-depth layer in addition
+ * to `redactToken`: when `git -c http.<host>.extraheader=Authorization:
+ * basic <BASE64>` fails, the spawned-process error message echoes the
+ * full argv — and the secret in that echo is the base64-encoded form of
+ * `x-access-token:<TOKEN>`, NOT the raw token. `redactToken` searches
+ * for the raw token and will silently miss the base64 form, so without
+ * this helper a live `gho_` / `ghp_` / `ghs_` / `ghu_` token would land
+ * in `console.error` and the WebSocket `onFailure` payload.
+ *
+ * The replacement preserves the scheme (`basic`, `bearer`, `token`, …)
+ * for debuggability and drops everything after it up to the next
+ * delimiter we trust to not be part of the credential. The "stop"
+ * characters are picked so the redaction doesn't eat the rest of the
+ * message:
+ *   - whitespace / line endings — natural end of a header value in
+ *     spawned-process error echoes (argv elements are space-separated).
+ *   - quote characters (`'`, `"`) — many error formatters wrap the
+ *     offending argv element in quotes.
+ *   - the literal sequence `\n` — node's child_process error messages
+ *     sometimes inline `\n` rather than embedding a real newline.
+ *
+ * Match is case-insensitive on the literal `Authorization` so a header
+ * that arrives lower-cased from a different transport still redacts.
+ */
+export function redactAuthHeader(text: string): string {
+  if (!text) return text;
+  // Capture: (1) `Authorization:` (preserves whatever case the caller
+  // used), (2) one or more spaces, (3) the scheme word, (4) one or more
+  // spaces, then drop the credential up to a stop char or end-of-string.
+  return text.replace(
+    /(Authorization:\s+)(\S+)(\s+)(?:[^\s'"\\]|\\(?!n))+/gi,
+    (_match, header: string, scheme: string, sep: string) => `${header}${scheme}${sep}***`,
+  );
+}
+
+/**
  * Friendly user-facing message for SSH URLs we can't satisfy. Used both
  * for the synchronous 400 response and as a fallback when git itself
  * surfaces `Host key verification failed`.

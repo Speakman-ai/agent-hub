@@ -5,7 +5,12 @@ import path from 'path';
 import { homedir } from 'os';
 import config from './config.js';
 import type { SessionRow } from './types.js';
-import { classifyCloneUrl, buildAuthenticatedUrl, redactToken } from './clone-url-auth.js';
+import {
+  classifyCloneUrl,
+  buildAuthenticatedUrl,
+  redactToken,
+  redactAuthHeader,
+} from './clone-url-auth.js';
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
@@ -680,9 +685,14 @@ export async function ensureProjectRepoCloned(
     // so the caller / log pipeline never sees the installation token or
     // the user token. `redactToken` is a no-op when its second argument
     // is falsy, so the chain is safe even when only one of the two is set.
+    // `redactAuthHeader` is a final defence-in-depth pass that catches
+    // the base64-encoded `Authorization: basic <BASE64>` form echoed in
+    // the spawned argv when `gitAuthArgsForGithubPat` is in play — the
+    // raw-token passes above cannot find the value there.
     const raw = err instanceof Error ? err.message : String(err);
     const safeOnce = redactToken(raw, token);
-    const safe = redactToken(safeOnce, userToken);
+    const safeTwice = redactToken(safeOnce, userToken);
+    const safe = redactAuthHeader(safeTwice);
     throw new Error(
       `Auto-clone failed for project ${options.projectId ?? '<unknown>'} (${repoUrl}): ${safe}`,
     );
@@ -1087,7 +1097,7 @@ export async function ensureSessionWorkspace(
       fetchSucceeded = true;
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
-      const message = redactToken(raw, userToken);
+      const message = redactAuthHeader(redactToken(raw, userToken));
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
 
@@ -1116,7 +1126,7 @@ export async function ensureSessionWorkspace(
         );
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : String(err);
-        const message = redactToken(raw, userToken);
+        const message = redactAuthHeader(redactToken(raw, userToken));
         console.warn(
           `[Workspace] Could not refresh origin/${trimmedBase} for drift check on session "${safeName}":`,
           message,
@@ -1237,7 +1247,7 @@ export async function ensureSessionWorkspace(
         await runGit(['reset', '--hard', `origin/${base}`], { cwd: cloneDir });
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : String(err);
-        const message = redactToken(raw, userToken);
+        const message = redactAuthHeader(redactToken(raw, userToken));
         console.error(`[Workspace] Failed to position session clone on origin/${base}:`, message);
         onFailure?.(session.id, message);
         return projectCwd;
@@ -1256,11 +1266,19 @@ export async function ensureSessionWorkspace(
     return cloneDir;
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
-    // Double-pass redaction: strip the user token and any installation token
-    // that was embedded in the project repo's remote.origin.url so neither
-    // secret reaches the WebSocket log or the onFailure callback.
+    // Triple-pass redaction: strip the user token and any installation
+    // token that was embedded in the project repo's remote.origin.url so
+    // neither secret reaches the WebSocket log or the onFailure callback,
+    // then run `redactAuthHeader` to catch the base64-encoded
+    // `Authorization: basic <BASE64(x-access-token:<TOKEN>)>` form that
+    // appears in the spawned-process argv echo. The raw-token passes
+    // never find that form because the token is base64-wrapped there;
+    // without this defence-in-depth layer a live `gho_` token would land
+    // in `console.error` and the WebSocket onFailure payload (production
+    // incident 2026-05-14 17:16:40).
     const once = redactToken(raw, userToken);
-    const message = redactToken(once, embeddedToken);
+    const twice = redactToken(once, embeddedToken);
+    const message = redactAuthHeader(twice);
     console.error(`[Workspace] Failed to create session clone:`, message);
     onFailure?.(session.id, message);
     return projectCwd;

@@ -3,6 +3,7 @@ import {
   classifyCloneUrl,
   buildAuthenticatedUrl,
   redactToken,
+  redactAuthHeader,
   SSH_NOT_SUPPORTED_MESSAGE,
 } from './clone-url-auth.js';
 
@@ -120,6 +121,93 @@ describe('redactToken', () => {
     expect(redactToken('hello main world', null)).toBe('hello main world');
     expect(redactToken('hello main world', '')).toBe('hello main world');
     expect(redactToken('hello main world', 'main')).toBe('hello main world');
+  });
+});
+
+describe('redactAuthHeader', () => {
+  // The production incident on 2026-05-14 17:16:40 leaked a live `gho_`
+  // OAuth token via the spawned-process argv echo of the
+  // `-c http.<host>.extraheader=Authorization: basic <BASE64>` arg —
+  // because the secret in that echo is base64-encoded, the raw-token
+  // pass `redactToken` ran in the catch handler missed it entirely.
+  // This suite locks in the regex that catches that leak shape.
+
+  it('redacts the basic-auth extraheader argv form (production-incident regression)', () => {
+    // `Buffer.from('x-access-token:gho_secret_value_with_padding', 'utf8').toString('base64')`
+    // produces a string ending in `==` padding — matches the real leak shape.
+    const argv =
+      'Command failed: git -c http.https://github.com/.extraheader=Authorization: basic eC1hY2Nlc3MtdG9rZW46Z2hvX3NlY3JldF92YWx1ZV93aXRoX3BhZGRpbmc= clone --depth 1 --quiet https://github.com/owner/repo.git /tmp/sessions/session-abc';
+    const out = redactAuthHeader(argv);
+    expect(out).not.toContain('eC1hY2Nlc3M');
+    expect(out).toContain('Authorization: basic ***');
+    // Surrounding context — both the upstream `-c http.…extraheader=`
+    // anchor and the trailing git args — must survive so operators can
+    // still diagnose the failure.
+    expect(out).toContain('-c http.https://github.com/.extraheader=Authorization: basic ***');
+    expect(out).toContain('clone --depth 1 --quiet https://github.com/owner/repo.git');
+  });
+
+  it('redacts a bearer-auth header echo', () => {
+    const text = 'fatal: Authorization: Bearer ghs_installationtokenvalue not accepted';
+    const out = redactAuthHeader(text);
+    expect(out).not.toContain('ghs_installationtokenvalue');
+    expect(out).toBe('fatal: Authorization: Bearer *** not accepted');
+  });
+
+  it('matches case-insensitively on the Authorization keyword', () => {
+    const text = 'header authorization: basic eC1hY2Nlc3M= rejected';
+    const out = redactAuthHeader(text);
+    expect(out).not.toContain('eC1hY2Nlc3M');
+    // Preserves the original casing of the keyword for debuggability.
+    expect(out).toBe('header authorization: basic *** rejected');
+  });
+
+  it('handles a header at end-of-string with no trailing whitespace', () => {
+    const text = 'Authorization: basic eC1hY2Nlc3M=';
+    expect(redactAuthHeader(text)).toBe('Authorization: basic ***');
+  });
+
+  it('handles a header wrapped in single quotes', () => {
+    const text = "args: 'Authorization: basic eC1hY2Nlc3M=' then more";
+    const out = redactAuthHeader(text);
+    expect(out).not.toContain('eC1hY2Nlc3M');
+    expect(out).toBe("args: 'Authorization: basic ***' then more");
+  });
+
+  it('redacts multiple Authorization headers in the same string', () => {
+    const text = 'try1 Authorization: basic AAAAAA= retry Authorization: bearer BBBBBB now';
+    const out = redactAuthHeader(text);
+    expect(out).not.toContain('AAAAAA');
+    expect(out).not.toContain('BBBBBB');
+    expect(out).toBe('try1 Authorization: basic *** retry Authorization: bearer *** now');
+  });
+
+  it('is a no-op when no Authorization header is present', () => {
+    const text = 'fatal: Write access to repository not granted. remote: 403';
+    expect(redactAuthHeader(text)).toBe(text);
+  });
+
+  it('is a no-op on empty input', () => {
+    expect(redactAuthHeader('')).toBe('');
+  });
+
+  it('layers correctly with redactToken (raw + header form both stripped)', () => {
+    // Realistic catch-handler shape: a `gho_` token leaks BOTH as the
+    // raw value (e.g. embedded in a URL) and as the base64-encoded form
+    // inside the extraheader argv. The defence-in-depth chain in
+    // `server/worktree.ts` runs `redactToken` first, then this helper.
+    const token = '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';
+    const basicPayload = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+    const raw =
+      `Command failed: git -c http.https://github.com/.extraheader=Authorization: basic ${basicPayload} ` +
+      `clone --depth 1 --quiet https://x-access-token:${token}@github.com/owner/repo.git /tmp/foo`;
+    const layered = redactAuthHeader(redactToken(raw, token));
+    expect(layered).not.toContain(token);
+    expect(layered).not.toContain(basicPayload);
+    expect(layered).toContain('Authorization: basic ***');
+    // The userinfo `x-access-token:***@github.com/...` form falls to the
+    // first pass (token-substring match), so it is also redacted.
+    expect(layered).toContain('https://x-access-token:***@github.com/owner/repo.git');
   });
 });
 
