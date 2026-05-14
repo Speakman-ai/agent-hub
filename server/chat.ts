@@ -199,6 +199,17 @@ interface BuildEnrichedPromptOptions {
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
   orchestrationMetaJson?: string | null;
+  /**
+   * URL of an already-open PR for this session's worktree branch. When set,
+   * the prompt builder appends a `## Active Pull Request` block instructing
+   * the agent NOT to run `gh pr create`. Closes the duplicate-PR pattern
+   * where a context-resumed session re-opens a PR for a branch that already
+   * has one (only the server-side auto-git flow dedupes; the spawned agent
+   * itself can still call `gh pr create` from its own toolbox).
+   */
+  branchPrUrl?: string | null;
+  /** Configured base branch for the PR (from card.pr_base_branch). Optional. */
+  branchPrBase?: string | null;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -818,6 +829,23 @@ Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking 
     options.orchestrationMetaJson ?? null,
   );
   if (outerOrch) prompt += `\n\n${outerOrch}`;
+
+  // Active-PR awareness. When a previous session for this kanban card
+  // already opened a PR (see `auto-git.ts` → `setCardPrUrl`), the server
+  // surfaces the URL here so a context-resumed or autonomous-redispatched
+  // session does not blindly run `gh pr create` and produce a duplicate PR
+  // for the same branch (the recurring failure pattern documented at
+  // duplicate-PR investigation in 2026-05-14 notes). The server-side
+  // auto-PR flow dedupes by branch, but it cannot intercept `gh pr create`
+  // calls that the spawned agent runs from its own Bash tool — this prompt
+  // block is the contract-level fix.
+  if (options.branchPrUrl) {
+    const baseSuffix = options.branchPrBase ? ` (base: \`${options.branchPrBase}\`)` : '';
+    prompt += `\n\n## Active Pull Request
+A pull request is already open for this worktree's branch: ${options.branchPrUrl}${baseSuffix}
+
+Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Push new commits to the existing branch; the server will route them to the existing PR. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
+  }
 
   return prompt;
 }
@@ -1548,6 +1576,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
+      // Look up the kanban card linked to this session so the prompt + spawn
+      // env can surface any already-open PR for this branch (see
+      // BuildEnrichedPromptOptions.branchPrUrl). `auto-git.ts` writes the PR
+      // URL onto the card via `setCardPrUrl` when it opens a PR; a follow-up
+      // session redispatched on the same card inherits that URL through this
+      // lookup. Failure is non-fatal — we just skip the warning block.
+      let linkedCardForPr: KanbanCardRow | null = null;
+      try {
+        linkedCardForPr =
+          ((stmts as Stmts).getKanbanCardBySession?.get(sessionId) as KanbanCardRow | undefined) ??
+          null;
+      } catch {
+        /* no-op — warning block simply omitted */
+      }
       let enrichedPrompt = buildEnrichedPrompt(
         project as ProjectWithCommands,
         agent as AgentWithModel,
@@ -1557,6 +1599,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionId,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
+          branchPrUrl: linkedCardForPr?.pr_url ?? null,
+          branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
           _getEnrichedAgent: getEnrichedAgent,
         },
       );
@@ -2376,6 +2420,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
         base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
         base.PROJECT_ID = project.id;
+        // Active-PR awareness for the spawned process — companion to the
+        // `## Active Pull Request` system-prompt block (see buildEnrichedPrompt).
+        // Scripts and skills that key off env vars (e.g. a future "before you
+        // run `gh pr create`" guard) can read these without re-querying the
+        // kanban API. We re-look up `linkedCardForPr` here because spawn-env
+        // assembly happens in its own closure further down the function and
+        // doesn't see the prompt-builder closure's locals.
+        try {
+          const cardForEnv = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+            | KanbanCardRow
+            | undefined;
+          if (cardForEnv?.pr_url) {
+            base.AGENT_HUB_BRANCH_PR_URL = cardForEnv.pr_url;
+            if (cardForEnv.pr_base_branch) {
+              base.AGENT_HUB_BRANCH_PR_BASE = cardForEnv.pr_base_branch;
+            }
+          }
+        } catch {
+          /* non-fatal — env var simply omitted, prompt block already covers the agent */
+        }
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         return base;
       })();
