@@ -370,6 +370,56 @@ const config: AppConfig = {
     ? false
     : fileConfig.browserBlockAdsTrackers !== false,
 
+  // ── Session watchdog ──────────────────────────────────────────
+  // Server-side watchdog that catches sessions stalling mid-task. Defaults:
+  //   • idleThresholdMs    5 min  — first nudge fires after 5 min of silence
+  //   • nudgeCooldownMs    3 min  — minimum gap between nudges per session
+  //   • checkIntervalMs    60 s   — how often the scan cron ticks
+  //   • maxSoftNudges      2      — soft (T1) nudges before T2/T3/T4 escalate
+  //   • cardBudgetMs       1 h    — hard escalation if the linked card lingers
+  //                                 longer than this (operator promise: PRs
+  //                                 should land within an hour; longer = bad)
+  // See server/session-watchdog.ts and the wiki page "Session Watchdog".
+  watchdog: {
+    enabled:
+      process.env.AGENT_HUB_WATCHDOG_ENABLED !== undefined
+        ? envMeansTrue('AGENT_HUB_WATCHDOG_ENABLED')
+        : coerceConfigBooleanLoose(
+            (fileConfig.watchdog as Record<string, unknown> | undefined)?.enabled,
+            true,
+          ),
+    idleThresholdMs: clampFiniteInt(
+      (fileConfig.watchdog as Record<string, unknown> | undefined)?.idleThresholdMs,
+      5 * 60 * 1000,
+      30_000,
+      6 * 60 * 60 * 1000,
+    ),
+    nudgeCooldownMs: clampFiniteInt(
+      (fileConfig.watchdog as Record<string, unknown> | undefined)?.nudgeCooldownMs,
+      3 * 60 * 1000,
+      30_000,
+      60 * 60 * 1000,
+    ),
+    checkIntervalMs: clampFiniteInt(
+      (fileConfig.watchdog as Record<string, unknown> | undefined)?.checkIntervalMs,
+      60 * 1000,
+      15_000,
+      15 * 60 * 1000,
+    ),
+    maxSoftNudges: clampFiniteInt(
+      (fileConfig.watchdog as Record<string, unknown> | undefined)?.maxSoftNudges,
+      2,
+      0,
+      10,
+    ),
+    cardBudgetMs: clampFiniteInt(
+      (fileConfig.watchdog as Record<string, unknown> | undefined)?.cardBudgetMs,
+      60 * 60 * 1000,
+      5 * 60 * 1000,
+      24 * 60 * 60 * 1000,
+    ),
+  },
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

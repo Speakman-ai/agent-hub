@@ -50,6 +50,14 @@ function makeConfig(): AppConfig {
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,
     browserBlockAdsTrackers: true,
+    watchdog: {
+      enabled: true,
+      idleThresholdMs: 5 * 60 * 1000,
+      nudgeCooldownMs: 3 * 60 * 1000,
+      checkIntervalMs: 60 * 1000,
+      maxSoftNudges: 2,
+      cardBudgetMs: 60 * 60 * 1000,
+    },
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },
