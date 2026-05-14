@@ -89,6 +89,15 @@ interface InstallationListRefreshEntry {
 }
 
 const INSTALLATION_LIST_REFRESH_TTL_MS = 5 * 60 * 1000;
+/**
+ * Failure back-off — much shorter than the success TTL so a transient
+ * outage (network blip, 5xx, GitHub rate-limit response) doesn't
+ * silently starve an org for the full 5-minute success window. 30s +
+ * up to 30s jitter keeps a webhook burst from synchronising retries
+ * against the same upstream.
+ */
+const INSTALLATION_LIST_REFRESH_FAILURE_TTL_MS = 30 * 1000;
+const INSTALLATION_LIST_REFRESH_FAILURE_JITTER_MS = 30 * 1000;
 const installationListRefreshCache = new Map<string, InstallationListRefreshEntry>();
 
 /**
@@ -125,13 +134,18 @@ async function refreshInstallationsForOwner(
   const now = Date.now();
   const lastRefresh = installationListRefreshCache.get(key);
   if (lastRefresh && lastRefresh.expiry > now) return;
-  installationListRefreshCache.set(key, { expiry: now + INSTALLATION_LIST_REFRESH_TTL_MS });
 
   try {
     const installations = (await installationLister(
       app.appId,
       app.privateKey,
     )) as unknown as GithubInstallationApiRow[];
+    // Only prime the success TTL after the call actually succeeds.
+    // Priming pre-call meant a transient failure starved the owner for
+    // the full 5-minute success window even though no refresh happened.
+    installationListRefreshCache.set(key, {
+      expiry: Date.now() + INSTALLATION_LIST_REFRESH_TTL_MS,
+    });
     if (!Array.isArray(installations)) return;
     app.installations = installations
       .filter(
@@ -142,11 +156,23 @@ async function refreshInstallationsForOwner(
         account: inst.account?.login ?? '',
         accountType: inst.account?.type ?? '',
       }));
-    // Invalidate the per-owner lookup cache so the next call sees the
-    // refreshed list rather than the negative cache entry that brought
-    // us here.
-    installationLookupCache.clear();
+    // Invalidate ONLY the lookup-cache entries scoped to this App so a
+    // refresh for org A doesn't force every other org on the same App
+    // to re-run `resolveInstallationId`. Walk the keys (small map, one
+    // entry per (appId, owner) seen this process) and drop the
+    // matching prefix.
+    const prefix = `${app.appId}::`;
+    for (const cachedKey of installationLookupCache.keys()) {
+      if (cachedKey.startsWith(prefix)) installationLookupCache.delete(cachedKey);
+    }
   } catch (err) {
+    // Failure back-off: short TTL + jitter so we retry quickly when
+    // the upstream recovers, but a hot loop of webhooks for the same
+    // org still can't hammer GitHub's rate limit.
+    const jitter = Math.floor(Math.random() * INSTALLATION_LIST_REFRESH_FAILURE_JITTER_MS);
+    installationListRefreshCache.set(key, {
+      expiry: Date.now() + INSTALLATION_LIST_REFRESH_FAILURE_TTL_MS + jitter,
+    });
     emitTokenError({
       summary: (err as Error).message || 'installation list refresh failed',
       owner,
@@ -411,7 +437,10 @@ function emitTokenError(payload: TokenErrorPayload): void {
     };
     if (payload.owner) meta.owner = payload.owner;
     if (payload.repo) meta.repo = payload.repo;
-    console.error(
+    // sev:"soft" with resolution:"recovered" is by definition a warning,
+    // not an error. Routing through console.warn keeps PM2 / dashboards
+    // from flagging the recurring auth-revoked flap as an error spike.
+    console.warn(
       `TOOL_ERROR | ${new Date().toISOString()} | github-auth | ${payload.tag} | warn | ${summary} | ${JSON.stringify(meta)}`,
     );
   } catch {
