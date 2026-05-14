@@ -117,6 +117,41 @@ describe('getEngineAuthStatus', () => {
     expect(out.any).toBe(true);
   });
 
+  it('detects per-user Cursor credentials when host probe is false', async () => {
+    const user = createUser({
+      username: 'cursor-per-user',
+      passwordHash: 'x',
+    });
+    const { setUserCursorAuth } = await import('./users-store.js');
+    setUserCursorAuth(user.id, { apiKey: 'cur-user-key' });
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      cursorProbe: noCursor,
+    });
+    expect(out.cursor).toBe(true);
+    expect(out.any).toBe(true);
+  });
+
+  it('does not consult per-user Cursor creds when userId is omitted', async () => {
+    const user = createUser({
+      username: 'cursor-isolated',
+      passwordHash: 'x',
+    });
+    const { setUserCursorAuth } = await import('./users-store.js');
+    setUserCursorAuth(user.id, { apiKey: 'cur-user-key' });
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/nonexistent/cursor-agent',
+      cursorProbe: noCursor,
+    });
+    expect(out.cursor).toBe(false);
+    expect(out.any).toBe(false);
+  });
+
   it('detects codex via CODEX_API_KEY env var', async () => {
     process.env.CODEX_API_KEY = 'codex-test';
     const out = await getEngineAuthStatus({
