@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { createProjectVisibilityGate } from './project-visibility-middleware.js';
+import {
+  createProjectVisibilityGate,
+  resolveVisibilityCaller,
+} from './project-visibility-middleware.js';
 import type { Project } from './types.js';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -164,5 +167,55 @@ describe('createProjectVisibilityGate — non-bypass branches', () => {
 
     expect(next).toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveVisibilityCaller', () => {
+  it('authenticated User → userId set, role copied, no bypass', () => {
+    const caller = resolveVisibilityCaller(
+      makeReq({ authUserId: 'u-123', authUser: 'ada', authRole: 'User' }),
+    );
+    expect(caller).toEqual({ userId: 'u-123', role: 'User', localBypass: false });
+  });
+
+  it('authenticated Owner → userId set, role=Owner, no bypass', () => {
+    // An org Owner with a real `authUserId` does NOT get a localBypass —
+    // privacy still applies to them via `canViewProject` (Owners do not
+    // get a read bypass on others' private projects).
+    const caller = resolveVisibilityCaller(
+      makeReq({ authUserId: 'owner-1', authUser: 'owner-1', authRole: 'Owner' }),
+    );
+    expect(caller).toEqual({ userId: 'owner-1', role: 'Owner', localBypass: false });
+  });
+
+  it('local-bundled bypass → bypass=true even with no userId', () => {
+    const caller = resolveVisibilityCaller(
+      makeReq({ authRole: 'Owner', authLocalOrgBypass: true }),
+    );
+    expect(caller.localBypass).toBe(true);
+  });
+
+  it('global x-api-key break-glass → bypass=true', () => {
+    const caller = resolveVisibilityCaller(makeReq({ authRole: 'Owner', authViaApiKey: true }));
+    expect(caller.localBypass).toBe(true);
+  });
+
+  it('no-auth-configured (Owner role + no user id + no user record) → bypass=true', () => {
+    // Matches the auth middleware's fresh-install / dev / unit-test
+    // early-return branch: `authRole='Owner'` is stamped but no
+    // `authUserId` or `authUser` is attached.
+    const caller = resolveVisibilityCaller(makeReq({ authRole: 'Owner' }));
+    expect(caller.localBypass).toBe(true);
+    expect(caller.userId).toBeNull();
+  });
+
+  it('no claims at all → userId null, no bypass (real multi-user deployment, anonymous caller)', () => {
+    // The middleware upstream would normally 401 before we get here; this
+    // test pins the helper's behavior so callers that reach it without
+    // any claims fall closed (no bypass, no userId → private projects
+    // hidden).
+    const caller = resolveVisibilityCaller(makeReq({}));
+    expect(caller.userId).toBeNull();
+    expect(caller.localBypass).toBe(false);
   });
 });

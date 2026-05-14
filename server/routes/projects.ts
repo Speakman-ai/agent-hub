@@ -32,8 +32,8 @@ import {
   getVisibility,
   canChangeVisibility,
   classifyVisibilityTransition,
-  type VisibilityCaller,
 } from '../project-visibility.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
 
 const execAsync = promisify(exec);
@@ -676,35 +676,6 @@ function resolveCloneUserId(req: Request): string | null {
     }
   }
   return null;
-}
-
-/**
- * Resolve the caller's visibility context from an authenticated request.
- * Centralizes the JWT/apiKey/local-bypass story so every project-scoped
- * route sees the same shape.
- *
- * The global apiKey path is treated as `localBypass` because it's the
- * break-glass Owner credential — scripts using it (heartbeats, crons,
- * delegations) need to read every project to do their job.
- */
-function resolveVisibilityCaller(req: Request): VisibilityCaller {
-  const areq = req as AuthenticatedRequest;
-  // Bypass paths — these collapse "who is this caller" into "see
-  // everything" because privacy is meaningless when:
-  //   - `authLocalOrgBypass`: single-tenant local-bundled server.
-  //   - `authViaApiKey`: global `x-api-key` break-glass (Owner-forced).
-  //   - No-auth-configured mode: `apiKey` and `authRecord` both unset
-  //     server-side; the auth middleware stamps `authRole='Owner'` but
-  //     leaves `authUserId` undefined. Detected here by the
-  //     (Owner role, no user id, no JWT) tuple — matches the auth
-  //     middleware's early-return branch and keeps the gate a no-op
-  //     in fresh-install / dev / unit-test environments.
-  const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
-  return {
-    userId: areq.authUserId ?? null,
-    role: areq.authRole,
-    localBypass: Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured),
-  };
 }
 
 export default function createProjectRoutes(deps: RouteDeps): Router {
