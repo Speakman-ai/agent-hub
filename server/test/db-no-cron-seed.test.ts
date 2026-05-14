@@ -1,6 +1,8 @@
 /**
- * Narrow config mocks omit `defaultCwd`; cron bootstrap must still populate a
- * non-null `cwd` (see `SqliteError: NOT NULL constraint failed: crons.cwd`).
+ * A fresh DB must NOT seed any default crons. The earlier
+ * `dependabot-merger` / `job-search-monitor` rows were operator-specific
+ * leftovers and got removed; this test pins the no-seed contract so a
+ * future refactor can't quietly re-introduce them.
  */
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
@@ -9,6 +11,11 @@ import { tmpdir } from 'os';
 
 var _cronSeedTmp = '';
 
+// Redirect `dataDir` into a per-test tmp so we get a virgin SQLite file and
+// don't collide with the developer's real ~/.agent-hub database. Nothing
+// else in `config` needs to be overridden — the old `defaultCwd` Proxy trap
+// was load-bearing only while db.ts seeded crons based on it, and was
+// dropped along with the seed.
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
   const base = actual.default;
@@ -16,7 +23,6 @@ vi.mock('../config.js', async () => {
     default: new Proxy(base, {
       get(t, prop, recv) {
         if (prop === 'dataDir') return _cronSeedTmp || Reflect.get(t, 'dataDir', recv);
-        if (prop === 'defaultCwd') return undefined as never;
         return Reflect.get(t, prop, recv);
       },
     }),
@@ -32,17 +38,13 @@ afterAll(() => {
   rmSync(_cronSeedTmp, { recursive: true, force: true });
 });
 
-describe('cron seed cwd', () => {
-  it('uses process.cwd when defaultCwd is missing from config', async () => {
-    const expected = process.cwd();
+describe('cron seed (none)', () => {
+  it('does not insert any default crons on a fresh database', async () => {
     const { getDb } = await import('../db.js');
-    const rows = getDb().prepare<[], { cwd: string }>('SELECT cwd FROM crons ORDER BY id').all();
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-    for (const r of rows) {
-      expect(typeof r.cwd).toBe('string');
-      expect(r.cwd.length).toBeGreaterThan(0);
-      expect(r.cwd).toBe(expected);
-    }
+    const rows = getDb()
+      .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM crons')
+      .all();
+    expect(rows[0].count).toBe(0);
     expect(existsSync(path.join(_cronSeedTmp, 'agent-hub.db'))).toBe(true);
   });
 });
