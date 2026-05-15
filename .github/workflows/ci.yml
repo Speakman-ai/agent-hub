@@ -7,6 +7,10 @@ on:
   # deploy-prod-2.yml) also no longer re-run tests; if you push directly to
   # main without a PR, run `gh workflow run ci.yml --ref main` manually before
   # triggering a deploy.
+  #
+  # Path-based job skipping: see `changes` + `scripts/ci-path-plan.mjs`. If you
+  # use branch protection, point required checks at **CI (gate)** — not the
+  # optional lint/build/test jobs (they are skipped when unrelated paths change).
   pull_request:
     branches: [main]
 
@@ -15,8 +19,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Path scope
+    runs-on: ubuntu-latest
+    outputs:
+      run_lint: ${{ steps.plan.outputs.run_lint }}
+      run_terraform: ${{ steps.plan.outputs.run_terraform }}
+      run_build: ${{ steps.plan.outputs.run_build }}
+      run_tests: ${{ steps.plan.outputs.run_tests }}
+      test_matrix: ${{ steps.plan.outputs.test_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            global:
+              - '.github/workflows/ci.yml'
+              - 'eslint.config.js'
+              - '.prettierrc'
+              - '.prettierignore'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'server/package.json'
+              - 'server/package-lock.json'
+              - 'client/package.json'
+              - 'client/package-lock.json'
+              - 'mobile/package.json'
+              - 'mobile/package-lock.json'
+            server:
+              - 'server/**'
+            client:
+              - 'client/**'
+            electron:
+              - 'electron/**'
+            mobile:
+              - 'mobile/**'
+            shared:
+              - 'shared/**'
+            terraform:
+              - 'ops/terraform/**'
+            scripts:
+              - 'scripts/**'
+            e2e:
+              - 'e2e/**'
+
+      - name: Plan jobs from diff
+        id: plan
+        env:
+          FILTER_GLOBAL: ${{ steps.filter.outputs.global }}
+          FILTER_SERVER: ${{ steps.filter.outputs.server }}
+          FILTER_CLIENT: ${{ steps.filter.outputs.client }}
+          FILTER_ELECTRON: ${{ steps.filter.outputs.electron }}
+          FILTER_MOBILE: ${{ steps.filter.outputs.mobile }}
+          FILTER_SHARED: ${{ steps.filter.outputs.shared }}
+          FILTER_TERRAFORM: ${{ steps.filter.outputs.terraform }}
+          FILTER_SCRIPTS: ${{ steps.filter.outputs.scripts }}
+          FILTER_E2E: ${{ steps.filter.outputs.e2e }}
+        run: node scripts/ci-path-plan.mjs >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint & Format
+    needs: changes
+    if: needs.changes.outputs.run_lint == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +130,8 @@ jobs:
 
   terraform:
     name: Terraform
+    needs: changes
+    if: needs.changes.outputs.run_terraform == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -86,6 +154,8 @@ jobs:
 
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.run_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,38 +196,15 @@ jobs:
           exit 1
 
   test:
-    # Fan out the four test suites across runners, and shard the server suite
-    # 3 ways with `vitest run --shard`. The server suite has
-    # `sequence.concurrent: false` and `fileParallelism: false` in
-    # server/vitest.config.ts, so within a single runner files run serially —
-    # sharding across runners is the only way to get real parallelism for it.
-    # We invoke per-package test scripts directly (not root `npm test`), which
-    # bypasses scripts/verify-test-prerequisites.mjs and lets each shard skip
-    # installs it doesn't need.
+    # Fan out suites across runners; shard server with `vitest run --shard`.
+    # Matrix rows are computed in the `changes` job from path filters.
     name: Test (${{ matrix.label }})
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - suite: client
-            label: client
-          - suite: electron
-            label: electron
-          - suite: mobile
-            label: mobile
-          - suite: server
-            shard: 1
-            shards: 3
-            label: server 1/3
-          - suite: server
-            shard: 2
-            shards: 3
-            label: server 2/3
-          - suite: server
-            shard: 3
-            shards: 3
-            label: server 3/3
+      matrix: ${{ fromJson(needs.changes.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -214,8 +261,6 @@ jobs:
         run: cd client && npm test
 
       - name: Run electron tests
-        # Electron tests run via `npx vitest run` against electron/ and rely on
-        # vitest from root devDependencies — no separate electron/ install.
         if: matrix.suite == 'electron'
         run: cd electron && npx vitest run
 
@@ -226,3 +271,33 @@ jobs:
       - name: Run server tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
         if: matrix.suite == 'server'
         run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
+
+  ci-gate:
+    # Use this job as the single required status check. Downstream jobs are
+    # skipped when paths do not need them; this job still succeeds so docs-only
+    # PRs do not stall on missing "Lint / Test" statuses.
+    name: CI (gate)
+    needs: [changes, lint, terraform, build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify path planning succeeded
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::Path scope job failed — fix the workflow or checkout."
+          exit 1
+
+      - name: Verify runnable jobs
+        env:
+          LINT: ${{ needs.lint.result }}
+          TF: ${{ needs.terraform.result }}
+          BUILD: ${{ needs.build.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+          # failure / cancelled on a non-skipped job should fail the gate
+          case "$LINT" in success|skipped) ;; *) echo "::error::Lint & Format job: $LINT"; exit 1 ;; esac
+          case "$TF" in success|skipped) ;; *) echo "::error::Terraform job: $TF"; exit 1 ;; esac
+          case "$BUILD" in success|skipped) ;; *) echo "::error::Build job: $BUILD"; exit 1 ;; esac
+          case "$TEST" in success|skipped) ;; *) echo "::error::Test job: $TEST"; exit 1 ;; esac
+          echo "CI gate: OK (lint=$LINT terraform=$TF build=$BUILD test=$TEST)"
