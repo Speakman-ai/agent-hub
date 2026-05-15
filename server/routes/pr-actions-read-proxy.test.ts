@@ -37,7 +37,20 @@ vi.mock('./pr-list.js', () => ({
   resolveUserToken: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('child_process', () => ({ execFile: vi.fn() }));
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFile: vi.fn(),
+    exec: vi.fn((...args: unknown[]) => {
+      const cb = args.find((a) => typeof a === 'function') as
+        | ((err: unknown, stdout?: string, stderr?: string) => void)
+        | undefined;
+      if (cb) queueMicrotask(() => cb(null, '', ''));
+      return {} as ReturnType<typeof actual.exec>;
+    }),
+  };
+});
 vi.mock('util', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, promisify: () => vi.fn() };

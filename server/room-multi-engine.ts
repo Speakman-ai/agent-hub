@@ -8,6 +8,7 @@
  * See `room-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 
 export const ROOM_CHAT_ENGINES = [
@@ -54,6 +55,11 @@ export interface BuildRoomSpawnArgsInput {
   bins: RoomSpawnBins;
   /** Optional context for logging when an engine drops --model. */
   logTag?: string;
+  /**
+   * Host setting: pass Codex `--dangerously-bypass-approvals-and-sandbox`
+   * instead of `--full-auto` for room turns (parity with chat.ts).
+   */
+  codexDangerBypass?: boolean;
 }
 
 export interface RoomSpawnPlan {
@@ -82,7 +88,8 @@ export interface RoomSpawnPlan {
  * + the multi-agent / @mention scaffold, not the full chat enrichment.
  */
 export function buildRoomSpawnArgs(input: BuildRoomSpawnArgsInput): RoomSpawnPlan {
-  const { engine, model, systemPrompt, userPrompt, cursorChatId, bins, logTag } = input;
+  const { engine, model, systemPrompt, userPrompt, cursorChatId, bins, logTag, codexDangerBypass } =
+    input;
 
   if (engine === 'cursor-agent') {
     if (!cursorChatId) {
@@ -127,7 +134,12 @@ export function buildRoomSpawnArgs(input: BuildRoomSpawnArgsInput): RoomSpawnPla
   if (engine === 'codex-cli') {
     // Each turn is a fresh codex exec (no `resume <thread-id>` because rooms
     // do not persist `engine_session_id` between turns).
-    const args: string[] = ['exec', '--json', '--skip-git-repo-check', '--full-auto'];
+    // Rooms have no Ask Mode; honour host `codexDangerBypass` like chat Codex.
+    const args: string[] = ['exec', '--json', '--skip-git-repo-check'];
+    appendCodexExecSandboxFlags(args, {
+      askMode: false,
+      dangerBypass: !!codexDangerBypass,
+    });
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);

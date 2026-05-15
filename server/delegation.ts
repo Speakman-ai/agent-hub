@@ -4,6 +4,7 @@ import { buildSpawnEnv } from './config.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
 import type { StreamEvent } from './types.js';
@@ -178,6 +179,8 @@ function buildDelegateCliSpec(
   ownerUserId: string | null,
   /** Lead session Ask Mode — mirrors `server/chat.ts` privilege flags on Gemini/Codex. */
   leadAskMode: boolean,
+  /** Host `codexDangerBypass` — mirrors chat Codex sandbox selection. */
+  codexDangerBypass: boolean,
 ): DelegateCliSpec {
   const engine = subAgent.engine || 'claude-code';
   const model = resolveEffectiveModel(cfg, engine, {
@@ -207,11 +210,10 @@ function buildDelegateCliSpec(
     case 'codex-cli': {
       const codexAuth = detectCodexAuthMode();
       const args = ['exec', '--json', '--skip-git-repo-check'];
-      if (leadAskMode) {
-        args.push('--sandbox', 'read-only');
-      } else {
-        args.push('--full-auto');
-      }
+      appendCodexExecSandboxFlags(args, {
+        askMode: leadAskMode,
+        dangerBypass: codexDangerBypass,
+      });
       if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
       }
@@ -560,6 +562,7 @@ export async function handleDelegation(
             cfg,
             credOwnerId,
             leadAskMode,
+            !!cfg.codexDangerBypass,
           );
           const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
 
@@ -1003,11 +1006,10 @@ export async function synthesizeResults(
           args.push('resume', engineSessionId);
         }
         args.push('--json', '--skip-git-repo-check');
-        if (isAskMode) {
-          args.push('--sandbox', 'read-only');
-        } else {
-          args.push('--full-auto');
-        }
+        appendCodexExecSandboxFlags(args, {
+          askMode: isAskMode,
+          dangerBypass: !!cfg.codexDangerBypass,
+        });
         if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
           args.push('--model', sessionModel);
         }

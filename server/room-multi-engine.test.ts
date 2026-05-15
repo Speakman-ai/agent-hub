@@ -145,6 +145,17 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args.includes('resume')).toBe(false);
   });
 
+  it('codex-cli: uses danger bypass flag when codexDangerBypass is true', () => {
+    const plan = buildRoomSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      codexDangerBypass: true,
+    });
+    expect(plan.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(plan.args).not.toContain('--full-auto');
+  });
+
   it('codex-cli: forwards --model when shouldPassModelFlag accepts it', () => {
     // detectCodexAuthMode() returns 'api-key' / 'unknown' in tests (no
     // ChatGPT OAuth headers), and shouldPassModelFlag forwards arbitrary

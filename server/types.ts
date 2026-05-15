@@ -282,41 +282,6 @@ export interface BackgroundTaskRow {
   completed_at: string | null;
 }
 
-/**
- * Server-side watchdog state for a single session. One row per session
- * that has been observed by the watchdog at least once. See
- * `server/session-watchdog.ts` for the state machine and tier ladder.
- *
- * Timestamps are ms-epoch integers (not ISO strings) so the cron scan
- * query can do `now - last_token_at >= idleThresholdMs` directly in SQL.
- */
-export interface WatchdogRow {
-  session_id: string;
-  card_id: string | null;
-  pr_url: string | null;
-  /** 1 = a user/system message went in and we're waiting on a turn boundary. */
-  awaiting_response: 0 | 1;
-  last_token_at: number | null;
-  last_user_message_at: number | null;
-  nudge_count: number;
-  last_nudge_at: number | null;
-  budget_started_at: number | null;
-  state: 'active' | 'stuck' | 'escalated' | 'completed' | 'disabled';
-  disabled_reason: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface WatchdogEventRow {
-  id: number;
-  session_id: string;
-  card_id: string | null;
-  tier: string;
-  reason: string | null;
-  detail: string | null;
-  created_at: number;
-}
-
 export interface MessageQueueRow {
   id: string;
   session_id: string;
@@ -1352,23 +1317,6 @@ export interface Stmts {
   getAuditReport: Stmt;
   upsertProjectRoster: Stmt;
   getProjectRoster: Stmt;
-
-  // Session watchdog (server-side stall detector) — see server/session-watchdog.ts.
-  getWatchdogRow: Stmt;
-  upsertWatchdogRow: Stmt;
-  markWatchdogAwaiting: Stmt;
-  markWatchdogTokenAt: Stmt;
-  markWatchdogClean: Stmt;
-  markWatchdogCompleted: Stmt;
-  markWatchdogCompletedByCard: Stmt;
-  markWatchdogCompletedByPrUrl: Stmt;
-  incrementWatchdogNudge: Stmt;
-  setWatchdogState: Stmt;
-  selectIdleWatchdogs: Stmt;
-  selectWatchdogsByCard: Stmt;
-  selectWatchdogsByPrUrl: Stmt;
-  insertWatchdogEvent: Stmt;
-  getRecentWatchdogEvents: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
@@ -1852,6 +1800,15 @@ export interface AppConfig {
   openaiApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;
+  /**
+   * When true, interactive Codex spawns (chat, rooms, design, delegation)
+   * outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
+   * instead of `--full-auto`. Prefer enabling only when the host cannot run
+   * Codex's Linux sandbox (`bwrap`) or you need full parity with Claude
+   * `bypassPermissions`. Configure via `codexDangerBypass` in config.json,
+   * `PATCH /api/config`, or env `AGENT_HUB_CODEX_DANGER_BYPASS=1`.
+   */
+  codexDangerBypass: boolean;
   /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
   cursorApiKey: string | null;
   slackWebhookUrl: string | null;
@@ -1864,31 +1821,6 @@ export interface AppConfig {
   browserAllowDownloads: boolean;
   /** Block common ad/tracker third-party hosts at route level when true. */
   browserBlockAdsTrackers: boolean;
-  /**
-   * Session watchdog tunables. The watchdog runs server-side (no agent skill)
-   * and detects sessions that stalled mid-task: an assistant message was
-   * being awaited, the last assistant token arrived `idleThresholdMs` ago,
-   * and no clean `result` terminator was seen. See `server/session-watchdog.ts`
-   * for the tier ladder (T1 soft nudge → T2 context refresh → T3 fresh
-   * sibling session → T4 escalate-and-stop) and the per-card budget cap.
-   */
-  watchdog: {
-    /** Master kill switch. When false, no nudges or escalations fire. */
-    enabled: boolean;
-    /** Time without a fresh assistant token before a session is considered idle. */
-    idleThresholdMs: number;
-    /** Minimum gap between nudges into the same session. */
-    nudgeCooldownMs: number;
-    /** Scan interval — how often the watchdog cron evaluates sessions. */
-    checkIntervalMs: number;
-    /** How many soft (T1) nudges before escalating to T2 / T3 / T4. */
-    maxSoftNudges: number;
-    /**
-     * Per-card wall-clock budget. When exceeded the watchdog jumps directly
-     * to T4 (escalate-and-stop) regardless of where it is in the tier ladder.
-     */
-    cardBudgetMs: number;
-  };
   readonly allValidModels: string[];
 }
 

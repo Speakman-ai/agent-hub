@@ -78,6 +78,15 @@ describe('PATCH /api/config — engine bin paths', () => {
     expect(res.body.geminiBin).toBe('/tmp/test-gemini' + suffix);
   });
 
+  it('persists codexDangerBypass and exposes it on GET /api/config', async () => {
+    await request.patch('/api/config').send({ codexDangerBypass: true }).expect(200);
+    expect(readFileConfig().codexDangerBypass).toBe(true);
+    const res = await request.get('/api/config').expect(200);
+    expect(res.body.codexDangerBypass).toBe(true);
+    await request.patch('/api/config').send({ codexDangerBypass: false }).expect(200);
+    expect(readFileConfig().codexDangerBypass).toBe(false);
+  });
+
   it('still rejects updates with no allowlisted fields', async () => {
     const res = await request.patch('/api/config').send({ madeUpField: 'nope' }).expect(400);
     expect(res.body.error).toMatch(/No valid config fields/);

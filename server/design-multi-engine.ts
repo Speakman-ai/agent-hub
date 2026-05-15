@@ -3,6 +3,7 @@
  * for `design-chat.ts`. See `design-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
@@ -95,6 +96,10 @@ export interface BuildDesignSpawnArgsInput {
   engineSessionId: string | null;
   isNewEngineSession: boolean;
   bins: DesignSpawnBins;
+  /**
+   * Host setting: Codex full bypass instead of `--full-auto` (matches chat).
+   */
+  codexDangerBypass?: boolean;
 }
 
 /**
@@ -115,6 +120,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     engineSessionId,
     isNewEngineSession,
     bins,
+    codexDangerBypass,
   } = input;
 
   const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
@@ -169,7 +175,11 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     if (!isNewEngineSession && engineSessionId) {
       args.push('resume', engineSessionId);
     }
-    args.push('--json', '--skip-git-repo-check', '--full-auto');
+    args.push('--json', '--skip-git-repo-check');
+    appendCodexExecSandboxFlags(args, {
+      askMode: false,
+      dangerBypass: !!codexDangerBypass,
+    });
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);

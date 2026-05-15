@@ -1133,6 +1133,8 @@ components:
           type: string
         anthropicApiKeySet:
           type: boolean
+        codexDangerBypass:
+          type: boolean
         _file:
           type: object
           properties:
@@ -2479,86 +2481,6 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
-    WatchdogErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for watchdog routes.
-    WatchdogRow:
-      type: object
-      properties:
-        session_id:
-          type: string
-        card_id:
-          type: string
-          nullable: true
-        pr_url:
-          type: string
-          nullable: true
-        awaiting_response:
-          type: integer
-        last_token_at:
-          type: integer
-          nullable: true
-        last_user_message_at:
-          type: integer
-          nullable: true
-        nudge_count:
-          type: integer
-        last_nudge_at:
-          type: integer
-          nullable: true
-        budget_started_at:
-          type: integer
-          nullable: true
-        state:
-          type: string
-        disabled_reason:
-          type: string
-          nullable: true
-        created_at:
-          type: integer
-        updated_at:
-          type: integer
-      required:
-        - session_id
-        - card_id
-        - pr_url
-        - awaiting_response
-        - last_token_at
-        - last_user_message_at
-        - nudge_count
-        - last_nudge_at
-        - budget_started_at
-        - state
-        - disabled_reason
-        - created_at
-        - updated_at
-      description: Current row from `session_watchdog`.
-    WatchdogEvent:
-      type: object
-      properties:
-        id:
-          type: integer
-        session_id:
-          type: string
-        tier:
-          type: string
-        reason:
-          type: string
-          nullable: true
-        created_at:
-          type: integer
-      required:
-        - id
-        - session_id
-        - tier
-        - reason
-        - created_at
-      description: Audit row from `watchdog_events`.
     WikiPage:
       type: object
       properties:
@@ -7033,7 +6955,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
       requestBody:
         content:
           application/json:
@@ -7062,6 +6984,8 @@ paths:
                 botGithubToken:
                   type: string
                   nullable: true
+                codexDangerBypass:
+                  type: boolean
               additionalProperties:
                 nullable: true
               description: Partial config update. Unknown keys are ignored. At least one allowed key must be present, otherwise the handler returns 400.
@@ -9954,121 +9878,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/sessions/{sessionId}/watchdog:
-    get:
-      tags:
-        - Watchdog
-      summary: Read the current watchdog row + recent events for a session
-      description: Returns the per-session watchdog row plus the 20 most-recent audit events. If no row exists yet, `exists` is false and `events` is empty.
-      parameters:
-        - schema:
-            type: string
-            description: Session id.
-          required: true
-          description: Session id.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Watchdog state.
-          content:
-            application/json:
-              schema:
-                anyOf:
-                  - type: object
-                    properties:
-                      session_id:
-                        type: string
-                      exists:
-                        type: boolean
-                        enum:
-                          - false
-                      events:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WatchdogEvent"
-                    required:
-                      - session_id
-                      - exists
-                      - events
-                  - type: object
-                    properties:
-                      exists:
-                        type: boolean
-                        enum:
-                          - true
-                      row:
-                        $ref: "#/components/schemas/WatchdogRow"
-                      events:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WatchdogEvent"
-                    required:
-                      - exists
-                      - row
-                      - events
-  /api/sessions/{sessionId}/watchdog/nudge:
-    post:
-      tags:
-        - Watchdog
-      summary: Force a watchdog tier dispatch immediately (default T2)
-      description: Bypasses the idle/cooldown gates and dispatches the chosen tier now. Used by the UI "nudge" button and by ops tooling.
-      parameters:
-        - schema:
-            type: string
-            description: Session id.
-          required: true
-          description: Session id.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                tier:
-                  type: string
-                  enum:
-                    - T1
-                    - T2
-                    - T3
-                    - T4
-                  description: Which tier to force. Defaults to T2.
-      responses:
-        "202":
-          description: Dispatched.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  tier:
-                    type: string
-                    enum:
-                      - T1
-                      - T2
-                      - T3
-                      - T4
-                required:
-                  - ok
-                  - tier
-        "400":
-          description: Invalid tier value.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WatchdogErrorResponse"
-        "409":
-          description: Dispatch refused (watchdog disabled, session unknown, etc.).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WatchdogErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:
