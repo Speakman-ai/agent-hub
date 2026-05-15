@@ -1582,6 +1582,9 @@ components:
         skill_principal_agent_id:
           type: string
           nullable: true
+        engine:
+          type: string
+          nullable: true
         created_at:
           type: string
       required:
@@ -1599,8 +1602,9 @@ components:
         - notify_on_run
         - model
         - skill_principal_agent_id
+        - engine
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id` are nullable to mean "use default".
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine` are nullable to mean "use default" — `engine` falls back to the skill principal agent's engine, then to `claude-code`.
     CronLog:
       type: object
       properties:
@@ -7543,7 +7547,7 @@ paths:
       tags:
         - Crons
       summary: Create a new cron job
-      description: "`schedule` must be a valid cron expression. `model` is validated against the `claude-code` engine allowlist. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      description: "`schedule` must be a valid cron expression. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
       requestBody:
         content:
           application/json:
@@ -7601,6 +7605,13 @@ paths:
                 skill_principal_agent_id:
                   type: string
                   nullable: true
+                engine:
+                  anyOf:
+                    - type: string
+                    - nullable: true
+                    - type: string
+                      enum:
+                        - ""
               required:
                 - name
                 - schedule
@@ -7623,7 +7634,7 @@ paths:
       tags:
         - Crons
       summary: Update a cron job
-      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear).
+      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).
       parameters:
         - schema:
             type: string
@@ -7687,6 +7698,13 @@ paths:
                 skill_principal_agent_id:
                   type: string
                   nullable: true
+                engine:
+                  anyOf:
+                    - type: string
+                    - nullable: true
+                    - type: string
+                      enum:
+                        - ""
       responses:
         "200":
           description: Updated cron.

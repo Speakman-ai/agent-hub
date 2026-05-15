@@ -16,6 +16,7 @@ import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
 import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
+import { resolveCronEngine } from './cron-engine.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
 import type {
   EnrichedAgent,
@@ -551,12 +552,15 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const cronSkillAgentId = cronProject
       ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
       : undefined;
-    // Cron jobs historically targeted Claude Code only; preserve that as
-    // the preferred engine, but fall back to any other authed engine
-    // when Claude is unavailable. NoEnginesAvailableError bubbles into
-    // the outer catch block where it's surfaced verbatim.
+    // Resolve the engine the cron actually wants to run under: the row's
+    // explicit `engine` first, then the skill principal agent's `engine`,
+    // then the historical `claude-code` fallback. The resolver will still
+    // walk its own fallback chain if that engine isn't authed locally —
+    // NoEnginesAvailableError bubbles into the outer catch block where
+    // it's surfaced verbatim.
+    const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
     const resolved = await resolveOneShotEngine(config, {
-      preferred: 'claude-code',
+      preferred: preferredCronEngine,
       preferredModel: requestedModel,
     });
     const cronOwnerId = getOrgOwnerUserId();
@@ -570,7 +574,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     }
     if (resolved.fallbackUsed) {
       console.warn(
-        `[Cron] "${cronJob.name}": preferred engine "claude-code" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
+        `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
       );
     }
     const cronModel = resolved.model;
