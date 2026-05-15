@@ -3,6 +3,7 @@
  * the decision table to the filters in the workflow.
  *
  * Env contract (set by the `changes` job): FILTER_GLOBAL, FILTER_SERVER, etc.
+ * See also `scripts/ci-path-scope.mjs` (must match `dorny/paths-filter` keys).
  */
 
 import path from 'node:path';
@@ -15,10 +16,19 @@ export function truthy(v) {
 
 /**
  * @param {Record<string, string | boolean | undefined>} f paths-filter outputs
+ * plus synthetic `uncovered` when `git diff` lists files outside every group.
  */
 export function computeCiPlan(f) {
   const T = (key) => truthy(f[key]);
   const any = (...keys) => keys.some((k) => T(k));
+
+  if (T('uncovered')) {
+    const wide = computeCiPlan({ global: 'true' });
+    return {
+      ...wide,
+      run_terraform: T('terraform'),
+    };
+  }
 
   const run_lint = any('global', 'server', 'client', 'electron', 'shared', 'scripts', 'e2e');
   const run_terraform = T('terraform');
@@ -80,6 +90,7 @@ function main() {
     terraform: process.env.FILTER_TERRAFORM,
     scripts: process.env.FILTER_SCRIPTS,
     e2e: process.env.FILTER_E2E,
+    uncovered: process.env.FILTER_UNCOVERED,
   });
   process.stdout.write(formatGithubOutput(plan));
 }

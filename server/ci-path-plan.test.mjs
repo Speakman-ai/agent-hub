@@ -57,6 +57,18 @@ describe('computeCiPlan', () => {
     expect(p.test_matrix.include).toHaveLength(6);
   });
 
+  it('synthetic uncovered runs the full matrix but keeps terraform scoped', () => {
+    const noTf = computeCiPlan({ uncovered: 'true', terraform: 'false' });
+    expect(noTf.run_lint).toBe(true);
+    expect(noTf.run_build).toBe(true);
+    expect(noTf.run_tests).toBe(true);
+    expect(noTf.run_terraform).toBe(false);
+    expect(noTf.test_matrix.include).toHaveLength(6);
+
+    const withTf = computeCiPlan({ uncovered: 'true', terraform: 'true' });
+    expect(withTf.run_terraform).toBe(true);
+  });
+
   it('formatGithubOutput uses MATRIX_EOF delimiter', () => {
     const p = computeCiPlan({ client: 'true' });
     const out = formatGithubOutput(p);

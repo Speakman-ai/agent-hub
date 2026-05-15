@@ -8,9 +8,9 @@ on:
   # main without a PR, run `gh workflow run ci.yml --ref main` manually before
   # triggering a deploy.
   #
-  # Path-based job skipping: see `changes` + `scripts/ci-path-plan.mjs`. If you
-  # use branch protection, point required checks at **CI (gate)** — not the
-  # optional lint/build/test jobs (they are skipped when unrelated paths change).
+  # Path-based job skipping: see `jobs.changes`, `scripts/ci-path-plan.mjs`, and
+  # `scripts/ci-path-scope.mjs` (git-diff catch-all for paths no `dorny` group hits).
+  # Point branch protection at **CI (gate)** — not optional lint/build/test jobs.
   pull_request:
     branches: [main]
 
@@ -30,6 +30,8 @@ jobs:
       test_matrix: ${{ steps.plan.outputs.test_matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -65,6 +67,13 @@ jobs:
             e2e:
               - 'e2e/**'
 
+      - name: Detect paths outside dorny filter scope
+        id: uncovered
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-uncovered-paths.mjs >> "$GITHUB_OUTPUT"
+
       - name: Plan jobs from diff
         id: plan
         env:
@@ -77,6 +86,7 @@ jobs:
           FILTER_TERRAFORM: ${{ steps.filter.outputs.terraform }}
           FILTER_SCRIPTS: ${{ steps.filter.outputs.scripts }}
           FILTER_E2E: ${{ steps.filter.outputs.e2e }}
+          FILTER_UNCOVERED: ${{ steps.uncovered.outputs.uncovered }}
         run: node scripts/ci-path-plan.mjs >> "$GITHUB_OUTPUT"
 
   lint:
@@ -273,9 +283,9 @@ jobs:
         run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
   ci-gate:
-    # Use this job as the single required status check. Downstream jobs are
-    # skipped when paths do not need them; this job still succeeds so docs-only
-    # PRs do not stall on missing "Lint / Test" statuses.
+    # Single required status check. Downstream jobs skip when scoped paths do not
+    # need them. Out-of-scope paths (see `ci-uncovered-paths.mjs`) force the full
+    # lint/build/test matrix so the gate cannot pass with every leg skipped.
     name: CI (gate)
     needs: [changes, lint, terraform, build, test]
     if: always()
