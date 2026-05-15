@@ -10,6 +10,14 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 
+/**
+ * Spy the exact {@link exec} function `worktree.ts` binds with `promisify` at
+ * module load. Re-resolving `exec` from `import('child_process')` in `beforeEach`
+ * can point at a different object than the one worktree imported (duplicate module
+ * evaluation under Vitest shards), which makes `toHaveBeenCalled` flake.
+ */
+let childProcessExecMock: ReturnType<typeof vi.fn>;
+
 vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp' },
 }));
@@ -51,9 +59,10 @@ vi.mock('child_process', async (importOriginal) => {
     return {} as ReturnType<typeof mod.exec>;
   }
 
+  childProcessExecMock = vi.fn(fakeExec);
   return {
     ...mod,
-    exec: vi.fn(fakeExec),
+    exec: childProcessExecMock,
   };
 });
 
@@ -63,9 +72,8 @@ describe('setupDependencies awaited install failures', () => {
   let sourceDir = '';
   let cloneDir = '';
   let cleanup: Array<() => void> = [];
-  let execMock!: ReturnType<typeof vi.fn>;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     cleanup = [];
     delete process.env.TEST_WORKTREE_EXEC_FAIL;
     sourceDir = path.join(os.tmpdir(), `wh-src-${Date.now()}`);
@@ -75,9 +83,11 @@ describe('setupDependencies awaited install failures', () => {
     writeFileSync(path.join(sourceDir, 'noop.txt'), 'x');
     writeFileSync(path.join(cloneDir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
     writeFileSync(path.join(cloneDir, 'package-lock.json'), '{}', 'utf8');
+    // Mirror husky-enabled repos so `needsDependencyInstall` consults eslint
+    // in `node_modules/.bin` instead of returning early when `.husky` is absent.
+    mkdirSync(path.join(cloneDir, '.husky'), { recursive: true });
+    writeFileSync(path.join(cloneDir, '.husky', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
 
-    const cp = await import('child_process');
-    execMock = vi.mocked(cp.exec);
     cleanup.push(() => {
       rmSync(sourceDir, { recursive: true, force: true });
       rmSync(cloneDir, { recursive: true, force: true });
@@ -95,7 +105,7 @@ describe('setupDependencies awaited install failures', () => {
     process.env.TEST_WORKTREE_EXEC_FAIL = '1';
     const { SessionDependencyInstallError, SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER, __test } =
       await worktreePromise;
-    execMock.mockClear();
+    childProcessExecMock.mockClear();
 
     await expect(
       __test.setupDependencies(sourceDir, cloneDir, null, {
@@ -107,14 +117,14 @@ describe('setupDependencies awaited install failures', () => {
     const markerPath = path.join(cloneDir, SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER);
     expect(existsSync(markerPath)).toBe(true);
 
-    execMock.mockClear();
+    childProcessExecMock.mockClear();
     await expect(
       __test.setupDependencies(sourceDir, cloneDir, null, {
         awaitInstall: true,
         preferInstallAllScript: false,
       }),
     ).rejects.toThrow(/previously failed/);
-    expect(execMock).not.toHaveBeenCalled();
+    expect(childProcessExecMock).not.toHaveBeenCalled();
   });
 
   it('clears the failure marker after a successful awaited install so the next attempt runs npm again', async () => {
@@ -124,7 +134,7 @@ describe('setupDependencies awaited install failures', () => {
       clearDependencyInstallFailureMarker,
       __test,
     } = await worktreePromise;
-    execMock.mockClear();
+    childProcessExecMock.mockClear();
 
     process.env.TEST_WORKTREE_EXEC_FAIL = '1';
     await expect(
@@ -138,7 +148,7 @@ describe('setupDependencies awaited install failures', () => {
 
     delete process.env.TEST_WORKTREE_EXEC_FAIL;
     clearDependencyInstallFailureMarker(cloneDir);
-    execMock.mockClear();
+    childProcessExecMock.mockClear();
 
     await __test.setupDependencies(sourceDir, cloneDir, null, {
       awaitInstall: true,
@@ -146,16 +156,16 @@ describe('setupDependencies awaited install failures', () => {
     });
 
     expect(existsSync(markerPath)).toBe(false);
-    expect(execMock).toHaveBeenCalled();
+    expect(childProcessExecMock).toHaveBeenCalled();
 
     rmSync(path.join(cloneDir, 'node_modules'), { recursive: true, force: true });
-    execMock.mockClear();
+    childProcessExecMock.mockClear();
 
     await __test.setupDependencies(sourceDir, cloneDir, null, {
       awaitInstall: true,
       preferInstallAllScript: false,
     });
-    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(childProcessExecMock).toHaveBeenCalledTimes(1);
     clearDependencyInstallFailureMarker(cloneDir);
   });
 });
