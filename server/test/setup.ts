@@ -34,6 +34,17 @@ if (!TEST_DATA_DIR.startsWith(os.tmpdir())) {
 // Override BEFORE the test file body imports anything from server/.
 process.env.AGENT_HUB_DATA_DIR = TEST_DATA_DIR;
 delete process.env.AGENT_HUB_API_KEY;
+// Fresh deploy bootstrap env must not leak from the host (Agent Hub
+// sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
+// server boot, auth.json exists, and authMiddleware rejects unauthenticated
+// API calls — most integration tests expect the legacy "no auth configured"
+// open gate unless they attach Bearer tokens explicitly.
+delete process.env.AGENT_HUB_DEFAULT_PASSWORD;
+delete process.env.AGENT_HUB_DEFAULT_USERNAME;
+// Deploy URL overrides in config.json must not leak from the host; tests
+// write their own config.json and expect env not to win.
+delete process.env.AGENT_HUB_PUBLIC_URL;
+delete process.env.AGENT_HUB_AGENT_URL;
 
 // ─── Hard guard: tests must never spawn the real CLI binaries ────────────────
 // History: tests that didn't mock `child_process` were spawning real `claude`
