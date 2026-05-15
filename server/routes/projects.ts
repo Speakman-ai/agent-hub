@@ -2237,15 +2237,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
       const { owner, repo } = projectData.githubRepo;
       // Persist the `owner/repo` slug on the project record so downstream
       // helpers (e.g. `ensureReviewerAgents()`) can detect GitHub
-      // integration without needing to re-query the webhook table.
-      (project as Record<string, unknown>).githubRepo = `${owner}/${repo}`;
+      // integration without needing to re-query the webhook table. Also set
+      // `repoUrl` so the Settings page shows the link and the worktree manager
+      // can auto-clone on session spawn.
       const repoUrl = `https://github.com/${owner}/${repo}`;
-      // Persist the repo link onto the project itself so the Settings page
-      // (which reads `project.githubRepo` as an `owner/repo` string) renders
-      // the green dot + slug instead of "No repo linked", and so the worktree
-      // manager can auto-clone via `project.repoUrl` on session spawn.
-      (project as Record<string, unknown>).githubRepo = `${owner}/${repo}`;
-      (project as Record<string, unknown>).repoUrl = `${repoUrl}.git`;
+      project.githubRepo = `${owner}/${repo}`;
+      project.repoUrl = `${repoUrl}.git`;
       const defaultEvents = JSON.stringify([
         'pull_request.opened',
         'pull_request.closed',
@@ -2276,8 +2273,13 @@ This workspace has no git repo and no PR automation — your job is planning, or
       ensureDocsAgents();
       ensureIntakeAgents();
       ensureReviewerAgents();
-    } catch (err) {
-      console.warn(`[Onboard] Specialist agent seeding failed: ${(err as Error).message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Onboard] Specialist agent seeding failed: ${message}`);
+      return res.status(500).json({
+        error: 'specialist_agent_seeding_failed',
+        message,
+      });
     }
 
     ensureProjectRoom(project);

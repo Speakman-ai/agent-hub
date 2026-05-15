@@ -386,6 +386,7 @@ describe('Projects', () => {
         .expect(201);
 
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      expect(proj.body.githubRepo).toBe('octocat/hello-world');
       const agents =
         (proj.body.agents as Array<{ id: string; role?: string; name?: string }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
