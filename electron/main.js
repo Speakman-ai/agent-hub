@@ -22,15 +22,17 @@ import {
 import { createNotificationHandlers } from './notifications.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
 import { mergeElectronServerPath } from './merge-server-path.js';
+import { resolveElectronDevUserDataDir } from './resolve-user-data-dir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const isDev = process.env.NODE_ENV === 'development';
 
-// Use platform-appropriate user data directory.
-// In dev, use the repo's server/ dir so we share config with `npm run dev:server`.
+// Packaged builds isolate under Electron userData. Dev uses the same default
+// data dir as `npm run dev:server` (~/.agent-hub/data) unless AGENT_HUB_DATA_DIR
+// is set, so GitHub OAuth and SQLite survive switching between dev modes.
 const USER_DATA = isDev
-  ? path.join(ROOT, 'server')
+  ? resolveElectronDevUserDataDir()
   : path.join(app.getPath('userData'), 'data');
 
 let mainWindow = null;
