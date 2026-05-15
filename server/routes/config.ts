@@ -20,7 +20,7 @@ import type {
   Stmts,
 } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { refreshShellPath, getCachedShellPath } from '../config.js';
+import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
@@ -289,6 +289,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       botGithubUser: getGhBotUser() || null,
       anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
       anthropicApiKeySet: !!config.anthropicApiKey,
+      codexDangerBypass: !!config.codexDangerBypass,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
@@ -343,11 +344,15 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'apiKey',
       'publicUrl',
       'botGithubToken',
+      'codexDangerBypass',
     ] as const;
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
         updates[key] = (req.body as Record<string, unknown>)[key];
+    }
+    if (updates.codexDangerBypass !== undefined) {
+      updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid config fields provided' });

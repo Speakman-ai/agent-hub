@@ -73,6 +73,7 @@ import {
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
+import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -2184,7 +2185,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //   codex exec resume <session-id> --json "..."   — continue a session
         //   codex exec resume --last --json "..."         — continue the newest recorded session
         //   --sandbox read-only|workspace-write|danger-full-access
-        //   --full-auto                                   — low-friction workspace-write alias
+        //   --full-auto                                   — workspace-write convenience (still prompts for escalations)
+        //   --dangerously-bypass-approvals-and-sandbox — full bypass (alias `--yolo`; gated by `codexDangerBypass` / env)
         //   -m / --model                                  — model selector
         //   -C / --cd <dir>                               — working root
         //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)
@@ -2206,13 +2208,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('resume', engineSessionId);
         }
         args.push('--json', '--skip-git-repo-check');
-        if (isAskMode) {
-          args.push('--sandbox', 'read-only');
-        } else {
-          // --full-auto = `-a on-request --sandbox workspace-write`, which is
-          // the closest parity with Claude Code's bypassPermissions default.
-          args.push('--full-auto');
-        }
+        appendCodexExecSandboxFlags(args, {
+          askMode: isAskMode,
+          dangerBypass: !!config.codexDangerBypass,
+        });
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
         // rejects most explicit `--model` IDs (HTTP 400 "not supported when
         // using Codex with a ChatGPT account"). shouldPassModelFlag() filters

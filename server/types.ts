@@ -1800,6 +1800,15 @@ export interface AppConfig {
   openaiApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;
+  /**
+   * When true, interactive Codex spawns (chat, rooms, design, delegation)
+   * outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
+   * instead of `--full-auto`. Prefer enabling only when the host cannot run
+   * Codex's Linux sandbox (`bwrap`) or you need full parity with Claude
+   * `bypassPermissions`. Configure via `codexDangerBypass` in config.json,
+   * `PATCH /api/config`, or env `AGENT_HUB_CODEX_DANGER_BYPASS=1`.
+   */
+  codexDangerBypass: boolean;
   /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
   cursorApiKey: string | null;
   slackWebhookUrl: string | null;
