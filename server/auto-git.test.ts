@@ -12,6 +12,7 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   existsSync: vi.fn(() => false),
   statSync: vi.fn(),
+  mkdirSync: vi.fn(),
 }));
 
 // Stubs for the per-user GitHub token resolution path. Default to nulls so

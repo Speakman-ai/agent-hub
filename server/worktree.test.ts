@@ -1246,12 +1246,12 @@ describe('dependency install command helpers', () => {
     }
   });
 
-  it('sessionWorkspaceDependencyInstallOpts awaits install only outside Vitest test mode', () => {
+  it('sessionWorkspaceDependencyInstallOpts never blocks clone on install (deferred until publish)', () => {
     const prev = process.env.AGENT_HUB_TEST_MODE;
     try {
       delete process.env.AGENT_HUB_TEST_MODE;
       expect(sessionWorkspaceDependencyInstallOpts()).toEqual({
-        awaitInstall: true,
+        awaitInstall: false,
         preferInstallAllScript: true,
       });
       process.env.AGENT_HUB_TEST_MODE = '1';

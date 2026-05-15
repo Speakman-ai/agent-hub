@@ -401,8 +401,10 @@ function projectSlug(projectCwd: string): string {
  * Husky's `prepare` script only wires `core.hooksPath` during `npm install`,
  * and **process** worktree creation (heartbeats / crons) still does not await
  * install (see {@link setupDependencies} with `awaitInstall: false`). Session
- * clones await `npm ci` / `install:all` so `eslint` and Husky hooks exist
- * before the first commit.
+ * clones also use non-blocking install at clone/reuse time; call
+ * {@link ensureSessionWorktreeDependenciesInstalled} immediately before
+ * `git commit` / the `changes_ready` banner so eslint and Husky hooks exist
+ * when publishing.
  *
  * **Assumes husky v9+** — the shipped hook scripts are self-contained and do
  * not source `.husky/_/husky.sh`. Husky v8 and earlier sourced that helper
@@ -554,7 +556,7 @@ interface NodeModulesEntry {
 }
 
 interface SetupDependenciesOptions {
-  /** When true, block until install finishes (session workspaces). */
+  /** When true, block until install finishes (deferred session publish path). */
   awaitInstall: boolean;
   /** When true, use {@link resolveSessionInstallCommand} (install:all for monorepos). */
   preferInstallAllScript: boolean;
@@ -564,8 +566,12 @@ interface SetupDependenciesOptions {
  * Vitest sets AGENT_HUB_TEST_MODE=1 (server/vitest.config.ts). Session clones
  * created during tests must not block on `npm install`: shallow fixtures rarely
  * ship lockfiles, and awaiting monorepo `install:all` against the checkout blows
- * hook timeouts. Production omits this env var so installs stay awaited for
- * Husky/eslint readiness before the first commit.
+ * hook timeouts.
+ *
+ * Production also uses non-blocking install here so session startup is not
+ * stalled by a cold `install:all`. {@link ensureSessionWorktreeDependenciesInstalled}
+ * awaits install immediately before `changes_ready` / `git commit` so Husky
+ * pre-commit hooks still run when the user publishes.
  */
 function sessionWorkspaceDependencyInstallOpts(): Pick<
   SetupDependenciesOptions,
@@ -574,7 +580,26 @@ function sessionWorkspaceDependencyInstallOpts(): Pick<
   if (process.env.AGENT_HUB_TEST_MODE === '1') {
     return { awaitInstall: false, preferInstallAllScript: false };
   }
-  return { awaitInstall: true, preferInstallAllScript: true };
+  return { awaitInstall: false, preferInstallAllScript: true };
+}
+
+/**
+ * Block until the session worktree has node_modules (and eslint when `.husky`
+ * exists) so Husky / project pre-commit can run. Skipped entirely under
+ * `AGENT_HUB_TEST_MODE=1` (see {@link sessionWorkspaceDependencyInstallOpts}).
+ */
+export async function ensureSessionWorktreeDependenciesInstalled(
+  projectCwd: string,
+  sessionCloneDir: string,
+  installCommand: string | null | undefined,
+): Promise<void> {
+  if (process.env.AGENT_HUB_TEST_MODE === '1') {
+    return;
+  }
+  await setupDependencies(projectCwd, sessionCloneDir, installCommand ?? null, {
+    awaitInstall: true,
+    preferInstallAllScript: true,
+  });
 }
 
 function resolveInstallCommand(
@@ -590,7 +615,8 @@ function resolveInstallCommand(
 
 /**
  * Link node_modules from the project cwd when present, otherwise run the package manager.
- * Session clones use {@link SetupDependenciesOptions.awaitInstall} so git commit + Husky work on first push.
+ * Session clones pass `awaitInstall: false` at setup time; see
+ * {@link ensureSessionWorktreeDependenciesInstalled} for the awaited path before commit.
  */
 async function setupDependencies(
   sourceDir: string,
