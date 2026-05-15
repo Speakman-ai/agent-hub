@@ -133,6 +133,7 @@ import type {
   ChatMessage,
   BrowserToolActivityEvent,
 } from './types.js';
+import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import {
   HOST_REACT_ACTIONS_PARSE_CAP,
   resolveOrchestrationBudgets,
@@ -3657,7 +3658,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           S.updateSessionName.run(autoName, sessionId);
           broadcast({
             type: 'session-updated',
-            session: { ...sess, name: autoName },
+            session: enrichSessionForClient({ ...sess, name: autoName } as SessionRow),
           });
         }
 

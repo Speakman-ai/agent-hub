@@ -47,6 +47,10 @@ export const SessionComponent = registerComponent(
       agent_id: z.string(),
       name: z.string(),
       engine: z.string(),
+      checkpoint_rewind_supported: z.boolean().openapi({
+        description:
+          'True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint.',
+      }),
       model: z.string(),
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
@@ -90,6 +94,10 @@ export const SessionErrorResponseComponent = registerComponent(
   z
     .object({
       error: z.string(),
+      code: z.string().optional().openapi({
+        description:
+          'Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).',
+      }),
       details: z
         .array(
           z.object({
@@ -393,6 +401,8 @@ registerPath({
   path: '/api/sessions/{sessionId}/rewind',
   tags: ['Sessions'],
   summary: 'Rewind a Claude Code session to a checkpoint UUID',
+  description:
+    'Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`.',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(RewindRequestSchema) },
@@ -404,7 +414,9 @@ registerPath({
         z.object({ status: z.literal('rewind_started'), uuid: z.string(), sessionId: z.string() }),
       ),
     },
-    400: errorResponse('Validation failed or engine not claude-code.'),
+    400: errorResponse(
+      'Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.',
+    ),
     404: errorResponse('Session or checkpoint not found.'),
     409: errorResponse('Session is actively running.'),
   },
