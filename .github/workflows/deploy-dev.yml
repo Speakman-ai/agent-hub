@@ -1,12 +1,9 @@
 name: Deploy Dev
 
 # Triggered two ways:
-#   1. workflow_dispatch — operator fires it manually from the Actions tab
-#      to roll whatever is on `main` to agent-hub-server. We intentionally do
-#      NOT auto-deploy on CI success; deploys stay opt-in.
-#   2. workflow_call — invoked by `release-all.yml` after a release tag has
-#      been cut and prod-1 has rolled, with `ref` pinned to the new tag so
-#      dev lands on the exact same commit that's going to prod-2.
+#   1. workflow_dispatch — roll a git/npm/pm2 host (Name=agent-hub-server) to any ref.
+#   2. workflow_call — programmatic reuse (outside the main **Release**
+#      workflow — that path publishes docker + rolls the ECR-fed sandbox instead).
 on:
   workflow_dispatch:
     inputs:
@@ -136,7 +133,7 @@ jobs:
           # shellcheck disable=SC1091
           [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
           cd ${DEPLOY_PATH}
-          # --tags so tag refs passed by release-all.yml (e.g. v1.2.3) resolve.
+          # --tags so tag refs from callers (e.g. v1.2.3) resolve.
           # The default origin/main case also benefits — no harm fetching tags.
           git fetch --all --tags --prune
           git reset --hard "${REF}"

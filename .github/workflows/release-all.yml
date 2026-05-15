@@ -1,27 +1,22 @@
-name: Release All
+name: Release
 
-# One-shot full rollout. Operator picks a semver bump (patch/minor/major)
-# and the workflow:
-#   1. release      — bumps version, tags, generates notes, creates a
-#                     GitHub release (identical to release-prod.yml).
-#   2. After release succeeds, three jobs fan out in parallel:
-#        - build-mac     — builds + uploads macOS DMGs. Non-gating
-#                          (DMG failure does NOT block server deploys).
-#        - deploy-dev    — rolls the new tag to agent-hub-server (dev).
-#        - deploy-prod-2 — rolls the new tag to agent-hub-prod-2.
+# One-shot rollout (manual Actions tab). Operator picks a semver bump
+# (patch/minor/major) and the workflow:
+#   1. release               — bumps version, tags, notes, GitHub release
+#                              (same core job as release-prod.yml).
+#   2. After release succeeds, jobs fan out in parallel:
+#        - docker-ecr-dev — build + push the server image to ECR Public at
+#          the tag commit (`:branch`, `:sha`, `:vX.Y.Z`), then SSM restart of
+#          the docker dev sandbox (`agenthub.dev` pull :main + digest checks).
+#        - build-mac        — DMGs → S3 (non-gating vs server rollout).
+#        - deploy-prod-2    — rolls the tag to agent-hub-prod-2 via SSM/git.
 #
-# History: this workflow previously chained a `deploy-prod-1` job that
-# rolled to the standalone `agent-hub-prod` EC2 instance. That host has
-# been shut down and replaced by the dockerized sandbox served at
-# `agenthub.dev.surveytracker.io`, which pulls `:main` from ECR Public
-# on systemd restart and is fed by `push-image.yml` (out of band of
-# this workflow). The prod-1 job was removed and dev + prod-2 now
-# depend only on `release` — they no longer gate on a host that no
-# longer exists.
+# Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
+# "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
+# no longer chained here.
 #
-# `deploy-prod-2.yml` still exists as a standalone workflow for
-# operators who want to roll a specific target conservatively. This
-# workflow is the "ship to everywhere" button for routine releases.
+# Emergency image builds without a version bump remain under
+# `.github/workflows/push-image.yml` (same reusable ECR playbook).
 on:
   workflow_dispatch:
     inputs:
@@ -34,21 +29,27 @@ on:
           - patch
           - minor
           - major
+      docker_reset_instance:
+        description: >-
+          With ECR roll: wipe Agent Hub SQLite/uploads/projects on docker dev sandbox
+          before restart (fresh-setup drill). Leaves TLS + data/config intact.
+        required: false
+        type: boolean
+        default: false
 
-# Only one Release All can be in flight at a time. We do NOT cancel
+# Only one Release can be in flight at a time. We do NOT cancel
 # in-progress: a half-finished release (tag pushed but deploys not run)
 # leaves the system in an awkward state — better to wait for the prior
 # run to finish before starting another.
 concurrency:
-  group: release-all
+  group: release-workflow
   cancel-in-progress: false
 
 permissions:
   id-token: write # OIDC for AWS (build-mac)
   # Mutations (push version bump + tag, gh release create) go through
-  # RELEASE_PAT, so the default GITHUB_TOKEN only needs read access. The
-  # called deploy-dev / deploy-prod-2 workflows declare their own
-  # permissions blocks.
+  # RELEASE_PAT, so the default GITHUB_TOKEN only needs read access.
+  # Deploy / ECR callables declare their own permissions blocks.
   contents: read
 
 jobs:
@@ -56,7 +57,7 @@ jobs:
   # before merge to main, so by the time main is taggable it is already
   # green. Skipping the duplicate run shortens the release cycle. If you
   # suspect main is dirty, run `gh workflow run ci.yml --ref main` before
-  # triggering Release All.
+  # triggering Release.
   release:
     name: Tag & release
     runs-on: ubuntu-latest
@@ -158,7 +159,7 @@ jobs:
 
   build-mac:
     name: Build & upload macOS DMGs
-    # Parallel with deploy-dev and deploy-prod-2. DMG failure does NOT
+    # Parallel with ECR rollout and prod-2. DMG failure does NOT
     # gate the server rollout — desktop app and server are independent
     # artifacts. If this job fails, the server deploys still proceed and
     # the DMG can be cut manually afterward with `npm run release:mac`.
@@ -216,21 +217,16 @@ jobs:
             echo "> First-pass builds are **unsigned**. Code-signing and notarization will be added in a follow-up PR."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # dev and prod-2 fan out in parallel as soon as `release` is green.
-  # The former `deploy-prod-1` gate was removed when the standalone
-  # agent-hub-prod EC2 instance was shut down (replaced by the
-  # dockerized sandbox at agenthub.dev.surveytracker.io, fed by
-  # push-image.yml + a systemd pull-on-start unit). If either of these
-  # deploys fails, the other still runs — operators can re-run a single
-  # target via deploy-dev.yml or deploy-prod-2.yml with the new tag.
-  deploy-dev:
-    name: Deploy agent-hub-server (dev)
+  # ECR docker dev sandbox + prod-2 fan out in parallel as soon as `release`.
+  docker-ecr-dev:
+    name: ECR push and docker dev sandbox
     needs: release
-    uses: ./.github/workflows/deploy-dev.yml
+    uses: ./.github/workflows/ecr-publish-rollout-docker-dev.yml
     with:
-      ref: ${{ needs.release.outputs.tag }}
-    # No secrets passed — deploy-dev.yml uses OIDC + vars only. If it ever
-    # gains a secret dependency, add `secrets: inherit` here.
+      git_ref: refs/tags/${{ needs.release.outputs.tag }}
+      version_tag: refs/tags/${{ needs.release.outputs.tag }}
+      rollout: true
+      reset_instance: ${{ inputs.docker_reset_instance }}
 
   deploy-prod-2:
     name: Deploy agent-hub-prod-2
@@ -240,8 +236,8 @@ jobs:
       tag: ${{ needs.release.outputs.tag }}
 
   summary:
-    name: Release All summary
-    needs: [release, deploy-dev, deploy-prod-2, build-mac]
+    name: Release summary
+    needs: [release, docker-ecr-dev, deploy-prod-2, build-mac]
     # Always run so the operator gets a single status block at the bottom
     # of the workflow page, regardless of which fan-out leg succeeded.
     if: always()
@@ -249,7 +245,7 @@ jobs:
     env:
       TAG: ${{ needs.release.outputs.tag }}
       RELEASE_RESULT: ${{ needs.release.result }}
-      DEV_RESULT: ${{ needs.deploy-dev.result }}
+      DOCKER_ECR_RESULT: ${{ needs.docker-ecr-dev.result }}
       PROD2_RESULT: ${{ needs.deploy-prod-2.result }}
       MAC_RESULT: ${{ needs.build-mac.result }}
     steps:
@@ -266,12 +262,12 @@ jobs:
             esac
           }
           {
-            echo "## 🚀 Release All — ${TAG:-(no tag cut)}"
+            echo "## Release — ${TAG:-(no tag cut)}"
             echo ""
             echo "| Stage | Result |"
             echo "| --- | --- |"
             echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
-            echo "| Deploy dev         | $(icon "$DEV_RESULT") $DEV_RESULT |"
+            echo "| ECR + docker dev   | $(icon "$DOCKER_ECR_RESULT") $DOCKER_ECR_RESULT |"
             echo "| Deploy prod-2      | $(icon "$PROD2_RESULT") $PROD2_RESULT |"
             echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
           } >> "$GITHUB_STEP_SUMMARY"
