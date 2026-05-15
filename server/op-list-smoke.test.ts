@@ -30,15 +30,26 @@ import { tmpdir } from 'os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, 'default-skills/1password/scripts/op-list.sh');
 
+function resolvePythonBin(): string | null {
+  for (const cmd of ['python3', 'python']) {
+    const r = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000 });
+    if (r.status === 0) return cmd;
+  }
+  return null;
+}
+
+const PYTHON_BIN = resolvePythonBin();
+
 /** Run Python code from a temp file with JSON piped to stdin. */
 function runPythonCode(
+  python: string,
   code: string,
   stdinJson: string,
 ): { stdout: string; stderr: string; status: number } {
   const tmpDir = mkdtempSync(`${tmpdir()}/op-list-test-`);
   const pyFile = `${tmpDir}/fmt.py`;
   writeFileSync(pyFile, code, 'utf8');
-  const result = spawnSync('python3', [pyFile], {
+  const result = spawnSync(python, [pyFile], {
     input: stdinJson,
     encoding: 'utf8',
     timeout: 10_000,
@@ -107,13 +118,26 @@ print("\\n{} document(s)".format(len(docs)))
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('op-list.sh Python formatting (bash quoting regression)', () => {
+describe('op-list.sh file sanity', () => {
+  it('op-list.sh exists', () => {
+    expect(existsSync(SCRIPT)).toBe(true);
+  });
+
+  it('op-list.sh passes bash -n syntax check', () => {
+    const result = spawnSync('bash', ['-n', SCRIPT], { encoding: 'utf8' });
+    expect(result.status, `bash -n stderr: ${result.stderr}`).toBe(0);
+  });
+});
+
+describe.skipIf(!PYTHON_BIN)('op-list.sh Python formatting (bash quoting regression)', () => {
+  const py = PYTHON_BIN!;
+
   // --- items ----------------------------------------------------------------
 
   it('items: formats items correctly', () => {
     const json =
       '[{"title":"My Login","category":"Login","vault":{"name":"Personal"},"id":"abc123"}]';
-    const { stdout, stderr, status } = runPythonCode(ITEMS_CODE, json);
+    const { stdout, stderr, status } = runPythonCode(py, ITEMS_CODE, json);
     expect(status, `stderr: ${stderr}`).toBe(0);
     expect(stdout).toContain('Title');
     expect(stdout).toContain('My Login');
@@ -124,7 +148,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
   });
 
   it('items: handles empty list', () => {
-    const { stdout, status } = runPythonCode(ITEMS_CODE, '[]');
+    const { stdout, status } = runPythonCode(py, ITEMS_CODE, '[]');
     expect(status).toBe(0);
     expect(stdout.trim()).toBe('(no items found)');
   });
@@ -132,7 +156,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
   it('items: truncates long title to 38 chars', () => {
     const longTitle = 'A'.repeat(50);
     const json = `[{"title":"${longTitle}","category":"Login","vault":{"name":"V"},"id":"x"}]`;
-    const { stdout, status } = runPythonCode(ITEMS_CODE, json);
+    const { stdout, status } = runPythonCode(py, ITEMS_CODE, json);
     expect(status).toBe(0);
     expect(stdout).toContain('A'.repeat(38));
     // 39th 'A' must not appear (truncated)
@@ -142,7 +166,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
 
   it('items: handles missing vault gracefully', () => {
     const json = '[{"title":"No Vault","category":"Login","id":"nv1"}]';
-    const { stdout, status } = runPythonCode(ITEMS_CODE, json);
+    const { stdout, status } = runPythonCode(py, ITEMS_CODE, json);
     expect(status).toBe(0);
     expect(stdout).toContain('No Vault');
   });
@@ -152,7 +176,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
   it('vaults: formats vault list correctly', () => {
     const json =
       '[{"name":"Personal","type":"USER_CREATED","id":"v1"},{"name":"Shared","type":"USER_CREATED","id":"v2"}]';
-    const { stdout, status } = runPythonCode(VAULTS_CODE, json);
+    const { stdout, status } = runPythonCode(py, VAULTS_CODE, json);
     expect(status).toBe(0);
     expect(stdout).toContain('Name');
     expect(stdout).toContain('Personal');
@@ -161,7 +185,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
   });
 
   it('vaults: handles empty list', () => {
-    const { stdout, status } = runPythonCode(VAULTS_CODE, '[]');
+    const { stdout, status } = runPythonCode(py, VAULTS_CODE, '[]');
     expect(status).toBe(0);
     expect(stdout.trim()).toBe('(no vaults accessible)');
   });
@@ -170,7 +194,7 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
 
   it('documents: formats document list correctly', () => {
     const json = '[{"title":"SSH Key","vault":{"name":"Personal"},"id":"doc1"}]';
-    const { stdout, status } = runPythonCode(DOCUMENTS_CODE, json);
+    const { stdout, status } = runPythonCode(py, DOCUMENTS_CODE, json);
     expect(status).toBe(0);
     expect(stdout).toContain('Title');
     expect(stdout).toContain('SSH Key');
@@ -179,19 +203,8 @@ describe('op-list.sh Python formatting (bash quoting regression)', () => {
   });
 
   it('documents: handles empty list', () => {
-    const { stdout, status } = runPythonCode(DOCUMENTS_CODE, '[]');
+    const { stdout, status } = runPythonCode(py, DOCUMENTS_CODE, '[]');
     expect(status).toBe(0);
     expect(stdout.trim()).toBe('(no documents found)');
-  });
-
-  // --- script-level checks --------------------------------------------------
-
-  it('op-list.sh exists', () => {
-    expect(existsSync(SCRIPT)).toBe(true);
-  });
-
-  it('op-list.sh passes bash -n syntax check', () => {
-    const result = spawnSync('bash', ['-n', SCRIPT], { encoding: 'utf8' });
-    expect(result.status, `bash -n stderr: ${result.stderr}`).toBe(0);
   });
 });
