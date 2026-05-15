@@ -79,6 +79,7 @@ export const AppConfigComponent = registerComponent(
       botGithubUser: z.string().nullable(),
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
+      codexDangerBypass: z.boolean().optional(),
       _file: z.object({
         claudeBin: z.string().nullable(),
         cursorBin: z.string().nullable(),
@@ -344,6 +345,7 @@ export const PatchConfigRequestSchema = z
     apiKey: z.string().nullable().optional(),
     publicUrl: z.string().optional(),
     botGithubToken: z.string().nullable().optional(),
+    codexDangerBypass: z.boolean().optional(),
   })
   .passthrough()
   .openapi({
@@ -429,7 +431,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

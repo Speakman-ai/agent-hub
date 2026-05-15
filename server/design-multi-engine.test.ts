@@ -229,6 +229,19 @@ describe('buildDesignSpawnArgs', () => {
     expect(args[args.length - 1]).toContain('SYS');
   });
 
+  it('codex-cli: codexDangerBypass uses bypass flag instead of --full-auto', () => {
+    const { args } = buildDesignSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      engineSessionId: null,
+      isNewEngineSession: true,
+      codexDangerBypass: true,
+    });
+    expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(args).not.toContain('--full-auto');
+  });
+
   it('codex-cli: resume inserts thread id', () => {
     const { args } = buildDesignSpawnArgs({
       ...baseInput,

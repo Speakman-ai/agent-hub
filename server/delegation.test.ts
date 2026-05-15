@@ -104,6 +104,9 @@ type FakeProc = ReturnType<typeof makeFakeProc>;
 /** Lead session `ask_mode` for `stmts.getSession.get(sessionId)` in delegate tests (0 = off). */
 let delegationLeadAskMode = 0;
 
+/** Host `codexDangerBypass` returned by `getConfig()` in delegate tests. */
+let delegationCodexDangerBypass = false;
+
 /** Build a stub Stmts with delegation statements + session lookup for Ask Mode parity. */
 function makeStmts() {
   const createDelegation = { run: vi.fn() };
@@ -171,6 +174,7 @@ describe('handleDelegation — retry logic', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delegationLeadAskMode = 0;
+    delegationCodexDangerBypass = false;
     tmpWorkspace = mkdtempSync(path.join(os.tmpdir(), 'delegation-test-'));
     fakeProcs = [];
     broadcast = vi.fn();
@@ -220,6 +224,7 @@ describe('handleDelegation — retry logic', () => {
           conferenceTimeoutMs: 600000,
           delegationMaxAttempts: 3,
           delegationRetryBackoffMs: 0, // no wait between attempts in tests
+          codexDangerBypass: delegationCodexDangerBypass,
         }) as unknown as import('./types.js').AppConfig,
     });
   });
@@ -571,6 +576,40 @@ describe('handleDelegation — retry logic', () => {
     const results = await pending;
     expect(results[0].output).toContain('codex ask ok');
   });
+
+  it('Codex delegate passes danger bypass instead of full-auto when host enables codexDangerBypass', async () => {
+    delegationCodexDangerBypass = true;
+    subAgent = makeAgent('sub-1', {
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-codex-yolo',
+      'msg-yolo',
+      [delegateTask('full access task')],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(argv).not.toContain('--full-auto');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'item.completed',
+          item: { id: 'y', type: 'agent_message', text: 'codex bypass ok' },
+        }) + '\n',
+    });
+
+    const results = await pending;
+    expect(results[0].output).toContain('codex bypass ok');
+  });
 });
 
 /** Stubs for delegation synthesis tests (session row + message writers). */
@@ -618,9 +657,12 @@ describe('synthesizeResults — engine routing', () => {
   let procMap: Map<string, unknown>;
   /** Tracks correct (agent, undefined, opts) arity for Gemini/Codex synthesis enrichment. */
   let buildEnrichedPromptMock: ReturnType<typeof vi.fn>;
+  /** Host flag surfaced via `getConfig().codexDangerBypass` for Codex synthesis argv tests. */
+  let synthesisCodexDangerBypass = false;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    synthesisCodexDangerBypass = false;
     fakeProcs = [];
     broadcast = vi.fn();
     procMap = new Map();
@@ -663,6 +705,7 @@ describe('synthesizeResults — engine routing', () => {
       getConfig: () =>
         ({
           conferenceTimeoutMs: 600000,
+          codexDangerBypass: synthesisCodexDangerBypass,
         }) as unknown as import('./types.js').AppConfig,
     });
   });
@@ -952,6 +995,46 @@ describe('synthesizeResults — engine routing', () => {
         isFirstMessage: false,
       }),
     );
+  });
+
+  it('Codex synthesis passes danger bypass when host enables codexDangerBypass', async () => {
+    synthesisCodexDangerBypass = true;
+    synthBundle.sessionRow.engine = 'codex-cli';
+    synthBundle.sessionRow.model = 'gpt-5.3-codex';
+    synthBundle.sessionRow.engine_session_id = 'thread-bypass-id';
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'x', error: null }],
+      'original',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv.slice(0, 6)).toEqual([
+      'exec',
+      'resume',
+      'thread-bypass-id',
+      '--json',
+      '--skip-git-repo-check',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ]);
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'item.completed',
+          item: { id: 'byp', type: 'agent_message', text: 'bypass synth.' },
+        }) + '\n',
+    });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run.mock.calls[0][3]).toContain('bypass synth.');
   });
 
   it('Codex synthesis uses read-only sandbox in Ask Mode instead of full-auto', async () => {

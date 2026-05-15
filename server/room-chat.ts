@@ -429,6 +429,7 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
                 codex: CODEX_BIN,
               },
               logTag: `room ${roomId} agent ${agent.id}`,
+              codexDangerBypass: !!config.codexDangerBypass,
             });
             bin = plan.bin;
             args = plan.args;

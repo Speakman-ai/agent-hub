@@ -281,6 +281,7 @@ export async function handleDesignChat(
           gemini: d.getGeminiBin(),
           codex: d.getCodexBin(),
         },
+        codexDangerBypass: !!config.codexDangerBypass,
       }));
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);

@@ -1124,6 +1124,8 @@ components:
           type: string
         anthropicApiKeySet:
           type: boolean
+        codexDangerBypass:
+          type: boolean
         _file:
           type: object
           properties:
@@ -6878,7 +6880,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
       requestBody:
         content:
           application/json:
@@ -6907,6 +6909,8 @@ paths:
                 botGithubToken:
                   type: string
                   nullable: true
+                codexDangerBypass:
+                  type: boolean
               additionalProperties:
                 nullable: true
               description: Partial config update. Unknown keys are ignored. At least one allowed key must be present, otherwise the handler returns 400.

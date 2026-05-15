@@ -350,6 +350,10 @@ const config: AppConfig = {
   // ── Captures ──────────────────────────────────────────────────
   capturesEnabled: resolve('AGENT_HUB_CAPTURES_ENABLED', 'capturesEnabled', 'false') === 'true',
 
+  codexDangerBypass:
+    envMeansTrue('AGENT_HUB_CODEX_DANGER_BYPASS') ||
+    coerceConfigBooleanLoose(fileConfig.codexDangerBypass, false),
+
   // ── Host browser sessions (Stagehand / Playwright Chromium) ──
   browserMaxConcurrentContexts: clampFiniteInt(
     resolveInt('AGENT_HUB_BROWSER_MAX_CONTEXTS', 'browserMaxConcurrentContexts', 3),

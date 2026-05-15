@@ -34,6 +34,11 @@ if (!TEST_DATA_DIR.startsWith(os.tmpdir())) {
 // Override BEFORE the test file body imports anything from server/.
 process.env.AGENT_HUB_DATA_DIR = TEST_DATA_DIR;
 delete process.env.AGENT_HUB_API_KEY;
+// Same host-leak story as the api key: Terraform / Agent Hub shells export
+// these and would otherwise convince bootstrap + middleware that JWT auth is
+// configured for the tmp data dir (see maybeAutoProvisionOwner test-mode guard).
+delete process.env.AGENT_HUB_DEFAULT_PASSWORD;
+delete process.env.AGENT_HUB_DEFAULT_USERNAME;
 
 // ─── Hard guard: tests must never spawn the real CLI binaries ────────────────
 // History: tests that didn't mock `child_process` were spawning real `claude`
