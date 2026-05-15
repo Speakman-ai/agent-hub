@@ -4,10 +4,20 @@ import config from './config.js';
 import { verifyJwt } from './jwt.js';
 import { getAuthRecord } from './auth-store.js';
 import { getActiveOrgId } from './orgs.js';
-import { getUserById, getUserByUsername } from './users-store.js';
+import { getUserById, getUserByUsername, listUsers } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import { verifyApiKey as verifyUserApiKey } from './api-keys-store.js';
 import type { Role } from './roles.js';
+
+/** Oldest user in orgs.db — same ordering as `session-ownership::getOrgOwnerUserId`. */
+function resolveOrgOwnerUserIdForLocalBundledMode(): string | null {
+  try {
+    const users = listUsers();
+    return users.length > 0 ? users[0]!.id : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
@@ -203,6 +213,16 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     try {
       r.authOrgId = getActiveOrgId();
     } catch {}
+    // Single-tenant Electron / dev: attribute REST calls to the real org
+    // owner so per-user Claude/Cursor/Codex/Gemini endpoints and engine
+    // status (`/api/config/models`, `/api/setup/status`) see stored keys
+    // without requiring duplicate host-wide admin credentials.
+    try {
+      const uid = resolveOrgOwnerUserIdForLocalBundledMode();
+      if (uid) r.authUserId = uid;
+    } catch {
+      // orgs.db not initialized — leave authUserId unset.
+    }
     return next();
   }
 
@@ -381,7 +401,13 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
     try {
       orgId = getActiveOrgId();
     } catch {}
-    return { ok: true, subject: 'local', role: 'Owner', orgId };
+    let userId: string | undefined;
+    try {
+      userId = resolveOrgOwnerUserIdForLocalBundledMode() ?? undefined;
+    } catch {
+      // orgs.db not initialized — same as REST local bypass.
+    }
+    return { ok: true, subject: 'local', role: 'Owner', orgId, userId };
   }
 
   const url = new URL(request.url!, `http://${request.headers.host}`);

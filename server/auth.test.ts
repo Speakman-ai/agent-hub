@@ -45,6 +45,8 @@ vi.mock('./orgs.js', () => ({
 vi.mock('./users-store.js', () => ({
   getUserById: (id: string) => mockUsersById.get(id) ?? null,
   getUserByUsername: (name: string) => mockUsersByName.get(name) ?? null,
+  listUsers: () =>
+    Array.from(mockUsersById.values()).sort((a, b) => a.created_at.localeCompare(b.created_at)),
 }));
 vi.mock('./memberships-store.js', () => ({
   getMembershipRole: (userId: string, orgId: string) =>
@@ -638,6 +640,23 @@ describe('authMiddleware — local-bundled-server bypass (AGENT_HUB_MODE)', () =
     expect(r.authLocalOrgBypass).toBe(true);
   });
 
+  it('stamps authUserId with the org owner when users exist (local bundled)', () => {
+    process.env.AGENT_HUB_MODE = 'local';
+    mockActiveOrgId = 'default';
+    seedUser({
+      id: 'local-owner-uid',
+      username: 'solo',
+      password_hash: 'x',
+      created_at: '2020-01-01T00:00:00.000Z',
+    });
+    const next = vi.fn();
+    const req = mockReq();
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    const r = req as Request & { authUserId?: string };
+    expect(r.authUserId).toBe('local-owner-uid');
+  });
+
   it('returns 401 when AGENT_HUB_MODE is unset and no credentials are provided', () => {
     // Default deployment: no env var → multi-user → auth required.
     const next = vi.fn();
@@ -720,6 +739,23 @@ describe('authenticateWsDetailed — local-bundled-server bypass (AGENT_HUB_MODE
     expect(result.subject).toBe('local');
     expect(result.role).toBe('Owner');
     expect(result.orgId).toBe('default');
+  });
+
+  it('returns org owner userId when AGENT_HUB_MODE=local and users exist', () => {
+    process.env.AGENT_HUB_MODE = 'local';
+    mockActiveOrgId = 'default';
+    seedUser({
+      id: 'ws-local-owner',
+      username: 'wsowner',
+      password_hash: 'x',
+      created_at: '2020-01-01T00:00:00.000Z',
+    });
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result.ok).toBe(true);
+    expect(result.userId).toBe('ws-local-owner');
   });
 
   it('rejects WS handshake when AGENT_HUB_MODE is unset and no token is provided', () => {
