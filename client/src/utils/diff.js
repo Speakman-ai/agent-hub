@@ -19,8 +19,9 @@ export function shortenPath(filePath) {
 
 /**
  * Codex CLI (`codex exec --json`) emits `file_change` items with a `changes`
- * array of `{ path, kind }` — no line-level hunks in the public stream today.
- * Show one row per file so the diff card is meaningful.
+ * array. `item.started` may only include `{ path, kind }`; `unified_diff` often
+ * arrives on `item.completed` (merged into the tool card via
+ * `mergeEditInputWithToolResult` + `tool_result.output` JSON).
  *
  * @param {Array<{ path?: string, kind?: string, unified_diff?: string, content?: string }>} changes
  */
@@ -79,6 +80,78 @@ function parseCodexFileChanges(changes) {
   };
 }
 
+function stripLeadingBom(s) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
+/** True when the first codepoint is a minus used as a diff leader (ASCII or common Unicode). */
+function isDiffMinusLeader(line) {
+  const ch0 = line.codePointAt(0);
+  return ch0 === 0x2d || ch0 === 0x2212 || ch0 === 0x2013;
+}
+
+/** True when the first codepoint is a plus used as a diff leader. */
+function isDiffPlusLeader(line) {
+  return line.codePointAt(0) === 0x2b;
+}
+
+/**
+ * Codex `file_change` often emits `item.started` with `{ path, kind }` only, then
+ * `item.completed` repeats the same paths with `unified_diff` in `tool_result.output`
+ * (JSON array). DiffView reads the paired `tool_use.input`; merge completed hunks in
+ * so line-level diffs render after the turn finishes.
+ *
+ * @param {Record<string, unknown> | null | undefined} input
+ * @param {{ output?: string } | null | undefined} toolResult
+ */
+export function mergeEditInputWithToolResult(input, toolResult) {
+  if (!input || typeof input !== 'object') return input;
+  const changes = input.changes;
+  if (!Array.isArray(changes) || changes.length === 0) return input;
+  const rawOut = toolResult?.output;
+  if (typeof rawOut !== 'string' || !rawOut.trim()) return input;
+  let completed;
+  try {
+    completed = JSON.parse(rawOut);
+  } catch {
+    return input;
+  }
+  if (!Array.isArray(completed)) return input;
+
+  const byPath = new Map();
+  for (const ch of completed) {
+    if (ch && typeof ch === 'object' && typeof ch.path === 'string') {
+      byPath.set(ch.path, ch);
+    }
+  }
+
+  let touched = false;
+  const mergedChanges = changes.map((st) => {
+    if (!st || typeof st !== 'object') return st;
+    const p = st.path;
+    if (typeof p !== 'string') return st;
+    const fin = byPath.get(p);
+    if (!fin || typeof fin !== 'object') return st;
+    const next = { ...st };
+    if (typeof fin.unified_diff === 'string' && fin.unified_diff.trim()) {
+      next.unified_diff = fin.unified_diff;
+      touched = true;
+    }
+    if (typeof fin.content === 'string' && fin.content.trim()) {
+      next.content = fin.content;
+      touched = true;
+    }
+    if (typeof fin.kind === 'string' && fin.kind) {
+      next.kind = fin.kind;
+      touched = true;
+    }
+    return next;
+  });
+
+  return touched ? { ...input, changes: mergedChanges } : input;
+}
+
 /**
  * Split a unified-diff / applyPatch body into removal (-) and addition (+) lines.
  * Cursor `editToolCall` uses `applyPatch.patchContent` (see Cursor CLI docs).
@@ -90,20 +163,25 @@ function parseApplyPatchContent(patch) {
   }
   const removals = [];
   const additions = [];
-  for (const rawLine of patch.split('\n')) {
+  const body = stripLeadingBom(patch);
+  for (let rawLine of body.split(/\r\n|\n|\r/)) {
+    rawLine = rawLine.replace(/\r$/, '');
     if (rawLine.startsWith('diff --git')) continue;
     if (rawLine.startsWith('index ')) continue;
     if (rawLine.startsWith('--- ') || rawLine.startsWith('+++ ')) continue;
     if (rawLine.startsWith('@@')) continue;
     if (rawLine === '\\ No newline at end of file') continue;
-    if (rawLine.startsWith('-')) {
+    if (isDiffMinusLeader(rawLine) && !rawLine.startsWith('--- ')) {
       removals.push(rawLine.slice(1));
-    } else if (rawLine.startsWith('+')) {
+    } else if (isDiffPlusLeader(rawLine)) {
       additions.push(rawLine.slice(1));
     }
   }
   if (removals.length === 0 && additions.length === 0) {
-    const raw = patch.trim().split('\n');
+    const raw = body
+      .trim()
+      .split(/\r\n|\n|\r/)
+      .map((l) => l.replace(/\r$/, ''));
     return { removals: [], additions: raw.length ? raw : ['(empty patch)'] };
   }
   return { removals, additions };

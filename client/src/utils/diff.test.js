@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { isFileModifyingTool, shortenPath, parseDiffLines } from './diff.js';
+import {
+  isFileModifyingTool,
+  shortenPath,
+  parseDiffLines,
+  mergeEditInputWithToolResult,
+} from './diff.js';
 
 describe('isFileModifyingTool', () => {
   it('returns true for Edit and Write', () => {
@@ -119,6 +124,34 @@ describe('parseDiffLines', () => {
     expect(result.filePath).toBe('x.ts');
     expect(result.removals).toEqual(['old']);
     expect(result.additions).toEqual(['update  x.ts', 'new']);
+  });
+
+  it('parses CRLF unified_diff bodies', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update', unified_diff: '-old\r\n+new\r\n' }],
+    });
+    expect(result.removals).toEqual(['old']);
+    expect(result.additions).toEqual(['update  x.ts', 'new']);
+  });
+
+  it('parses Unicode minus leader as removal', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update', unified_diff: '\u2212old\n+new' }],
+    });
+    expect(result.removals).toEqual(['old']);
+    expect(result.additions).toEqual(['update  x.ts', 'new']);
+  });
+
+  it('merges Codex file_change unified_diff from tool_result.output JSON', () => {
+    const input = { changes: [{ path: 'ci.yml', kind: 'update' }] };
+    const merged = mergeEditInputWithToolResult(input, {
+      output: JSON.stringify([
+        { path: 'ci.yml', kind: 'update', unified_diff: '-before\n+after\n' },
+      ]),
+    });
+    const result = parseDiffLines('Edit', merged);
+    expect(result.removals).toEqual(['before']);
+    expect(result.additions).toEqual(['update  ci.yml', 'after']);
   });
 
   it('parses Codex git-style unified_diff headers', () => {
