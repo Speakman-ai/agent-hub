@@ -3254,6 +3254,136 @@ describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
     expect(Number.isFinite(count) && count >= 2).toBe(true);
   });
 
+  it('injects credentials into git ls-remote when resolving pr_base_branch', async () => {
+    const lsRemoteEnvs: NodeJS.ProcessEnv[] = [];
+    const mockCard = {
+      id: 'card-ls-remote-token',
+      title: 'PR base probe card',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/parent-branch',
+    };
+    const mockStmts = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getKanbanCard: { get: vi.fn(() => mockCard) },
+      getKanbanEpic: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'Ls-remote session' })) },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-inprog', name: 'In Progress' },
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      getMessages: { all: vi.fn(() => [] as MessageRow[]) },
+      setCardPrUrl: { run: vi.fn() },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      createKanbanCardComment: { run: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+      getMessageById: {
+        get: vi.fn(() => ({
+          id: 'm-lsr',
+          session_id: 'sess-ls-remote',
+          role: 'system',
+          content: '',
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata: null,
+          created_at: '2026-05-13T00:00:00.000Z',
+        })),
+      },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    (spawn as unknown as Mock).mockImplementation(
+      (file: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        const child = new EventEmitter() as EventEmitter & {
+          stdout: EventEmitter;
+          stderr: EventEmitter;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = vi.fn();
+        queueMicrotask(() => {
+          if (file === 'gh' && args[0] === 'pr' && args[1] === 'create') {
+            child.stdout.emit('data', Buffer.from('https://github.com/test/repo/pull/777\n'));
+          }
+          child.emit('close', 0, null);
+        });
+        return child;
+      },
+    );
+
+    (exec as unknown as Mock).mockImplementation(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => cb?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git log @{upstream}..HEAD'))
+          return cb?.(new Error('no upstream'), { stdout: '', stderr: '' });
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.startsWith('git config user.name'))
+          return cb?.(null, { stdout: 'CI Bot\n', stderr: '' });
+        if (cmd.startsWith('git config user.email'))
+          return cb?.(null, { stdout: 'ci@example.com\n', stderr: '' });
+        return ok('');
+      },
+    );
+
+    (execFile as unknown as Mock).mockImplementation(
+      (
+        file: string,
+        args: string[],
+        opts: Record<string, unknown>,
+        cb?: (err: Error | null, r: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (file === 'git' && args[0] === 'ls-remote') {
+          lsRemoteEnvs.push((opts.env ?? {}) as NodeJS.ProcessEnv);
+          return cb?.(null, {
+            stdout: 'abcdef012345678901234567890123456789abcd\trefs/heads/feature/parent-branch\n',
+            stderr: '',
+          });
+        }
+        if (file === 'gh' && args[0] === 'pr' && args[1] === 'view') {
+          return cb?.(null, { stdout: '', stderr: '' });
+        }
+        cb?.(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'ls-remote-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-ls-remote', 'agent-lsr', project, agent, '/worktree', '');
+
+    expect(lsRemoteEnvs.length).toBeGreaterThanOrEqual(1);
+    const probeEnv = lsRemoteEnvs[0];
+    expect(probeEnv?.GH_TOKEN).toBe(FAKE_TOKEN);
+    expect(probeEnv?.GITHUB_TOKEN).toBe(FAKE_TOKEN);
+    expect(probeEnv?.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+  });
+
   it('does NOT inject GH_TOKEN when no session owner is resolvable', async () => {
     // Regression guard: when the owner lookup yields nothing (legacy install,
     // tests, or a misconfigured row), we fall back to the Hub process's

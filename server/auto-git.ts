@@ -1387,10 +1387,10 @@ async function commitPushAndCreatePR(
   const d = getDeps();
 
   // Resolve the session owner's GitHub token ONCE per invocation. Threaded
-  // into every `git push` / `gh` spawn so the server-side push authenticates
-  // as the human owner of the repo — closes the
-  // "Authentication failed for 'https://github.com/<user>/repo.git/'" failure
-  // mode for autonomous-dispatch sessions whose spawn env was deliberately
+  // into every `git ls-remote` / `git push` / `gh` spawn so HTTPS probes,
+  // pushes, and PR opens authenticate as the human owner of the repo.
+  // Closes the "Authentication failed for 'https://github.com/<user>/repo.git/'"
+  // failure mode for autonomous-dispatch sessions whose spawn env was deliberately
   // stripped of GitHub credentials.
   const githubToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
 
@@ -1422,9 +1422,14 @@ async function commitPushAndCreatePR(
 
   if (requestedBase && isSafeBranch(requestedBase)) {
     try {
-      const { stdout: lsOut } = await execAsync(
-        `git ls-remote --heads origin ${JSON.stringify(requestedBase)}`,
-        { cwd: effectiveCwd, timeout: 10_000 },
+      const { stdout: lsOut } = await execFileAsync(
+        'git',
+        ['ls-remote', '--heads', 'origin', requestedBase],
+        {
+          cwd: effectiveCwd,
+          timeout: 10_000,
+          env: autoGitChildEnv(githubToken),
+        },
       );
       if (lsOut.trim()) {
         resolvedBaseBranch = requestedBase;
