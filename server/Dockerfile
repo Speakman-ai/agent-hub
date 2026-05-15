@@ -62,34 +62,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libasound2 libxshmfence1 libx11-xcb1 \
  && rm -rf /var/lib/apt/lists/*
 
-# Python + native build deps for Django-style monorepos (Survey Tracker:
-# `backend/requirements-local.txt`, `manage.py`, `pip install`, venv).
-# psycopg2, Pillow, lxml, cryptography, mysqlclient, etc. need headers and
-# a compiler when wheels are missing for the platform.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-dev \
-    python3-pip \
-    python3-venv \
-    build-essential \
-    pkg-config \
-    gettext \
-    postgresql-client \
-    libpq-dev \
-    default-libmysqlclient-dev \
-    libffi-dev \
-    libssl-dev \
-    libjpeg62-turbo-dev \
-    zlib1g-dev \
-    libpng-dev \
-    libxml2-dev \
-    libxslt1-dev \
-    libyaml-dev \
-    libsqlite3-dev \
-    libmagic1 \
-    redis-tools \
- && rm -rf /var/lib/apt/lists/*
-
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
