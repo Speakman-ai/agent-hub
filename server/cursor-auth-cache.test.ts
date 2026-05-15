@@ -37,13 +37,13 @@ describe('cursor-auth-cache', () => {
       .mockResolvedValueOnce(true); // re-probe after invalidate (post-login)
 
     expect(await getCursorAuthenticatedCached('/usr/local/bin/cursor-agent', probe)).toBe(false);
-    expect(_peekCursorAuthCacheForTests()).toMatchObject({
+    expect(_peekCursorAuthCacheForTests('/usr/local/bin/cursor-agent')).toMatchObject({
       bin: '/usr/local/bin/cursor-agent',
       value: false,
     });
 
     invalidateCursorAuthCache();
-    expect(_peekCursorAuthCacheForTests()).toBeNull();
+    expect(_peekCursorAuthCacheForTests('/usr/local/bin/cursor-agent')).toBeNull();
 
     expect(await getCursorAuthenticatedCached('/usr/local/bin/cursor-agent', probe)).toBe(true);
     expect(probe).toHaveBeenCalledTimes(2);
@@ -52,6 +52,37 @@ describe('cursor-auth-cache', () => {
   it('invalidate() is idempotent and safe to call when the cache is empty', () => {
     invalidateCursorAuthCache();
     invalidateCursorAuthCache();
-    expect(_peekCursorAuthCacheForTests()).toBeNull();
+    expect(_peekCursorAuthCacheForTests('/usr/local/bin/cursor-agent')).toBeNull();
+  });
+
+  it('scopes cache entries per uid so host + user probes do not collide', async () => {
+    const calls: string[] = [];
+    await getCursorAuthenticatedCached('/usr/local/bin/cursor-agent', async () => {
+      calls.push('host');
+      return true;
+    });
+    await getCursorAuthenticatedCached(
+      '/usr/local/bin/cursor-agent',
+      async () => {
+        calls.push('user');
+        return false;
+      },
+      { scope: 'uid:user-a' },
+    );
+    expect(calls).toEqual(['host', 'user']);
+
+    await getCursorAuthenticatedCached('/usr/local/bin/cursor-agent', async () => {
+      calls.push('host-repeat');
+      return false;
+    });
+    await getCursorAuthenticatedCached(
+      '/usr/local/bin/cursor-agent',
+      async () => {
+        calls.push('user-repeat');
+        return true;
+      },
+      { scope: 'uid:user-a' },
+    );
+    expect(calls).toEqual(['host', 'user']);
   });
 });

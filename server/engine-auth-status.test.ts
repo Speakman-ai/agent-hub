@@ -22,6 +22,7 @@ vi.mock('./config.js', () => ({
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('./auth-store.js');
 const { createUser } = await import('./users-store.js');
+const { ensurePerUserHome } = await import('./per-user-home.js');
 const { _resetCursorAuthCacheForTests } = await import('./cursor-auth-cache.js');
 const { getEngineAuthStatus } = await import('./engine-auth-status.js');
 
@@ -150,6 +151,50 @@ describe('getEngineAuthStatus', () => {
     });
     expect(out.cursor).toBe(false);
     expect(out.any).toBe(false);
+  });
+
+  it('JWT callers probe Cursor against per-user HOME only (no host fallback)', async () => {
+    const user = createUser({
+      username: 'cursor-per-home-only',
+      passwordHash: 'x',
+    });
+    const expectedHome = ensurePerUserHome(user.id, TMP_DIR);
+    const perProbe = vi.fn().mockResolvedValue(true);
+    const hostProbe = vi.fn().mockResolvedValue(false);
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/bin/agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbe: hostProbe,
+      cursorProbePerUserHome: perProbe,
+    });
+
+    expect(out.cursor).toBe(true);
+    expect(perProbe).toHaveBeenCalledWith('/bin/agent', expectedHome);
+    expect(hostProbe).not.toHaveBeenCalled();
+  });
+
+  it('JWT callers ignore host Cursor login when per-user HOME reports logged out', async () => {
+    const user = createUser({
+      username: 'cursor-no-host-fallback',
+      passwordHash: 'x',
+    });
+    const perProbe = vi.fn().mockResolvedValue(false);
+    const hostProbe = vi.fn().mockResolvedValue(true);
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/bin/agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbe: hostProbe,
+      cursorProbePerUserHome: perProbe,
+    });
+
+    expect(out.cursor).toBe(false);
+    expect(hostProbe).not.toHaveBeenCalled();
   });
 
   it('detects codex via CODEX_API_KEY env var', async () => {
