@@ -122,6 +122,7 @@ function setupHarness(opts: {
     getConfig: () =>
       ({
         conferenceTimeoutMs: 60_000,
+        codexDangerBypass: true,
         engineDefaultModels: {
           'claude-code': 'claude-opus-4-7',
           'cursor-agent': 'composer-2',
@@ -290,7 +291,7 @@ describe('handleRoomChat — per-engine spawn', () => {
     expect(a).toContain('--yolo');
   });
 
-  it('codex-cli agent: spawns codexBin with exec --json --full-auto and pipes prompt via stdin', async () => {
+  it('codex-cli agent: spawns codexBin with exec --json + danger bypass and pipes prompt via stdin', async () => {
     setupHarness({
       roomAgents: [{ id: 'a-codex', engine: 'codex-cli', name: 'CodexDev' }],
     });
@@ -316,7 +317,8 @@ describe('handleRoomChat — per-engine spawn', () => {
     expect(a[0]).toBe('exec');
     expect(a).toContain('--json');
     expect(a).toContain('--skip-git-repo-check');
-    expect(a).toContain('--full-auto');
+    expect(a).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(a).not.toContain('--full-auto');
     expect(a[a.length - 1]).toBe('-');
     // stdio[0] must be 'pipe' so we can write the prompt to stdin.
     expect((opts as { stdio: unknown[] }).stdio[0]).toBe('pipe');

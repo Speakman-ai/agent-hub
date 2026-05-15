@@ -126,23 +126,35 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args.includes('--model')).toBe(false);
   });
 
-  it('codex-cli: exec --json --skip-git-repo-check --full-auto with stdin sentinel', () => {
+  it('codex-cli: exec --json --skip-git-repo-check + danger bypass with stdin sentinel', () => {
     const plan = buildRoomSpawnArgs({
       ...baseInput,
       engine: 'codex-cli',
       model: 'gpt-5.3-codex',
+      codexDangerBypass: true,
     });
     expect(plan.bin).toBe(bins.codex);
     expect(plan.args[0]).toBe('exec');
     expect(plan.args).toContain('--json');
     expect(plan.args).toContain('--skip-git-repo-check');
-    expect(plan.args).toContain('--full-auto');
+    expect(plan.args).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(plan.args[plan.args.length - 1]).toBe('-');
     // stdin sentinel must be paired with a stdinPrompt that carries SYS + transcript.
     expect(plan.stdinPrompt).toContain('SYS-PROMPT');
     expect(plan.stdinPrompt).toContain('transcript + you are Dev');
     // Resume is intentionally absent — rooms are stateless per-turn.
     expect(plan.args.includes('resume')).toBe(false);
+  });
+
+  it('codex-cli: uses --full-auto when codexDangerBypass is explicitly false', () => {
+    const plan = buildRoomSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      codexDangerBypass: false,
+    });
+    expect(plan.args).toContain('--full-auto');
+    expect(plan.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
   it('codex-cli: uses danger bypass flag when codexDangerBypass is true', () => {

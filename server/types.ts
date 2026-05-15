@@ -1801,12 +1801,13 @@ export interface AppConfig {
   geminiApiKey: string | null;
   codexApiKey: string | null;
   /**
-   * When true, interactive Codex spawns (chat, rooms, design, delegation)
-   * outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
-   * instead of `--full-auto`. Prefer enabling only when the host cannot run
-   * Codex's Linux sandbox (`bwrap`) or you need full parity with Claude
-   * `bypassPermissions`. Configure via `codexDangerBypass` in config.json,
-   * `PATCH /api/config`, or env `AGENT_HUB_CODEX_DANGER_BYPASS=1`.
+   * When true (the default), interactive Codex spawns (chat, rooms, design,
+   * delegation) outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
+   * instead of `--full-auto`, so Codex works in environments where Linux
+   * bubblewrap cannot create user namespaces. Set false to keep Codex's
+   * sandbox on hosts that support it. Configure via `codexDangerBypass` in
+   * config.json, `PATCH /api/config`, or env `AGENT_HUB_CODEX_DANGER_BYPASS`
+   * (`false` / `0` / `off` to disable).
    */
   codexDangerBypass: boolean;
   /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */

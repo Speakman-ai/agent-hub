@@ -2196,7 +2196,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //   codex exec resume --last --json "..."         — continue the newest recorded session
         //   --sandbox read-only|workspace-write|danger-full-access
         //   --full-auto                                   — workspace-write convenience (still prompts for escalations)
-        //   --dangerously-bypass-approvals-and-sandbox — full bypass (alias `--yolo`; gated by `codexDangerBypass` / env)
+        //   --dangerously-bypass-approvals-and-sandbox — full bypass (alias `--yolo`; default on via `codexDangerBypass` / env, opt out with false)
         //   -m / --model                                  — model selector
         //   -C / --cd <dir>                               — working root
         //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)

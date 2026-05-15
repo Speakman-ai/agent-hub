@@ -70,7 +70,7 @@ All scripts read these env vars:
 | `AGENT_HUB_API_KEY` | (injected by the server) | Sent as `x-api-key`; treated as Owner for all orgs. |
 | `PROJECT_ID` | (required) | Slug from the system prompt, e.g. `agent-hub`. |
 | `AGENT_HUB_SESSION_ID` | (injected) | Your session id. Pass when creating cards to auto-link. |
-| `AGENT_HUB_CODEX_DANGER_BYPASS` | unset | Server-only: when set true (`1`/`true`/`on`), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto`. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, Design Studio, and `<delegate>` sub-agent runs plus delegation synthesis when the lead engine is Codex. |
+| `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default) | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, Design Studio, and `<delegate>` sub-agent runs plus delegation synthesis when the lead engine is Codex. |
 
 Identify yourself / the project:
 
