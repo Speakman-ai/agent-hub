@@ -331,6 +331,14 @@ describe('Projects', () => {
             cwd: '/tmp',
             githubRepo: { owner: 'acme', repo: 'widget' },
           },
+          agents: [
+            {
+              id: `${projId}-dev`,
+              name: 'Dev',
+              engine: 'claude-code',
+              systemPrompt: 'You are the dev agent.',
+            },
+          ],
         })
         .expect(201);
       expect(res.body.githubRepo).toBe('acme/widget');
@@ -349,10 +357,53 @@ describe('Projects', () => {
         .post('/api/projects/onboard')
         .send({
           project: { id: projId, name: 'Onboard No GH', cwd: '/tmp' },
+          agents: [
+            {
+              id: `${projId}-dev`,
+              name: 'Dev',
+              engine: 'claude-code',
+              systemPrompt: 'You are the dev agent.',
+            },
+          ],
         })
         .expect(201);
       expect(res.body.githubRepo).toBeUndefined();
       expect(res.body.repoUrl).toBeUndefined();
+    });
+
+    it('rejects onboard when no valid dev agents remain after parsing', async () => {
+      const projId = `onboard-empty-roster-${Date.now()}-${++_uniqueCounter}`;
+      const emptyAgents = await request
+        .post('/api/projects/onboard')
+        .send({
+          project: { id: projId, name: 'Empty Roster', cwd: '/tmp' },
+          agents: [],
+        })
+        .expect(400);
+      expect(emptyAgents.body.error).toBe('onboard_dev_roster_required');
+
+      const projId2 = `onboard-no-agents-key-${Date.now()}-${++_uniqueCounter}`;
+      const omitted = await request
+        .post('/api/projects/onboard')
+        .send({
+          project: { id: projId2, name: 'No agents key', cwd: '/tmp' },
+        })
+        .expect(400);
+      expect(omitted.body.error).toBe('onboard_dev_roster_required');
+
+      await request.get(`/api/projects/${projId}`).expect(404);
+      await request.get(`/api/projects/${projId2}`).expect(404);
+
+      const projId3 = `onboard-invalid-agent-ids-${Date.now()}-${++_uniqueCounter}`;
+      const invalidIds = await request
+        .post('/api/projects/onboard')
+        .send({
+          project: { id: projId3, name: 'Invalid ids', cwd: '/tmp' },
+          agents: [{ id: 'not valid!', name: 'x' }],
+        })
+        .expect(400);
+      expect(invalidIds.body.error).toBe('onboard_dev_roster_required');
+      await request.get(`/api/projects/${projId3}`).expect(404);
     });
   });
 

@@ -2268,6 +2268,24 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
+    // Specialist helpers (`ensureDocsAgents`, `ensureIntakeAgents`,
+    // `ensureReviewerAgents`) intentionally skip projects with an empty
+    // `agents` roster. Require at least one validated dev peer so onboard
+    // cannot return 201 without Docs/Intake (and Reviewer when GitHub-linked).
+    if (project.agents.length === 0) {
+      try {
+        rmSync(dataDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(
+          `[Onboard] Failed to remove data dir after empty roster: ${(err as Error).message}`,
+        );
+      }
+      return res.status(400).json({
+        error: 'onboard_dev_roster_required',
+        message: 'At least one dev agent with a valid id is required (non-empty `agents` array).',
+      });
+    }
+
     if (projectData.githubRepo?.owner && projectData.githubRepo?.repo) {
       const { owner, repo } = projectData.githubRepo;
       // Persist the `owner/repo` slug on the project record so downstream
