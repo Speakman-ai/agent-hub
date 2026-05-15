@@ -36,10 +36,10 @@ import { existsSync } from 'fs';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { shouldPassModelFlag, detectCodexAuthMode } from './codex-auth.js';
-import os from 'os';
 import path from 'path';
 import type { AppConfig } from './types.js';
 import type { SupportedEngine } from './engine-availability.js';
+import { operatorCliHome } from './operator-cli-home.js';
 
 export interface OneShotSpawnInput {
   engine: SupportedEngine;
@@ -113,7 +113,7 @@ export function buildOneShotSpawnArgs(
     const args: string[] = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only'];
     // Codex ChatGPT-OAuth mode rejects most --model values; only pass
     // through models on the curated allowlist.
-    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexHome = process.env.CODEX_HOME ?? path.join(operatorCliHome(cfg.dataDir), '.codex');
     const auth = detectCodexAuthMode(codexHome);
     if (trimmedModel && shouldPassModelFlag(auth.mode, trimmedModel)) {
       args.push('--model', trimmedModel);

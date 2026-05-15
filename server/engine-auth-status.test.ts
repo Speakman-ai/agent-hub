@@ -42,6 +42,7 @@ function freshSandbox() {
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   delete process.env.CODEX_API_KEY;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
 }
 
 const noCursor = async () => false;
@@ -58,7 +59,7 @@ describe('getEngineAuthStatus', () => {
       cursorBin: '/nonexistent/cursor-agent',
       cursorProbe: noCursor,
     });
-    expect(out).toEqual({ claude: false, cursor: false, codex: false, any: false });
+    expect(out).toEqual({ claude: false, cursor: false, codex: false, gemini: false, any: false });
   });
 
   it('detects host-level Anthropic API key', async () => {
@@ -205,6 +206,42 @@ describe('getEngineAuthStatus', () => {
       cursorProbe: noCursor,
     });
     expect(out.codex).toBe(true);
+    expect(out.any).toBe(true);
+  });
+
+  it('detects per-user Codex API key when host config is empty', async () => {
+    const user = createUser({
+      username: 'codex-per-user',
+      passwordHash: 'x',
+    });
+    const { setUserCodexAuth } = await import('./users-store.js');
+    setUserCodexAuth(user.id, { apiKey: 'sk-codex-user-only' });
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      cursorProbe: noCursor,
+    });
+    expect(out.codex).toBe(true);
+    expect(out.any).toBe(true);
+  });
+
+  it('detects per-user Gemini API key when host config is empty', async () => {
+    const user = createUser({
+      username: 'gemini-per-user',
+      passwordHash: 'x',
+    });
+    const { setUserGeminiAuth } = await import('./users-store.js');
+    setUserGeminiAuth(user.id, { apiKey: 'gem-user-key' });
+
+    const out = await getEngineAuthStatus({
+      config: {},
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      cursorProbe: noCursor,
+    });
+    expect(out.gemini).toBe(true);
     expect(out.any).toBe(true);
   });
 });

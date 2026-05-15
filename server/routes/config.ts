@@ -320,7 +320,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       userId: authedReq.authUserId ?? null,
       dataDir: config.dataDir,
     });
-    const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
+    const geminiAuthenticated = engineStatus.gemini;
 
     res.json(
       buildAuthenticatedModelConfig(config, {

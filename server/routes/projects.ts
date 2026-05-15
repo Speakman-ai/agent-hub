@@ -1060,7 +1060,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // instead of being dropped into the project picker with no working
     // engine. See `engine-auth-status.ts` for the full contract.
     const authedReq = req as AuthenticatedRequest;
-    let engineAuth: { claude: boolean; cursor: boolean; codex: boolean; any: boolean };
+    let engineAuth: import('../engine-auth-status.js').EngineAuthStatus;
     try {
       engineAuth = await getEngineAuthStatus({
         config,
@@ -1069,7 +1069,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         dataDir: config.dataDir,
       });
     } catch {
-      engineAuth = { claude: false, cursor: false, codex: false, any: false };
+      engineAuth = { claude: false, cursor: false, codex: false, gemini: false, any: false };
     }
 
     // `authConfigured` reflects whether the Agent Hub Owner record exists.

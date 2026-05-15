@@ -22,6 +22,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import type { AppConfig } from './types.js';
+import { operatorCliHome, ensureOperatorCliHome } from './operator-cli-home.js';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached, invalidateCursorAuthCache } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
@@ -71,11 +72,15 @@ export const ALL_SUPPORTED_ENGINES: readonly SupportedEngine[] = [
  * `claudeHome` is an opt-in override mainly for tests; production reads
  * the real `~/.claude` so behavior matches the upstream config probe.
  */
-export function probeClaudeOauth(claudeHome?: string): { state: 'valid' | 'expired' | 'absent' } {
-  const credentialsPath = path.join(
-    claudeHome ?? path.join(os.homedir(), '.claude'),
-    '.credentials.json',
-  );
+export function probeClaudeOauth(
+  claudeHome?: string,
+  dataDirHint?: string,
+): {
+  state: 'valid' | 'expired' | 'absent';
+} {
+  const resolvedHome =
+    claudeHome ?? path.join(dataDirHint ? operatorCliHome(dataDirHint) : os.homedir(), '.claude');
+  const credentialsPath = path.join(resolvedHome, '.credentials.json');
   if (!existsSync(credentialsPath)) return { state: 'absent' };
   try {
     const raw = JSON.parse(readFileSync(credentialsPath, 'utf-8')) as {
@@ -102,13 +107,15 @@ export function probeClaudeOauth(claudeHome?: string): { state: 'valid' | 'expir
  * `isAuthenticated` flag. Same shape as `routes/config.ts::runCursorStatus`
  * — kept here so the resolver can share the cache.
  */
-function runCursorStatus(binPath: string): Promise<boolean> {
+function runCursorStatus(binPath: string, cfg: AppConfig): Promise<boolean> {
   return new Promise((resolve) => {
     if (!existsSync(binPath)) return resolve(false);
+    const home = ensureOperatorCliHome(cfg.dataDir);
+    const env = { ...process.env, HOME: home };
     const proc = execFile(
       binPath,
       ['status', '--format', 'json'],
-      { cwd: os.homedir(), timeout: 12_000, env: process.env },
+      { cwd: home, timeout: 12_000, env },
       (err, stdout, stderr) => {
         const stdoutText = String(stdout ?? '');
         const stderrText = String(stderr ?? '');
@@ -155,7 +162,7 @@ export async function probeEngineAvailability(
     const hasApiKey = !!(cfg.anthropicApiKey || env.ANTHROPIC_API_KEY);
     const hasSetupToken = !!(cfg.claudeCodeOAuthToken || env.CLAUDE_CODE_OAUTH_TOKEN);
     if (hasApiKey || hasSetupToken) return { engine, available: true };
-    const oauth = probeClaudeOauth(opts.claudeHome);
+    const oauth = probeClaudeOauth(opts.claudeHome, cfg.dataDir);
     if (oauth.state === 'valid') return { engine, available: true };
     if (oauth.state === 'expired') {
       return {
@@ -185,7 +192,7 @@ export async function probeEngineAvailability(
         detail: `cursor-agent binary not found at "${bin || '(unset)'}". Install Cursor Agent or update cursorBin in Settings.`,
       };
     }
-    const probe = opts.cursorProbe ?? runCursorStatus;
+    const probe = opts.cursorProbe ?? ((b: string) => runCursorStatus(b, cfg));
     const ok = await getCursorAuthenticatedCached(bin, probe);
     if (ok) return { engine, available: true };
     return {
@@ -208,7 +215,7 @@ export async function probeEngineAvailability(
     }
     const apiKeyConfigured = !!(cfg.codexApiKey || env.CODEX_API_KEY || env.OPENAI_API_KEY);
     if (apiKeyConfigured) return { engine, available: true };
-    const codexHome = env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexHome = env.CODEX_HOME ?? path.join(operatorCliHome(cfg.dataDir), '.codex');
     const auth = detectCodexAuthMode(codexHome);
     if (auth.present && (auth.mode === 'chatgpt' || auth.mode === 'apikey')) {
       return { engine, available: true };

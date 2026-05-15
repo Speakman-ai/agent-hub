@@ -348,9 +348,16 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
     tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-perusrhome-'));
   });
 
-  it('preserves the host HOME when no userId is supplied (legacy global-apiKey path)', () => {
+  it('pins HOME to <dataDir>/global-cli-home when no userId (Docker / custom data dirs)', () => {
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir });
-    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.HOME).toBe(path.join(tmpDataDir, 'global-cli-home'));
+    expect(existsSync(env.HOME as string)).toBe(true);
+  });
+
+  it('uses os.homedir() as HOME when dataDir is the default ~/.agent-hub/data tree', () => {
+    const defaultDir = path.join(os.homedir(), '.agent-hub', 'data');
+    const env = buildSpawnEnv({ ...config, dataDir: defaultDir });
+    expect(env.HOME).toBe(os.homedir());
   });
 
   it('redirects HOME to <dataDir>/per-user-creds/<userId>/home when userId is set', () => {
@@ -370,9 +377,9 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
     expect(mode).toBe(0o700);
   });
 
-  it('treats whitespace-only userId as "not provided" (falls back to host HOME)', () => {
+  it('treats whitespace-only userId as "not provided" (uses global-cli-home under dataDir)', () => {
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '   ' });
-    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.HOME).toBe(path.join(tmpDataDir, 'global-cli-home'));
   });
 
   it('different userIds get different HOME paths', () => {
@@ -383,11 +390,11 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
     expect(envB.HOME).toMatch(/user-B\/home$/);
   });
 
-  it('rejects userId containing path-traversal segments by falling back to host HOME', () => {
+  it('rejects userId containing path-traversal segments by using global-cli-home under dataDir', () => {
     // The per-user-home module throws on bad ids; buildSpawnEnv swallows the
     // throw so a malformed id can never block a spawn.
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '../escape' });
-    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.HOME).toBe(path.join(tmpDataDir, 'global-cli-home'));
   });
 });
 

@@ -2,10 +2,10 @@ import { Router, Request, Response } from 'express';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
-import { homedir } from 'os';
 import type { RouteDeps, AppConfig } from '../types.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
+import { ensureOperatorCliHome } from '../operator-cli-home.js';
 import {
   computeCodexUiStatus,
   extractCodexDeviceUrl,
@@ -167,8 +167,6 @@ registerPath({
   },
 });
 
-const HOME = homedir();
-
 /**
  * Codex CLI auth routes.
  *
@@ -224,6 +222,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   const binPath = (): string => getCodexBin?.() ?? config.codexBin;
+  const hostCliHome = (): string => ensureOperatorCliHome(config.dataDir);
 
   const resetDeviceLogin = (): void => {
     activeDeviceLoginProc = null;
@@ -251,7 +250,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
       config.codexApiKey || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || null;
     const masked = rawKey ? `••••••••${rawKey.slice(-4)}` : null;
 
-    const codexHome = process.env.CODEX_HOME ?? path.join(HOME, '.codex');
+    const codexHome = process.env.CODEX_HOME ?? path.join(hostCliHome(), '.codex');
     const authModeInfo = detectCodexAuthMode(codexHome);
     const chatgptOAuthFromFile = authModeInfo.present && authModeInfo.mode === 'chatgpt';
     const cliApiKeyFromFile = authModeInfo.present && authModeInfo.mode === 'apikey';
@@ -312,9 +311,10 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     const loginId = Date.now().toString(36);
     activeDeviceLoginId = loginId;
 
+    const cliHome = hostCliHome();
     const proc = spawn(bin, ['login', '--device-auth'], {
-      cwd: HOME,
-      env: { ...process.env },
+      cwd: cliHome,
+      env: { ...process.env, HOME: cliHome },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -468,7 +468,11 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
           'Reply with only the word OK',
         ],
         {
-          env: { OPENAI_API_KEY: apiKey, CODEX_API_KEY: apiKey },
+          env: {
+            OPENAI_API_KEY: apiKey,
+            CODEX_API_KEY: apiKey,
+            HOME: hostCliHome(),
+          },
           timeout: 30_000,
         },
       );
@@ -505,8 +509,10 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     const bin = binPath();
     const parts: string[] = ['Codex API key cleared from Agent Hub config'];
     if (existsSync(bin)) {
+      const cliHome = hostCliHome();
       const { stdout, stderr, code } = await runCodex(bin, ['logout'], {
-        cwd: HOME,
+        cwd: cliHome,
+        env: { HOME: cliHome },
         timeout: 60_000,
       });
       const msg = (stdout + stderr).trim();

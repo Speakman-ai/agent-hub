@@ -7,6 +7,7 @@ import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
 import { getActualPort } from './server-port.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import { ensureOperatorCliHome } from './operator-cli-home.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -532,20 +533,21 @@ export function buildSpawnEnv(
   env.AGENT_HUB_DATA_DIR = cfg.dataDir;
 
   // Per-user HOME — isolates `.cursor`, `.codex`, etc. CLI caches per
-  // Hub user so each user's "Sign in with browser" / device-auth flow
-  // writes tokens under their own subtree, and every downstream spawn
-  // owned by that user reads the same cache. When `userId` is unset we
-  // intentionally leave HOME alone (the host operator's HOME) so the
-  // legacy global-apiKey path and Admin host-wide auth flows keep
-  // working untouched.
+  // Hub user. When `userId` is unset, host-wide ("global") CLI auth uses
+  // `operatorCliHome(dataDir)` so Docker and other non-default data dirs
+  // persist OAuth caches on the same volume as the DB (see
+  // `server/operator-cli-home.ts`). Default `~/.agent-hub/data` keeps
+  // `HOME=os.homedir()` for backward compatibility with existing desktop
+  // token locations.
   const ownerUserId = presentString(opts.userId);
   if (ownerUserId) {
     try {
       env.HOME = ensurePerUserHome(ownerUserId, cfg.dataDir);
     } catch {
-      // Best-effort: a transient FS error must never block a spawn.
-      // Fall through to the host HOME inherited via process.env.
+      env.HOME = ensureOperatorCliHome(cfg.dataDir);
     }
+  } else {
+    env.HOME = ensureOperatorCliHome(cfg.dataDir);
   }
 
   return env;

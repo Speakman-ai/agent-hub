@@ -8,6 +8,7 @@ import os from 'os';
 import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken } from '../config.js';
+import { operatorCliHome, ensureOperatorCliHome } from '../operator-cli-home.js';
 import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
 import { registerPath, z } from '../openapi/registry.js';
 import {
@@ -230,9 +231,9 @@ registerPath({
 
 const execFileAsync = promisify(execFile);
 
-/** Prefer $HOME / %USERPROFILE% over raw os.homedir() so we match the user's shell & Claude CLI. */
-function getUserHome(): string {
-  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+/** HOME for Claude CLI spawns and credential paths — matches `buildSpawnEnv` host HOME. */
+function claudeAuthHome(): string {
+  return ensureOperatorCliHome(config.dataDir);
 }
 
 /**
@@ -244,7 +245,7 @@ export function getClaudeCredentialsPath(): string {
   if (raw) {
     return path.join(path.resolve(raw), '.credentials.json');
   }
-  return path.join(getUserHome(), '.claude', '.credentials.json');
+  return path.join(operatorCliHome(config.dataDir), '.claude', '.credentials.json');
 }
 
 interface ClaudeRunResult {
@@ -366,7 +367,7 @@ function runClaude(
 ): Promise<ClaudeRunResult> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
-      cwd: getUserHome(),
+      cwd: claudeAuthHome(),
       env: { ...buildSpawnEnv(config), ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
@@ -394,8 +395,8 @@ function runClaude(
 
 function readCredentialsFileSafe(): string | null {
   const primary = getClaudeCredentialsPath();
-  const fallback = path.join(getUserHome(), '.claude', '.credentials.json');
-  const paths = primary === fallback ? [primary] : [primary, fallback];
+  const legacy = path.join(os.homedir(), '.claude', '.credentials.json');
+  const paths = primary === legacy ? [primary] : [primary, legacy];
   for (const p of paths) {
     try {
       if (existsSync(p)) return readFileSync(p, 'utf-8');
@@ -409,8 +410,8 @@ function readCredentialsFileSafe(): string | null {
 /** Latest mtime among known credential file locations (detect OAuth write during paste-code). */
 function credentialsFilesMaxMtime(): number | null {
   const primary = getClaudeCredentialsPath();
-  const fallback = path.join(getUserHome(), '.claude', '.credentials.json');
-  const paths = [...new Set([primary, fallback])];
+  const legacy = path.join(os.homedir(), '.claude', '.credentials.json');
+  const paths = [...new Set([primary, legacy])];
   let max: number | null = null;
   for (const p of paths) {
     try {
@@ -715,7 +716,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     );
 
     const proc = spawn(config.claudeBin, args, {
-      cwd: getUserHome(),
+      cwd: claudeAuthHome(),
       env: { ...buildSpawnEnv(config), BROWSER: 'false' },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,

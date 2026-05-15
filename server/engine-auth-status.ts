@@ -5,7 +5,7 @@
 // credentials take precedence over host fallback. Today that covers Claude
 // (anthropic API key / OAuth token) and Cursor (per-user CURSOR_API_KEY in
 // `users.cursor_api_key`, plus OAuth tokens under per-user HOME).
-// Codex is still host-level only.
+// Codex / Gemini also honor per-user single-key rows (see `buildSpawnEnv`).
 //
 // This module is async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
@@ -22,23 +22,34 @@ import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
-import { getUserClaudeAuth, getUserCursorAuth } from './users-store.js';
+import {
+  getUserClaudeAuth,
+  getUserCodexAuth,
+  getUserCursorAuth,
+  getUserGeminiAuth,
+} from './users-store.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import { operatorCliHome, ensureOperatorCliHome } from './operator-cli-home.js';
 
 export interface EngineAuthStatus {
   claude: boolean;
   cursor: boolean;
   codex: boolean;
+  gemini: boolean;
   /** True iff at least one engine has a usable credential. */
   any: boolean;
 }
 
 /**
- * Returns true when `~/.claude/.credentials.json` holds an unexpired Anthropic
- * OAuth session. Mirrors `buildSpawnEnv`'s claude OAuth fallback.
+ * Returns true when the host-level Claude OAuth credentials file exists and
+ * is unexpired. `dataDir` selects the same operator HOME layout as
+ * `buildSpawnEnv` (see `operator-cli-home.ts`).
  */
-export function hasClaudeHostOauth(): boolean {
-  const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
+export function hasClaudeHostOauth(dataDir?: string | null): boolean {
+  const claudeDir = dataDir
+    ? path.join(operatorCliHome(dataDir), '.claude')
+    : path.join(os.homedir(), '.claude');
+  const credentialsPath = path.join(claudeDir, '.credentials.json');
   if (!existsSync(credentialsPath)) return false;
   try {
     const raw = JSON.parse(readFileSync(credentialsPath, 'utf-8')) as {
@@ -97,6 +108,7 @@ export interface EngineAuthInputs {
     anthropicApiKey?: string | null;
     claudeCodeOAuthToken?: string | null;
     codexApiKey?: string | null;
+    geminiApiKey?: string | null;
   };
   cursorBin: string;
   /** Authenticated user id, when the calling route has `AuthenticatedRequest`. */
@@ -106,8 +118,8 @@ export interface EngineAuthInputs {
    * per-user HOME `buildSpawnEnv` uses for spawns.
    */
   dataDir?: string | null;
-  /** Override the cursor probe (tests). Defaults to `probeCursorStatus`. */
-  cursorProbe?: (bin: string) => Promise<boolean>;
+  /** Override cursor probe — tests inject stubs; defaults to `probeCursorStatus`. */
+  cursorProbe?: (bin: string, opts?: ProbeCursorStatusOpts) => Promise<boolean>;
   /**
    * Override per-user HOME Cursor probe (tests). Defaults to shelling out via
    * `probeCursorStatus` with `HOME` pinned to `ensurePerUserHome(...)`.
@@ -145,18 +157,42 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
     process.env.ANTHROPIC_API_KEY ||
     config.claudeCodeOAuthToken ||
     process.env.CLAUDE_CODE_OAUTH_TOKEN ||
-    hasClaudeHostOauth()
+    hasClaudeHostOauth(dataDir)
   );
 
+  let userCodexKey = false;
+  if (userId) {
+    try {
+      const stored = getUserCodexAuth(userId);
+      if (stored?.apiKey?.trim()) userCodexKey = true;
+    } catch {
+      userCodexKey = false;
+    }
+  }
+
   const codexApiKey = !!(
+    userCodexKey ||
     config.codexApiKey ||
     process.env.CODEX_API_KEY ||
     process.env.OPENAI_API_KEY
   );
-  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+  const codexHome =
+    process.env.CODEX_HOME ??
+    path.join(dataDir ? operatorCliHome(dataDir) : os.homedir(), '.codex');
   const codexFs = detectCodexAuthMode(codexHome);
   const codex =
     codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
+
+  let userGeminiKey = false;
+  if (userId) {
+    try {
+      const stored = getUserGeminiAuth(userId);
+      if (stored?.apiKey?.trim()) userGeminiKey = true;
+    } catch {
+      userGeminiKey = false;
+    }
+  }
+  const gemini = !!(userGeminiKey || config.geminiApiKey || process.env.GEMINI_API_KEY);
 
   // Per-user Cursor credentials win over host probe (see buildSpawnEnv
   // / chat.ts spawn auth resolution). Without this branch the engine
@@ -191,13 +227,21 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
       cursor = false;
     }
   } else {
-    cursor = await getCursorAuthenticatedCached(cursorBin, cursorProbe);
+    if (dataDir) {
+      const hostHome = ensureOperatorCliHome(dataDir);
+      cursor = await getCursorAuthenticatedCached(cursorBin, (bin) =>
+        cursorProbe(bin, { env: { ...process.env, HOME: hostHome } }),
+      );
+    } else {
+      cursor = await getCursorAuthenticatedCached(cursorBin, cursorProbe);
+    }
   }
 
   return {
     claude,
     cursor,
     codex,
-    any: claude || cursor || codex,
+    gemini,
+    any: claude || cursor || codex || gemini,
   };
 }
