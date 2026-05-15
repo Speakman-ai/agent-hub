@@ -125,17 +125,18 @@ RUN npm install -g @openai/codex
 
 WORKDIR /app
 
-# Copy built node_modules and source from build stage
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/server ./server
-COPY --from=build /app/shared ./shared
-COPY --from=build /app/package.json ./
+# Own app files at copy time. A recursive chown over ./node_modules alone can take
+# many minutes on Docker Desktop; COPY --chown avoids that walk entirely.
+COPY --chown=node:node --from=build /app/node_modules ./node_modules
+COPY --chown=node:node --from=build /app/server ./server
+COPY --chown=node:node --from=build /app/shared ./shared
+COPY --chown=node:node --from=build /app/package.json ./
 
 # Copy client dist for serving the web UI
-COPY --from=client-build /app/client/dist ./client/dist
+COPY --chown=node:node --from=client-build /app/client/dist ./client/dist
 
-# Set up data volume and uploads
-RUN mkdir -p /data /app/uploads && chown -R node:node /data /app/uploads /app
+# Writable mount points only (not all of /app).
+RUN mkdir -p /data /app/uploads && chown node:node /data /app/uploads
 
 # Cursor Agent CLI — official installer drops the `agent` symlink at
 # ~/.local/bin/agent; config.ts defaults cursorBin there for HOME=/home/node so
