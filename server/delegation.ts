@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv, defaultModelForEngine } from './config.js';
+import { buildSpawnEnv } from './config.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -173,13 +174,16 @@ function buildDelegateCliSpec(
   subPrompt: string,
   taskText: string,
   bins: { claude: string; cursor: string; gemini: string; codex: string },
-  defaultModelStr: string,
+  cfg: AppConfig,
+  ownerUserId: string | null,
   /** Lead session Ask Mode — mirrors `server/chat.ts` privilege flags on Gemini/Codex. */
   leadAskMode: boolean,
 ): DelegateCliSpec {
   const engine = subAgent.engine || 'claude-code';
-  const model =
-    (subAgent.model as string | undefined) || defaultModelStr || defaultModelForEngine(engine);
+  const model = resolveEffectiveModel(cfg, engine, {
+    agentModel: subAgent.model as string | undefined,
+    ownerUserId,
+  });
   const combined = `${subPrompt}\n\n${taskText}`;
 
   switch (engine) {
@@ -424,7 +428,6 @@ export async function handleDelegation(
     getCursorBin,
     getGeminiBin,
     getCodexBin,
-    getDefaultModel,
     getConfig,
   } = deps!;
 
@@ -434,8 +437,7 @@ export async function handleDelegation(
     gemini: getGeminiBin(),
     codex: getCodexBin(),
   };
-  const DEFAULT_MODEL = getDefaultModel();
-  const cfg = getConfig() as DelegationRetryConfig;
+  const cfg = getConfig() as AppConfig & DelegationRetryConfig;
 
   const maxAttempts = Math.max(1, cfg.delegationMaxAttempts ?? DEFAULT_MAX_ATTEMPTS);
   const retryBackoffMs = Math.max(0, cfg.delegationRetryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS);
@@ -548,13 +550,15 @@ export async function handleDelegation(
        */
       const dispatchOnce = (): Promise<string> =>
         new Promise<string>((resolve, reject) => {
+          const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
           const subPrompt = buildEnrichedPrompt(subAgent, undefined, { useWorktree: true });
           const spec = buildDelegateCliSpec(
             subAgent,
             subPrompt,
             task.task,
             cliBins,
-            DEFAULT_MODEL,
+            cfg,
+            credOwnerId,
             leadAskMode,
           );
           const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
@@ -569,8 +573,6 @@ export async function handleDelegation(
           const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
 
           const timeout = cfg.conferenceTimeoutMs || 600000;
-
-          const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
           const spawnEnv = buildSpawnEnv(cfg, { userId: credOwnerId });
           mergeSkillCredentialSpawnEnv(spawnEnv, {
             ownerId: credOwnerId,
@@ -892,21 +894,24 @@ export async function synthesizeResults(
     getCursorBin,
     getGeminiBin,
     getCodexBin,
-    getDefaultModel,
     getConfig,
     buildEnrichedPrompt,
   } = deps!;
 
   const activeProcesses = getActiveProcesses();
 
-  const DEFAULT_MODEL = getDefaultModel();
   const cfg = getConfig();
 
   const assistantMsgId = uuidv4();
   const sessRow = stmts.getSession.get(sessionId) as SessionRow | undefined;
+  const synthOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
   const sessionEngine = sessRow?.engine || enrichedAgent.engine || 'claude-code';
   const sessionModel =
-    sessRow?.model || (enrichedAgent?.model as string | undefined) || DEFAULT_MODEL;
+    sessRow?.model?.trim() ||
+    resolveEffectiveModel(cfg as AppConfig, sessionEngine, {
+      agentModel: (enrichedAgent?.model as string | undefined) ?? null,
+      ownerUserId: synthOwnerId,
+    });
 
   const synthesisPrompt = buildDelegationSynthesisPrompt(results, originalUserMessage);
 
@@ -934,7 +939,6 @@ export async function synthesizeResults(
       let stdout = '';
       let stderr = '';
 
-      const synthOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
       const synthEnv = buildSpawnEnv(cfg, { userId: synthOwnerId });
       mergeSkillCredentialSpawnEnv(synthEnv, {
         ownerId: synthOwnerId,

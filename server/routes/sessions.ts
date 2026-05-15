@@ -2,7 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
+import { buildSpawnEnv } from '../config.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import {
   CreateSessionRequestSchema,
   PatchSessionRequestSchema,
@@ -308,7 +309,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
     const engine = parsed.engine || found?.agent?.engine || 'claude-code';
-    const model = parsed.model || found?.agent?.model || defaultModelForEngine(engine);
+    const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+    const model = resolveEffectiveModel(config, engine, {
+      explicitModel: parsed.model,
+      agentModel: found?.agent?.model ?? null,
+      ownerUserId: ownerUid,
+    });
     // Agent Hub is worktree-only for user-facing session creation.
     // `defaultSessionUseWorktreeFlag` returns 1 unconditionally; internal
     // callers that need a shared-checkout session (preview-wizard) bypass
@@ -391,7 +397,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessionId = uuidv4();
 
     const engine = found.agent.engine || 'claude-code';
-    const model = found.agent.model || defaultModelForEngine(engine);
+    const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+    const model = resolveEffectiveModel(config, engine, {
+      agentModel: found.agent.model,
+      ownerUserId: ownerUid,
+    });
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
     // Worktree-only — see note above.
     stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0, 1);
@@ -714,23 +724,31 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(PutSessionEngineRequestSchema, req, res);
     if (!parsed) return;
     const { engine } = parsed;
+    const sessionId = req.params.sessionId as string;
     // Load the session BEFORE updating the engine so we can check whether
     // the current model is still valid for the new engine. If not, reset
     // the model to the engine's default. Without this step, the session
     // ends up in a mixed state (e.g. engine=codex-cli, model=claude-opus-4-7)
     // and the next `PUT .../model` call — which the client fires right
     // after — 400s with "Model X is not valid for engine Y".
-    const existing = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Session not found' });
     const allowedForNewEngine = config.engineValidModels[engine] || [];
     getDb().transaction(() => {
-      stmts.updateSessionEngine.run(engine, req.params.sessionId);
-      stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);
+      stmts.updateSessionEngine.run(engine, sessionId);
+      stmts.updateSessionEngineSessionId.run(null, sessionId);
       if (!existing.model || !allowedForNewEngine.includes(existing.model)) {
-        stmts.updateSessionModel.run(defaultModelForEngine(engine), req.params.sessionId);
+        const af = existing.agent_id ? findAgent(existing.agent_id) : null;
+        const agentModel = (af?.agent as { model?: string } | undefined)?.model ?? null;
+        const ownerUid = getSessionOwner(sessionId);
+        const fallbackModel = resolveEffectiveModel(config, engine, {
+          agentModel,
+          ownerUserId: ownerUid,
+        });
+        stmts.updateSessionModel.run(fallbackModel, sessionId);
       }
     })();
-    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json(session);
   });
@@ -1286,7 +1304,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         100,
       );
       const engine = targetAgent.engine || 'claude-code';
-      const model = targetAgent.model || defaultModelForEngine(engine);
+      const fwdOwnerUid = getSessionOwner(String(req.params.sessionId));
+      const model = resolveEffectiveModel(config, engine, {
+        agentModel: targetAgent.model,
+        ownerUserId: fwdOwnerUid,
+      });
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);
       // Forwarded session inherits ownership from the source — the caller

@@ -15,8 +15,9 @@ import type {
   SessionRow,
 } from './types.js';
 import { buildPrTitle } from './auto-git.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
-import { inheritOwnerFromSession } from './session-ownership.js';
+import { inheritOwnerFromSession, getSessionOwner } from './session-ownership.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
@@ -629,8 +630,9 @@ export async function handleHandoff(
   sourceProject: Project,
 ): Promise<HandoffResult | null> {
   if (!deps) throw new Error('[Handoff] initHandoff() was not called');
-  const { stmts, broadcast, getEnrichedAgent, findAgent, getHandleChat } = deps;
+  const { stmts, broadcast, getEnrichedAgent, findAgent, getHandleChat, getConfig } = deps;
   const handleChat = getHandleChat();
+  const cfg = getConfig();
 
   const handoffId = uuidv4();
   const structuredNote = task.note;
@@ -708,8 +710,10 @@ export async function handleHandoff(
   const toSessionId = uuidv4();
   try {
     const engine = targetAgent.engine || 'claude-code';
-    const model =
-      (targetAgent as EnrichedAgent & { model?: string }).model || defaultModelForEngine(engine);
+    const model = resolveEffectiveModel(cfg, engine, {
+      agentModel: (targetAgent as EnrichedAgent & { model?: string }).model,
+      ownerUserId: getSessionOwner(srcSessionId),
+    });
     // Derive a readable session title from the handoff note so that — when
     // this session later opens a PR without a linked kanban card — the PR
     // title reflects the task instead of a timestamp. Source-agent provenance
@@ -894,16 +898,4 @@ export function buildHandoffSeedingContent(
     `- \`<agenthub:close-card>\` and auto-PR linkage now resolve against **this** session.`,
   );
   return `${lines.join('\n')}\n\n---\n\n${note}`;
-}
-
-// ─── Internal helpers ────────────────────────────────────────────────────
-
-function defaultModelForEngine(engine: string): string {
-  // Mirror server/config.ts defaults without importing it (keeps handoff.ts
-  // independently testable). The real config defaults apply when handleChat
-  // runs for the target session.
-  if (engine === 'cursor-agent') return 'gpt-4';
-  if (engine === 'gemini-cli') return 'gemini-2.5-pro';
-  if (engine === 'codex-cli') return 'gpt-5.2-codex';
-  return 'claude-opus-4-7';
 }

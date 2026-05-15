@@ -30,7 +30,7 @@ import { fileURLToPath } from 'url';
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { defaultModelForEngine } from '../config.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
@@ -102,7 +102,7 @@ export function buildKickoffPrompt(
 }
 
 export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
-  const { findProject, findAgent, stmts, handleChat, broadcast } = deps;
+  const { findProject, findAgent, stmts, handleChat, broadcast, config } = deps;
   const router = Router();
 
   // ─── Spawn the wizard session ─────────────────────────────────────
@@ -134,7 +134,11 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
 
       const sessionId = uuidv4();
       const engine = agentLookup.agent.engine || 'claude-code';
-      const model = agentLookup.agent.model || defaultModelForEngine(engine);
+      const wizOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+      const model = resolveEffectiveModel(config, engine, {
+        agentModel: agentLookup.agent.model,
+        ownerUserId: wizOwnerUid,
+      });
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
       // The wizard explicitly never mutates code — it only reads the
       // project checkout. So we always opt out of worktree isolation,

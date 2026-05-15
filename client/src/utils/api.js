@@ -516,6 +516,13 @@ export const api = {
   putMyCodexAuth: (body) =>
     fetchJSON('/auth/me/codex-auth', { method: 'PUT', body: JSON.stringify(body) }),
 
+  getMyEngineDefaultModels: () => fetchJSON('/auth/me/engine-default-models'),
+  putMyEngineDefaultModels: (body) =>
+    fetchJSON('/auth/me/engine-default-models', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
   getSkillCredentials: (skillId) =>
     fetchJSON(
       `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,

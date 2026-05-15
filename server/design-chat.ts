@@ -236,8 +236,10 @@ export async function handleDesignChat(
 
   try {
     const config = d.getConfig();
+    const designOwnerId =
+      getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
     const engine = normalizeDesignEngine(design.agent_engine);
-    const model = resolveDesignModelForEngine(engine, design.agent_model, config);
+    const model = resolveDesignModelForEngine(engine, design.agent_model, config, designOwnerId);
     let engineSessionId = design.engine_session_id ?? null;
     const startedWithoutSession = !engineSessionId;
 
@@ -304,8 +306,6 @@ export async function handleDesignChat(
     let spawnErrored = false;
     let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
 
-    const designOwnerId =
-      getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
     const spawnEnv = {
       ...buildSpawnEnv(config, { userId: designOwnerId }),
       AGENT_HUB_SESSION_ID: `design:${designId}`,

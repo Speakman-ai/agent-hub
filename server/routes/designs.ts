@@ -21,7 +21,7 @@ import {
   listDesignFilesRecursive,
   patchDesignChatEngineModelSession,
 } from '../designs-store.js';
-import { defaultModelForEngine } from '../config.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import {
   DESIGN_CHAT_ENGINES,
   isDesignChatEngine,
@@ -408,8 +408,12 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
 
       const newSessionId = uuidv4();
       const sessionName = `[Design Fwd] ${design.name}`.slice(0, 100);
+      const fwdUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const engine = targetAgent.engine || 'claude-code';
-      const model = targetAgent.model || defaultModelForEngine(engine);
+      const model = resolveEffectiveModel(config, engine, {
+        agentModel: targetAgent.model,
+        ownerUserId: fwdUid,
+      });
       stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0, 1);
       setSessionOwner(newSessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 

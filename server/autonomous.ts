@@ -13,7 +13,7 @@ import {
   lastDispatchedReviewId,
   recordDispatchedChangesRequestedReview,
 } from './review-feedback-dedup.js';
-import { defaultModelForEngine } from './config.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import type {
@@ -447,7 +447,8 @@ export function engineForModel(
  *      preserved, but the CLI spawn runs under the engine that actually
  *      owns the model. `chat.ts` reads `session.engine` from the DB row
  *      when spawning, so the override flows end-to-end.
- *   3. Otherwise → agent default engine + (agent.model || defaultModelForEngine(engine)).
+ *   3. Otherwise → agent default engine + resolved model (`resolveEffectiveModel`
+ *      using the autonomous session owner as `ownerUserId`).
  *
  * Card-level `assign_model` follows the same precedence but is resolved by
  * the dispatch loop directly (the function used to handle only the epic
@@ -457,6 +458,8 @@ function sessionEngineAndModelForAutonomousDispatch(
   epic: KanbanEpicRow,
   agent: Agent,
   engineValidModels: Record<string, string[]>,
+  cfg: AppConfig,
+  ownerUserId: string | null,
 ): { engine: string; model: string } {
   const agentEngine = agent.engine || 'claude-code';
   const raw = typeof epic.autonomous_model === 'string' ? epic.autonomous_model.trim() : '';
@@ -466,7 +469,13 @@ function sessionEngineAndModelForAutonomousDispatch(
     const otherEngine = engineForModel(raw, engineValidModels);
     if (otherEngine) return { engine: otherEngine, model: raw };
   }
-  return { engine: agentEngine, model: agent.model || defaultModelForEngine(agentEngine) };
+  return {
+    engine: agentEngine,
+    model: resolveEffectiveModel(cfg, agentEngine, {
+      agentModel: agent.model,
+      ownerUserId,
+    }),
+  };
 }
 
 export function initAutonomous(d: AutonomousDeps): void {
@@ -653,12 +662,6 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     await ensureOperatorBaseBranch(project, epic.pr_base_branch, { config: d.getConfig() });
   }
 
-  // Label-based routing: every eligible card is dispatchable. The intake
-  // ("ticketing") agent stamps labels at card-creation time; we route to
-  // the first specialist whose id/role/name matches a label, falling back
-  // to the project lead (which can implement directly or `<handoff>`).
-  const dispatchable = eligible;
-
   const activeProcesses = d.getActiveProcesses();
   const agentSessionCounts = new Map<string, number>();
   for (const [sid] of activeProcesses) {
@@ -798,6 +801,12 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     slotsByAgentId.set(lead.id, perAgentLimit);
   }
 
+  // Label-based routing: every eligible card is dispatchable. The intake
+  // ("ticketing") agent stamps labels at card-creation time; we route to
+  // the first specialist whose id/role/name matches a label, falling back
+  // to the project lead (which can implement directly or `<handoff>`).
+  const dispatchable = eligible;
+
   while (assigned < slotsAvailable && assigned < dispatchable.length) {
     const card = dispatchable[assigned];
 
@@ -886,6 +895,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const cfg = d.getConfig();
       const engineValidModels = cfg.engineValidModels || {};
       const agentEngine = agent.engine || 'claude-code';
+      const autonomousOwnerId = resolveAutonomousOwnerUserId(card, epic);
 
       // Resolve the (engine, model) pair for the spawn. Card-level
       // `assign_model` wins over epic-level `autonomous_model`; either may
@@ -915,6 +925,8 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
               epic,
               agent,
               engineValidModels,
+              cfg,
+              autonomousOwnerId,
             ));
           }
         }
@@ -923,6 +935,8 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
           epic,
           agent,
           engineValidModels,
+          cfg,
+          autonomousOwnerId,
         ));
       }
       const projRow = d.findProject(projectId);
@@ -936,7 +950,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       // strict-mode auth. `resolveAutonomousOwnerUserId` walks
       // card.created_by → card.session_id owner → epic.autonomous_enabled_by
       // → org owner; only the last hop matches the old behaviour.
-      setSessionOwner(sessionId, resolveAutonomousOwnerUserId(card, epic));
+      setSessionOwner(sessionId, autonomousOwnerId);
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {

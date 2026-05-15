@@ -294,6 +294,12 @@ export function initOrgsDb(): void {
     }
   }
 
+  try {
+    orgsDb.prepare('SELECT preferences_json FROM users LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE users ADD COLUMN preferences_json TEXT');
+  }
+
   orgsStmts = {
     getAll: orgsDb.prepare('SELECT * FROM orgs ORDER BY position ASC, created_at ASC'),
     getById: orgsDb.prepare('SELECT * FROM orgs WHERE id = ?'),

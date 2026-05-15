@@ -1,7 +1,8 @@
 import { spawn, execFile, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv, defaultModelForEngine } from './config.js';
+import { buildSpawnEnv } from './config.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
@@ -172,7 +173,6 @@ export async function handleRoomChat(ws: WebSocketLike | null, msg: RoomChatMsg)
   const CURSOR_BIN = d.getCursorBin();
   const GEMINI_BIN = d.getGeminiBin();
   const CODEX_BIN = d.getCodexBin();
-  const DEFAULT_MODEL = d.getDefaultModel();
   const config = d.getConfig();
   const MAX_QUEUE_SIZE = d.getMaxQueueSize();
 
@@ -358,11 +358,13 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
       : content;
 
     const engine = normalizeRoomEngine(agent.engine);
-    // Prefer the agent's configured model, then the engine-specific default,
-    // then the global default. Mirrors chat.ts model resolution.
-    const model =
-      (agent.model as string | undefined) || defaultModelForEngine(engine) || DEFAULT_MODEL;
 
+    const roomOwnerId =
+      getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+    const model = resolveEffectiveModel(config, engine, {
+      agentModel: agent.model as string | undefined,
+      ownerUserId: roomOwnerId,
+    });
     broadcast({
       type: 'room_thinking',
       roomId,
@@ -376,8 +378,6 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
       const result = await new Promise<string>((resolve, reject) => {
         const timeout = config.conferenceTimeoutMs;
 
-        const roomOwnerId =
-          getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
         const roomEnv = { ...buildSpawnEnv(config, { userId: roomOwnerId }) };
         if (room.project_id && roomOwnerId) {
           const proj = getProjects().find((p) => p.id === room.project_id);
