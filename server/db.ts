@@ -114,6 +114,7 @@ function initDb(dataDir: string): void {
       last_result TEXT,
       timeout_ms INTEGER,
       notify_on_run INTEGER NOT NULL DEFAULT 0,
+      engine TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -769,6 +770,19 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT skill_principal_agent_id FROM crons LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE crons ADD COLUMN skill_principal_agent_id TEXT');
+  }
+
+  // Per-cron engine selection. Nullable — when unset, `runCronJob` first looks
+  // at the resolved skill principal agent's `engine` (so a cron on a Cursor
+  // project follows that agent without extra config) and finally falls back
+  // to `claude-code` (the historical default for crons). Stored as a free-
+  // form TEXT column so the engine list can grow without breaking existing
+  // rows; the API validates against `ALL_SUPPORTED_ENGINES` on write, and
+  // model selection is validated against the chosen engine's allowlist.
+  try {
+    db.prepare('SELECT engine FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN engine TEXT');
   }
 
   // Threads-as-chatroom: thread_entries grew an author identity + role so
@@ -2079,10 +2093,10 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(

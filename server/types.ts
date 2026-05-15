@@ -117,6 +117,18 @@ export interface CronRow {
    * the project has exactly one agent (`server/cron-skill-principal.ts`).
    */
   skill_principal_agent_id: string | null;
+  /**
+   * Engine identifier the cron prefers when running (`claude-code`,
+   * `cursor-agent`, `gemini-cli`, `codex-cli`). When null, `runCronJob`
+   * inherits the resolved skill-principal agent's `engine`, falling back to
+   * `claude-code` when no principal can be resolved. Stored as free-form
+   * TEXT so the supported-engine list can grow; the API validates writes
+   * against `ALL_SUPPORTED_ENGINES`. The `model` allowlist used for
+   * validation is keyed off this column (or the inherited fallback when
+   * unset), so a cron pointed at `cursor-agent` accepts Composer ids and
+   * rejects Claude ids.
+   */
+  engine: string | null;
   created_at: string;
 }
 
