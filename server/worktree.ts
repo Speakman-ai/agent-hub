@@ -9,6 +9,8 @@ import {
   readFileSync,
   statSync,
   symlinkSync,
+  unlinkSync,
+  writeFileSync,
 } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
@@ -43,6 +45,45 @@ export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'works
  */
 const execFileP = promisify(execFile);
 const execP = promisify(exec);
+
+/** Written in the session clone when an awaited dependency install fails; reuse opens fail fast instead of repeating the install timeout. */
+export const SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER = '.agent-hub-dependency-install-failed';
+
+/** Thrown when {@link setupDependencies} is asked to await an install that fails so callers can invoke {@link OnFailureFn} and skip returning a falsely-ready worktree path. */
+export class SessionDependencyInstallError extends Error {
+  override readonly name = 'SessionDependencyInstallError';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+function dependencyInstallFailureMarkerPath(cloneDir: string): string {
+  return path.join(cloneDir, SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER);
+}
+
+function readDependencyInstallFailureMarker(cloneDir: string): string | null {
+  const p = dependencyInstallFailureMarkerPath(cloneDir);
+  if (!existsSync(p)) return null;
+  try {
+    const text = readFileSync(p, 'utf8').trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDependencyInstallFailureMarker(cloneDir: string, reason: string): void {
+  const line = reason.replace(/\r?\n/g, ' ').slice(0, 4000);
+  writeFileSync(dependencyInstallFailureMarkerPath(cloneDir), `${line}\n`, 'utf8');
+}
+
+export function clearDependencyInstallFailureMarker(cloneDir: string): void {
+  try {
+    unlinkSync(dependencyInstallFailureMarkerPath(cloneDir));
+  } catch {
+    /* noop */
+  }
+}
 
 /** Session clones await install so Husky / lint-staged can run before the first commit. */
 const SESSION_INSTALL_TIMEOUT_MS = 600_000;
@@ -604,6 +645,7 @@ async function setupDependencies(
       console.log(`[Workspace] Symlinked ${linked} node_modules from source project`);
     }
     if (linked > 0 && !needsDependencyInstall(cloneDir)) {
+      clearDependencyInstallFailureMarker(cloneDir);
       return;
     }
     if (linked > 0 && needsDependencyInstall(cloneDir)) {
@@ -627,6 +669,16 @@ async function setupDependencies(
     : BACKGROUND_INSTALL_TIMEOUT_MS;
 
   if (options.awaitInstall) {
+    if (!needsDependencyInstall(cloneDir)) {
+      clearDependencyInstallFailureMarker(cloneDir);
+      return;
+    }
+    const prior = readDependencyInstallFailureMarker(cloneDir);
+    if (prior) {
+      throw new SessionDependencyInstallError(
+        `[Workspace] Session dependency install previously failed (${cloneDir}): ${prior}`,
+      );
+    }
     try {
       console.log(`[Workspace] Running "${installCmd}" in ${cloneDir} (awaiting completion)`);
       await execP(installCmd, {
@@ -636,9 +688,14 @@ async function setupDependencies(
         env: installChildEnv,
       });
       console.log(`[Workspace] Install completed in ${cloneDir}`);
+      clearDependencyInstallFailureMarker(cloneDir);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Install failed in clone ${cloneDir}:`, message);
+      writeDependencyInstallFailureMarker(cloneDir, message);
+      throw new SessionDependencyInstallError(
+        `[Workspace] Dependency install failed in ${cloneDir}: ${message}`,
+      );
     }
     return;
   }
@@ -1168,9 +1225,15 @@ export async function ensureSessionWorkspace(
   onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
-    await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
-      ...sessionWorkspaceDependencyInstallOpts(),
-    });
+    try {
+      await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     return session.worktree_path;
   }
 
@@ -1304,9 +1367,15 @@ export async function ensureSessionWorkspace(
     }
 
     await enableHuskyHooks(cloneDir);
-    await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-      ...sessionWorkspaceDependencyInstallOpts(),
-    });
+    try {
+      await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
   }
@@ -1403,9 +1472,15 @@ export async function ensureSessionWorkspace(
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
 
-    await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-      ...sessionWorkspaceDependencyInstallOpts(),
-    });
+    try {
+      await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     persistFn(cloneDir, branchName, session.id);
     console.log(
       `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userToken ? ' (user token)' : ''}`,
@@ -1576,4 +1651,5 @@ export const __test = {
   resolveSessionInstallCommand,
   needsDependencyInstall,
   sessionWorkspaceDependencyInstallOpts,
+  setupDependencies,
 };
