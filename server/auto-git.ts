@@ -22,6 +22,7 @@ import {
 } from './spawn-github-credentials.js';
 import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
+import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1375,6 +1376,11 @@ async function retargetExistingPrIfNeeded(
   }
 }
 
+function sessionInstallCommand(project: Project): string | null {
+  const install = (project as Project & { commands?: { install?: string } }).commands?.install;
+  return typeof install === 'string' ? install : null;
+}
+
 async function commitPushAndCreatePR(
   sessionId: string,
   agentId: string,
@@ -1533,6 +1539,17 @@ async function commitPushAndCreatePR(
     const commitTitle = rawTitle || 'Agent task completion';
 
     if (changes.hasUncommitted) {
+      try {
+        await ensureSessionWorktreeDependenciesInstalled(
+          project.cwd,
+          effectiveCwd,
+          sessionInstallCommand(project),
+        );
+      } catch (installErr: unknown) {
+        const msg = installErr instanceof Error ? installErr.message : String(installErr);
+        console.error(`[auto-commit] Dependency install failed: ${msg}`);
+        return { ok: false, error: msg, code: 'commit_failed', branch: changes.branch };
+      }
       // Ensure git identity is configured (may be missing in shallow clones)
       try {
         await execAsync('git config user.name', { cwd: effectiveCwd });
@@ -2113,6 +2130,19 @@ export async function autoCommitAndPR(
       console.log(
         `[auto-commit] Session ${sessionId} — ad-hoc session with changes, broadcasting changes_ready`,
       );
+      try {
+        await ensureSessionWorktreeDependenciesInstalled(
+          project.cwd,
+          effectiveCwd,
+          sessionInstallCommand(project),
+        );
+      } catch (installErr: unknown) {
+        const msg = installErr instanceof Error ? installErr.message : String(installErr);
+        console.error(
+          `[auto-commit] Dependency install failed before changes_ready (session ${sessionId}): ${msg}`,
+        );
+        // Still broadcast — operator may fix deps manually; Create PR will surface commit errors.
+      }
       const changesReadyData = {
         agentId,
         branch: changes.branch,
