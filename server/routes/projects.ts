@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { execSync, execFileSync, spawn, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -700,6 +700,39 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     getCodexBin,
     setCodexBin,
   } = deps;
+
+  /** Remove a partially-created project after disk + `projects.json` were persisted but a later step failed (specialist seeding, workflow scaffolding). */
+  const rollbackIncompleteProjectCreation = (project: Project, dataDir: string) => {
+    try {
+      deleteProjectScopedRows(stmts, project);
+    } catch (err) {
+      console.error(
+        `[rollbackIncompleteProjectCreation] DB cleanup failed for "${project.id}":`,
+        (err as Error).message,
+      );
+    }
+    const list = getProjects();
+    const idx = list.findIndex((p) => p.id === project.id);
+    if (idx !== -1) {
+      list.splice(idx, 1);
+      try {
+        saveProjects();
+      } catch (saveErr) {
+        console.error(
+          `[rollbackIncompleteProjectCreation] saveProjects failed for "${project.id}":`,
+          (saveErr as Error).message,
+        );
+      }
+    }
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(
+        `[rollbackIncompleteProjectCreation] Failed to remove data dir "${dataDir}":`,
+        (err as Error).message,
+      );
+    }
+  };
 
   const router = Router();
 
@@ -1533,14 +1566,16 @@ This workspace has no git repo and no PR automation — your job is planning, or
         //    server restart — `ensureContextFiles()` is otherwise only
         //    invoked at startup (`server/index.ts:302`).
         ensureContextFiles();
-      } catch (err) {
-        // Scaffolding failure is non-fatal — the project row is already
-        // persisted. Log loudly so the operator can investigate, but
-        // return success so the wizard doesn't pretend the project
-        // wasn't created.
-        console.warn(
-          `[POST /api/projects] Workflow scaffolding failed for "${project.id}": ${(err as Error).message}`,
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[POST /api/projects] Workflow scaffolding failed for "${project.id}": ${message}`,
         );
+        rollbackIncompleteProjectCreation(project, dataDir);
+        return res.status(500).json({
+          error: 'workflow_scaffolding_failed',
+          message,
+        });
       }
     }
 
@@ -2276,6 +2311,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Onboard] Specialist agent seeding failed: ${message}`);
+      rollbackIncompleteProjectCreation(project, dataDir);
       return res.status(500).json({
         error: 'specialist_agent_seeding_failed',
         message,
