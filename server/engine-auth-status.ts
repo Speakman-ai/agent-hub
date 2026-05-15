@@ -4,7 +4,8 @@
 // Auth resolution mirrors `buildSpawnEnv` (server/config.ts): per-user
 // credentials take precedence over host fallback. Today that covers Claude
 // (anthropic API key / OAuth token) and Cursor (per-user CURSOR_API_KEY in
-// `users.cursor_api_key`). Codex is still host-level only.
+// `users.cursor_api_key`, plus OAuth tokens under per-user HOME).
+// Codex is still host-level only.
 //
 // This module is async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
@@ -22,6 +23,7 @@ import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
 import { getUserClaudeAuth, getUserCursorAuth } from './users-store.js';
+import { ensurePerUserHome } from './per-user-home.js';
 
 export interface EngineAuthStatus {
   claude: boolean;
@@ -54,6 +56,11 @@ export function hasClaudeHostOauth(): boolean {
   }
 }
 
+export interface ProbeCursorStatusOpts {
+  /** Overrides merged onto `process.env` so per-user HOME matches `buildSpawnEnv`. */
+  env?: NodeJS.ProcessEnv;
+}
+
 /**
  * Default cursor-status probe — resolves to `true` when `cursor-agent status
  * --format json` reports an authenticated session. Used as the runner for
@@ -61,13 +68,15 @@ export function hasClaudeHostOauth(): boolean {
  * `cursor-auth-cache.ts`) so the cache module stays free of `child_process`
  * plumbing and remains trivial to test.
  */
-export function probeCursorStatus(binPath: string): Promise<boolean> {
+export function probeCursorStatus(binPath: string, opts?: ProbeCursorStatusOpts): Promise<boolean> {
   return new Promise((resolve) => {
     if (!existsSync(binPath)) return resolve(false);
+    const env = opts?.env ? { ...process.env, ...opts.env } : process.env;
+    const cwd = typeof env.HOME === 'string' && env.HOME.length > 0 ? env.HOME : os.homedir();
     const proc = execFile(
       binPath,
       ['status', '--format', 'json'],
-      { cwd: os.homedir(), timeout: 12_000, env: process.env },
+      { cwd, timeout: 12_000, env },
       (err, stdout, stderr) => {
         const stdoutText = String(stdout ?? '');
         const stderrText = String(stderr ?? '');
@@ -92,12 +101,29 @@ export interface EngineAuthInputs {
   cursorBin: string;
   /** Authenticated user id, when the calling route has `AuthenticatedRequest`. */
   userId?: string | null;
+  /**
+   * Hub data dir — required with `userId` to probe Cursor OAuth under the same
+   * per-user HOME `buildSpawnEnv` uses for spawns.
+   */
+  dataDir?: string | null;
   /** Override the cursor probe (tests). Defaults to `probeCursorStatus`. */
   cursorProbe?: (bin: string) => Promise<boolean>;
+  /**
+   * Override per-user HOME Cursor probe (tests). Defaults to shelling out via
+   * `probeCursorStatus` with `HOME` pinned to `ensurePerUserHome(...)`.
+   */
+  cursorProbePerUserHome?: (bin: string, homePath: string) => Promise<boolean>;
 }
 
 export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<EngineAuthStatus> {
-  const { config, cursorBin, userId, cursorProbe = probeCursorStatus } = opts;
+  const {
+    config,
+    cursorBin,
+    userId,
+    dataDir,
+    cursorProbe = probeCursorStatus,
+    cursorProbePerUserHome,
+  } = opts;
 
   // Per-user Claude credentials win over host fallback (see buildSpawnEnv).
   let userClaude = false;
@@ -136,18 +162,37 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
   // / chat.ts spawn auth resolution). Without this branch the engine
   // dropdown hides Cursor for any user who only logged in at the
   // per-user level, even though their spawn would actually succeed.
-  let userCursor = false;
+  let hasUserCursorApiKey = false;
   if (userId) {
     try {
       const stored = getUserCursorAuth(userId);
-      if (stored && stored.apiKey) userCursor = true;
+      if (stored && stored.apiKey) hasUserCursorApiKey = true;
     } catch {
       // users-store schema may be missing on bare bootstraps — treat as no creds.
-      userCursor = false;
+      hasUserCursorApiKey = false;
     }
   }
 
-  const cursor = userCursor || (await getCursorAuthenticatedCached(cursorBin, cursorProbe));
+  let cursor = false;
+  if (hasUserCursorApiKey) {
+    cursor = true;
+  } else if (userId && dataDir) {
+    // JWT / per-user API key callers never read the operator's ~/.cursor for
+    // spawns — mirror that here so the engine picker stays aligned with chat.
+    try {
+      const home = ensurePerUserHome(userId, dataDir);
+      const runPerUserProbe =
+        cursorProbePerUserHome ??
+        ((bin: string, homePath: string) => probeCursorStatus(bin, { env: { HOME: homePath } }));
+      cursor = await getCursorAuthenticatedCached(cursorBin, (bin) => runPerUserProbe(bin, home), {
+        scope: `uid:${userId}`,
+      });
+    } catch {
+      cursor = false;
+    }
+  } else {
+    cursor = await getCursorAuthenticatedCached(cursorBin, cursorProbe);
+  }
 
   return {
     claude,

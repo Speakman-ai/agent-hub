@@ -1033,6 +1033,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         config,
         cursorBin: cursorBinResolved,
         userId: authedReq.authUserId ?? null,
+        dataDir: config.dataDir,
       });
     } catch {
       engineAuth = { claude: false, cursor: false, codex: false, any: false };
