@@ -124,6 +124,14 @@ describe('server/Dockerfile — better-sqlite3 native binding', () => {
   });
 });
 
+describe('server/Dockerfile — git (husky / lint-staged in Docker)', () => {
+  const dockerfile = readFileSync(path.join(serverDir, 'Dockerfile'), 'utf8');
+
+  it('sets safe.directory so mounted clones are not rejected as dubious ownership', () => {
+    expect(dockerfile).toContain("git config --system --add safe.directory '*'");
+  });
+});
+
 /**
  * Hub container defaults (`server/config.ts`) expect `codex` at /usr/local/bin and
  * Cursor's `agent` at ~/.local/bin/agent for HOME=/home/node. The prod Dockerfile
