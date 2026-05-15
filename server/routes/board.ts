@@ -13,6 +13,7 @@ import type {
   KanbanEpicRow,
   KanbanBlockerLink,
   KanbanCardBlockerRow,
+  SessionRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
@@ -22,6 +23,7 @@ import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { onCardDone as watchdogOnCardDone } from '../session-watchdog.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 import {
@@ -666,7 +668,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       });
 
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      broadcast({ type: 'session_created', agentId, session: stmts.getSession.get(sessionId) });
+      broadcast({
+        type: 'session_created',
+        agentId,
+        session: enrichSessionForClient(stmts.getSession.get(sessionId) as SessionRow),
+      });
 
       res.json({
         sessionId,

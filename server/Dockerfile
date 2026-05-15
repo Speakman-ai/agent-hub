@@ -37,17 +37,22 @@ RUN cd client && VITE_API_PORT="" npm run build
 # ─── Runtime stage ───────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
 
-# OS packages the server shells out to or links against
+# OS packages the server shells out to or links against.
+# Git 2.35+ "dubious ownership": bind mounts and mixed UIDs make git refuse
+# the repo; lint-staged / husky pre-commit then fail. Trust all paths in this
+# single-tenant agent image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
     ca-certificates \
     curl \
+    unzip \
     openssl \
     bash \
     jq \
     tini \
     gnupg \
+ && git config --system --add safe.directory '*' \
  && rm -rf /var/lib/apt/lists/*
 
 # Chromium system libs (playwright chromium runtime deps)
@@ -64,6 +69,18 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
+
+# AWS CLI v2 (bundled installer; maps dpkg arch to AWS's x86_64/aarch64 zips).
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) aws_arch=x86_64 ;; \
+      arm64) aws_arch=aarch64 ;; \
+      *) echo "aws-cli: unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${aws_arch}.zip" -o /tmp/awscliv2.zip \
+ && unzip -q /tmp/awscliv2.zip -d /tmp \
+ && /tmp/aws/install \
+ && rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # Docker CLI + Compose v2 plugin (no daemon, no buildx). The runtime
 # container talks to the *host* docker daemon over a bind-mounted

@@ -124,6 +124,37 @@ describe('server/Dockerfile — better-sqlite3 native binding', () => {
   });
 });
 
+describe('server/Dockerfile — git (husky / lint-staged in Docker)', () => {
+  const dockerfile = readFileSync(path.join(serverDir, 'Dockerfile'), 'utf8');
+
+  it('sets safe.directory so mounted clones are not rejected as dubious ownership', () => {
+    expect(dockerfile).toContain("git config --system --add safe.directory '*'");
+  });
+});
+
+/**
+ * AWS CLI v2 ships as a bundled zip; the Dockerfile maps Debian dpkg architecture
+ * to AWS's x86_64/aarch64 bundle names. Regressions here break multi-arch builds.
+ */
+describe('server/Dockerfile — AWS CLI v2', () => {
+  const dockerfile = readFileSync(path.join(serverDir, 'Dockerfile'), 'utf8');
+
+  it('maps dpkg amd64/arm64 to AWS bundle arch names and rejects unknown arches', () => {
+    expect(dockerfile).toMatch(/amd64\)\s+aws_arch=x86_64\s*;;/);
+    expect(dockerfile).toMatch(/arm64\)\s+aws_arch=aarch64\s*;;/);
+    expect(dockerfile).toMatch(/aws-cli:\s+unsupported architecture/);
+  });
+
+  it('uses the official bundled zip URL and runs the upstream installer', () => {
+    expect(dockerfile).toMatch(
+      /curl[^\n]*https:\/\/awscli\.amazonaws\.com\/awscli-exe-linux-\$\{aws_arch\}\.zip/s,
+    );
+    expect(dockerfile).toMatch(/unzip\s+-q\s+\/tmp\/awscliv2\.zip\s+-d\s+\/tmp/);
+    expect(dockerfile).toMatch(/^\s*&&\s+\/tmp\/aws\/install\s*\\/m);
+    expect(dockerfile).toMatch(/rm\s+-rf\s+\/tmp\/aws\s+\/tmp\/awscliv2\.zip/);
+  });
+});
+
 /**
  * Hub container defaults (`server/config.ts`) expect `codex` at /usr/local/bin and
  * Cursor's `agent` at ~/.local/bin/agent for HOME=/home/node. The prod Dockerfile

@@ -19,6 +19,7 @@ import type {
   Project,
   Stmts,
 } from '../types.js';
+import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
@@ -304,14 +305,20 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     });
   });
 
-  router.get('/api/config/models', async (_req: Request, res: Response) => {
+  router.get('/api/config/models', async (req: Request, res: Response) => {
     // Engine auth resolution lives in `engine-auth-status.ts` (shared with
     // `/api/setup/status`) so the spawn-time view of "is X usable?" can't
     // drift from the Settings / wizard view. Gemini auth stays inline here
     // because it's API-key-only and not yet a first-class engine in the
     // engine-status helper.
     const cursorBin = deps.getCursorBin?.() ?? config.cursorBin;
-    const engineStatus = await getEngineAuthStatus({ config, cursorBin });
+    const authedReq = req as AuthenticatedRequest;
+    const engineStatus = await getEngineAuthStatus({
+      config,
+      cursorBin,
+      userId: authedReq.authUserId ?? null,
+      dataDir: config.dataDir,
+    });
     const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
 
     res.json(

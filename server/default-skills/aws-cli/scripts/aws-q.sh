@@ -27,9 +27,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR}/_common.sh"
 
-require_aws_cli
-
-# Strip --profile / --region from args; rest goes to aws
+# Bad invocations should surface usage before we require `aws` on PATH —
+# CI sandboxes / agent hosts often omit the AWS CLI for tests that only
+# exercise the shell argument contract.
 parse_common_flags "$@"
 
 if [[ ${#REMAINING_ARGS[@]} -lt 2 ]]; then
@@ -44,6 +44,8 @@ Examples:
 USAGE
   exit 2
 fi
+
+require_aws_cli
 
 echo "# Profile: ${RESOLVED_PROFILE}  Region: ${RESOLVED_REGION}" >&2
 echo "" >&2
