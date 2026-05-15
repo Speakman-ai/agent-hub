@@ -401,10 +401,11 @@ function projectSlug(projectCwd: string): string {
  * Husky's `prepare` script only wires `core.hooksPath` during `npm install`,
  * and **process** worktree creation (heartbeats / crons) still does not await
  * install (see {@link setupDependencies} with `awaitInstall: false`). Session
- * clones also use non-blocking install at clone/reuse time; call
+ * clones use a **background** package-manager install when deps are still missing
+ * after symlinks (see {@link sessionWorkspaceDependencyInstallOpts}). Call
  * {@link ensureSessionWorktreeDependenciesInstalled} immediately before
  * `git commit` / the `changes_ready` banner so eslint and Husky hooks exist
- * when publishing.
+ * when publishing even if background install has not finished.
  *
  * **Assumes husky v9+** — the shipped hook scripts are self-contained and do
  * not source `.husky/_/husky.sh`. Husky v8 and earlier sourced that helper
@@ -568,10 +569,11 @@ interface SetupDependenciesOptions {
  * ship lockfiles, and awaiting monorepo `install:all` against the checkout blows
  * hook timeouts.
  *
- * Production also uses non-blocking install here so session startup is not
- * stalled by a cold `install:all`. {@link ensureSessionWorktreeDependenciesInstalled}
- * awaits install immediately before `changes_ready` / `git commit` so Husky
- * pre-commit hooks still run when the user publishes.
+ * Production uses non-blocking session setup: symlinks first, then the package
+ * manager runs in the **background** when deps are still missing (no session
+ * stall). {@link ensureSessionWorktreeDependenciesInstalled} still **awaits**
+ * install immediately before `changes_ready` / `git commit` so Husky pre-commit
+ * hooks reliably run when publishing even if background work was slow or failed.
  */
 function sessionWorkspaceDependencyInstallOpts(): Pick<
   SetupDependenciesOptions,
@@ -615,7 +617,7 @@ function resolveInstallCommand(
 
 /**
  * Link node_modules from the project cwd when present, otherwise run the package manager.
- * Session clones pass `awaitInstall: false` at setup time; see
+ * Session clones pass `awaitInstall: false` at setup time (background install when needed); see
  * {@link ensureSessionWorktreeDependenciesInstalled} for the awaited path before commit.
  */
 async function setupDependencies(
