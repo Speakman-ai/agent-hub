@@ -54,6 +54,20 @@ describe('auth-bootstrap — maybeAutoProvisionOwner', () => {
     expect(getAuthRecord()).toBeNull();
   });
 
+  it('skips the index.ts boot path in Vitest even when the host leaked DEFAULT_PASSWORD', async () => {
+    const prevPassword = process.env.AGENT_HUB_DEFAULT_PASSWORD;
+    process.env.AGENT_HUB_DEFAULT_PASSWORD = 'literal-password-1234';
+    try {
+      expect(process.env.AGENT_HUB_TEST_MODE).toBe('1');
+      const result = await maybeAutoProvisionOwner({ ...baseOpts() });
+      expect(result).toEqual({ provisioned: false, reason: 'test-mode' });
+      expect(getAuthRecord()).toBeNull();
+    } finally {
+      if (prevPassword === undefined) delete process.env.AGENT_HUB_DEFAULT_PASSWORD;
+      else process.env.AGENT_HUB_DEFAULT_PASSWORD = prevPassword;
+    }
+  });
+
   it('skips when AGENT_HUB_DEFAULT_PASSWORD is empty string', async () => {
     const result = await maybeAutoProvisionOwner({
       env: { AGENT_HUB_DEFAULT_PASSWORD: '' },

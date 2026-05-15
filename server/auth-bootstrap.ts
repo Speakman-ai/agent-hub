@@ -75,7 +75,9 @@ export type BootstrapSkipReason =
   | 'no-default-password-env'
   | 'auth-already-configured'
   | 'invalid-username'
-  | 'invalid-password';
+  | 'invalid-password'
+  /** `index.ts` calls with empty opts during Vitest; do not inherit host deploy env. */
+  | 'test-mode';
 
 function defaultLogger(level: 'info' | 'error', msg: string): void {
   (level === 'error' ? console.error : console.log)(msg);
@@ -106,6 +108,15 @@ export function credentialsFilePath(dataDir: string): string {
 export async function maybeAutoProvisionOwner(
   opts: BootstrapOptions = {},
 ): Promise<BootstrapResult> {
+  // Vitest sets AGENT_HUB_TEST_MODE and imports `index.ts`, which calls this
+  // with no opts. The Agent Hub host / systemd unit often exports
+  // AGENT_HUB_DEFAULT_PASSWORD — auto-provisioning would write auth.json into
+  // the isolated test DATA_DIR and gate REST with JWT, so supertest calls
+  // without Bearer get 401. Unit tests always pass an explicit `env` object.
+  if (process.env.AGENT_HUB_TEST_MODE === '1' && opts.env === undefined) {
+    return { provisioned: false, reason: 'test-mode' };
+  }
+
   const env = opts.env ?? process.env;
   const dataDir = opts.dataDir ?? config.dataDir;
   const now = opts.now ?? (() => new Date());
