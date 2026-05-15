@@ -181,6 +181,13 @@ export const UpsertSkillCredentialBody = registerComponent(
   }),
 );
 
+export const PutEngineDefaultModelsBody = registerComponent(
+  'PutEngineDefaultModelsBody',
+  z.object({
+    engineDefaultModels: z.record(z.string(), z.string()),
+  }),
+);
+
 // ── CLI auth route bodies ──────────────────────────────────────────────
 
 export const ClaudeLoginBody = registerComponent(

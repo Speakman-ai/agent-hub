@@ -451,6 +451,15 @@ components:
         - skill_id
         - key_name
         - agent_id
+    PutEngineDefaultModelsBody:
+      type: object
+      properties:
+        engineDefaultModels:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - engineDefaultModels
     ClaudeLoginBody:
       type: object
       properties:
@@ -3739,6 +3748,72 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/engine-default-models:
+    get:
+      tags:
+        - Auth
+      summary: Per-user default CLI model ids by engine.
+      responses:
+        "200":
+          description: Validated engine→model map (unknown/stale ids are stripped).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engineDefaultModels:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - engineDefaultModels
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Replace per-user default CLI models by engine.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutEngineDefaultModelsBody"
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engineDefaultModels:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - engineDefaultModels
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
           content:
             application/json:
               schema:

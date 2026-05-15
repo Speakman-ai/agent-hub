@@ -4,7 +4,7 @@
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
-import { defaultModelForEngine } from './config.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
@@ -29,32 +29,37 @@ export function normalizeDesignEngine(engine: string | null | undefined): Design
 }
 
 /**
- * Resolve the CLI model id for a design row. Uses the per-engine allowlist in
- * config; null/empty `agent_model` falls back to `defaultModelForEngine(engine)`.
+ * Resolve the CLI model id for a design row. Validates against the per-engine
+ * allowlist in config. When `agent_model` is null/invalid, falls back via
+ * `resolveEffectiveModel` (per-user defaults, then hub engine default).
  */
 export function resolveDesignModelForEngine(
   engine: string,
   agentModel: string | null | undefined,
   cfg: AppConfig,
+  ownerUserId?: string | null,
 ): string {
   const allowed = cfg.engineValidModels[engine] || [];
   const configured = typeof agentModel === 'string' ? agentModel.trim() : '';
-  if (configured && allowed.includes(configured)) {
-    return configured;
+  const explicit = configured && allowed.includes(configured) ? configured : null;
+  let resolved = resolveEffectiveModel(cfg, engine, {
+    explicitModel: explicit,
+    agentModel: null,
+    ownerUserId: ownerUserId ?? null,
+  });
+  if (allowed.length === 0 || allowed.includes(resolved)) {
+    return resolved;
   }
-  const fallback = defaultModelForEngine(engine);
-  if (allowed.length === 0 || allowed.includes(fallback)) {
-    return fallback;
-  }
-  return allowed[0] ?? fallback;
+  return allowed[0] ?? resolved;
 }
 
 /** @deprecated use resolveDesignModelForEngine('claude-code', …) */
 export function resolveDesignStudioModel(
   agentModel: string | null | undefined,
   cfg: AppConfig,
+  ownerUserId?: string | null,
 ): string {
-  return resolveDesignModelForEngine('claude-code', agentModel, cfg);
+  return resolveDesignModelForEngine('claude-code', agentModel, cfg, ownerUserId);
 }
 
 /**

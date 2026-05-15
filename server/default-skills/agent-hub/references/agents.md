@@ -57,6 +57,27 @@ one call. Use it when migrating a project from one CLI to another
 endpoint validates each agent's current state — disabled or missing
 agents are skipped with a per-id status, not a 4xx on the whole batch.
 
+### Effective CLI model (`server/effective-model.ts`)
+
+Model selection for spawned CLIs resolves in strict order:
+
+1. **Explicit** model on the incoming request / session picker (when provided).
+2. **Per-account defaults:** `users.preferences_json.engineDefaultModels` maps
+   each `agent.engine` id (for example `claude-code`) to a default model string.
+   Only models listed under the server's `engineValidModels[engine]` apply;
+   stale or unknown ids are ignored at read time.
+3. **Shared agent row** `agents.model`, again only when that model is allowed
+   for the active engine.
+4. **Fallbacks:** server `engineDefaultModels[engine]`, then `defaultModel`, then the
+   process-wide startup default from `defaultModelForEngine(engine)`.
+
+Authenticated humans manage their tier (2) map with **`GET`** and **`PUT`**
+`/api/auth/me/engine-default-models` returning `{ engineDefaultModels: {...} }`
+(see `#tag/Auth`). `PUT` rejects unknown engines or models outside the server's
+validation list; `GET` omits entries that no longer match `engineValidModels`.
+Preferences attach to the user account, while `sessions.owner_user_id` still picks
+whose tier (2) defaults and credential bundle apply for shared agents.
+
 ## Workspace & context files
 
 Every agent has a `cwd`. The server reads these files from that

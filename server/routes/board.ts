@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import { defaultModelForEngine } from '../config.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import type {
   RouteDeps,
   Stmts,
@@ -548,7 +548,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         const v = validateKanbanAssignModel(trimmedOverride, project, agent.name, config);
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
-      const resolvedModel = trimmedOverride ?? (agent.model || defaultModelForEngine(engine));
+      const assignOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+      const resolvedModel = resolveEffectiveModel(config, engine, {
+        explicitModel: trimmedOverride,
+        agentModel: agent.model,
+        ownerUserId: assignOwnerUid,
+      });
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));

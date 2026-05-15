@@ -7,11 +7,8 @@ import { getDb, stmts as _stmts } from './db.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { clampPayload } from './session-events-store.js';
-import config, {
-  defaultModelForEngine,
-  buildSpawnEnv,
-  resolveAgentHubApiBaseForSpawn,
-} from './config.js';
+import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
+import { resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
   contextFilePath,
@@ -163,7 +160,6 @@ import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
-const DEFAULT_MODEL: string = config.defaultModel;
 const MAX_QUEUE_SIZE = 10;
 
 // ─── Internal types ─────────────────────────────────────────────
@@ -1392,8 +1388,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (intakeTarget) {
         const intakeSessionId = uuidv4();
         const intakeEngine = intakeTarget.engine || 'claude-code';
-        const intakeModel =
-          (intakeTarget as AgentWithModel).model || defaultModelForEngine(intakeEngine);
+        const intakeOwnerUid = getSessionOwner(sessionId);
+        const intakeModel = resolveEffectiveModel(config, intakeEngine, {
+          agentModel: (intakeTarget as AgentWithModel).model,
+          ownerUserId: intakeOwnerUid,
+        });
         const title = extractBugReportTitle(content) || 'Bug Report';
         const sessionName = `[Bug] ${title.substring(0, 80)}`;
 
@@ -1481,12 +1480,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (!session) {
         const initialEngine = agent.engine || 'claude-code';
         const orphanWt = defaultSessionUseWorktreeFlag(project);
+        const orphanOwner = ownerUserIdForChatSpawn(ws);
+        const orphanModel = resolveEffectiveModel(config, initialEngine, {
+          agentModel: (agent as AgentWithModel).model,
+          ownerUserId: orphanOwner,
+        });
         stmts.createSession.run(
           sessionId,
           agentId,
           `Session ${new Date().toLocaleString()}`,
           initialEngine,
-          (agent as AgentWithModel).model || defaultModelForEngine(initialEngine),
+          orphanModel,
           orphanWt,
           0,
           1,
@@ -1638,7 +1642,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const isFirstMessage = priorMessages.length === 0;
 
       const engine: string = session!.engine || 'claude-code';
-      const model: string = session!.model || DEFAULT_MODEL;
+      const sessOwnerUid = getSessionOwner(sessionId);
+      const model: string =
+        session!.model?.trim() ||
+        resolveEffectiveModel(config, engine, {
+          agentModel: (agent as AgentWithModel).model,
+          ownerUserId: sessOwnerUid,
+        });
       const paths = resolveProjectPaths(project as Project, agent as Agent);
       const slashAug = augmentChatTurnForSlashSkill({
         slashResult,
