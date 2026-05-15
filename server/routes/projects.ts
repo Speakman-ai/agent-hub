@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { execSync, execFileSync, spawn, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -700,6 +700,39 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     getCodexBin,
     setCodexBin,
   } = deps;
+
+  /** Remove a partially-created project after disk + `projects.json` were persisted but a later step failed (specialist seeding, workflow scaffolding). */
+  const rollbackIncompleteProjectCreation = (project: Project, dataDir: string) => {
+    try {
+      deleteProjectScopedRows(stmts, project);
+    } catch (err) {
+      console.error(
+        `[rollbackIncompleteProjectCreation] DB cleanup failed for "${project.id}":`,
+        (err as Error).message,
+      );
+    }
+    const list = getProjects();
+    const idx = list.findIndex((p) => p.id === project.id);
+    if (idx !== -1) {
+      list.splice(idx, 1);
+      try {
+        saveProjects();
+      } catch (saveErr) {
+        console.error(
+          `[rollbackIncompleteProjectCreation] saveProjects failed for "${project.id}":`,
+          (saveErr as Error).message,
+        );
+      }
+    }
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(
+        `[rollbackIncompleteProjectCreation] Failed to remove data dir "${dataDir}":`,
+        (err as Error).message,
+      );
+    }
+  };
 
   const router = Router();
 
@@ -1464,34 +1497,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // We seed the minimum so the project is immediately usable as a
     // tasks-only workspace.
     //
-    // Per the flat-agent model (sub-agents are deprecated — see CLAUDE.md
-    // "Flat Agent Model"), we seed EXACTLY ONE dev agent. The user can add
-    // more dev agents from the UI later if they want a multi-specialist
-    // setup. We no longer auto-seed Intake / Docs / Reviewer here.
-    //
-    // Dev-mode (default) projects keep the lean POST behavior — the richer
-    // `POST /api/projects/onboard` route owns dev scaffolding because it
-    // already has an analyzed agent roster + GitHub repo to wire up.
+    // Roster on a fresh workflow project:
+    //   1. A single primary "Agent" — workflow projects have no git repo,
+    //      so we call them "<Project> Agent" rather than "<Project> Dev".
+    //   2. A Docs agent (`ensureDocsAgents()`), enabled for all projects.
+    //   3. An Intake agent (`ensureIntakeAgents()`), enabled for all projects.
+    //   4. A Reviewer agent is NOT seeded here — Reviewer is GitHub-only
+    //      (`ensureReviewerAgents()` gates on `githubRepo` / webhooks).
     if (createMode === 'workflow') {
       try {
         // 1. Pre-create the kanban board with default columns so the user
         //    lands on a structured To Do → Done view.
         getOrCreateBoard(stmts, project.id);
 
-        // 2. Seed a single dev agent so subsequent helpers
-        //    (`ensureProjectRoom`) have an anchor — that helper
-        //    early-returns on `project.agents.length === 0`. Engine
-        //    defaults to claude-code but is overridable via the optional
-        //    `engine` POST field for Cursor-only installs.
-        const devAgentId = `${project.id}-dev`;
-        if (!findAgent(devAgentId)) {
-          const devAgent: Agent = {
-            id: devAgentId,
-            name: `${project.name} Dev`,
+        // 2. Seed the primary agent so subsequent helpers
+        //    (`ensureProjectRoom`, `ensureDocsAgents`, `ensureIntakeAgents`)
+        //    have an anchor — those helpers early-return on
+        //    `project.agents.length === 0`. Engine defaults to claude-code
+        //    but is overridable via the optional `engine` POST field for
+        //    Cursor-only installs.
+        const primaryAgentId = `${project.id}-agent`;
+        if (!findAgent(primaryAgentId)) {
+          const primaryAgent: Agent = {
+            id: primaryAgentId,
+            name: `${project.name} Agent`,
             engine: resolvedEngine,
             role: 'dev',
             color: project.color,
-            systemPrompt: `You are the primary dev agent for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
+            systemPrompt: `You are the primary agent for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
 
 You own:
 - The kanban board (To Do → Done) at /api/projects/${project.id}/board
@@ -1502,40 +1535,48 @@ You own:
 This workspace has no git repo and no PR automation — your job is planning, organizing, and synthesizing, not shipping code. Use the kanban board to track work, the wiki to capture decisions and reference material, and chat sessions to drive the work forward.`,
             heartbeat: { enabled: false, interval: '', prompt: '' },
           };
-          mkdirSync(path.join(dataDir, 'agents', devAgentId), { recursive: true });
+          mkdirSync(path.join(dataDir, 'agents', primaryAgentId), { recursive: true });
           writeFileSync(
-            path.join(dataDir, 'agents', devAgentId, 'IDENTITY.md'),
-            `# ${project.name} Dev\n\nYou are the primary dev agent for the ${project.name} workspace. You own the kanban board, the wiki, and routing user requests into actionable work. This is a non-coding workspace — no git repo, no PRs.\n`,
+            path.join(dataDir, 'agents', primaryAgentId, 'IDENTITY.md'),
+            `# ${project.name} Agent\n\nYou are the primary agent for the ${project.name} workspace. You own the kanban board, the wiki, and routing user requests into actionable work. This is a non-coding workspace — no git repo, no PRs.\n`,
             'utf-8',
           );
-          project.agents.push(devAgent);
+          project.agents.push(primaryAgent);
         }
 
-        // 3. Persist the seeded dev agent. (We previously deferred this
-        //    save to `ensureIntakeAgents()`; that helper is no longer
-        //    invoked here because the Intake agent is deprecated as an
-        //    auto-seed.)
+        // 3. Persist the seeded primary agent before invoking the
+        //    docs/intake helpers — they pick the project up via the
+        //    in-memory `projects` array and call `saveProjects()`
+        //    themselves once they add their own rows.
         saveProjects();
 
-        // 4. Create the project's conference room now that we have an
+        // 4. Seed Docs and Intake for every project (Reviewer is GitHub-only
+        //    and skipped here intentionally — `ensureReviewerAgents()` gates
+        //    on `githubRepo` / webhook configs).
+        ensureDocsAgents();
+        ensureIntakeAgents();
+
+        // 5. Create the project's conference room now that we have an
         //    anchor agent.
         ensureProjectRoom(project);
 
-        // 5. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
+        // 6. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
         //    USER.md, TOOLS.md, MEMORY.md). Without this, a freshly-scaffolded
         //    workflow project's data dir has empty `agents/`, `skills/`,
         //    `memory/` subdirs but no top-level context files until the next
         //    server restart — `ensureContextFiles()` is otherwise only
         //    invoked at startup (`server/index.ts:302`).
         ensureContextFiles();
-      } catch (err) {
-        // Scaffolding failure is non-fatal — the project row is already
-        // persisted. Log loudly so the operator can investigate, but
-        // return success so the wizard doesn't pretend the project
-        // wasn't created.
-        console.warn(
-          `[POST /api/projects] Workflow scaffolding failed for "${project.id}": ${(err as Error).message}`,
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[POST /api/projects] Workflow scaffolding failed for "${project.id}": ${message}`,
         );
+        rollbackIncompleteProjectCreation(project, dataDir);
+        return res.status(500).json({
+          error: 'workflow_scaffolding_failed',
+          message,
+        });
       }
     }
 
@@ -2228,15 +2269,34 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
+    // Specialist helpers (`ensureDocsAgents`, `ensureIntakeAgents`,
+    // `ensureReviewerAgents`) intentionally skip projects with an empty
+    // `agents` roster. Require at least one validated dev peer so onboard
+    // cannot return 201 without Docs/Intake (and Reviewer when GitHub-linked).
+    if (project.agents.length === 0) {
+      try {
+        rmSync(dataDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(
+          `[Onboard] Failed to remove data dir after empty roster: ${(err as Error).message}`,
+        );
+      }
+      return res.status(400).json({
+        error: 'onboard_dev_roster_required',
+        message: 'At least one dev agent with a valid id is required (non-empty `agents` array).',
+      });
+    }
+
     if (projectData.githubRepo?.owner && projectData.githubRepo?.repo) {
       const { owner, repo } = projectData.githubRepo;
+      // Persist the `owner/repo` slug on the project record so downstream
+      // helpers (e.g. `ensureReviewerAgents()`) can detect GitHub
+      // integration without needing to re-query the webhook table. Also set
+      // `repoUrl` so the Settings page shows the link and the worktree manager
+      // can auto-clone on session spawn.
       const repoUrl = `https://github.com/${owner}/${repo}`;
-      // Persist the repo link onto the project itself so the Settings page
-      // (which reads `project.githubRepo` as an `owner/repo` string) renders
-      // the green dot + slug instead of "No repo linked", and so the worktree
-      // manager can auto-clone via `project.repoUrl` on session spawn.
-      (project as Record<string, unknown>).githubRepo = `${owner}/${repo}`;
-      (project as Record<string, unknown>).repoUrl = `${repoUrl}.git`;
+      project.githubRepo = `${owner}/${repo}`;
+      project.repoUrl = `${repoUrl}.git`;
       const defaultEvents = JSON.stringify([
         'pull_request.opened',
         'pull_request.closed',
@@ -2256,11 +2316,26 @@ This workspace has no git repo and no PR automation — your job is planning, or
     projects.push(project);
     saveProjects();
 
-    // Sub-agents (Docs / Intake / Reviewer) are deprecated as an auto-seed
-    // on project creation — see CLAUDE.md "Flat Agent Model". The user can
-    // add additional dev agents from the UI later. (`ensureReviewerAgents`
-    // is still invoked from the GitHub-App / webhook routes when the user
-    // explicitly wires up GitHub, so the reviewer path stays opt-in.)
+    // Seed the role-specialist agents alongside the analyzed dev roster.
+    //   * Docs + Intake are seeded for every onboarded project.
+    //   * Reviewer is GitHub-only — `ensureReviewerAgents()` internally
+    //     gates on `githubRepo` / webhook configs and is a no-op for
+    //     non-GitHub projects. (It's also re-invoked from the GitHub-App /
+    //     webhook routes when the user wires up GitHub later, so the
+    //     reviewer path remains opt-in for after-the-fact connections.)
+    try {
+      ensureDocsAgents();
+      ensureIntakeAgents();
+      ensureReviewerAgents();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Onboard] Specialist agent seeding failed: ${message}`);
+      rollbackIncompleteProjectCreation(project, dataDir);
+      return res.status(500).json({
+        error: 'specialist_agent_seeding_failed',
+        message,
+      });
+    }
 
     ensureProjectRoom(project);
 
