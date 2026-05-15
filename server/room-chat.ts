@@ -1,11 +1,12 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execFile, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv } from './config.js';
+import { buildSpawnEnv, defaultModelForEngine } from './config.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { createStreamParser } from './stream-parser.js';
+import { buildRoomSpawnArgs, normalizeRoomEngine } from './room-multi-engine.js';
 import type {
   Stmts,
   EnrichedAgent,
@@ -15,6 +16,7 @@ import type {
   RoomMessageQueueRow,
   AppConfig,
   BroadcastFn,
+  StreamEvent,
 } from './types.js';
 
 // ─── Dependency Types ────────────────────────────────────────────────
@@ -25,6 +27,9 @@ interface RoomChatDeps {
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
   buildEnrichedPrompt: (agent: EnrichedAgent) => string;
   getClaudeBin: () => string;
+  getCursorBin: () => string;
+  getGeminiBin: () => string;
+  getCodexBin: () => string;
   getDefaultModel: () => string;
   getConfig: () => AppConfig;
   getMaxQueueSize: () => number;
@@ -75,6 +80,25 @@ export function parseMentions(text: string, agentList: EnrichedAgent[]): Set<str
     }
   }
   return mentioned;
+}
+
+// ─── Cursor chat creation (rooms are stateless, fresh chat per turn) ─
+
+function createRoomCursorChat(cursorBin: string, cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cursorBin, ['create-chat'], { cwd, env: process.env }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
+        return;
+      }
+      const id = (stdout || '').trim().split(/\s+/).pop();
+      if (!id) {
+        reject(new Error('cursor create-chat returned no id'));
+        return;
+      }
+      resolve(id);
+    });
+  });
 }
 
 // ─── Cancel & Queue helpers ──────────────────────────────────────────
@@ -145,6 +169,9 @@ export async function handleRoomChat(ws: WebSocketLike | null, msg: RoomChatMsg)
   const S = d.stmts;
   const { broadcast, getEnrichedAgent, buildEnrichedPrompt } = d;
   const CLAUDE_BIN = d.getClaudeBin();
+  const CURSOR_BIN = d.getCursorBin();
+  const GEMINI_BIN = d.getGeminiBin();
+  const CODEX_BIN = d.getCodexBin();
   const DEFAULT_MODEL = d.getDefaultModel();
   const config = d.getConfig();
   const MAX_QUEUE_SIZE = d.getMaxQueueSize();
@@ -330,6 +357,12 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
       ? `${transcript}\n\nRespond to the conversation above. You are ${agent.name}.`
       : content;
 
+    const engine = normalizeRoomEngine(agent.engine);
+    // Prefer the agent's configured model, then the engine-specific default,
+    // then the global default. Mirrors chat.ts model resolution.
+    const model =
+      (agent.model as string | undefined) || defaultModelForEngine(engine) || DEFAULT_MODEL;
+
     broadcast({
       type: 'room_thinking',
       roomId,
@@ -341,25 +374,6 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
 
     try {
       const result = await new Promise<string>((resolve, reject) => {
-        const model = (agent.model as string | undefined) || DEFAULT_MODEL;
-        const args: string[] = [
-          '--print',
-          '--permission-mode',
-          'bypassPermissions',
-          '--model',
-          model,
-          '--system-prompt',
-          roomSystemPrompt,
-          // see claude-cli-args.ts
-          ...disableNativeSkillToolArgs(),
-          // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
-          // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
-          '--',
-          userPrompt,
-        ];
-
-        let output = '';
-        let errorOutput = '';
         const timeout = config.conferenceTimeoutMs;
 
         const roomOwnerId =
@@ -376,61 +390,168 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           }
         }
 
-        const proc = spawn(CLAUDE_BIN, args, {
-          cwd: agent.cwd || process.env.HOME,
-          env: roomEnv,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
-        }) as ChildProcess;
-
-        roomState.proc = proc;
-        trackChild(proc);
-
-        const timer = setTimeout(() => {
-          killProcessGroup(proc, 'SIGTERM');
-          reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
-        }, timeout);
-
-        proc.stdout!.on('data', (chunk: Buffer) => {
-          output += chunk.toString();
-          try {
-            S.appendActiveRoomTaskOutput.run(output, roomId);
-          } catch {
-            // non-critical
+        // cursor-agent requires a chat id to `--resume` against. Rooms do
+        // not persist `engine_session_id` between turns, so each turn mints
+        // a fresh chat. The await-via-Promise pattern keeps the spawn site
+        // synchronous-looking; createRoomCursorChat is awaited inline.
+        const planAndSpawn = async (): Promise<void> => {
+          let cursorChatId: string | null = null;
+          if (engine === 'cursor-agent') {
+            try {
+              cursorChatId = await createRoomCursorChat(
+                CURSOR_BIN,
+                agent.cwd || process.env.HOME || '/',
+              );
+            } catch (err: unknown) {
+              reject(err instanceof Error ? err : new Error(String(err)));
+              return;
+            }
+            if (roomState.cancelled) {
+              reject(new Error('Cancelled'));
+              return;
+            }
           }
-          broadcast({
-            type: 'room_stream',
-            roomId,
-            agentId: agent.id,
-            agentName: agent.name,
-            agentColor: agent.color,
-            messageId: assistantMsgId,
-            content: output,
-          });
-        });
 
-        proc.stderr!.on('data', (chunk: Buffer) => {
-          errorOutput += chunk.toString();
-        });
-
-        proc.on('close', (code: number | null) => {
-          clearTimeout(timer);
-          roomState.proc = null;
-          if (roomState.cancelled) {
-            reject(new Error('Cancelled'));
+          let bin: string;
+          let args: string[];
+          let stdinPrompt: string | null;
+          try {
+            const plan = buildRoomSpawnArgs({
+              engine,
+              model,
+              systemPrompt: roomSystemPrompt,
+              userPrompt,
+              cursorChatId,
+              bins: {
+                claude: CLAUDE_BIN,
+                cursor: CURSOR_BIN,
+                gemini: GEMINI_BIN,
+                codex: CODEX_BIN,
+              },
+              logTag: `room ${roomId} agent ${agent.id}`,
+            });
+            bin = plan.bin;
+            args = plan.args;
+            stdinPrompt = plan.stdinPrompt;
+          } catch (err: unknown) {
+            reject(err instanceof Error ? err : new Error(String(err)));
             return;
           }
-          if (code !== 0 && !output) {
-            reject(new Error(errorOutput || `Exited with code ${code}`));
-          } else {
-            resolve(output.trim() || errorOutput.trim() || '(empty response)');
-          }
-        });
 
-        proc.on('error', (err: Error) => {
-          clearTimeout(timer);
-          roomState.proc = null;
-          reject(err);
+          const parser = createStreamParser(engine);
+          let finalText = '';
+          let partialFallback = '';
+          let errorOutput = '';
+          let streamErrorMessage = '';
+          let spawnErrored = false;
+
+          const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
+          const proc = spawn(bin, args, {
+            cwd: agent.cwd || process.env.HOME,
+            env: roomEnv,
+            stdio: [childStdin, 'pipe', 'pipe'],
+            detached: true,
+          }) as ChildProcess;
+
+          roomState.proc = proc;
+          trackChild(proc);
+
+          if (stdinPrompt !== null && proc.stdin) {
+            try {
+              proc.stdin.end(stdinPrompt, 'utf8');
+            } catch (err) {
+              console.error(
+                `[room] failed to write stdin prompt for ${engine} (room ${roomId}):`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+
+          const timer = setTimeout(() => {
+            killProcessGroup(proc, 'SIGTERM');
+            reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
+          }, timeout);
+
+          const handleEvent = (event: StreamEvent): void => {
+            if (event.type === 'assistant_text') {
+              const text =
+                typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+              if (event.replacesAssistantBuffer) {
+                finalText = text;
+                partialFallback = '';
+              } else if (event.partial) {
+                partialFallback += text;
+              } else {
+                finalText += text;
+              }
+              const visible = finalText || partialFallback;
+              try {
+                S.appendActiveRoomTaskOutput.run(visible, roomId);
+              } catch {
+                // non-critical
+              }
+              broadcast({
+                type: 'room_stream',
+                roomId,
+                agentId: agent.id,
+                agentName: agent.name,
+                agentColor: agent.color,
+                messageId: assistantMsgId,
+                content: visible,
+              });
+            }
+
+            if (event.type === 'result' && event.isError && event.text) {
+              if (!streamErrorMessage) streamErrorMessage = event.text;
+            }
+            if (
+              event.type === 'unknown' &&
+              typeof event.text === 'string' &&
+              (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+            ) {
+              if (!streamErrorMessage) streamErrorMessage = event.text;
+            }
+          };
+
+          proc.stdout!.on('data', (chunk: Buffer) => {
+            for (const ev of parser.feed(chunk)) handleEvent(ev);
+          });
+
+          proc.stderr!.on('data', (chunk: Buffer) => {
+            errorOutput += chunk.toString();
+          });
+
+          proc.on('close', (code: number | null) => {
+            clearTimeout(timer);
+            roomState.proc = null;
+            if (roomState.cancelled) {
+              reject(new Error('Cancelled'));
+              return;
+            }
+            if (spawnErrored) {
+              // proc.on('error') already rejected with the useful message
+              return;
+            }
+            for (const ev of parser.flush()) handleEvent(ev);
+            const assembled = (finalText || partialFallback).trim();
+            if (code !== 0 && !assembled) {
+              const errMsg = streamErrorMessage || errorOutput.trim() || `Exited with code ${code}`;
+              reject(new Error(errMsg));
+            } else {
+              resolve(assembled || errorOutput.trim() || '(empty response)');
+            }
+          });
+
+          proc.on('error', (err: Error) => {
+            spawnErrored = true;
+            clearTimeout(timer);
+            roomState.proc = null;
+            reject(err);
+          });
+        };
+
+        planAndSpawn().catch((err: unknown) => {
+          reject(err instanceof Error ? err : new Error(String(err)));
         });
       });
 
