@@ -30,6 +30,7 @@ import type {
 } from './types.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { setSessionOwner, resolveAutonomousOwnerUserId } from './session-ownership.js';
+import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 
@@ -940,7 +941,11 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {
-          d.broadcast({ type: 'session_created', agentId: agent.id, session: row });
+          d.broadcast({
+            type: 'session_created',
+            agentId: agent.id,
+            session: enrichSessionForClient(row),
+          });
         }
       }
 

@@ -30,6 +30,7 @@ import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup
 import { buildResolvePrompt } from './pr-resolve.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
+import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
 import {
   onCardDone as watchdogOnCardDone,
@@ -844,7 +845,11 @@ export async function dispatchReviewFeedback(
     {
       const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (row) {
-        broadcast({ type: 'session_created', agentId: agent.id, session: row });
+        broadcast({
+          type: 'session_created',
+          agentId: agent.id,
+          session: enrichSessionForClient(row),
+        });
       }
     }
 
@@ -1338,7 +1343,11 @@ async function runReviewerDispatch(
   {
     const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (row) {
-      broadcast({ type: 'session_created', agentId: reviewer.id, session: row });
+      broadcast({
+        type: 'session_created',
+        agentId: reviewer.id,
+        session: enrichSessionForClient(row),
+      });
     }
   }
 

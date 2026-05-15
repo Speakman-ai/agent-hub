@@ -17,6 +17,7 @@ import type {
 import { buildPrTitle } from './auto-git.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { inheritOwnerFromSession } from './session-ownership.js';
+import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
@@ -749,7 +750,11 @@ export async function handleHandoff(
   {
     const row = stmts.getSession.get(toSessionId) as SessionRow | undefined;
     if (row) {
-      broadcast({ type: 'session_created', agentId: targetAgent.id, session: row });
+      broadcast({
+        type: 'session_created',
+        agentId: targetAgent.id,
+        session: enrichSessionForClient(row),
+      });
     }
   }
 
