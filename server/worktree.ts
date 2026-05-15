@@ -1,6 +1,17 @@
 import { execFile, exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync, symlinkSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  cpSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import config from './config.js';
@@ -33,6 +44,52 @@ export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'works
  * the node-cron `missed execution` warning bursts on PID 19954.
  */
 const execFileP = promisify(execFile);
+const execP = promisify(exec);
+
+/** Written in the session clone when an awaited dependency install fails; reuse opens fail fast instead of repeating the install timeout. */
+export const SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER = '.agent-hub-dependency-install-failed';
+
+/** Thrown when {@link setupDependencies} is asked to await an install that fails so callers can invoke {@link OnFailureFn} and skip returning a falsely-ready worktree path. */
+export class SessionDependencyInstallError extends Error {
+  override readonly name = 'SessionDependencyInstallError';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+function dependencyInstallFailureMarkerPath(cloneDir: string): string {
+  return path.join(cloneDir, SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER);
+}
+
+function readDependencyInstallFailureMarker(cloneDir: string): string | null {
+  const p = dependencyInstallFailureMarkerPath(cloneDir);
+  if (!existsSync(p)) return null;
+  try {
+    const text = readFileSync(p, 'utf8').trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDependencyInstallFailureMarker(cloneDir: string, reason: string): void {
+  const line = reason.replace(/\r?\n/g, ' ').slice(0, 4000);
+  writeFileSync(dependencyInstallFailureMarkerPath(cloneDir), `${line}\n`, 'utf8');
+}
+
+export function clearDependencyInstallFailureMarker(cloneDir: string): void {
+  try {
+    unlinkSync(dependencyInstallFailureMarkerPath(cloneDir));
+  } catch {
+    /* noop */
+  }
+}
+
+/** Session clones await install so Husky / lint-staged can run before the first commit. */
+const SESSION_INSTALL_TIMEOUT_MS = 600_000;
+
+/** Fire-and-forget installs for heartbeat/cron process clones stay bounded. */
+const BACKGROUND_INSTALL_TIMEOUT_MS = 120_000;
 
 /**
  * Short-op timeout (ms) — applied to all metadata-only git commands
@@ -342,10 +399,10 @@ function projectSlug(projectCwd: string): string {
  * If the cloned repo ships a `.husky/` directory, point `core.hooksPath` at it.
  *
  * Husky's `prepare` script only wires `core.hooksPath` during `npm install`,
- * and worktree creation in this module does not run install — so without this
- * step every worktree ends up using `.git/hooks/` (the inert stub) and the
- * repo's pre-commit checks (lint, format) never fire. That's how PRs like
- * #451 slipped through with Prettier violations.
+ * and **process** worktree creation (heartbeats / crons) still does not await
+ * install (see {@link setupDependencies} with `awaitInstall: false`). Session
+ * clones await `npm ci` / `install:all` so `eslint` and Husky hooks exist
+ * before the first commit.
  *
  * **Assumes husky v9+** — the shipped hook scripts are self-contained and do
  * not source `.husky/_/husky.sh`. Husky v8 and earlier sourced that helper
@@ -443,21 +500,104 @@ function detectInstallCommand(dir: string): string | null {
     return 'bun install --frozen-lockfile';
   if (existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm install --frozen-lockfile';
   if (existsSync(path.join(dir, 'yarn.lock'))) return 'yarn install --frozen-lockfile';
-  if (existsSync(path.join(dir, 'package-lock.json'))) return 'npm ci';
-  if (existsSync(path.join(dir, 'package.json'))) return 'npm install';
+  if (existsSync(path.join(dir, 'package-lock.json'))) return 'npm ci --include=dev';
+  if (existsSync(path.join(dir, 'package.json'))) return 'npm install --include=dev';
   return null;
 }
+
+/**
+ * For session workspaces, prefer `npm run install:all` when the repo defines it
+ * (monorepos like Agent Hub need server/client/mobile installs, not root-only).
+ */
+function resolveSessionInstallCommand(
+  cloneDir: string,
+  explicit: string | null | undefined,
+): string | null {
+  const trimmed = explicit?.trim();
+  if (trimmed) return trimmed;
+  try {
+    const pkgPath = path.join(cloneDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { scripts?: Record<string, string> };
+      if (pkg.scripts?.['install:all']?.trim()) {
+        return 'npm run install:all';
+      }
+    }
+  } catch {
+    /* ignore invalid package.json */
+  }
+  return detectInstallCommand(cloneDir);
+}
+
+/**
+ * True when a JS workspace still needs `npm install` for Husky pre-commit (eslint)
+ * or when there is no node_modules at all.
+ */
+function needsDependencyInstall(cloneDir: string): boolean {
+  if (!existsSync(path.join(cloneDir, 'package.json'))) return false;
+  if (!existsSync(path.join(cloneDir, 'node_modules'))) return true;
+  if (!existsSync(path.join(cloneDir, '.husky'))) return false;
+  const eslintBin = path.join(cloneDir, 'node_modules', '.bin', 'eslint');
+  return !existsSync(eslintBin);
+}
+
+const installChildEnv: NodeJS.ProcessEnv = {
+  ...process.env,
+  // Provisioning and some hosts run the server with NODE_ENV=production, which
+  // would otherwise make npm omit devDependencies despite --include=dev in some paths.
+  NODE_ENV: 'development',
+};
 
 interface NodeModulesEntry {
   relative: string;
   absolute: string;
 }
 
-function setupDependencies(
+interface SetupDependenciesOptions {
+  /** When true, block until install finishes (session workspaces). */
+  awaitInstall: boolean;
+  /** When true, use {@link resolveSessionInstallCommand} (install:all for monorepos). */
+  preferInstallAllScript: boolean;
+}
+
+/**
+ * Vitest sets AGENT_HUB_TEST_MODE=1 (server/vitest.config.ts). Session clones
+ * created during tests must not block on `npm install`: shallow fixtures rarely
+ * ship lockfiles, and awaiting monorepo `install:all` against the checkout blows
+ * hook timeouts. Production omits this env var so installs stay awaited for
+ * Husky/eslint readiness before the first commit.
+ */
+function sessionWorkspaceDependencyInstallOpts(): Pick<
+  SetupDependenciesOptions,
+  'awaitInstall' | 'preferInstallAllScript'
+> {
+  if (process.env.AGENT_HUB_TEST_MODE === '1') {
+    return { awaitInstall: false, preferInstallAllScript: false };
+  }
+  return { awaitInstall: true, preferInstallAllScript: true };
+}
+
+function resolveInstallCommand(
+  cloneDir: string,
+  installCommand: string | null,
+  preferInstallAllScript: boolean,
+): string | null {
+  if (preferInstallAllScript) {
+    return resolveSessionInstallCommand(cloneDir, installCommand);
+  }
+  return installCommand || detectInstallCommand(cloneDir);
+}
+
+/**
+ * Link node_modules from the project cwd when present, otherwise run the package manager.
+ * Session clones use {@link SetupDependenciesOptions.awaitInstall} so git commit + Husky work on first push.
+ */
+async function setupDependencies(
   sourceDir: string,
   cloneDir: string,
   installCommand: string | null,
-): void {
+  options: SetupDependenciesOptions,
+): Promise<void> {
   const nodeModulesDirs: NodeModulesEntry[] = [];
 
   const rootNM = path.join(sourceDir, 'node_modules');
@@ -504,20 +644,72 @@ function setupDependencies(
     if (linked > 0) {
       console.log(`[Workspace] Symlinked ${linked} node_modules from source project`);
     }
+    if (linked > 0 && !needsDependencyInstall(cloneDir)) {
+      clearDependencyInstallFailureMarker(cloneDir);
+      return;
+    }
+    if (linked > 0 && needsDependencyInstall(cloneDir)) {
+      console.warn(
+        `[Workspace] Symlinked node_modules from source are incomplete for this clone (${cloneDir}) — running install`,
+      );
+    }
+  }
+
+  const installCmd = resolveInstallCommand(
+    cloneDir,
+    installCommand,
+    options.preferInstallAllScript,
+  );
+  if (!installCmd) {
     return;
   }
 
-  const installCmd = installCommand || detectInstallCommand(cloneDir);
-  if (installCmd) {
-    console.log(`[Workspace] No node_modules in source — running "${installCmd}" in clone`);
-    exec(installCmd, { cwd: cloneDir, timeout: 120000 }, (err) => {
-      if (err) {
-        console.warn(`[Workspace] Install failed in clone:`, err.message);
-      } else {
-        console.log(`[Workspace] Install completed in ${cloneDir}`);
-      }
-    });
+  const timeoutMs = options.awaitInstall
+    ? SESSION_INSTALL_TIMEOUT_MS
+    : BACKGROUND_INSTALL_TIMEOUT_MS;
+
+  if (options.awaitInstall) {
+    if (!needsDependencyInstall(cloneDir)) {
+      clearDependencyInstallFailureMarker(cloneDir);
+      return;
+    }
+    const prior = readDependencyInstallFailureMarker(cloneDir);
+    if (prior) {
+      throw new SessionDependencyInstallError(
+        `[Workspace] Session dependency install previously failed (${cloneDir}): ${prior}`,
+      );
+    }
+    try {
+      console.log(`[Workspace] Running "${installCmd}" in ${cloneDir} (awaiting completion)`);
+      await execP(installCmd, {
+        cwd: cloneDir,
+        timeout: timeoutMs,
+        maxBuffer: 32 * 1024 * 1024,
+        env: installChildEnv,
+      });
+      console.log(`[Workspace] Install completed in ${cloneDir}`);
+      clearDependencyInstallFailureMarker(cloneDir);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Workspace] Install failed in clone ${cloneDir}:`, message);
+      writeDependencyInstallFailureMarker(cloneDir, message);
+      throw new SessionDependencyInstallError(
+        `[Workspace] Dependency install failed in ${cloneDir}: ${message}`,
+      );
+    }
+    return;
   }
+
+  console.log(
+    `[Workspace] No node_modules in source — running "${installCmd}" in clone (background)`,
+  );
+  exec(installCmd, { cwd: cloneDir, timeout: timeoutMs, env: installChildEnv }, (err) => {
+    if (err) {
+      console.warn(`[Workspace] Install failed in clone:`, err.message);
+    } else {
+      console.log(`[Workspace] Install completed in ${cloneDir}`);
+    }
+  });
 }
 
 function copyFallback(projectCwd: string, destDir: string): string {
@@ -771,7 +963,10 @@ export async function getOrCreateProcessWorktree(
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, message);
     }
     await enableHuskyHooks(cloneDir);
-    setupDependencies(projectCwd, cloneDir, installCommand ?? null);
+    await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+      awaitInstall: false,
+      preferInstallAllScript: false,
+    });
     return cloneDir;
   }
 
@@ -814,7 +1009,10 @@ export async function getOrCreateProcessWorktree(
       );
     }
     await enableHuskyHooks(cloneDir);
-    setupDependencies(projectCwd, cloneDir, installCommand ?? null);
+    await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+      awaitInstall: false,
+      preferInstallAllScript: false,
+    });
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
   } catch (err: unknown) {
@@ -1027,6 +1225,15 @@ export async function ensureSessionWorkspace(
   onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
+    try {
+      await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     return session.worktree_path;
   }
 
@@ -1160,7 +1367,15 @@ export async function ensureSessionWorkspace(
     }
 
     await enableHuskyHooks(cloneDir);
-    setupDependencies(projectCwd, cloneDir, installCommand ?? null);
+    try {
+      await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
   }
@@ -1257,7 +1472,15 @@ export async function ensureSessionWorkspace(
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
 
-    setupDependencies(projectCwd, cloneDir, installCommand ?? null);
+    try {
+      await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
     persistFn(cloneDir, branchName, session.id);
     console.log(
       `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userToken ? ' (user token)' : ''}`,
@@ -1424,4 +1647,9 @@ export const __test = {
   cleanupPartialClone,
   defaultResolveInstallationToken,
   detectAndHandleBaseBranchDrift,
+  detectInstallCommand,
+  resolveSessionInstallCommand,
+  needsDependencyInstall,
+  sessionWorkspaceDependencyInstallOpts,
+  setupDependencies,
 };
