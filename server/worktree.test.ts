@@ -1197,3 +1197,48 @@ describe('fetchWithRetry — retry policy on the reuse path', () => {
     expect(calls[1].opts).toEqual(opts);
   });
 });
+
+describe('dependency install command helpers', () => {
+  const { detectInstallCommand, resolveSessionInstallCommand } = __test;
+
+  it('detectInstallCommand uses npm ci --include=dev when package-lock.json exists', () => {
+    const tmp = path.join(os.tmpdir(), `wt-cmd-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    try {
+      writeFileSync(path.join(tmp, 'package-lock.json'), '{}');
+      expect(detectInstallCommand(tmp)).toBe('npm ci --include=dev');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveSessionInstallCommand prefers npm run install:all when scripted', () => {
+    const tmp = path.join(os.tmpdir(), `wt-cmd-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    try {
+      writeFileSync(
+        path.join(tmp, 'package.json'),
+        JSON.stringify({ scripts: { 'install:all': 'npm ci && cd server && npm ci' } }),
+      );
+      expect(resolveSessionInstallCommand(tmp, null)).toBe('npm run install:all');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveSessionInstallCommand respects an explicit install command', () => {
+    const tmp = path.join(os.tmpdir(), `wt-cmd-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    try {
+      writeFileSync(
+        path.join(tmp, 'package.json'),
+        JSON.stringify({ scripts: { 'install:all': 'echo noop' } }),
+      );
+      expect(resolveSessionInstallCommand(tmp, 'npm ci --include=dev')).toBe(
+        'npm ci --include=dev',
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
