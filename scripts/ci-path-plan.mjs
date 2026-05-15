@@ -33,7 +33,9 @@ export function computeCiPlan(f) {
   const run_lint = any('global', 'server', 'client', 'electron', 'shared', 'scripts', 'e2e');
   const run_terraform = T('terraform');
   const run_build = any('global', 'client', 'shared');
-  const run_server = any('global', 'server', 'scripts');
+  // e2e-only edits still need a non-e2e regression signal until CI has a
+  // dedicated Playwright row; mirror `scripts/**` by fanning out server shards.
+  const run_server = any('global', 'server', 'scripts', 'e2e');
   const run_client = any('global', 'client', 'shared');
   const run_electron = any('global', 'electron');
   const run_mobile = any('global', 'mobile');

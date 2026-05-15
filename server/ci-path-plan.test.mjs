@@ -32,6 +32,14 @@ describe('computeCiPlan', () => {
     expect(p.test_matrix.include.some((r) => r.suite === 'client')).toBe(false);
   });
 
+  it('runs server tests and lint when only e2e/** changes', () => {
+    const p = computeCiPlan({ e2e: 'true' });
+    expect(p.run_lint).toBe(true);
+    expect(p.run_build).toBe(false);
+    expect(p.run_tests).toBe(true);
+    expect(p.test_matrix.include.filter((r) => r.suite === 'server')).toHaveLength(3);
+  });
+
   it('runs client build + tests when shared/** changes', () => {
     const p = computeCiPlan({ shared: 'true' });
     expect(p.run_lint).toBe(true);
