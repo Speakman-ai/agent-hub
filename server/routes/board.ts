@@ -21,7 +21,6 @@ import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
-import { onCardDone as watchdogOnCardDone } from '../session-watchdog.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -515,16 +514,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
               card: updatedCard,
             },
           );
-          // Watchdog: a card moving to Done means every session linked to
-          // this card has wrapped up. Mark them completed so the cron stops
-          // looking at them.
-          if (String(col.name || '').toLowerCase() === 'done') {
-            try {
-              watchdogOnCardDone(String(req.params.cardId));
-            } catch {
-              /* best-effort */
-            }
-          }
         }
         // Note: PR review is now triggered by the GitHub webhook handler
         // (pull_request.opened/synchronize) rather than by a card moving into

@@ -160,12 +160,6 @@ import {
 } from './browser-activity-emits.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
-import {
-  onUserMessageDispatched as watchdogOnUserMessage,
-  onAssistantToken as watchdogOnAssistantToken,
-  onCleanResult as watchdogOnCleanResult,
-  onProcExit as watchdogOnProcExit,
-} from './session-watchdog.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -1618,7 +1612,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         userMsgId = msg._existingMsgId!;
         broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
         reportUserMessagePersisted(true);
-        watchdogOnUserMessage(sessionId);
       } else if (!isAutoContinuation) {
         userMsgId = uuidv4();
         stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
@@ -1636,7 +1629,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           },
         });
         reportUserMessagePersisted(true);
-        watchdogOnUserMessage(sessionId);
       }
 
       const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
@@ -2745,16 +2737,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
           tryKickoffDelegationFromStream(accumulatedForKickoff);
-          // Watchdog: stream is alive, refresh last_token_at so the cron
-          // doesn't think this session has stalled.
-          watchdogOnAssistantToken(sessionId);
-        }
-
-        // Watchdog: a clean turn boundary (`result` without an error) means
-        // the session delivered a real reply. Clear awaiting_response so
-        // the cron stops looking at this row until the next user turn.
-        if (event.type === 'result' && !event.isError) {
-          watchdogOnCleanResult(sessionId);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {
@@ -2935,18 +2917,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       proc.on('close', async (code: number | null) => {
         activeProcesses.delete(sessionId);
-        // Watchdog: classify exit. code===0 with no streamErrorMessage and a
-        // recorded clean `result` event is considered clean. The token-path
-        // hook already cleared awaiting_response in that case; here we only
-        // record unclean exits so the audit log shows why a row stayed
-        // awaiting.
-        try {
-          watchdogOnProcExit(sessionId, {
-            clean: code === 0 && !spawnErrored && !streamErrorMessage,
-          });
-        } catch {
-          /* watchdog hook is best-effort */
-        }
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
         // spawn-prompt-payload.ts). Failures are swallowed inside
