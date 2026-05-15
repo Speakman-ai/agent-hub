@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.23.0
+  version: 1.24.0
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -790,6 +790,9 @@ components:
           type: string
         engine:
           type: string
+        checkpoint_rewind_supported:
+          type: boolean
+          description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
         model:
           type: string
         use_worktree:
@@ -832,6 +835,7 @@ components:
         - agent_id
         - name
         - engine
+        - checkpoint_rewind_supported
         - model
         - use_worktree
         - ask_mode
@@ -879,6 +883,9 @@ components:
       properties:
         error:
           type: string
+        code:
+          type: string
+          description: Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).
         details:
           type: array
           items:
@@ -1116,6 +1123,8 @@ components:
         anthropicApiKey:
           type: string
         anthropicApiKeySet:
+          type: boolean
+        codexDangerBypass:
           type: boolean
         _file:
           type: object
@@ -1582,6 +1591,9 @@ components:
         skill_principal_agent_id:
           type: string
           nullable: true
+        engine:
+          type: string
+          nullable: true
         created_at:
           type: string
       required:
@@ -1599,8 +1611,9 @@ components:
         - notify_on_run
         - model
         - skill_principal_agent_id
+        - engine
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id` are nullable to mean "use default".
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine` are nullable to mean "use default" — `engine` falls back to the skill principal agent's engine, then to `claude-code`.
     CronLog:
       type: object
       properties:
@@ -2459,86 +2472,6 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
-    WatchdogErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for watchdog routes.
-    WatchdogRow:
-      type: object
-      properties:
-        session_id:
-          type: string
-        card_id:
-          type: string
-          nullable: true
-        pr_url:
-          type: string
-          nullable: true
-        awaiting_response:
-          type: integer
-        last_token_at:
-          type: integer
-          nullable: true
-        last_user_message_at:
-          type: integer
-          nullable: true
-        nudge_count:
-          type: integer
-        last_nudge_at:
-          type: integer
-          nullable: true
-        budget_started_at:
-          type: integer
-          nullable: true
-        state:
-          type: string
-        disabled_reason:
-          type: string
-          nullable: true
-        created_at:
-          type: integer
-        updated_at:
-          type: integer
-      required:
-        - session_id
-        - card_id
-        - pr_url
-        - awaiting_response
-        - last_token_at
-        - last_user_message_at
-        - nudge_count
-        - last_nudge_at
-        - budget_started_at
-        - state
-        - disabled_reason
-        - created_at
-        - updated_at
-      description: Current row from `session_watchdog`.
-    WatchdogEvent:
-      type: object
-      properties:
-        id:
-          type: integer
-        session_id:
-          type: string
-        tier:
-          type: string
-        reason:
-          type: string
-          nullable: true
-        created_at:
-          type: integer
-      required:
-        - id
-        - session_id
-        - tier
-        - reason
-        - created_at
-      description: Audit row from `watchdog_events`.
     WikiPage:
       type: object
       properties:
@@ -5966,6 +5899,7 @@ paths:
       tags:
         - Sessions
       summary: Rewind a Claude Code session to a checkpoint UUID
+      description: "Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`."
       parameters:
         - schema:
             type: string
@@ -6006,7 +5940,7 @@ paths:
                   - uuid
                   - sessionId
         "400":
-          description: Validation failed or engine not claude-code.
+          description: Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.
           content:
             application/json:
               schema:
@@ -6946,7 +6880,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
       requestBody:
         content:
           application/json:
@@ -6975,6 +6909,8 @@ paths:
                 botGithubToken:
                   type: string
                   nullable: true
+                codexDangerBypass:
+                  type: boolean
               additionalProperties:
                 nullable: true
               description: Partial config update. Unknown keys are ignored. At least one allowed key must be present, otherwise the handler returns 400.
@@ -7543,7 +7479,7 @@ paths:
       tags:
         - Crons
       summary: Create a new cron job
-      description: "`schedule` must be a valid cron expression. `model` is validated against the `claude-code` engine allowlist. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      description: "`schedule` must be a valid cron expression. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
       requestBody:
         content:
           application/json:
@@ -7601,6 +7537,13 @@ paths:
                 skill_principal_agent_id:
                   type: string
                   nullable: true
+                engine:
+                  anyOf:
+                    - type: string
+                    - nullable: true
+                    - type: string
+                      enum:
+                        - ""
               required:
                 - name
                 - schedule
@@ -7623,7 +7566,7 @@ paths:
       tags:
         - Crons
       summary: Update a cron job
-      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear).
+      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).
       parameters:
         - schema:
             type: string
@@ -7687,6 +7630,13 @@ paths:
                 skill_principal_agent_id:
                   type: string
                   nullable: true
+                engine:
+                  anyOf:
+                    - type: string
+                    - nullable: true
+                    - type: string
+                      enum:
+                        - ""
       responses:
         "200":
           description: Updated cron.
@@ -9853,121 +9803,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/sessions/{sessionId}/watchdog:
-    get:
-      tags:
-        - Watchdog
-      summary: Read the current watchdog row + recent events for a session
-      description: Returns the per-session watchdog row plus the 20 most-recent audit events. If no row exists yet, `exists` is false and `events` is empty.
-      parameters:
-        - schema:
-            type: string
-            description: Session id.
-          required: true
-          description: Session id.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Watchdog state.
-          content:
-            application/json:
-              schema:
-                anyOf:
-                  - type: object
-                    properties:
-                      session_id:
-                        type: string
-                      exists:
-                        type: boolean
-                        enum:
-                          - false
-                      events:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WatchdogEvent"
-                    required:
-                      - session_id
-                      - exists
-                      - events
-                  - type: object
-                    properties:
-                      exists:
-                        type: boolean
-                        enum:
-                          - true
-                      row:
-                        $ref: "#/components/schemas/WatchdogRow"
-                      events:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WatchdogEvent"
-                    required:
-                      - exists
-                      - row
-                      - events
-  /api/sessions/{sessionId}/watchdog/nudge:
-    post:
-      tags:
-        - Watchdog
-      summary: Force a watchdog tier dispatch immediately (default T2)
-      description: Bypasses the idle/cooldown gates and dispatches the chosen tier now. Used by the UI "nudge" button and by ops tooling.
-      parameters:
-        - schema:
-            type: string
-            description: Session id.
-          required: true
-          description: Session id.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                tier:
-                  type: string
-                  enum:
-                    - T1
-                    - T2
-                    - T3
-                    - T4
-                  description: Which tier to force. Defaults to T2.
-      responses:
-        "202":
-          description: Dispatched.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  tier:
-                    type: string
-                    enum:
-                      - T1
-                      - T2
-                      - T3
-                      - T4
-                required:
-                  - ok
-                  - tier
-        "400":
-          description: Invalid tier value.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WatchdogErrorResponse"
-        "409":
-          description: Dispatch refused (watchdog disabled, session unknown, etc.).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WatchdogErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

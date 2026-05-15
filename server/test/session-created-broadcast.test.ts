@@ -34,7 +34,10 @@ describe('session_created broadcast coverage', () => {
       expect.objectContaining({
         type: 'session_created',
         agentId: agent.id,
-        session: expect.objectContaining({ id: res.body.id }),
+        session: expect.objectContaining({
+          id: res.body.id,
+          checkpoint_rewind_supported: true,
+        }),
       }),
     );
   });

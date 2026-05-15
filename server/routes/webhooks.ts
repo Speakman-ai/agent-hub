@@ -30,11 +30,8 @@ import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup
 import { buildResolvePrompt } from './pr-resolve.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
+import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
-import {
-  onCardDone as watchdogOnCardDone,
-  onPrMerged as watchdogOnPrMerged,
-} from '../session-watchdog.js';
 import type {
   AppConfig,
   RouteDeps,
@@ -844,7 +841,11 @@ export async function dispatchReviewFeedback(
     {
       const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (row) {
-        broadcast({ type: 'session_created', agentId: agent.id, session: row });
+        broadcast({
+          type: 'session_created',
+          agentId: agent.id,
+          session: enrichSessionForClient(row),
+        });
       }
     }
 
@@ -1338,7 +1339,11 @@ async function runReviewerDispatch(
   {
     const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (row) {
-      broadcast({ type: 'session_created', agentId: reviewer.id, session: row });
+      broadcast({
+        type: 'session_created',
+        agentId: reviewer.id,
+        session: enrichSessionForClient(row),
+      });
     }
   }
 
@@ -2067,16 +2072,6 @@ function handleWebhookPrClosed(
       stmts.moveKanbanCard.run(doneCol.id, 0, card.id);
       broadcast({ type: 'kanban_update', projectId: project.id });
       console.log(`[Webhook/Kanban] PR #${prNumber} merged — card "${card.title}" moved to Done`);
-    }
-    // Watchdog: the PR landed. Stop nudging any session linked to this card
-    // (matches by card id) or to this exact PR url (covers sessions that
-    // were linked by pr_url only, no kanban card).
-    try {
-      watchdogOnCardDone(card.id);
-      const prUrl = card.pr_url || payload.pull_request?.html_url;
-      if (prUrl) watchdogOnPrMerged(String(prUrl));
-    } catch {
-      /* best-effort */
     }
 
     let mergeAgentId: string | undefined;

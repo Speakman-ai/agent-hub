@@ -73,6 +73,7 @@ import {
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
+import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -133,6 +134,7 @@ import type {
   ChatMessage,
   BrowserToolActivityEvent,
 } from './types.js';
+import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import {
   HOST_REACT_ACTIONS_PARSE_CAP,
   resolveOrchestrationBudgets,
@@ -159,12 +161,6 @@ import {
 } from './browser-activity-emits.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
-import {
-  onUserMessageDispatched as watchdogOnUserMessage,
-  onAssistantToken as watchdogOnAssistantToken,
-  onCleanResult as watchdogOnCleanResult,
-  onProcExit as watchdogOnProcExit,
-} from './session-watchdog.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -1617,7 +1613,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         userMsgId = msg._existingMsgId!;
         broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
         reportUserMessagePersisted(true);
-        watchdogOnUserMessage(sessionId);
       } else if (!isAutoContinuation) {
         userMsgId = uuidv4();
         stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
@@ -1635,7 +1630,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           },
         });
         reportUserMessagePersisted(true);
-        watchdogOnUserMessage(sessionId);
       }
 
       const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
@@ -2191,7 +2185,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //   codex exec resume <session-id> --json "..."   — continue a session
         //   codex exec resume --last --json "..."         — continue the newest recorded session
         //   --sandbox read-only|workspace-write|danger-full-access
-        //   --full-auto                                   — low-friction workspace-write alias
+        //   --full-auto                                   — workspace-write convenience (still prompts for escalations)
+        //   --dangerously-bypass-approvals-and-sandbox — full bypass (alias `--yolo`; gated by `codexDangerBypass` / env)
         //   -m / --model                                  — model selector
         //   -C / --cd <dir>                               — working root
         //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)
@@ -2213,13 +2208,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('resume', engineSessionId);
         }
         args.push('--json', '--skip-git-repo-check');
-        if (isAskMode) {
-          args.push('--sandbox', 'read-only');
-        } else {
-          // --full-auto = `-a on-request --sandbox workspace-write`, which is
-          // the closest parity with Claude Code's bypassPermissions default.
-          args.push('--full-auto');
-        }
+        appendCodexExecSandboxFlags(args, {
+          askMode: isAskMode,
+          dangerBypass: !!config.codexDangerBypass,
+        });
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
         // rejects most explicit `--model` IDs (HTTP 400 "not supported when
         // using Codex with a ChatGPT account"). shouldPassModelFlag() filters
@@ -2744,16 +2736,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
           tryKickoffDelegationFromStream(accumulatedForKickoff);
-          // Watchdog: stream is alive, refresh last_token_at so the cron
-          // doesn't think this session has stalled.
-          watchdogOnAssistantToken(sessionId);
-        }
-
-        // Watchdog: a clean turn boundary (`result` without an error) means
-        // the session delivered a real reply. Clear awaiting_response so
-        // the cron stops looking at this row until the next user turn.
-        if (event.type === 'result' && !event.isError) {
-          watchdogOnCleanResult(sessionId);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {
@@ -2934,18 +2916,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       proc.on('close', async (code: number | null) => {
         activeProcesses.delete(sessionId);
-        // Watchdog: classify exit. code===0 with no streamErrorMessage and a
-        // recorded clean `result` event is considered clean. The token-path
-        // hook already cleared awaiting_response in that case; here we only
-        // record unclean exits so the audit log shows why a row stayed
-        // awaiting.
-        try {
-          watchdogOnProcExit(sessionId, {
-            clean: code === 0 && !spawnErrored && !streamErrorMessage,
-          });
-        } catch {
-          /* watchdog hook is best-effort */
-        }
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
         // spawn-prompt-payload.ts). Failures are swallowed inside
@@ -3657,7 +3627,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           S.updateSessionName.run(autoName, sessionId);
           broadcast({
             type: 'session-updated',
-            session: { ...sess, name: autoName },
+            session: enrichSessionForClient({ ...sess, name: autoName } as SessionRow),
           });
         }
 

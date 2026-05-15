@@ -19,12 +19,14 @@ import type {
   Project,
   Stmts,
 } from '../types.js';
-import { refreshShellPath, getCachedShellPath } from '../config.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
-import { normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
+import { normalizeCronEngine, normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
+import { resolveCronEngine } from '../cron-engine.js';
 import { getProjects } from '../project-model.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
@@ -70,9 +72,21 @@ interface CronImportData {
   project_id?: string;
   timeout_ms?: number | null;
   notify_on_run?: boolean | number;
-  // Optional Claude model id. Validated against `engineValidModels['claude-code']`
-  // by `normalizeCronModel`; unknown ids fall back to null (engine default) on
-  // import rather than 500ing the whole batch.
+  /**
+   * Optional CLI engine id (`claude-code`, `cursor-agent`, `gemini-cli`,
+   * `codex-cli`). Validated against `ALL_SUPPORTED_ENGINES` by
+   * `normalizeCronEngine`; unknown values import as null so the run-time
+   * resolver falls back through the principal agent / `claude-code`
+   * default rather than 500ing the whole batch.
+   */
+  engine?: string | null;
+  /**
+   * Optional model id. Validated against `engineValidModels[<resolved
+   * engine>]` by `normalizeCronModel` — the resolved engine is the
+   * imported `engine` field above, falling back to the principal agent's
+   * engine and then `claude-code`. Unknown ids fall back to null (engine
+   * default) on import rather than 500ing the batch.
+   */
   model?: string | null;
   /** Optional agent id for spawn skill-credential resolution; must belong to the import target project. */
   skill_principal_agent_id?: string | null;
@@ -275,6 +289,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       botGithubUser: getGhBotUser() || null,
       anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
       anthropicApiKeySet: !!config.anthropicApiKey,
+      codexDangerBypass: !!config.codexDangerBypass,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
@@ -291,14 +306,20 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     });
   });
 
-  router.get('/api/config/models', async (_req: Request, res: Response) => {
+  router.get('/api/config/models', async (req: Request, res: Response) => {
     // Engine auth resolution lives in `engine-auth-status.ts` (shared with
     // `/api/setup/status`) so the spawn-time view of "is X usable?" can't
     // drift from the Settings / wizard view. Gemini auth stays inline here
     // because it's API-key-only and not yet a first-class engine in the
     // engine-status helper.
     const cursorBin = deps.getCursorBin?.() ?? config.cursorBin;
-    const engineStatus = await getEngineAuthStatus({ config, cursorBin });
+    const authedReq = req as AuthenticatedRequest;
+    const engineStatus = await getEngineAuthStatus({
+      config,
+      cursorBin,
+      userId: authedReq.authUserId ?? null,
+      dataDir: config.dataDir,
+    });
     const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
 
     res.json(
@@ -323,11 +344,15 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'apiKey',
       'publicUrl',
       'botGithubToken',
+      'codexDangerBypass',
     ] as const;
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
         updates[key] = (req.body as Record<string, unknown>)[key];
+    }
+    if (updates.codexDangerBypass !== undefined) {
+      updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid config fields provided' });
@@ -1173,13 +1198,29 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         let imported = 0;
         for (const c of crons) {
           if (existingNames.has(c.name)) continue;
-          // Validate `model` against the cron API allowlist so a stale or
-          // hand-crafted export can't smuggle an unknown id into the DB
-          // and crash the CLI at run time. An invalid id falls back to
-          // null (engine default) instead of failing the whole import.
+          // Validate `engine` first; an invalid value imports as null so the
+          // run-time resolver inherits from the principal agent / falls back
+          // to claude-code rather than failing the whole import.
+          let importedEngine: string | null = null;
+          try {
+            importedEngine = normalizeCronEngine(c.engine);
+          } catch {
+            importedEngine = null;
+          }
+          const importedSkillPrincipal = cronImportSkillPrincipal(
+            c.skill_principal_agent_id,
+            targetProject,
+          );
+          // Validate `model` against the engine the imported cron will run
+          // under (explicit → principal → claude-code). An invalid id falls
+          // back to null (engine default) instead of failing the import.
+          const importEngine = resolveCronEngine(
+            { engine: importedEngine, skill_principal_agent_id: importedSkillPrincipal },
+            targetProject,
+          );
           let importedModel: string | null = null;
           try {
-            importedModel = normalizeCronModel(c.model);
+            importedModel = normalizeCronModel(c.model, importEngine);
           } catch {
             importedModel = null;
           }
@@ -1193,7 +1234,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
             c.notify_on_run ? 1 : 0,
             importedModel,
-            cronImportSkillPrincipal(c.skill_principal_agent_id, targetProject),
+            importedSkillPrincipal,
+            importedEngine,
           );
           imported++;
         }
@@ -1757,20 +1799,38 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         let imported = 0;
         for (const c of data.crons) {
           if (existingNames.has(c.name)) continue;
-          // Validate `model` against the cron API allowlist; invalid id
-          // falls back to null (engine default) so a single bad row
-          // doesn't take down the whole v1-agents import.
-          let importedModel: string | null = null;
+          // Validate `engine` first; an invalid value imports as null so the
+          // run-time resolver inherits from the principal agent / falls back
+          // to claude-code rather than failing the whole import.
+          let importedEngine: string | null = null;
           try {
-            importedModel = normalizeCronModel(c.model);
+            importedEngine = normalizeCronEngine(c.engine);
           } catch {
-            importedModel = null;
+            importedEngine = null;
           }
           const projectIdForPrincipal =
             typeof c.project_id === 'string' && c.project_id.trim() ? c.project_id.trim() : '';
           const principalProject = projectIdForPrincipal
             ? (getProjects().find((p) => p.id === projectIdForPrincipal) ?? null)
             : null;
+          const importedSkillPrincipal = cronImportSkillPrincipal(
+            c.skill_principal_agent_id,
+            principalProject,
+          );
+          // Validate `model` against the engine the imported cron will run
+          // under (explicit → principal → claude-code). An invalid id falls
+          // back to null (engine default) so a single bad row doesn't take
+          // down the whole v1-agents import.
+          const importEngine = resolveCronEngine(
+            { engine: importedEngine, skill_principal_agent_id: importedSkillPrincipal },
+            principalProject,
+          );
+          let importedModel: string | null = null;
+          try {
+            importedModel = normalizeCronModel(c.model, importEngine);
+          } catch {
+            importedModel = null;
+          }
           stmts.createCron.run(
             c.name,
             c.schedule,
@@ -1781,7 +1841,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
             c.notify_on_run ? 1 : 0,
             importedModel,
-            cronImportSkillPrincipal(c.skill_principal_agent_id, principalProject),
+            importedSkillPrincipal,
+            importedEngine,
           );
           imported++;
         }

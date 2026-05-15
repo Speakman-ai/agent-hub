@@ -47,6 +47,7 @@
 
 import cron from 'node-cron';
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
 
 // ─── Custom refinements ──────────────────────────────────────────
 
@@ -114,11 +115,12 @@ export const CronComponent = registerComponent(
       notify_on_run: z.number().int(),
       model: z.string().nullable(),
       skill_principal_agent_id: z.string().nullable(),
+      engine: z.string().nullable(),
       created_at: z.string(),
     })
     .openapi({
       description:
-        'A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id` are nullable to mean "use default".',
+        'A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine` are nullable to mean "use default" — `engine` falls back to the skill principal agent\'s engine, then to `claude-code`.',
     }),
 );
 
@@ -184,6 +186,18 @@ export const CronErrorResponseComponent = registerComponent(
 // ─── Request schemas ──────────────────────────────────────────────
 
 /**
+ * `engine` accepts one of `ALL_SUPPORTED_ENGINES`, null, or empty string
+ * (= "use default / inherit from skill principal at run time"). Loose
+ * accept on the wire to match the rest of the cron fields; the handler
+ * (`normalizeCronEngine`) does the strict allowlist check so that the
+ * 400 error message can list the valid engine ids.
+ */
+const cronEngine = z
+  .union([z.string(), z.null(), z.literal('')])
+  .nullable()
+  .optional();
+
+/**
  * POST /api/crons — create a cron job.
  *
  * Required: `name`, `schedule` (valid cron expression), `prompt`. All
@@ -204,6 +218,7 @@ export const CreateCronRequestSchema = z.object({
   notify_on_run: notifyOnRun,
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
+  engine: cronEngine,
 });
 
 /**
@@ -230,6 +245,7 @@ export const UpdateCronRequestSchema = z.object({
   notify_on_run: notifyOnRun,
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
+  engine: cronEngine,
 });
 
 // ─── OpenAPI path registrations ───────────────────────────────────
@@ -264,8 +280,7 @@ registerPath({
   path: '/api/crons',
   tags: ['Crons'],
   summary: 'Create a new cron job',
-  description:
-    "`schedule` must be a valid cron expression. `model` is validated against the `claude-code` engine allowlist. `skill_principal_agent_id` (when provided) must be an agent in the cron's project.",
+  description: `\`schedule\` must be a valid cron expression. \`engine\` (when provided) must be one of: ${ALL_SUPPORTED_ENGINES.join(', ')} — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to \`claude-code\`. \`model\` is validated against \`engineValidModels[engine]\` for whichever engine the cron resolves to. \`skill_principal_agent_id\` (when provided) must be an agent in the cron's project.`,
   request: { body: { content: jsonContent(CreateCronRequestSchema) } },
   responses: {
     200: { description: 'Created cron.', content: jsonContent(CronComponent) },
@@ -280,7 +295,7 @@ registerPath({
   tags: ['Crons'],
   summary: 'Update a cron job',
   description:
-    'Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear).',
+    'Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).',
   request: {
     params: cronIdParams,
     body: { content: jsonContent(UpdateCronRequestSchema) },

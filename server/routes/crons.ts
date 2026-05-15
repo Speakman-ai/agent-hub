@@ -12,30 +12,57 @@ import type {
   ThreadEntryRow,
 } from '../types.js';
 import { CreateCronRequestSchema, UpdateCronRequestSchema } from './crons.openapi.js';
+import { DEFAULT_CRON_ENGINE, isSupportedEngine, resolveCronEngine } from '../cron-engine.js';
+import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
+
+/**
+ * Coerce an `engine` request value into the DB-friendly form: a non-empty
+ * string from `ALL_SUPPORTED_ENGINES`, or null (= "use default / inherit
+ * from skill principal at run time"). Throws on a bad type or an unknown
+ * engine so the API returns 400 instead of persisting a value the resolver
+ * would silently fall back from.
+ */
+export function normalizeCronEngine(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new Error('engine must be a string');
+  }
+  if (!isSupportedEngine(raw)) {
+    throw new Error(`engine must be one of: ${ALL_SUPPORTED_ENGINES.join(', ')}`);
+  }
+  return raw;
+}
 
 /**
  * Coerce a `model` request value into the DB-friendly form: a non-empty
- * string from the `claude-code` engine allowlist, or null (use default).
- * Throws on a bad type or an unknown id so the API returns 400 instead of
- * silently persisting a model that the CLI will reject at run time.
+ * string from the engine's allowlist (`config.engineValidModels[engine]`),
+ * or null (use that engine's default). Throws on a bad type or an unknown
+ * id so the API returns 400 instead of silently persisting a model the CLI
+ * will reject at run time.
  *
- * Crons currently always run via the `claude-code` engine (see runCronJob
- * in heartbeat.ts), so we validate against that allowlist only. If/when
- * crons gain a per-row engine field, validation should pivot to that.
+ * The validation engine is whichever engine the cron will run under (see
+ * `resolveCronEngine`): an explicit per-row `engine`, the skill principal
+ * agent's `engine`, or the historical `claude-code` fallback. This keeps a
+ * Cursor cron from accepting a Claude id, and vice versa.
  *
- * Exported (module-scoped) so import paths in `routes/config.ts` can
- * reuse the same allowlist check on cron rows arriving via project /
- * v1-agents config import. Keeping a single validator avoids drift if
- * the allowlist grows or shrinks.
+ * Exported (module-scoped) so import paths in `routes/config.ts` can reuse
+ * the same allowlist check on cron rows arriving via project / v1-agents
+ * config import. The optional `engine` argument lets callers pass the
+ * already-resolved engine; defaults to `DEFAULT_CRON_ENGINE` so legacy
+ * call sites that haven't been threaded through still validate against
+ * the historical Claude allowlist (i.e. unchanged behaviour).
  */
-export function normalizeCronModel(raw: unknown): string | null {
+export function normalizeCronModel(
+  raw: unknown,
+  engine: string = DEFAULT_CRON_ENGINE,
+): string | null {
   if (raw === null || raw === undefined || raw === '') return null;
   if (typeof raw !== 'string') {
     throw new Error('model must be a string');
   }
-  const allowed = config.engineValidModels['claude-code'] || [];
+  const allowed = config.engineValidModels[engine] || [];
   if (!allowed.includes(raw)) {
-    throw new Error(`model must be one of: ${allowed.join(', ')}`);
+    throw new Error(`model must be one of (engine=${engine}): ${allowed.join(', ')}`);
   }
   return raw;
 }
@@ -139,14 +166,15 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       notify_on_run,
       model,
       skill_principal_agent_id,
+      engine,
     } = parsed;
 
     const normalizedTimeout = timeout_ms !== undefined ? coerceTimeoutMs(timeout_ms) : null;
     const normalizedNotify = notify_on_run !== undefined ? coerceNotifyOnRun(notify_on_run) : 0;
 
-    let normalizedModel: string | null;
+    let normalizedEngine: string | null;
     try {
-      normalizedModel = normalizeCronModel(model);
+      normalizedEngine = normalizeCronEngine(engine);
     } catch (err) {
       return res.status(400).json({ error: (err as Error).message });
     }
@@ -163,6 +191,23 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: (err as Error).message });
     }
 
+    // Validate the model against the engine that this cron would actually run
+    // under (explicit `engine` → skill-principal agent's engine → claude-code).
+    // This keeps a cursor-agent cron from accepting a Claude id and vice versa.
+    const projects = getProjects();
+    const project = (project_id && projects.find((p) => p.id === project_id)) || null;
+    const effectiveEngine = resolveCronEngine(
+      { engine: normalizedEngine, skill_principal_agent_id: normalizedSkillPrincipal },
+      project,
+    );
+
+    let normalizedModel: string | null;
+    try {
+      normalizedModel = normalizeCronModel(model, effectiveEngine);
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+
     const result = stmts.createCron.run(
       name,
       schedule,
@@ -174,6 +219,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       normalizedNotify,
       normalizedModel,
       normalizedSkillPrincipal,
+      normalizedEngine,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
@@ -197,6 +243,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       notify_on_run,
       model,
       skill_principal_agent_id,
+      engine,
     } = parsed;
 
     let nextTimeout: number | null = existing.timeout_ms;
@@ -212,10 +259,10 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       nextNotify = coerceNotifyOnRun(notify_on_run);
     }
 
-    let nextModel: string | null = existing.model;
-    if (Object.prototype.hasOwnProperty.call(req.body, 'model')) {
+    let nextEngine: string | null = existing.engine;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'engine')) {
       try {
-        nextModel = normalizeCronModel(model);
+        nextEngine = normalizeCronEngine(engine);
       } catch (err) {
         return res.status(400).json({ error: (err as Error).message });
       }
@@ -238,6 +285,39 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: (err as Error).message });
     }
 
+    // Resolve the engine the row will run under after this update so model
+    // validation lines up with the run-time decision (see POST handler note).
+    const projects = getProjects();
+    const projectForResolve =
+      (nextProjectId && projects.find((p) => p.id === nextProjectId)) || null;
+    const effectiveEngine = resolveCronEngine(
+      { engine: nextEngine, skill_principal_agent_id: nextSkillPrincipal },
+      projectForResolve,
+    );
+
+    let nextModel: string | null = existing.model;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'model')) {
+      try {
+        nextModel = normalizeCronModel(model, effectiveEngine);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    } else if (
+      // When the engine changes but the model is left alone, the existing model
+      // may now be invalid for the newly resolved engine. Re-validate the
+      // surviving value so we don't silently persist a Claude id under a
+      // Cursor engine. Clearing on incompatibility is the safest behaviour;
+      // the user can resend a compatible model in the same PUT.
+      Object.prototype.hasOwnProperty.call(req.body, 'engine') &&
+      existing.model
+    ) {
+      try {
+        nextModel = normalizeCronModel(existing.model, effectiveEngine);
+      } catch {
+        nextModel = null;
+      }
+    }
+
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
@@ -249,6 +329,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       nextNotify,
       nextModel,
       nextSkillPrincipal,
+      nextEngine,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id) as CronRow;
