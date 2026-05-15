@@ -4,13 +4,12 @@ name: Deploy Prod-2
 #   1. workflow_dispatch — operator manually rolls an existing release tag to
 #      agent-hub-prod-2 (typically after prod-1 has soaked, or to propagate a
 #      prod-1-only hotfix).
-#   2. workflow_call — invoked by `release-all.yml` after a fresh release tag
-#      has been cut and prod-1 has rolled, so prod-2 lands in the same
-#      orchestrated run alongside dev.
+#   2. workflow_call — invoked by `.github/workflows/release-all.yml` (shown in
+#      the Actions tab as workflow **Release**).
 #
-# The release/tagging/notes/DMG steps and prod-1 rollout still live in
-# `release-prod.yml` / `release-all.yml`; this workflow only deploys an
-# *existing* tag to the prod-2 instance.
+# Release tagging and prod-1 still live in `release-prod.yml`. The orchestrated
+# **Release** workflow (`release-all.yml`) invokes this callable after tagging.
+# This file only rolls an existing tag to prod-2.
 on:
   workflow_dispatch:
     inputs:

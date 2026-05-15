@@ -1,0 +1,348 @@
+# Builds the server image and pushes it to public ECR, then optionally
+# restarts the dockerized dev sandbox (SSM pull :main digest check).
+#
+# Called by `release-all.yml` after a semver tag is pushed. Also reachable
+# directly via `workflow_dispatch` for emergency image builds without a
+# version bump (`push-image.yml` delegates here).
+#
+# See also: wiki / deployment-guide (docker dev sandbox path).
+name: ECR publish and docker dev rollout
+
+on:
+  workflow_call:
+    inputs:
+      git_ref:
+        description: >-
+          Ref to checkout before build (e.g. refs/tags/v1.2.3 or refs/heads/main).
+        required: true
+        type: string
+      reset_instance:
+        description: >-
+          When true (with rollout), wipes Agent Hub state on the sandbox before
+          restart; see `.github/workflows/push-image.yml` history for behavior.
+        required: false
+        type: boolean
+        default: false
+      rollout:
+        description: When true, run SSM docker restart after the image push.
+        required: false
+        type: boolean
+        default: true
+      version_tag:
+        description: >-
+          Optional extra immutable tag pushed alongside sha/branch (e.g. refs/tags/v1.2.3).
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      reset_instance:
+        description: >-
+          Wipe Agent Hub state on the dev sandbox before restart (fresh-setup test).
+          Preserves OS, /etc/letsencrypt, and /data/config.json.
+        required: false
+        type: boolean
+        default: false
+      rollout:
+        description: Restart Agent Hub docker on the dev sandbox after push via SSM.
+        required: false
+        type: boolean
+        default: true
+      version_tag:
+        description: >-
+          Optional extra immutable tag pushed alongside branch/sha (e.g. refs/tags/v1.2.3).
+        required: false
+        type: string
+        default: ''
+
+# One rollout at a time; cancel superseded manual runs against the same ref.
+concurrency:
+  group: ecr-publish-docker-dev-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write # OIDC: assume AWS role without long-lived keys
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: us-east-1 # ECR Public API is us-east-1 only
+  ECR_PUBLIC_URI: public.ecr.aws/h9t4v7h0/agent-hub
+  AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
+
+jobs:
+  push:
+    name: Build + push image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out source (called from Release workflow)
+        if: github.event_name == 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ inputs.git_ref }}
+
+      - name: Check out source (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR Public
+        run: |
+          aws ecr-public get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin public.ecr.aws
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute tags
+        id: tags
+        env:
+          INPUT_VERSION_TAG: ${{ inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          EXTRA_TAG=""
+          if [[ -n "$INPUT_VERSION_TAG" ]]; then
+            if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
+              EXTRA_TAG="${INPUT_VERSION_TAG#refs/tags/}"
+            else
+              EXTRA_TAG="$INPUT_VERSION_TAG"
+            fi
+          fi
+
+          echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          {
+            echo "docker_tags_multi<<DOCKER_TAGS_EOF"
+            echo "${ECR_PUBLIC_URI}:${SHA_SHORT}"
+            echo "${ECR_PUBLIC_URI}:${BRANCH}"
+            if [[ -n "$EXTRA_TAG" ]]; then
+              echo "${ECR_PUBLIC_URI}:${EXTRA_TAG}"
+            fi
+            echo "DOCKER_TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build + push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.docker_tags_multi }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        env:
+          ST_SHA: ${{ steps.tags.outputs.sha_short }}
+          ST_BRANCH: ${{ steps.tags.outputs.branch }}
+        run: |
+          {
+            echo "### Pushed image"
+            echo ""
+            echo "- \`${ECR_PUBLIC_URI}:${ST_SHA}\`"
+            echo "- \`${ECR_PUBLIC_URI}:${ST_BRANCH}\`"
+            echo ""
+            echo "Pull:"
+            echo '```'
+            echo "docker pull ${ECR_PUBLIC_URI}:${ST_SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-dev-sandbox:
+    name: Deploy dev sandbox (Docker + SSM)
+    needs: push
+    if: inputs.rollout
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
+      AWS_DEPLOY_REGION: us-east-2
+      DEV_SANDBOX_INSTANCE_ID: i-066e44ff85ec24d8e
+      EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEPLOY_REGION }}
+
+      - name: Restart Agent Hub on dev EC2 (pull fresh image)
+        env:
+          RESET_INSTANCE: ${{ inputs.reset_instance }}
+        run: |
+          set -euo pipefail
+          DATA_ROOT="/var/lib/agent-hub"
+          BOOL_RESET="${RESET_INSTANCE,,}"
+          if [[ "$BOOL_RESET" == "true" ]]; then
+            SCRIPT=$(cat <<EOF
+          set -euo pipefail
+          DATA_ROOT="$DATA_ROOT"
+          if [ -f "\$DATA_ROOT/data/config.json" ]; then
+            sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
+          fi
+          sudo systemctl stop agenthub-server || true
+          sudo docker rm -f agenthub-server 2>/dev/null || true
+          sudo rm -rf "\$DATA_ROOT/data" "\$DATA_ROOT/uploads" "\$DATA_ROOT/projects"
+          sudo install -d -m 0755 -o 1000 -g 1000 "\$DATA_ROOT/data" "\$DATA_ROOT/uploads" "\$DATA_ROOT/projects"
+          if [ -f /tmp/agent-hub-config.json ]; then
+            sudo install -m 0600 -o 1000 -g 1000 /tmp/agent-hub-config.json "\$DATA_ROOT/data/config.json"
+            sudo rm -f /tmp/agent-hub-config.json
+          fi
+          sudo systemctl start agenthub-server
+          sleep 5
+          sudo systemctl is-active agenthub-server
+          EOF
+          )
+            COMMENT="CI fresh-setup reset on dev sandbox ${{ github.sha }}"
+          else
+            SCRIPT=$(cat <<EOF
+          set -euo pipefail
+          EXPECTED_DIGEST="$EXPECTED_DIGEST"
+          sudo systemctl restart agenthub-server
+          sudo systemctl is-active agenthub-server
+
+          POLL_TIMEOUT=240
+          POLL_INTERVAL=5
+          POLL_DEADLINE=\$(( \$(date +%s) + POLL_TIMEOUT ))
+          LOCAL_DIGEST=""
+          CONTAINER_IMAGE_ID=""
+          LOCAL_IMAGE_ID=""
+          attempts=0
+          while :; do
+            attempts=\$(( attempts + 1 ))
+            LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+              | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+            CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' 2>/dev/null || true)
+
+            digest_ok="false"
+            container_ok="false"
+            if [ -z "\$EXPECTED_DIGEST" ] || [ "\$LOCAL_DIGEST" = "\$EXPECTED_DIGEST" ]; then
+              digest_ok="true"
+            fi
+            if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" = "\$LOCAL_IMAGE_ID" ]; then
+              container_ok="true"
+            fi
+
+            echo "wait_for_deploy attempt=\$attempts digest_ok=\$digest_ok container_ok=\$container_ok local_digest=\$LOCAL_DIGEST"
+
+            if [ "\$digest_ok" = "true" ] && [ "\$container_ok" = "true" ]; then
+              break
+            fi
+            if [ \$(date +%s) -ge \$POLL_DEADLINE ]; then
+              echo "wait_for_deploy: timed out after \${POLL_TIMEOUT}s (\$attempts attempts)" >&2
+              break
+            fi
+            sleep "\$POLL_INTERVAL"
+          done
+
+          echo "EXPECTED_DIGEST=\$EXPECTED_DIGEST"
+          echo "LOCAL_REPO_DIGEST=\$LOCAL_DIGEST"
+          echo "LOCAL_IMAGE_ID=\$LOCAL_IMAGE_ID"
+          echo "CONTAINER_IMAGE_ID=\$CONTAINER_IMAGE_ID"
+
+          if [ -z "\$EXPECTED_DIGEST" ]; then
+            echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
+            echo "OK: agenthub-server restarted (digest assertion skipped)."
+            exit 0
+          fi
+
+          if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+            echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            exit 1
+          fi
+
+          if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :main image-id (\$LOCAL_IMAGE_ID)" >&2
+            exit 1
+          fi
+
+          if [ -z "\$CONTAINER_IMAGE_ID" ] || [ -z "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: agenthub-server container not running after \${POLL_TIMEOUT}s" >&2
+            exit 1
+          fi
+
+          echo "OK: agenthub-server is running the just-pushed image."
+          EOF
+          )
+            COMMENT="CI deploy after ECR push ${{ github.sha }}"
+          fi
+          PARAMS_JSON=$(printf '%s' "$SCRIPT" | jq -Rcs '{commands: split("\n") | map(select(length > 0))}')
+          echo "reset_instance=$RESET_INSTANCE"
+          echo "ssm-comment=$COMMENT"
+          CMD_ID="$(aws ssm send-command \
+            --region "$AWS_DEPLOY_REGION" \
+            --instance-ids "$DEV_SANDBOX_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "$COMMENT" \
+            --parameters "$PARAMS_JSON" \
+            --output text \
+            --query 'Command.CommandId')"
+          echo "SSM CommandId=$CMD_ID"
+          for i in $(seq 1 90); do
+            STATUS="$(aws ssm get-command-invocation \
+              --region "$AWS_DEPLOY_REGION" \
+              --command-id "$CMD_ID" \
+              --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+              --query Status \
+              --output text || true)"
+            echo "poll $i status=$STATUS"
+            if [[ "$STATUS" == "Success" ]]; then
+              aws ssm get-command-invocation \
+                --region "$AWS_DEPLOY_REGION" \
+                --command-id "$CMD_ID" \
+                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --query StandardOutputContent \
+                --output text
+              exit 0
+            fi
+            if [[ "$STATUS" == "Failed" ]] || [[ "$STATUS" == "Cancelled" ]] || [[ "$STATUS" == "TimedOut" ]] || [[ "$STATUS" == "Cancelling" ]]; then
+              aws ssm get-command-invocation \
+                --region "$AWS_DEPLOY_REGION" \
+                --command-id "$CMD_ID" \
+                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --output json
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for SSM" >&2
+          exit 1
+
+      - name: Deploy summary
+        env:
+          RESET_INSTANCE: ${{ inputs.reset_instance }}
+        run: |
+          {
+            echo "### Dev sandbox"
+            echo ""
+            BOOL_RESET="${RESET_INSTANCE,,}"
+            if [[ "$BOOL_RESET" == "true" ]]; then
+              echo "**Reset mode** on instance \`$DEV_SANDBOX_INSTANCE_ID\`."
+            else
+              echo "Restarted \`agenthub-server\` on \`$DEV_SANDBOX_INSTANCE_ID\` (pull picks up \`:main\`)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
