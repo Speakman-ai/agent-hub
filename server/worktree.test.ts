@@ -1199,7 +1199,11 @@ describe('fetchWithRetry — retry policy on the reuse path', () => {
 });
 
 describe('dependency install command helpers', () => {
-  const { detectInstallCommand, resolveSessionInstallCommand } = __test;
+  const {
+    detectInstallCommand,
+    resolveSessionInstallCommand,
+    sessionWorkspaceDependencyInstallOpts,
+  } = __test;
 
   it('detectInstallCommand uses npm ci --include=dev when package-lock.json exists', () => {
     const tmp = path.join(os.tmpdir(), `wt-cmd-${Date.now()}`);
@@ -1239,6 +1243,25 @@ describe('dependency install command helpers', () => {
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('sessionWorkspaceDependencyInstallOpts awaits install only outside Vitest test mode', () => {
+    const prev = process.env.AGENT_HUB_TEST_MODE;
+    try {
+      delete process.env.AGENT_HUB_TEST_MODE;
+      expect(sessionWorkspaceDependencyInstallOpts()).toEqual({
+        awaitInstall: true,
+        preferInstallAllScript: true,
+      });
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      expect(sessionWorkspaceDependencyInstallOpts()).toEqual({
+        awaitInstall: false,
+        preferInstallAllScript: false,
+      });
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HUB_TEST_MODE;
+      else process.env.AGENT_HUB_TEST_MODE = prev;
     }
   });
 });

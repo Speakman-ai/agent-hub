@@ -519,6 +519,23 @@ interface SetupDependenciesOptions {
   preferInstallAllScript: boolean;
 }
 
+/**
+ * Vitest sets AGENT_HUB_TEST_MODE=1 (server/vitest.config.ts). Session clones
+ * created during tests must not block on `npm install`: shallow fixtures rarely
+ * ship lockfiles, and awaiting monorepo `install:all` against the checkout blows
+ * hook timeouts. Production omits this env var so installs stay awaited for
+ * Husky/eslint readiness before the first commit.
+ */
+function sessionWorkspaceDependencyInstallOpts(): Pick<
+  SetupDependenciesOptions,
+  'awaitInstall' | 'preferInstallAllScript'
+> {
+  if (process.env.AGENT_HUB_TEST_MODE === '1') {
+    return { awaitInstall: false, preferInstallAllScript: false };
+  }
+  return { awaitInstall: true, preferInstallAllScript: true };
+}
+
 function resolveInstallCommand(
   cloneDir: string,
   installCommand: string | null,
@@ -1152,8 +1169,7 @@ export async function ensureSessionWorkspace(
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
-      awaitInstall: true,
-      preferInstallAllScript: true,
+      ...sessionWorkspaceDependencyInstallOpts(),
     });
     return session.worktree_path;
   }
@@ -1289,8 +1305,7 @@ export async function ensureSessionWorkspace(
 
     await enableHuskyHooks(cloneDir);
     await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-      awaitInstall: true,
-      preferInstallAllScript: true,
+      ...sessionWorkspaceDependencyInstallOpts(),
     });
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
@@ -1389,8 +1404,7 @@ export async function ensureSessionWorkspace(
     await enableHuskyHooks(cloneDir);
 
     await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-      awaitInstall: true,
-      preferInstallAllScript: true,
+      ...sessionWorkspaceDependencyInstallOpts(),
     });
     persistFn(cloneDir, branchName, session.id);
     console.log(
@@ -1561,4 +1575,5 @@ export const __test = {
   detectInstallCommand,
   resolveSessionInstallCommand,
   needsDependencyInstall,
+  sessionWorkspaceDependencyInstallOpts,
 };
