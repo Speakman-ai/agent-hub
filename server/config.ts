@@ -350,9 +350,18 @@ const config: AppConfig = {
   // ── Captures ──────────────────────────────────────────────────
   capturesEnabled: resolve('AGENT_HUB_CAPTURES_ENABLED', 'capturesEnabled', 'false') === 'true',
 
-  codexDangerBypass:
-    envMeansTrue('AGENT_HUB_CODEX_DANGER_BYPASS') ||
-    coerceConfigBooleanLoose(fileConfig.codexDangerBypass, false),
+  // Default true: Codex's Linux bubblewrap sandbox fails in typical containers
+  // (no unprivileged user namespaces). Opt out with AGENT_HUB_CODEX_DANGER_BYPASS=false
+  // or `"codexDangerBypass": false` in config.json.
+  codexDangerBypass: (() => {
+    const k = 'AGENT_HUB_CODEX_DANGER_BYPASS' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], true);
+    }
+    return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
+  })(),
 
   // ── Host browser sessions (Stagehand / Playwright Chromium) ──
   browserMaxConcurrentContexts: clampFiniteInt(

@@ -43,7 +43,7 @@ function makeConfig(): AppConfig {
     openaiApiKey: null,
     geminiApiKey: null,
     codexApiKey: null,
-    codexDangerBypass: false,
+    codexDangerBypass: true,
     cursorApiKey: null,
     slackWebhookUrl: null,
     capturesEnabled: false,

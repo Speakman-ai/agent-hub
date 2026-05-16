@@ -45,6 +45,7 @@ delete process.env.AGENT_HUB_DEFAULT_USERNAME;
 // write their own config.json and expect env not to win.
 delete process.env.AGENT_HUB_PUBLIC_URL;
 delete process.env.AGENT_HUB_AGENT_URL;
+delete process.env.AGENT_HUB_CODEX_DANGER_BYPASS;
 
 // ─── Hard guard: tests must never spawn the real CLI binaries ────────────────
 // History: tests that didn't mock `child_process` were spawning real `claude`
