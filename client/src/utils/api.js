@@ -523,6 +523,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
+  putMyAgentEngineOverrides: (body) =>
+    fetchJSON('/auth/me/agent-engine-overrides', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
   getSkillCredentials: (skillId) =>
     fetchJSON(
       `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,

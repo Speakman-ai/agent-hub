@@ -5,7 +5,7 @@ vi.mock('./user-preferences-store.js', () => ({
   getUserPreferencesRow: vi.fn(() => ({})),
 }));
 
-import { resolveEffectiveModel } from './effective-model.js';
+import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import { getUserPreferencesRow } from './user-preferences-store.js';
 
 function makeCfg(): AppConfig {
@@ -136,5 +136,110 @@ describe('resolveEffectiveModel', () => {
       ownerUserId: 'u1',
     });
     expect(m).toBe('allowed-a');
+  });
+});
+
+describe('resolveEffectiveEngineAndModel', () => {
+  const mockGet = vi.mocked(getUserPreferencesRow);
+
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockGet.mockReturnValue({});
+  });
+
+  it('returns the agent default engine + model when no override exists', () => {
+    const cfg = makeCfg();
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: 'allowed-a',
+      ownerUserId: 'u1',
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.model).toBe('allowed-a');
+    expect(r.overrideApplied).toBe(false);
+  });
+
+  it("honors a user's per-agent engine override (with override model)", () => {
+    const cfg = makeCfg();
+    mockGet.mockReturnValue({
+      agentEngineOverrides: {
+        'agent-x': { engine: 'cursor-agent', model: 'allowed-b' },
+      },
+    });
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: 'allowed-a',
+      ownerUserId: 'u1',
+    });
+    expect(r.engine).toBe('cursor-agent');
+    expect(r.model).toBe('allowed-b');
+    expect(r.overrideApplied).toBe(true);
+  });
+
+  it('falls through to per-engine default when override has no model', () => {
+    const cfg = makeCfg();
+    mockGet.mockReturnValue({
+      agentEngineOverrides: { 'agent-x': { engine: 'cursor-agent' } },
+    });
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: 'allowed-a', // belongs to claude-code; must NOT leak into cursor
+      ownerUserId: 'u1',
+    });
+    expect(r.engine).toBe('cursor-agent');
+    expect(r.model).toBe('cursor-hub');
+    expect(r.overrideApplied).toBe(true);
+  });
+
+  it('uses per-user engineDefaultModels as model when override engine has no model', () => {
+    const cfg = makeCfg();
+    mockGet.mockReturnValue({
+      agentEngineOverrides: { 'agent-x': { engine: 'cursor-agent' } },
+      engineDefaultModels: { 'cursor-agent': 'allowed-b' },
+    });
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      ownerUserId: 'u1',
+    });
+    expect(r.engine).toBe('cursor-agent');
+    expect(r.model).toBe('allowed-b');
+  });
+
+  it('skips override when ownerUserId is null', () => {
+    const cfg = makeCfg();
+    mockGet.mockReturnValue({
+      agentEngineOverrides: { 'agent-x': { engine: 'cursor-agent', model: 'allowed-b' } },
+    });
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: 'allowed-a',
+      ownerUserId: null,
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.model).toBe('allowed-a');
+    expect(r.overrideApplied).toBe(false);
+  });
+
+  it('explicitEngine wins over per-user override', () => {
+    const cfg = makeCfg();
+    mockGet.mockReturnValue({
+      agentEngineOverrides: { 'agent-x': { engine: 'cursor-agent', model: 'allowed-b' } },
+    });
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: 'allowed-a',
+      ownerUserId: 'u1',
+      explicitEngine: 'claude-code',
+      explicitModel: 'allowed-a',
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.model).toBe('allowed-a');
+    expect(r.overrideApplied).toBe(false);
   });
 });

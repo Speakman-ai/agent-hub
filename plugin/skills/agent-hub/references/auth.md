@@ -22,6 +22,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
 - [Per-user engine credentials (Cursor / Gemini / Codex)](#per-user-engine-credentials-cursor--gemini--codex)
+- [Per-user model preferences (`preferences_json`)](#per-user-model-preferences-preferences_json)
 - [Per-user skill credentials](#per-user-skill-credentials)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
@@ -317,6 +318,55 @@ Claude precedent.
 implemented atop a generic `getSingleKeyAuth` / `setSingleKeyAuth`
 pair. The DB columns (`<engine>_api_key`, `<engine>_auth_updated_at`)
 are added via idempotent `ensureColumn` migrations on boot.
+
+## Per-user model preferences (`preferences_json`)
+
+Soft per-user preferences ride on a JSON column (`users.preferences_json`)
+rather than dedicated columns so we can add new keys without a schema
+migration. Two sub-maps today, both managed by
+`server/user-preferences-store.ts`:
+
+| Sub-map                | What it pins                                                        | Resolver                                                  |
+| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
+| `engineDefaultModels`  | Per-user default CLI model id by engine (e.g. `claude-code → claude-opus-4-7`). | `resolveEffectiveModel` (`server/effective-model.ts`).    |
+| `agentEngineOverrides` | Per-user, per-agent engine + optional model override.               | `resolveEffectiveEngineAndModel` (`server/effective-model.ts`). |
+
+Two REST pairs back the two sub-maps:
+
+| Verb + path                                  | Body shape                                                                 |
+| -------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/auth/me/engine-default-models`     | `{ engineDefaultModels: { [engine]: modelId } }`                           |
+| `PUT /api/auth/me/engine-default-models`     | same                                                                       |
+| `GET /api/auth/me/agent-engine-overrides`    | `{ agentEngineOverrides: { [agentId]: { engine, model? } } }`              |
+| `PUT /api/auth/me/agent-engine-overrides`    | same                                                                       |
+
+Both PUTs replace the named sub-map only — the store's
+`mergeUserPreferencesJson` helper preserves the untouched sub-map, so two
+unrelated PUTs cannot stomp each other. PUT bodies are validated against
+`cfg.engineValidModels`; unknown engines and models outside the engine's
+allowlist 400. The GETs also strip stale entries (engines / models that
+rotated out of the catalogue) before responding, so the client never sees
+state the server would refuse to honour.
+
+**Override precedence** (`resolveEffectiveEngineAndModel`):
+
+1. `explicitEngine` — supplied by the caller (e.g. session-creation body).
+2. **Per-user `agentEngineOverrides[agentId]`** — `{ engine, model? }`.
+   Wins over the agent's shared engine. The override's `model` is treated
+   as explicit when set; otherwise the model walks the standard ladder
+   keyed to the **override** engine, never the shared one.
+3. Agent's shared `engine` / `model` from `projects.json`.
+
+User-facing spawn sites that consult overrides:
+
+- `POST /api/agents/:agentId/sessions` (`server/routes/sessions.ts`).
+- `POST /api/projects/:projectId/board/cards/:cardId/assign`
+  (`server/routes/board.ts`).
+- WebSocket orphan-session bootstrap (`server/chat.ts`).
+
+Reviewer / webhook / autonomous dispatch deliberately does **not** read
+per-user overrides because those spawns are not owned by the caller of
+the trigger.
 
 ## Per-user skill credentials
 

@@ -188,6 +188,26 @@ export const PutEngineDefaultModelsBody = registerComponent(
   }),
 );
 
+export const AgentEngineOverrideEntry = registerComponent(
+  'AgentEngineOverrideEntry',
+  z
+    .object({
+      engine: z.string().min(1),
+      model: z.string().min(1).optional(),
+    })
+    .openapi({
+      description:
+        'A per-agent engine override on the caller. The optional `model` further pins a specific CLI model id within that engine; when omitted the per-engine default (or hub fallback) is used.',
+    }),
+);
+
+export const PutAgentEngineOverridesBody = registerComponent(
+  'PutAgentEngineOverridesBody',
+  z.object({
+    agentEngineOverrides: z.record(z.string(), AgentEngineOverrideEntry),
+  }),
+);
+
 // ── CLI auth route bodies ──────────────────────────────────────────────
 
 export const ClaudeLoginBody = registerComponent(
