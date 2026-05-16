@@ -1280,6 +1280,134 @@ export function dispatchReviewerForPR(
   return true;
 }
 
+/**
+ * Build the system-message prompt sent to the reviewer agent for a single PR
+ * review run. Pulled out of {@link runReviewerDispatch} so the prompt body can
+ * be unit-tested without spawning a real chat session — that's the only way to
+ * pin the "synchronize-after-CHANGES_REQUESTED MUST submit a formal review"
+ * directive after the #1009 regression where the reviewer dropped an issue
+ * comment instead.
+ *
+ * The function is intentionally pure: no I/O, no DB access, no broadcast — it
+ * takes the dispatch options and returns the prompt string. The synchronize-
+ * specific block is included whenever `opts.reason === 'synchronize'`; we do
+ * not try to detect whether a prior `CHANGES_REQUESTED` exists at prompt-build
+ * time because every synchronize already needs a fresh formal review (per the
+ * "dismiss stale reviews" repo setting), and the forcing language is the same
+ * in both cases.
+ */
+export function buildReviewerDispatchPrompt(opts: ReviewerDispatchOpts): string {
+  return `# PR Review Request (${opts.reason})
+
+You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullName}\`.
+
+- **PR URL**: ${opts.prUrl}
+- **Title**: ${opts.prTitle}
+- **Trigger**: ${reviewerTriggerDescription(opts.reason)}
+
+## Progress markers (drives the in-Hub ProgressPanel + GitHub Check Run)
+
+As you work, emit \`[[STEP:<status>:<label>]]\` markers on their own line at
+phase boundaries. These are stripped from the rendered output and drive the
+live Cursor-style checklist. Valid statuses: \`started\`, \`completed\`, \`failed\`.
+
+Use these exact labels in order so the panel lines up with the GitHub Check Run:
+
+1. \`Gather PR context\`
+2. \`Analyze diff and files\`
+3. \`Post formal review\`
+
+Example:
+
+    [[STEP:started:Gather PR context]]
+    ...do the work...
+    [[STEP:completed:Gather PR context]]
+    [[STEP:started:Analyze diff and files]]
+    ...
+    [[STEP:completed:Analyze diff and files]]
+    [[STEP:started:Post formal review]]
+    ...POST to /api/pr/review...
+    [[STEP:completed:Post formal review]]
+
+## Your task
+1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
+2. Read the changed files in context.
+3. For every issue you find, **assign a severity score from 1 to 10** using the rubric below, then classify it as **blocking** or **non-blocking** based on that score.
+
+   ### Severity rubric (1–10)
+   - **1–2**: pure nit — whitespace, naming preference, wording in a comment, stylistic taste.
+   - **3**: minor polish — small refactor opportunity, redundant code, slightly clearer API shape. No correctness impact.
+   - **4–5**: real issue — missing test for non-trivial new logic, unclear error handling, moderate performance smell, convention violation that will propagate.
+   - **6–7**: correctness concern — likely bug in an edge case, weak input validation, brittle assumption, subtle race, under-documented breaking change.
+   - **8–9**: serious defect — reproducible bug on the happy path, real security hole, data-loss risk, breaking API change for public consumers.
+   - **10**: showstopper — production will be down, credentials leaked, destructive migration, or a third-party API misuse that will fail immediately.
+
+   ### Severity → classification
+   - **Any finding scoring > 3 is BLOCKING.** There is no "non-blocking 4." A single finding scoring 4+ forces \`REQUEST_CHANGES\` for the whole review.
+   - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`APPROVE\`.
+   - When in doubt about a score, **round up, not down.** Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
+
+4. Choose an event using the decision tree below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
+
+## Event decision tree
+
+Walk this in order and pick the **first** match — do not hedge:
+
+1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
+2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
+3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
+
+**Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
+
+**Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
+${
+  opts.reason === 'synchronize'
+    ? `
+
+## Re-review after new commits (this run is a synchronize) — **FORMAL REVIEW IS MANDATORY**
+
+**The PR head SHA changed** since the last push. The previous run's verdict (if any) is now stale on the old head SHA. You **MUST** submit a fresh formal review on the new head via \`POST /api/pr/review\` before this session ends. Nothing else counts.
+
+### What does NOT count as a re-review (and will leave the PR blocked)
+
+- A free-form **issue comment** posted via \`gh pr comment\` (or \`gh api repos/.../issues/<n>/comments\`). Issue comments are notifications, not verdicts. They do not dismiss or supersede a prior \`CHANGES_REQUESTED\` review.
+- A **review comment** / inline comment posted via \`gh api repos/.../pulls/<n>/comments\`. Same story — these annotate a line, they do not produce a formal review event.
+- A **threaded reply** on an existing review thread.
+- Editing or deleting the prior review.
+- Just describing what changed in chat / in the session transcript.
+
+If you do any of the above without also calling \`POST /api/pr/review\`, the previous \`CHANGES_REQUESTED\` (or stale \`APPROVE\`) stays canonical and merge stays blocked. This is the **#1009 regression** — the reviewer posted a "Resolved the blocking item…" issue comment after an autofix and never submitted a fresh formal review. Don't repeat that mistake.
+
+### What DOES count
+
+Exactly one \`POST /api/pr/review\` call with an \`event\` of \`APPROVE\`, \`REQUEST_CHANGES\`, or \`COMMENT\`. Use the event decision tree above to pick:
+
+- If the autofix / new commits resolved every prior blocker and nothing new scores > 3 → \`APPROVE\`. Mention which prior finding the new commits resolved in the body.
+- If new findings score > 3 (or a prior blocker is still not fixed) → \`REQUEST_CHANGES\`. List what's still outstanding plus any new findings.
+- A formal review whose JSON \`event\` is **\`COMMENT\`** is **never** an approving review for merge, even if the markdown body says "Approved for merge" or "LGTM." Reserve \`COMMENT\` for the rare "genuinely cannot decide" case from the decision tree — not for "re-confirming" after a merge-conflict or autofix commit.
+- Many repos enable **"dismiss stale reviews"**, so an older \`APPROVE\` no longer counts toward required reviews even if GitHub still shows it. Resubmit on every synchronize.
+
+### Quick self-check before you end the session
+
+Before stopping, confirm: "Did I call \`POST $AGENT_HUB_URL/api/pr/review\` with an \`event\` field this run?" If the answer is no, you have not done the job — go back and submit the formal review.
+`
+    : ''
+}
+
+## Submitting the review
+
+\`\`\`bash
+curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
+  -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"prUrl":"${opts.prUrl}","event":"<EVENT>","body":"<markdown body>"}'
+\`\`\`
+
+Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. **Every event requires a substantive \`body\`** (minimum length + not placeholder-only — trivial strings like \`test\` are rejected server-side). Use markdown with concrete file:line references.
+
+Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
+}
+
 async function runReviewerDispatch(
   deps: ReviewerDeps,
   project: Project,
@@ -1347,96 +1475,7 @@ async function runReviewerDispatch(
     }
   }
 
-  const prompt = `# PR Review Request (${opts.reason})
-
-You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullName}\`.
-
-- **PR URL**: ${opts.prUrl}
-- **Title**: ${opts.prTitle}
-- **Trigger**: ${reviewerTriggerDescription(opts.reason)}
-
-## Progress markers (drives the in-Hub ProgressPanel + GitHub Check Run)
-
-As you work, emit \`[[STEP:<status>:<label>]]\` markers on their own line at
-phase boundaries. These are stripped from the rendered output and drive the
-live Cursor-style checklist. Valid statuses: \`started\`, \`completed\`, \`failed\`.
-
-Use these exact labels in order so the panel lines up with the GitHub Check Run:
-
-1. \`Gather PR context\`
-2. \`Analyze diff and files\`
-3. \`Post formal review\`
-
-Example:
-
-    [[STEP:started:Gather PR context]]
-    ...do the work...
-    [[STEP:completed:Gather PR context]]
-    [[STEP:started:Analyze diff and files]]
-    ...
-    [[STEP:completed:Analyze diff and files]]
-    [[STEP:started:Post formal review]]
-    ...POST to /api/pr/review...
-    [[STEP:completed:Post formal review]]
-
-## Your task
-1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
-2. Read the changed files in context.
-3. For every issue you find, **assign a severity score from 1 to 10** using the rubric below, then classify it as **blocking** or **non-blocking** based on that score.
-
-   ### Severity rubric (1–10)
-   - **1–2**: pure nit — whitespace, naming preference, wording in a comment, stylistic taste.
-   - **3**: minor polish — small refactor opportunity, redundant code, slightly clearer API shape. No correctness impact.
-   - **4–5**: real issue — missing test for non-trivial new logic, unclear error handling, moderate performance smell, convention violation that will propagate.
-   - **6–7**: correctness concern — likely bug in an edge case, weak input validation, brittle assumption, subtle race, under-documented breaking change.
-   - **8–9**: serious defect — reproducible bug on the happy path, real security hole, data-loss risk, breaking API change for public consumers.
-   - **10**: showstopper — production will be down, credentials leaked, destructive migration, or a third-party API misuse that will fail immediately.
-
-   ### Severity → classification
-   - **Any finding scoring > 3 is BLOCKING.** There is no "non-blocking 4." A single finding scoring 4+ forces \`REQUEST_CHANGES\` for the whole review.
-   - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`APPROVE\`.
-   - When in doubt about a score, **round up, not down.** Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
-
-4. Choose an event using the decision tree below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
-
-## Event decision tree
-
-Walk this in order and pick the **first** match — do not hedge:
-
-1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
-2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
-3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
-
-**Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
-
-**Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
-${
-  opts.reason === 'synchronize'
-    ? `
-
-## Re-approval after new commits (this run is a synchronize)
-
-**The PR head SHA changed** since the last push. Many repos enable **"dismiss stale reviews"** — an older **APPROVE** no longer counts toward required reviews even if GitHub still shows it in the timeline ("previously approved…").
-
-- A formal review whose JSON \`event\` is **\`COMMENT\`** is **never** an approving review for merge, even if the markdown body says "Approved for merge" or "LGTM."
-- If every finding scores **≤ 3** (nothing blocking merge), you **must** submit **\`APPROVE\`**, not \`COMMENT\`, so GitHub records a fresh approval on the **current** head.
-- Reserve \`COMMENT\` for the rare "genuinely cannot decide" case from the decision tree — not for "re-confirming" after a merge-conflict or autofix commit.
-`
-    : ''
-}
-
-## Submitting the review
-
-\`\`\`bash
-curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
-  -H "X-API-Key: $AGENT_HUB_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"prUrl":"${opts.prUrl}","event":"<EVENT>","body":"<markdown body>"}'
-\`\`\`
-
-Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. **Every event requires a substantive \`body\`** (minimum length + not placeholder-only — trivial strings like \`test\` are rejected server-side). Use markdown with concrete file:line references.
-
-Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
+  const prompt = buildReviewerDispatchPrompt(opts);
 
   console.log(
     `[Reviewer] Dispatching "${reviewer.name}" → PR #${opts.prNumber} (session ${sessionId})`,
