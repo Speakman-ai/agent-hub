@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { dispatchReviewerForPR, _clearReviewerDebounce } from './webhooks.js';
+import {
+  dispatchReviewerForPR,
+  _clearReviewerDebounce,
+  buildReviewerDispatchPrompt,
+} from './webhooks.js';
 import type { Project } from '../types.js';
 
 // `dispatchReviewerForPR` is the unified trigger surface for review:
@@ -309,6 +313,103 @@ describe('dispatchReviewerForPR — prompt content', () => {
     // After a push, prior APPROVE may be stale; COMMENT + "approved" prose does not unblock merge.
     expect(msg.content).toMatch(/dismiss stale|stale reviews/i);
     expect(msg.content).toMatch(/COMMENT[\s\S]{0,200}never/i);
+  });
+});
+
+describe('buildReviewerDispatchPrompt — formal review forcing on synchronize', () => {
+  // These tests pin the #1009 regression: after an autofix push fires
+  // `pull_request.synchronize`, the reviewer woke up correctly but dropped a
+  // free-form issue comment ("Resolved the blocking item…") instead of POSTing
+  // a fresh formal review. The prior CHANGES_REQUESTED stayed canonical, so
+  // the PR stayed BLOCKED. The synchronize block must explicitly forbid
+  // comment-only responses and require POST /api/pr/review with a formal
+  // event on every synchronize re-run.
+
+  it('on synchronize, requires a formal POST /api/pr/review (not a comment-only response)', () => {
+    const prompt = buildReviewerDispatchPrompt({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      prTitle: 'Add feature X',
+      repoFullName: 'owner/repo',
+      reason: 'synchronize',
+    });
+
+    // The block must shout MANDATORY in the heading so the language ranks
+    // high in the agent's attention. Heading-level forcing language is the
+    // strongest anti-drift signal — burying this in a bullet didn't work.
+    expect(prompt).toMatch(/FORMAL REVIEW IS MANDATORY/);
+
+    // The endpoint must be named with the verb so the agent knows what to
+    // call. `/api/pr/review` alone appears in other prompts; pairing it
+    // with `POST` here is the discriminator.
+    expect(prompt).toMatch(/POST\s+\/api\/pr\/review|POST\s+`?\/api\/pr\/review/);
+  });
+
+  it('on synchronize, explicitly names the failure modes that do NOT count as a re-review', () => {
+    const prompt = buildReviewerDispatchPrompt({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      prTitle: 'Add feature X',
+      repoFullName: 'owner/repo',
+      reason: 'synchronize',
+    });
+
+    // The #1009 failure was a `gh pr comment` issue comment. Naming the
+    // tool is what makes the rule sticky — generic "comment vs review"
+    // wording lets the agent reason it's an exception.
+    expect(prompt).toMatch(/gh pr comment|issue comment/i);
+
+    // Adjacent failure modes that share the same blast radius:
+    //   - inline review comments (pulls/.../comments)
+    //   - threaded replies
+    //   - editing/deleting the prior review
+    // Listing them prevents the "well, MY comment was different because…"
+    // self-justification loop.
+    expect(prompt).toMatch(/inline (review )?comment/i);
+    expect(prompt).toMatch(/threaded repl(y|ies)/i);
+
+    // The block must also explicitly reference the #1009 regression so this
+    // wording can't drift back to a softer form by accident in future edits.
+    // The PR number is the load-bearing anchor — readers can find this PR's
+    // postmortem and see the cost of dropping the rule.
+    expect(prompt).toMatch(/#?1009/);
+  });
+
+  it('on synchronize, requires the reviewer to self-check that POST /api/pr/review was called before ending', () => {
+    const prompt = buildReviewerDispatchPrompt({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      prTitle: 'Add feature X',
+      repoFullName: 'owner/repo',
+      reason: 'synchronize',
+    });
+
+    // A pre-exit self-check is the secondary guardrail. If the agent reads
+    // past the heading, the self-check forces it back to the contract right
+    // before it stops. Without this, prompt-tightening alone is one drift
+    // away from re-introducing the gap.
+    expect(prompt).toMatch(/self-check|self check/i);
+    expect(prompt).toMatch(/before (you )?(end|stop)/i);
+  });
+
+  it('does NOT include the formal-review forcing block on the opened path', () => {
+    // The forcing block is scoped to synchronize because that's where the
+    // #1009 regression lives — a brand-new `opened` event has no prior
+    // CHANGES_REQUESTED to leave stale, so the regular decision tree is
+    // sufficient. If we ever generalize this, update the test alongside the
+    // prompt so the scope change is intentional.
+    const prompt = buildReviewerDispatchPrompt({
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      prTitle: 'Add feature X',
+      repoFullName: 'owner/repo',
+      reason: 'opened',
+    });
+
+    expect(prompt).not.toMatch(/FORMAL REVIEW IS MANDATORY/);
+    // Regression-pin: the #1009 anchor lives inside the synchronize block;
+    // it must not bleed into the opened-event prompt.
+    expect(prompt).not.toMatch(/#?1009/);
   });
 });
 
