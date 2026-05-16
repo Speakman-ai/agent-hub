@@ -17,7 +17,10 @@ import type {
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
-import { validateKanbanAssignModel } from '../kanban-assign-model.js';
+import {
+  validateKanbanAssignModel,
+  validateKanbanAssignModelForEngine,
+} from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
@@ -554,13 +557,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (trimmedOverride) {
         // Validate the model against the engine the spawn will actually use
         // — which may be the per-user override engine rather than the
-        // agent's shared engine.
-        const v = validateKanbanAssignModel(
-          trimmedOverride,
-          project,
-          engine === agent.engine ? agent.name : null,
-          config,
-        );
+        // agent's shared engine. Going through the engine-keyed validator
+        // avoids the agent-name fallback in `validateKanbanAssignModel`,
+        // which would otherwise widen the allowlist to `cfg.allValidModels`
+        // (the global union across every engine) when the resolved engine
+        // doesn't match `agent.engine` — letting e.g. a claude-code model
+        // through even though the spawn will use codex-cli.
+        const v = validateKanbanAssignModelForEngine(trimmedOverride, engine, config);
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
       const wt = defaultSessionUseWorktreeFlag(project);
