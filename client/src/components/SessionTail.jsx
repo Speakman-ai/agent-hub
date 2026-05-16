@@ -5,7 +5,12 @@ import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponents } from './MarkdownRenderer.jsx';
-import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
+import {
+  isFileModifyingTool,
+  shortenPath,
+  parseDiffLines,
+  mergeEditInputWithToolResult,
+} from '../utils/diff.js';
 import {
   extractCoordinationBlocks,
   describeHandoffReason,
@@ -754,8 +759,12 @@ const DIFF_PREVIEW_LINES = 5;
  *    the user clicks the preview footer or when the change has fewer than
  *    `DIFF_PREVIEW_LINES` lines (no truncation needed).
  */
-export function DiffView({ tool, input }) {
-  const { filePath, action, removals, additions } = parseDiffLines(tool, input);
+export function DiffView({ tool, input, toolResult }) {
+  const mergedInput = useMemo(
+    () => mergeEditInputWithToolResult(input, toolResult),
+    [input, toolResult],
+  );
+  const { filePath, action, removals, additions } = parseDiffLines(tool, mergedInput);
   const [expanded, setExpanded] = useState(false);
 
   const addedCount = additions.filter((l) => l.trim()).length;
@@ -786,8 +795,11 @@ export function DiffView({ tool, input }) {
               className="flex px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
             >
               <span className="text-red-500/60 select-none mr-2 flex-shrink-0">-</span>
-              <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
-                {line}
+              <span
+                className="whitespace-pre min-w-0 flex-1 text-red-200"
+                style={{ tabSize: 2, MozTabSize: 2 }}
+              >
+                {line.length === 0 ? '\u00a0' : line}
               </span>
             </div>
           ))}
@@ -797,8 +809,11 @@ export function DiffView({ tool, input }) {
               className="flex px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
             >
               <span className="text-emerald-500/60 select-none mr-2 flex-shrink-0">+</span>
-              <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
-                {line}
+              <span
+                className="whitespace-pre min-w-0 flex-1 text-emerald-200"
+                style={{ tabSize: 2, MozTabSize: 2 }}
+              >
+                {line.length === 0 ? '\u00a0' : line}
               </span>
             </div>
           ))}
@@ -822,8 +837,13 @@ export function DiffView({ tool, input }) {
                 >
                   {previewKind === 'add' ? '+' : '-'}
                 </span>
-                <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
-                  {line}
+                <span
+                  className={`whitespace-pre min-w-0 flex-1 ${
+                    previewKind === 'add' ? 'text-emerald-200' : 'text-red-200'
+                  }`}
+                  style={{ tabSize: 2, MozTabSize: 2 }}
+                >
+                  {line.length === 0 ? '\u00a0' : line}
                 </span>
               </div>
             ))}
@@ -868,7 +888,7 @@ export function ToolCard({ use, result, defaultOpen }) {
       <div
         className={`border rounded-lg overflow-hidden ${style.color} ${errored ? 'border-red-700/80' : ''}`}
       >
-        <DiffView tool={use.tool} input={use.input} />
+        <DiffView tool={use.tool} input={use.input} toolResult={result} />
         {stillRunning && (
           <div className="flex items-center gap-2 px-2 py-1 border-t border-black/20 bg-black/10">
             <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
