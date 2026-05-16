@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.24.0
+  version: 1.24.2
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -460,6 +460,27 @@ components:
             type: string
       required:
         - engineDefaultModels
+    AgentEngineOverrideEntry:
+      type: object
+      properties:
+        engine:
+          type: string
+          minLength: 1
+        model:
+          type: string
+          minLength: 1
+      required:
+        - engine
+      description: A per-agent engine override on the caller. The optional `model` further pins a specific CLI model id within that engine; when omitted the per-engine default (or hub fallback) is used.
+    PutAgentEngineOverridesBody:
+      type: object
+      properties:
+        agentEngineOverrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/AgentEngineOverrideEntry"
+      required:
+        - agentEngineOverrides
     ClaudeLoginBody:
       type: object
       properties:
@@ -3800,6 +3821,93 @@ paths:
                       type: string
                 required:
                   - engineDefaultModels
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/agent-engine-overrides:
+    get:
+      tags:
+        - Auth
+      summary: Per-user per-agent engine (+ optional model) overrides.
+      responses:
+        "200":
+          description: Caller-scoped map of agentId → { engine, model? }. Entries whose engine/model are no longer in `engineValidModels` are filtered out.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentEngineOverrides:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                      required:
+                        - engine
+                required:
+                  - agentEngineOverrides
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Replace the caller-scoped per-agent engine override map.
+      description: "Pass `{ agentEngineOverrides: {} }` to clear all overrides. Each entry must name an engine present in `engineValidModels`; optional `model` must be a valid model for that engine."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAgentEngineOverridesBody"
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentEngineOverrides:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                      required:
+                        - engine
+                required:
+                  - agentEngineOverrides
         "400":
           description: Invalid payload.
           content:

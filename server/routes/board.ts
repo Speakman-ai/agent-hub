@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type {
   RouteDeps,
   Stmts,
@@ -541,19 +541,28 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
       const sessionId = crypto.randomUUID();
-      const engine = agent.engine || 'claude-code';
       const trimmedOverride =
         typeof modelBody === 'string' && modelBody.trim() ? modelBody.trim() : null;
+      const assignOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+      const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
+        agentId,
+        agentEngine: agent.engine || 'claude-code',
+        agentModel: agent.model ?? null,
+        ownerUserId: assignOwnerUid,
+        explicitModel: trimmedOverride,
+      });
       if (trimmedOverride) {
-        const v = validateKanbanAssignModel(trimmedOverride, project, agent.name, config);
+        // Validate the model against the engine the spawn will actually use
+        // — which may be the per-user override engine rather than the
+        // agent's shared engine.
+        const v = validateKanbanAssignModel(
+          trimmedOverride,
+          project,
+          engine === agent.engine ? agent.name : null,
+          config,
+        );
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
-      const assignOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const resolvedModel = resolveEffectiveModel(config, engine, {
-        explicitModel: trimmedOverride,
-        agentModel: agent.model,
-        ownerUserId: assignOwnerUid,
-      });
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));

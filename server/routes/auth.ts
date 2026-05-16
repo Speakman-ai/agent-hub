@@ -56,7 +56,11 @@ import {
   getUserCodexAuth,
   setUserCodexAuth,
 } from '../users-store.js';
-import { getUserPreferencesRow, replaceUserPreferencesJson } from '../user-preferences-store.js';
+import {
+  getUserPreferencesRow,
+  mergeUserPreferencesJson,
+  type AgentEngineOverride,
+} from '../user-preferences-store.js';
 import {
   createMembership,
   deleteMembership,
@@ -108,6 +112,7 @@ import {
   UpdateUserRoleBody,
   UpsertSkillCredentialBody,
   PutEngineDefaultModelsBody,
+  PutAgentEngineOverridesBody,
   UserSummary,
   ZodErrorResponse,
   formatZodError,
@@ -392,6 +397,82 @@ registerPath({
         'application/json': {
           schema: z.object({
             engineDefaultModels: z.record(z.string(), z.string()),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/agent-engine-overrides',
+  tags: ['Auth'],
+  summary: 'Per-user per-agent engine (+ optional model) overrides.',
+  responses: {
+    200: {
+      description:
+        'Caller-scoped map of agentId → { engine, model? }. Entries whose engine/model are no longer in `engineValidModels` are filtered out.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            agentEngineOverrides: z.record(
+              z.string(),
+              z.object({ engine: z.string(), model: z.string().optional() }),
+            ),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/agent-engine-overrides',
+  tags: ['Auth'],
+  summary: 'Replace the caller-scoped per-agent engine override map.',
+  description:
+    'Pass `{ agentEngineOverrides: {} }` to clear all overrides. Each entry must name an engine present in `engineValidModels`; optional `model` must be a valid model for that engine.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: PutAgentEngineOverridesBody,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            agentEngineOverrides: z.record(
+              z.string(),
+              z.object({ engine: z.string(), model: z.string().optional() }),
+            ),
           }),
         },
       },
@@ -1077,6 +1158,73 @@ function filterStoredEngineDefaults(
   return out;
 }
 
+/**
+ * Validate a `{ [agentId]: { engine, model? } }` PUT body. Returns the
+ * trimmed-and-checked map, or a precise `400` error message naming the
+ * first offending entry so the client can show a useful inline error.
+ */
+function sanitizeAgentEngineOverridesFromBody(
+  body: Record<string, { engine: string; model?: string }>,
+):
+  | { ok: true; agentEngineOverrides: Record<string, AgentEngineOverride> }
+  | { ok: false; error: string } {
+  const cleaned: Record<string, AgentEngineOverride> = {};
+  const knownEngines = new Set(Object.keys(config.engineValidModels));
+  for (const [agentId, raw] of Object.entries(body)) {
+    const id = typeof agentId === 'string' ? agentId.trim() : '';
+    if (!id) continue;
+    const engine = typeof raw?.engine === 'string' ? raw.engine.trim() : '';
+    if (!engine) {
+      return { ok: false, error: `Override for "${id}" is missing an engine` };
+    }
+    if (!knownEngines.has(engine)) {
+      return { ok: false, error: `Unknown engine "${engine}" for agent "${id}"` };
+    }
+    const model = typeof raw?.model === 'string' ? raw.model.trim() : '';
+    if (model) {
+      const allowed = config.engineValidModels[engine] || [];
+      if (!allowed.includes(model)) {
+        return {
+          ok: false,
+          error: `Model "${model}" is not allowed for engine "${engine}" on agent "${id}". Allowed: ${allowed.join(', ')}`,
+        };
+      }
+      cleaned[id] = { engine, model };
+    } else {
+      cleaned[id] = { engine };
+    }
+  }
+  return { ok: true, agentEngineOverrides: cleaned };
+}
+
+/**
+ * Drop persisted override entries whose engine / model are no longer in
+ * the live `engineValidModels`. Mirrors `filterStoredEngineDefaults` —
+ * keeps the API output honest after a config change rotates an engine
+ * out of the catalogue.
+ */
+function filterStoredAgentEngineOverrides(
+  stored: Record<string, AgentEngineOverride> | undefined,
+): Record<string, AgentEngineOverride> {
+  if (!stored) return {};
+  const out: Record<string, AgentEngineOverride> = {};
+  for (const [agentId, entry] of Object.entries(stored)) {
+    if (!entry?.engine) continue;
+    const allowed = config.engineValidModels[entry.engine];
+    if (!Array.isArray(allowed)) continue;
+    if (entry.model && !allowed.includes(entry.model)) {
+      // Model is now invalid for this engine — keep the engine override,
+      // drop the model so the spawn falls back through per-engine defaults.
+      out[agentId] = { engine: entry.engine };
+    } else {
+      out[agentId] = entry.model
+        ? { engine: entry.engine, model: entry.model }
+        : { engine: entry.engine };
+    }
+  }
+  return out;
+}
+
 export default function createAuthRoutes(options: AuthRoutesOptions = {}): Router {
   const router = Router();
   const loginLimiter = buildLoginLimiter(options);
@@ -1569,10 +1717,52 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: checked.error });
       return;
     }
-    replaceUserPreferencesJson(authedReq.authUserId, {
+    mergeUserPreferencesJson(authedReq.authUserId, {
       engineDefaultModels: checked.engineDefaultModels,
     });
     res.json({ engineDefaultModels: checked.engineDefaultModels });
+  });
+
+  router.get('/api/auth/me/agent-engine-overrides', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const rowUser = getUserById(authedReq.authUserId);
+    if (!rowUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const stored = getUserPreferencesRow(authedReq.authUserId).agentEngineOverrides;
+    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(stored) });
+  });
+
+  router.put('/api/auth/me/agent-engine-overrides', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const rowUser = getUserById(authedReq.authUserId);
+    if (!rowUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const parsed = PutAgentEngineOverridesBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    const checked = sanitizeAgentEngineOverridesFromBody(parsed.data.agentEngineOverrides ?? {});
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.error });
+      return;
+    }
+    mergeUserPreferencesJson(authedReq.authUserId, {
+      agentEngineOverrides: checked.agentEngineOverrides,
+    });
+    res.json({ agentEngineOverrides: checked.agentEngineOverrides });
   });
 
   // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──

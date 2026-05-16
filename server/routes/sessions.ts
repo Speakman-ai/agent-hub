@@ -3,7 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
 import { buildSpawnEnv } from '../config.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from '../effective-model.js';
 import {
   CreateSessionRequestSchema,
   PatchSessionRequestSchema,
@@ -312,12 +312,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           'Reviewer agent sessions are spawned by the GitHub webhook; they cannot be started manually.',
       });
     }
-    const engine = parsed.engine || found?.agent?.engine || 'claude-code';
     const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-    const model = resolveEffectiveModel(config, engine, {
-      explicitModel: parsed.model,
+    const agentIdParam = String(req.params.agentId);
+    const { engine, model } = resolveEffectiveEngineAndModel(config, {
+      agentId: agentIdParam,
+      agentEngine: found?.agent?.engine || 'claude-code',
       agentModel: found?.agent?.model ?? null,
       ownerUserId: ownerUid,
+      explicitEngine: parsed.engine,
+      explicitModel: parsed.model,
     });
     // Agent Hub is worktree-only for user-facing session creation.
     // `defaultSessionUseWorktreeFlag` returns 1 unconditionally; internal
@@ -401,10 +404,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const taskId = uuidv4();
     const sessionId = uuidv4();
 
-    const engine = found.agent.engine || 'claude-code';
     const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-    const model = resolveEffectiveModel(config, engine, {
-      agentModel: found.agent.model,
+    const { engine, model } = resolveEffectiveEngineAndModel(config, {
+      agentId,
+      agentEngine: found.agent.engine || 'claude-code',
+      agentModel: found.agent.model ?? null,
       ownerUserId: ownerUid,
     });
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;

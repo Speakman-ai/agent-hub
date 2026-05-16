@@ -8,7 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { clampPayload } from './session-events-store.js';
 import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
-import { resolveEffectiveModel } from './effective-model.js';
+import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
   contextFilePath,
@@ -1478,13 +1478,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (!session) {
-        const initialEngine = agent.engine || 'claude-code';
         const orphanWt = defaultSessionUseWorktreeFlag(project);
         const orphanOwner = ownerUserIdForChatSpawn(ws);
-        const orphanModel = resolveEffectiveModel(config, initialEngine, {
-          agentModel: (agent as AgentWithModel).model,
-          ownerUserId: orphanOwner,
-        });
+        const { engine: initialEngine, model: orphanModel } = resolveEffectiveEngineAndModel(
+          config,
+          {
+            agentId,
+            agentEngine: agent.engine || 'claude-code',
+            agentModel: (agent as AgentWithModel).model ?? null,
+            ownerUserId: orphanOwner,
+          },
+        );
         stmts.createSession.run(
           sessionId,
           agentId,

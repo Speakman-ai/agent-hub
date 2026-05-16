@@ -20,6 +20,7 @@ import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
+import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import PreviewSection from './PreviewSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -6397,6 +6398,12 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       </select>
                     </div>
                   </div>
+
+                  <MyAgentEngineOverrideInline
+                    agentId={agent.id}
+                    agentEngine={agent.engine || 'claude-code'}
+                    modelConfig={modelConfig}
+                  />
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
