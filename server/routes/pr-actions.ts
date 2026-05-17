@@ -254,6 +254,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: 'Invalid merge method' });
     }
 
+    // Surfaced in the final error response so operators can see exactly
+    // what GitHub rejected when the App tier silently falls through.
+    let appTierError: string | null = null;
+
     // Tier 0: the caller's user OAuth token — merge shows up as the
     // human in the "merged by" attribution, which is the behavior we
     // want by default. Only applies when the user has linked GitHub.
@@ -332,7 +336,8 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         if (/already.*merged/i.test(msg)) {
           return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
         }
-        console.warn(`[PR Action] GitHub App merge failed, trying gh CLI: ${msg.split('\n')[0]}`);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Action] GitHub App merge failed, trying gh CLI: ${appTierError}`);
       }
     }
 
@@ -358,7 +363,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       if (/already.*merged/i.test(msg)) {
         return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
       }
-      return res.status(500).json({ error: `Merge failed: ${msg.split('\n')[0]}` });
+      return res.status(500).json({
+        error: `Merge failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 
@@ -370,6 +378,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
     }
+
+    // Surfaced in the final error response so operators can see exactly
+    // what GitHub rejected when the App tier silently falls through.
+    let appTierError: string | null = null;
 
     // Tier 0: user OAuth — close attributes to the human.
     try {
@@ -405,7 +417,8 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : '';
-        console.warn(`[PR Action] GitHub App close failed, trying gh CLI: ${msg.split('\n')[0]}`);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Action] GitHub App close failed, trying gh CLI: ${appTierError}`);
       }
     }
 
@@ -419,7 +432,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.json({ ok: true, method: 'gh-cli', pr: pr.number });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({ error: `Close failed: ${msg.split('\n')[0]}` });
+      return res.status(500).json({
+        error: `Close failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 
@@ -459,6 +475,12 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     const reviewPayload: Record<string, unknown> = { event, body: reviewBody };
     if (commitId) reviewPayload.commit_id = commitId;
 
+    // Surfaced in the final 501/502 response so operators can see exactly
+    // what GitHub rejected when the App tier silently falls through.
+    // Without this, the only way to see the upstream error is shell access
+    // to the host for `pm2 logs`, which not all operators have.
+    let appTierError: string | null = null;
+
     // Tier 1: GitHub App (preferred — distinct identity from PR author)
     if (hasGitHubApp(config)) {
       try {
@@ -496,14 +518,12 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
             state: data.state,
           });
         }
-        console.warn(
-          `[PR Review] GitHub App configured but no installation matched owner "${pr.owner}" — falling back to bot token`,
-        );
+        appTierError = `GitHub App configured but no installation matched owner "${pr.owner}"`;
+        console.warn(`[PR Review] ${appTierError} — falling back to bot token`);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[PR Review] GitHub App review failed, trying bot token: ${msg.split('\n')[0]}`,
-        );
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Review] GitHub App review failed, trying bot token: ${appTierError}`);
       }
     }
 
@@ -549,14 +569,28 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         return res.status(502).json({
           error: `Bot token review failed: ${msg.split('\n')[0]}`,
           hint: 'Configure a GitHub App installation for this repo owner so reviews submit as the App identity.',
+          ...(appTierError && { appTierError }),
         });
       }
     }
 
-    // No viable auth — fallback chain exhausted
+    // No viable auth — fallback chain exhausted. When the App tier actually
+    // ran and threw, the error message that historically said "No GitHub App
+    // installation" was misleading: the App was configured, GitHub just
+    // rejected the review (403 / 422 / 404 / etc.). Surface that distinction
+    // so operators don't chase phantom installation problems. Status stays
+    // 501 — the wire contract for "fallback chain exhausted" — and the
+    // diagnostic detail lives in `appTierError`.
+    const fallbackError = appTierError
+      ? 'GitHub App review request failed and no bot token is configured to fall back to'
+      : 'No GitHub App installation for this repo owner and no bot token configured';
+    const fallbackHint = appTierError
+      ? "See appTierError for the upstream rejection; if that's a real install issue, fix the App installation. Otherwise configure botGithubToken as a fallback."
+      : 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.';
     return res.status(501).json({
-      error: 'No GitHub App installation for this repo owner and no bot token configured',
-      hint: 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.',
+      error: fallbackError,
+      hint: fallbackHint,
+      ...(appTierError && { appTierError }),
     });
   });
 
@@ -568,6 +602,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL (pass as ?prUrl=...)' });
     }
+
+    // Surfaced in the final error response so operators can see exactly
+    // what GitHub rejected when the App tier silently falls through.
+    let appTierError: string | null = null;
 
     // Try GitHub App
     if (hasGitHubApp(config)) {
@@ -595,7 +633,9 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           });
         }
       } catch (err: unknown) {
-        console.warn(`[PR Action] GitHub App status failed: ${(err as Error).message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Action] GitHub App status failed: ${appTierError}`);
       }
     }
 
@@ -630,7 +670,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({ error: `Status check failed: ${msg.split('\n')[0]}` });
+      return res.status(500).json({
+        error: `Status check failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 
@@ -686,7 +729,11 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(502).json({ error: `PR data fetch failed: ${msg.split('\n')[0]}` });
+      const appTierError = (err as { appTierError?: string }).appTierError;
+      return res.status(502).json({
+        error: `PR data fetch failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 
@@ -708,7 +755,11 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.send(result.diff);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(502).json({ error: `PR diff fetch failed: ${msg.split('\n')[0]}` });
+      const appTierError = (err as { appTierError?: string }).appTierError;
+      return res.status(502).json({
+        error: `PR diff fetch failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 
@@ -733,7 +784,11 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(502).json({ error: `PR files fetch failed: ${msg.split('\n')[0]}` });
+      const appTierError = (err as { appTierError?: string }).appTierError;
+      return res.status(502).json({
+        error: `PR files fetch failed: ${msg.split('\n')[0]}`,
+        ...(appTierError && { appTierError }),
+      });
     }
   });
 

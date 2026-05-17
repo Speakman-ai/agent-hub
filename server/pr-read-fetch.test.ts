@@ -153,6 +153,32 @@ describe('fetchPrDiff', () => {
       }),
     ).rejects.toThrow(/gh: command not found/);
   });
+
+  // Diagnostic surfacing — when both App and gh CLI fail, the route
+  // handler needs the App-tier error too. Same pattern as
+  // `pr-detail-fetch.test.ts → attaches appTierError`.
+  it('attaches appTierError to PrReadFetchError when App throws then CLI also fails', async () => {
+    const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
+    (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
+    (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token');
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response('Resource not accessible by integration', { status: 403 }));
+    cliMock.mockRejectedValue(new Error('gh: not authenticated'));
+
+    const { fetchPrDiff, PrReadFetchError } = await import('./pr-read-fetch.js');
+    try {
+      await fetchPrDiff(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 1, {
+        fetchImpl,
+      });
+      throw new Error('expected fetchPrDiff to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PrReadFetchError);
+      expect((err as Error).message).toMatch(/gh: not authenticated/);
+      expect((err as InstanceType<typeof PrReadFetchError>).appTierError).toMatch(/403/);
+    }
+  });
 });
 
 describe('fetchPrFiles', () => {
@@ -227,5 +253,35 @@ describe('fetchPrFiles', () => {
     expect((fetchImpl.mock.calls[0][1]?.headers as Record<string, string>)?.Authorization).toBe(
       'Bearer user-tok',
     );
+  });
+
+  // Diagnostic surfacing — same pattern as `fetchPrDiff`'s appTierError
+  // test, but for the `fetchPrFiles` gh-CLI fallback catch. The
+  // `gh api --paginate` execution sits behind its own try/catch; this
+  // verifies that an App-tier failure followed by a CLI failure
+  // propagates as a `PrReadFetchError` carrying both error messages.
+  it('attaches appTierError to PrReadFetchError when App throws then CLI also fails (files)', async () => {
+    const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
+    (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
+    (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token');
+
+    // App tier: 403 from GitHub on the first paginate page.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response('Resource not accessible by integration', { status: 403 }));
+    // gh CLI tier: also fails.
+    cliMock.mockRejectedValue(new Error('gh: command not found'));
+
+    const { fetchPrFiles, PrReadFetchError } = await import('./pr-read-fetch.js');
+    try {
+      await fetchPrFiles(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 7, {
+        fetchImpl,
+      });
+      throw new Error('expected fetchPrFiles to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PrReadFetchError);
+      expect((err as Error).message).toMatch(/gh: command not found/);
+      expect((err as InstanceType<typeof PrReadFetchError>).appTierError).toMatch(/403/);
+    }
   });
 });
