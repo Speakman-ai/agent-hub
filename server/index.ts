@@ -58,6 +58,7 @@ import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
+import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
@@ -360,33 +361,14 @@ function ensureWorktree(
       stmts!.updateSessionWorktreePath.run(wsPath, branch, sid);
     },
     installCommand,
-    // Worktree creation failed — surface it instead of silently letting the
-    // session fall back onto the main project repo. Flipping use_worktree to
-    // 0 stops subsequent turns from retrying (and masking the failure) and
-    // makes downstream behavior (auto-git skipping, edits landing in the main
-    // repo) explicit rather than a surprise. Broadcasting `worktree_failed`
-    // gives the UI a hook to warn the user that isolation was lost.
+    // Worktree creation failed — surface it loudly. `handleWorktreeFailure`
+    // clears `use_worktree`, posts a `role='system'` message into the session
+    // (so the agent's next-turn history + the chat UI both see it), comments
+    // on the linked kanban card when one exists, and broadcasts both a
+    // `message` and `worktree_failed` event. See `server/worktree-failure.ts`
+    // for the contract and `worktree-failure.test.ts` for the assertions.
     (sid: string, errorMessage: string) => {
-      try {
-        stmts!.updateSessionWorktree.run(0, sid);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[worktree] Failed to clear use_worktree for session ${sid} after worktree failure: ${message}`,
-        );
-      }
-      try {
-        broadcast({
-          type: 'worktree_failed',
-          sessionId: sid,
-          error: errorMessage,
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[worktree] Failed to broadcast worktree_failed for session ${sid}: ${message}`,
-        );
-      }
+      handleWorktreeFailure({ stmts: stmts!, broadcast }, sid, errorMessage);
     },
     prBaseBranch ?? null,
     repoUrl ?? null,
