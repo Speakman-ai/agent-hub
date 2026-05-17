@@ -26,14 +26,16 @@ vi.mock('child_process', async (importOriginal) => {
   };
 });
 
+// Shared mock for the `gh` CLI fallback tier. Tests can call
+// `cliMock.mockResolvedValue(...)` / `cliMock.mockRejectedValue(...)` to
+// control how the CLI tier resolves. Mirrors the pattern in
+// `pr-detail-fetch.test.ts` / `pr-read-fetch.test.ts`.
+const cliMock = vi.fn();
 vi.mock('util', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    promisify: (fn: unknown) => {
-      // Return a mock async version of execFile
-      return vi.fn();
-    },
+    promisify: () => cliMock,
   };
 });
 
@@ -485,6 +487,133 @@ describe('PR Actions route', () => {
       expect(res.status).toBe(501);
       expect(res.body.appTierError).toMatch(/no installation matched/i);
       expect(res.body.appTierError).toMatch(/owner/);
+    });
+  });
+
+  // Diagnostic-surfacing coverage for merge/close/status — same swallow
+  // pattern as /api/pr/review but with a gh-CLI tier 2 instead of a bot
+  // token tier. Verifies the App-tier error reaches the final 500.
+  describe('appTierError surfacing on /api/pr/{merge,close,status}', () => {
+    let app: express.Express;
+    let githubApiRequest: ReturnType<typeof vi.fn>;
+    let resolveInstallationId: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      vi.resetModules();
+      const mod = await import('../github-app.js');
+      githubApiRequest = mod.githubApiRequest as unknown as ReturnType<typeof vi.fn>;
+      resolveInstallationId = mod.resolveInstallationId as unknown as ReturnType<typeof vi.fn>;
+      githubApiRequest.mockReset();
+      resolveInstallationId.mockReset();
+      cliMock.mockReset();
+
+      const { default: createPrActionRoutes } = await import('./pr-actions.js');
+      const mockDeps = {
+        config: {
+          port: 3051,
+          dataDir: '/tmp',
+          botGithubToken: null,
+          githubApp: {
+            appId: '1',
+            privateKey: 'key',
+            installationId: 42,
+            installations: [{ id: 42, account: 'owner', accountType: 'Organization' }],
+          },
+        },
+        stmts: {},
+        broadcast: vi.fn() as unknown,
+        findProject: vi.fn(),
+        findAgent: vi.fn(),
+        getEnrichedAgent: vi.fn(),
+        allAgents: vi.fn(),
+        saveProjects: vi.fn(),
+        ensureProjectRoom: vi.fn(),
+        handleChat: vi.fn(),
+        pendingReviewComments: new Map(),
+        lastDispatchedReviewId: new Map(),
+        scheduleAutonomousEpic: vi.fn(),
+        autonomousCrons: new Map(),
+        runAutonomousLoop: vi.fn(),
+        getProjects: vi.fn().mockReturnValue([]),
+        setProjects: vi.fn(),
+        getGhBotUser: vi.fn().mockReturnValue(null),
+        setGhBotUser: vi.fn(),
+        getGhAppSlug: vi.fn().mockReturnValue(null),
+        setGhAppSlug: vi.fn(),
+        serverDir: '/tmp',
+        buildTranscript: vi.fn(),
+        summarizeTranscript: vi.fn(),
+      } as unknown as RouteDeps;
+      app = express();
+      app.use(express.json());
+      app.use(createPrActionRoutes(mockDeps));
+    });
+
+    it('/api/pr/merge surfaces App-tier error in 500 when both tiers fail', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockRejectedValue(new Error('GitHub API 403: permission denied'));
+      cliMock.mockRejectedValue(new Error('gh: not authenticated'));
+
+      const res = await request(app)
+        .post('/api/pr/merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Merge failed/);
+      expect(res.body.appTierError).toMatch(/403/);
+      expect(res.body.appTierError).toMatch(/permission denied/);
+    });
+
+    it('/api/pr/close surfaces App-tier error in 500 when both tiers fail', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockRejectedValue(new Error('GitHub API 404: not found'));
+      cliMock.mockRejectedValue(new Error('gh: command not found'));
+
+      const res = await request(app)
+        .post('/api/pr/close')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Close failed/);
+      expect(res.body.appTierError).toMatch(/404/);
+      expect(res.body.appTierError).toMatch(/not found/);
+    });
+
+    it('/api/pr/status surfaces App-tier error in 500 when both tiers fail', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockRejectedValue(new Error('GitHub API 403: forbidden'));
+      cliMock.mockRejectedValue(new Error('gh: command not found'));
+
+      const res = await request(app).get(
+        '/api/pr/status?prUrl=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F42',
+      );
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/Status check failed/);
+      expect(res.body.appTierError).toMatch(/403/);
+      expect(res.body.appTierError).toMatch(/forbidden/);
+    });
+
+    // Confirms the 501 message we just rewrote correctly distinguishes
+    // "App was never installed" from "App was installed but threw" — the
+    // first half of R2 must-fix #1 from the review.
+    it('/api/pr/review 501 message reflects App-tier failure when the App actually ran and threw', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockRejectedValue(new Error('GitHub API 422: Unprocessable Entity'));
+
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
+
+      expect(res.status).toBe(501);
+      // Old message said "No GitHub App installation" — factually wrong
+      // when App was configured but failed. New copy: explicitly names
+      // the rejection while still pointing at the bot-token escape hatch.
+      expect(res.body.error).toMatch(/GitHub App review request failed/);
+      expect(res.body.error).not.toMatch(/No GitHub App installation/);
+      expect(res.body.appTierError).toMatch(/422/);
     });
   });
 

@@ -574,10 +574,22 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       }
     }
 
-    // No viable auth — fallback chain exhausted
+    // No viable auth — fallback chain exhausted. When the App tier actually
+    // ran and threw, the error message that historically said "No GitHub App
+    // installation" was misleading: the App was configured, GitHub just
+    // rejected the review (403 / 422 / 404 / etc.). Surface that distinction
+    // so operators don't chase phantom installation problems. Status stays
+    // 501 — the wire contract for "fallback chain exhausted" — and the
+    // diagnostic detail lives in `appTierError`.
+    const fallbackError = appTierError
+      ? 'GitHub App review request failed and no bot token is configured to fall back to'
+      : 'No GitHub App installation for this repo owner and no bot token configured';
+    const fallbackHint = appTierError
+      ? "See appTierError for the upstream rejection; if that's a real install issue, fix the App installation. Otherwise configure botGithubToken as a fallback."
+      : 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.';
     return res.status(501).json({
-      error: 'No GitHub App installation for this repo owner and no bot token configured',
-      hint: 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.',
+      error: fallbackError,
+      hint: fallbackHint,
       ...(appTierError && { appTierError }),
     });
   });
