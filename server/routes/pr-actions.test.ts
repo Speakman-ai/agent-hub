@@ -448,6 +448,44 @@ describe('PR Actions route', () => {
       expect(res.status).toBe(501);
       expect(res.body.error).toMatch(/No GitHub App installation|bot token/);
     });
+
+    // Diagnostic surfacing — App tier was silently swallowing the GitHub
+    // error into a console.warn, leaving operators staring at a generic
+    // 501 with no clue what GitHub actually rejected. Surfacing the
+    // first-line of the App-tier error in the response makes future
+    // debugging tractable from outside the box.
+    it('surfaces the App-tier error message in the 501 response body', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockRejectedValue(
+        new Error('GitHub API POST failed (403): Resource not accessible by integration'),
+      );
+
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
+
+      expect(res.status).toBe(501);
+      expect(res.body.appTierError).toMatch(/403/);
+      expect(res.body.appTierError).toMatch(/Resource not accessible/);
+    });
+
+    it('surfaces the App-tier error when no installation matches the owner', async () => {
+      // Simulate the "App configured but installation not on this owner"
+      // branch: resolveInstallationId returns null/0 → console.warn path
+      resolveInstallationId.mockReturnValue(null);
+
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
+
+      expect(res.status).toBe(501);
+      expect(res.body.appTierError).toMatch(/no installation matched/i);
+      expect(res.body.appTierError).toMatch(/owner/);
+    });
   });
 
   // Regression test for the "Reviews panel stopped updating" bug.

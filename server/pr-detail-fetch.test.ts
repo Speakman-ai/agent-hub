@@ -244,4 +244,34 @@ describe('fetchPrDetail', () => {
       /gh: command not found/,
     );
   });
+
+  // Diagnostic surfacing — when both App and gh CLI fail, the route
+  // handler needs the App-tier error too. Without it operators see a
+  // 502 saying only `gh pr view` failed, with no clue about what the
+  // App tier actually rejected upstream.
+  it('attaches appTierError to PrFetchError when App throws then CLI also fails', async () => {
+    const { githubApiRequest, resolveInstallationId } = await import('./github-app.js');
+    (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(1);
+    (githubApiRequest as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('GitHub API 403: Resource not accessible by integration'),
+    );
+    cliMock.mockRejectedValue(new Error('gh: not authenticated'));
+
+    const { fetchPrDetail, PrFetchError } = await import('./pr-detail-fetch.js');
+    const config = baseConfig({
+      githubApp: { appId: '1', privateKey: 'k', installationId: 1 },
+    });
+
+    try {
+      await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 1);
+      throw new Error('expected fetchPrDetail to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PrFetchError);
+      expect((err as Error).message).toMatch(/gh: not authenticated/);
+      expect((err as InstanceType<typeof PrFetchError>).appTierError).toMatch(/403/);
+      expect((err as InstanceType<typeof PrFetchError>).appTierError).toMatch(
+        /Resource not accessible/,
+      );
+    }
+  });
 });

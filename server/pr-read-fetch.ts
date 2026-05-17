@@ -75,6 +75,22 @@ export interface PrFilesResult {
   truncated: boolean;
 }
 
+/**
+ * Thrown when every auth tier fails. Carries the first-line message from
+ * the App tier's exception (if any) so the route handler can surface it
+ * to the operator alongside the final gh-CLI failure. Mirrors the same
+ * shape used by `pr-detail-fetch.ts → PrFetchError`. See the App-tier
+ * silent-fallback debugging note on `pr-actions.ts:/api/pr/review`.
+ */
+export class PrReadFetchError extends Error {
+  appTierError?: string;
+  constructor(message: string, opts?: { appTierError?: string | null }) {
+    super(message);
+    this.name = 'PrReadFetchError';
+    if (opts?.appTierError) this.appTierError = opts.appTierError;
+  }
+}
+
 const PAGE_SIZE = 100;
 const MAX_PAGES = 30; // 3000-file cap. Larger PRs get truncated + flagged.
 
@@ -131,6 +147,9 @@ export async function fetchPrDiff(
   const f = opts?.fetchImpl ?? fetch;
   const path = `/repos/${repo.owner}/${repo.repo}/pulls/${num}`;
 
+  // Captured for the gh-CLI fallback to surface when it also fails.
+  let appTierError: string | null = null;
+
   // Tier 0: User OAuth
   if (opts?.userAccessToken) {
     try {
@@ -171,19 +190,25 @@ export async function fetchPrDiff(
         return { source: 'github-app', diff };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[PR Diff] GitHub App failed, trying gh CLI: ${msg.split('\n')[0]}`);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Diff] GitHub App failed, trying gh CLI: ${appTierError}`);
       }
     }
   }
 
   // Tier 2: gh CLI
   const env = botGhEnv(config);
-  const { stdout } = await execFileAsync(
-    'gh',
-    ['pr', 'diff', String(num), '--repo', `${repo.owner}/${repo.repo}`],
-    { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
-  );
-  return { source: 'gh-cli', diff: stdout };
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      ['pr', 'diff', String(num), '--repo', `${repo.owner}/${repo.repo}`],
+      { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
+    );
+    return { source: 'gh-cli', diff: stdout };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PrReadFetchError(msg.split('\n')[0], { appTierError });
+  }
 }
 
 /**
@@ -202,6 +227,9 @@ export async function fetchPrFiles(
   opts?: PrReadFetchOptions,
 ): Promise<PrFilesResult> {
   const f = opts?.fetchImpl ?? fetch;
+
+  // Captured for the gh-CLI fallback to surface when it also fails.
+  let appTierError: string | null = null;
 
   async function paginate(headers: Record<string, string>): Promise<PrFilesResult> {
     const all: PrFilesEntry[] = [];
@@ -249,22 +277,29 @@ export async function fetchPrFiles(
         return { ...result, source: 'github-app' };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[PR Files] GitHub App failed, trying gh CLI: ${msg.split('\n')[0]}`);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Files] GitHub App failed, trying gh CLI: ${appTierError}`);
       }
     }
   }
 
   // Tier 2: gh CLI
   const env = botGhEnv(config);
-  const { stdout } = await execFileAsync(
-    'gh',
-    [
-      'api',
-      '--paginate',
-      `repos/${repo.owner}/${repo.repo}/pulls/${num}/files?per_page=${PAGE_SIZE}`,
-    ],
-    { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
-  );
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        '--paginate',
+        `repos/${repo.owner}/${repo.repo}/pulls/${num}/files?per_page=${PAGE_SIZE}`,
+      ],
+      { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
+    ));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PrReadFetchError(msg.split('\n')[0], { appTierError });
+  }
   // `gh api --paginate` concatenates JSON arrays into a single array when
   // the response is an array, so a single `JSON.parse` works.
   let parsed: unknown;

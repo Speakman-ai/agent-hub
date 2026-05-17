@@ -40,6 +40,22 @@ export interface PrDetailFetchResult {
   checks: Array<Record<string, unknown>>;
 }
 
+/**
+ * Thrown when every auth tier fails. Carries the first-line message from
+ * the App tier's exception (if any) so the route handler can surface it
+ * to the operator alongside the final gh-CLI failure. Without this,
+ * silent App-tier failures are invisible without shell access to the
+ * host (see PR review 501 debugging — `pr-actions.ts:/api/pr/review`).
+ */
+export class PrFetchError extends Error {
+  appTierError?: string;
+  constructor(message: string, opts?: { appTierError?: string | null }) {
+    super(message);
+    this.name = 'PrFetchError';
+    if (opts?.appTierError) this.appTierError = opts.appTierError;
+  }
+}
+
 function hasGitHubApp(config: AppConfig): boolean {
   const app = config.githubApp;
   if (!(app?.appId && app?.privateKey)) return false;
@@ -73,6 +89,11 @@ export async function fetchPrDetail(
   num: number,
   opts?: PrDetailFetchOptions,
 ): Promise<PrDetailFetchResult> {
+  // Captures the App-tier failure so we can surface it when the gh-CLI
+  // fallback also fails. Stays null when the App tier never ran (no app
+  // configured / no matching installation) or succeeded.
+  let appTierError: string | null = null;
+
   // Tier 0: User OAuth — respects the caller's repo visibility
   if (opts?.userAccessToken) {
     try {
@@ -147,7 +168,8 @@ export async function fetchPrDetail(
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[PR Detail] GitHub App fetch failed, trying gh CLI: ${msg.split('\n')[0]}`);
+        appTierError = msg.split('\n')[0];
+        console.warn(`[PR Detail] GitHub App fetch failed, trying gh CLI: ${appTierError}`);
       }
     }
   }
@@ -156,15 +178,21 @@ export async function fetchPrDetail(
   // (`normalizePrSummary` already maps these on App/User tiers).
   const viewJsonFields =
     'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,mergedAt,closedAt,additions,deletions,changedFiles,body,mergeable,reviewDecision,reviewRequests,labels,reviews,comments,statusCheckRollup';
-  const stdout = await callCli(config, [
-    'pr',
-    'view',
-    String(num),
-    '--repo',
-    `${repo.owner}/${repo.repo}`,
-    '--json',
-    viewJsonFields,
-  ]);
+  let stdout: string;
+  try {
+    stdout = await callCli(config, [
+      'pr',
+      'view',
+      String(num),
+      '--repo',
+      `${repo.owner}/${repo.repo}`,
+      '--json',
+      viewJsonFields,
+    ]);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PrFetchError(msg.split('\n')[0], { appTierError });
+  }
   const data = JSON.parse(stdout) as Record<string, unknown>;
   const author = data.author as Record<string, unknown> | null | undefined;
   const reviews = (data.reviews as Array<Record<string, unknown>> | undefined) || [];
