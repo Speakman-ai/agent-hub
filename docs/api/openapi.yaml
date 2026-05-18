@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.25.4
+  version: 1.25.5
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -450,7 +450,7 @@ components:
       required:
         - skill_id
         - key_name
-        - agent_id
+      description: "Upsert a per-user skill credential. `agent_id` is optional: omit it when setting a personal credential for a bundled default skill from the Account page."
     PutEngineDefaultModelsBody:
       type: object
       properties:

@@ -273,20 +273,96 @@ credentials:
     expect(put.status).toBe(400);
   });
 
-  it('rejects PUT without agent_id', async () => {
-    registerMinimalAgentProject('cred-agent');
+  it('accepts PUT without agent_id for bundled default skills (Account page flow)', async () => {
+    // No project is registered — the Account page personal-credentials
+    // section operates without a project context. The skill schema must
+    // resolve from `server/default-skills/<skillId>/SKILL.md` alone.
     const app = buildGatedApp();
     const token = await setupOwner(app);
     const put = await supertest(app)
       .put('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: 'github',
-        key_name: 'GH_TOKEN',
+        skill_id: 'linear',
+        key_name: 'LINEAR_API_KEY',
+        value: 'lin_api_personal_test_xx',
+      });
+    expect(put.status).toBe(200);
+    expect(put.body.credential.skill_id).toBe('linear');
+    expect(put.body.credential.key_name).toBe('LINEAR_API_KEY');
+    expect(put.body.credential.masked_preview).toMatch(/^••••/);
+
+    const listed = await supertest(app)
+      .get('/api/auth/me/skill-credentials?skillId=linear')
+      .set('Authorization', `Bearer ${token}`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.credentials).toHaveLength(1);
+    expect(listed.body.credentials[0].key_name).toBe('LINEAR_API_KEY');
+  });
+
+  it('rejects PUT without agent_id for an unknown skill that does not resolve from defaults', async () => {
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'definitely-not-a-real-skill-xyz',
+        key_name: 'WHATEVER',
+        value: 'x',
+      });
+    // The schema resolver returns an empty credentials list when the skill
+    // is unknown — the PUT handler then 400s with the "no credentials"
+    // error rather than silently allowing arbitrary skill ids to seed rows.
+    expect(put.status).toBe(400);
+    expect(String(put.body.error)).toMatch(/no credentials|Unknown credential|invalid credential/i);
+  });
+
+  it('clears optional credential when PUT with empty value and a row exists (no agent_id)', async () => {
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    // Seed via the no-agent path.
+    await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'linear',
+        key_name: 'LINEAR_API_KEY',
+        value: 'lin_api_to_clear',
+      })
+      .expect(200);
+
+    // Clear via the no-agent path.
+    const clear = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'linear',
+        key_name: 'LINEAR_API_KEY',
+        value: '',
+      });
+    expect(clear.status).toBe(200);
+    expect(clear.body.cleared).toBe(true);
+
+    const listed = await supertest(app)
+      .get('/api/auth/me/skill-credentials?skillId=linear')
+      .set('Authorization', `Bearer ${token}`);
+    expect(listed.body.credentials).toHaveLength(0);
+  });
+
+  it('still rejects PUT without skill_id', async () => {
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        key_name: 'LINEAR_API_KEY',
         value: 'x',
       });
     expect(put.status).toBe(400);
-    expect(String(put.body.error)).toContain('agent_id');
+    expect(String(put.body.error)).toContain('skill_id');
   });
 
   it('rejects PUT for unknown agent_id', async () => {
