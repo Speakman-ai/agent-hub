@@ -72,6 +72,28 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+/**
+ * Build a one-line, grep-friendly descriptor for a queued webhook row. Used
+ * for both the wall-timeout error label (so the thrown message carries
+ * routing context) and the catch-block log line (so PM2 logs are
+ * self-diagnosing without cross-referencing the SQLite queue). Best-effort
+ * on `repo` — malformed payloads should not abort the run.
+ */
+export function describeWebhookRow(row: WebhookEventRow): string {
+  const eventKey = row.action ? `${row.event_type}.${row.action}` : row.event_type;
+  let repo = '?';
+  try {
+    const payload = JSON.parse(row.payload) as { repository?: { full_name?: string } };
+    repo = payload.repository?.full_name || '?';
+  } catch {
+    /* swallow — payload diagnostics aren't worth failing the run */
+  }
+  return (
+    `event=${row.id} key=${eventKey} repo=${repo} cfg=${row.webhook_config_id}` +
+    ` delivery=${row.delivery_id ?? 'none'}`
+  );
+}
+
 async function runOneClaim(): Promise<boolean> {
   if (!_deps) return false;
   if (_inFlight >= WEBHOOK_WORKER_CONCURRENCY) return false;
@@ -81,17 +103,20 @@ async function runOneClaim(): Promise<boolean> {
 
   _inFlight++;
   const processFn = _deps.processEvent ?? processWebhookEvent;
+  const descriptor = describeWebhookRow(row);
+  const startedAt = Date.now();
   try {
     await withTimeout(
       processFn(_deps.routeDeps, row),
       WEBHOOK_WORKER_JOB_TIMEOUT_MS,
-      `webhook event ${row.id} (${row.event_type}${row.action ? '.' + row.action : ''})`,
+      `webhook ${descriptor}`,
     );
     _deps.stmts.markWebhookEventDone.run(row.id);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    const elapsedMs = Date.now() - startedAt;
     _deps.stmts.markWebhookEventError.run(msg.substring(0, 10000), row.id);
-    console.error(`[webhook-worker] event ${row.id} failed:`, msg);
+    console.error(`[webhook-worker] failed ${descriptor} elapsedMs=${elapsedMs}: ${msg}`);
   } finally {
     _inFlight--;
     // Try to keep the pipeline full: if another slot is available and the
