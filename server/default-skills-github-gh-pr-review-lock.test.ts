@@ -1,12 +1,24 @@
 /**
  * Verifies the AGENT_HUB_REVIEWER_LOCK guard in
- * `default-skills/github/scripts/gh-pr.sh`. As of PR #896, Agent Hub
- * injects AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just
- * reviewer-role spawns). The guard is intentionally scoped to the
- * `review` subcommand only — that is the sole identity-attribution
- * surface for formal GitHub reviews. Other write subcommands
- * (create, comment, merge, close, ready) use the per-user OAuth/PAT
- * re-injected by applyGithubSpawnCredentials and must NOT be blocked.
+ * `default-skills/github/scripts/gh-pr.sh`. Agent Hub injects
+ * AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just reviewer-role
+ * spawns). The guard covers two identity-attribution surfaces:
+ *
+ *   1. `gh pr review`  — formal review attribution. Must route through
+ *      `POST /api/pr/review` so the review lands as the GitHub App.
+ *   2. `gh pr create`  — PR-author attribution. Non-reviewer spawns
+ *      carry a GitHub App installation token in `GH_TOKEN` (preferred
+ *      for git push against org-owned repos), so running `gh pr create`
+ *      directly attributes the PR to the bot. Must route through the
+ *      server-managed auto-PR flow (`commitPushAndCreatePR` in
+ *      `server/auto-git.ts`), which strips the spawn-env tokens and
+ *      re-resolves the session-owner's per-user OAuth before pushing.
+ *      Reference repro: mcsteen/surveytracker PR #682.
+ *
+ * Other write subcommands (comment, merge, close, ready) carry no
+ * identity-attribution risk under the universal lock and must remain
+ * available so lead/dev workflows still function. The reviewer-role
+ * lock (`AGENT_HUB_REVIEWER_ROLE_LOCK=1`) covers those for reviewers.
  *
  * Notes
  * -----
@@ -107,9 +119,7 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(result.stderr || '').not.toContain('is disabled inside Agent Hub reviewer sessions');
   });
 
-  // Only the `review` subcommand must refuse under the lock.
-  // Other write subcommands (create/comment/merge/close/ready) are not
-  // identity-attribution surfaces for formal reviews and must not be blocked.
+  // The `review` subcommand must refuse under the lock.
   it('blocks the review subcommand under AGENT_HUB_REVIEWER_LOCK=1', () => {
     const result = spawnSync('bash', [SCRIPT, 'review', '1', '--approve'], {
       env: {
@@ -125,22 +135,46 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(stderr).toContain('/api/pr/review');
   });
 
-  // Regression: create/comment/merge/close/ready must NOT be blocked under
-  // AGENT_HUB_REVIEWER_LOCK=1. These subcommands use the per-user OAuth/PAT
-  // re-injected by applyGithubSpawnCredentials — locking them would break
-  // normal dev-agent workflows (gh-pr.sh create, comment, etc.).
-  // We assert that the lock error message is absent; the stub gh exits 0
-  // so the command itself succeeds (or fails for other reasons, e.g. missing
-  // required args — we only care that the lock guard did not fire).
-  const NON_REVIEW_WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
-    ['create', ['create', '--title', 'test pr']],
+  // The `create` subcommand must also refuse under the lock. Non-reviewer
+  // spawns carry an App installation token in `GH_TOKEN`, so a direct
+  // `gh pr create` opens the PR as the bot. Agents must route through
+  // the server-managed auto-PR flow instead.
+  it('blocks the create subcommand under AGENT_HUB_REVIEWER_LOCK=1', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'test pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        AGENT_HUB_REVIEWER_LOCK: '1',
+        // Even with a token in env, the lock must fire before `gh` is invoked.
+        GH_TOKEN: 'fake-token-to-prove-the-lock-fires-before-require_gh_token',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    const stderr = result.stderr || '';
+    expect(stderr).toContain('gh-pr.sh create is disabled');
+    // The error must point the agent at the server-managed auto-PR flow.
+    expect(stderr).toContain('auto-PR');
+    expect(stderr).toContain('server/auto-git.ts');
+    // The stub gh exits 0, so a successful `gh pr create` would land on
+    // stdout. Assert it didn't.
+    expect(result.stdout).not.toContain('PR #');
+  });
+
+  // Regression: comment/merge/close/ready remain available under
+  // AGENT_HUB_REVIEWER_LOCK=1. Those subcommands are not the
+  // identity-attribution surfaces this universal lock covers, and
+  // legitimate dev workflows need them (PR conversation comments,
+  // merging a finished PR, etc.). The reviewer-role lock covers them
+  // for reviewer spawns separately.
+  const NON_LOCKED_WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
     ['comment', ['comment', '1', '--body', 'note']],
     ['merge', ['merge', '1', '--squash']],
     ['close', ['close', '1']],
     ['ready', ['ready', '1']],
   ];
 
-  for (const [name, args] of NON_REVIEW_WRITE_SUBCOMMANDS) {
+  for (const [name, args] of NON_LOCKED_WRITE_SUBCOMMANDS) {
     it(`does NOT block ${name} under AGENT_HUB_REVIEWER_LOCK=1`, () => {
       const result = spawnSync('bash', [SCRIPT, ...args], {
         env: {
@@ -151,7 +185,8 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
         },
         encoding: 'utf-8',
       });
-      // The lock message must NOT appear — the lock is scoped to `review` only.
+      // The lock messages must NOT appear — the universal lock only
+      // covers `review` and `create`.
       expect(result.stderr || '').not.toContain('is disabled in Agent Hub spawns');
     });
   }
