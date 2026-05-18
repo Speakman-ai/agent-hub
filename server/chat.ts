@@ -90,6 +90,7 @@ import {
   inheritOwnerFromSession,
   getOrgOwnerUserId,
   getWsAuthUserId,
+  resolveSpawnCredsOwnerUserId,
   type AuthStampedWs,
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
@@ -2063,6 +2064,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         );
       }
 
+      // Per-account CLI billing fallback. Sessions with no persisted owner
+      // (reviewer dispatches from the webhook, system spawns) historically
+      // skipped per-user Claude/Cursor/Gemini/Codex creds entirely and fell
+      // straight through to the host-wide `config.anthropicApiKey` /
+      // `~/.claude/.credentials.json`. That means a user can configure their
+      // own un-throttled per-account Anthropic OAuth token via Settings,
+      // chat sessions sail through, but the reviewer keeps hammering the
+      // shared host subscription until it 429s ("You've hit your limit").
+      //
+      // `resolveSpawnCredsOwnerUserId` returns the persisted owner when one
+      // exists and falls back to the org owner otherwise. The session row
+      // stays owner-NULL so shared visibility semantics for reviewer
+      // sessions are preserved — we only pick *which user's* per-account
+      // key is tried. Mirrors the `getSessionOwner() || getOrgOwnerUserId()`
+      // chain `auto-git.ts` already uses for GitHub PR-push tokens.
+      //
+      // GitHub token resolution below intentionally stays gated on the
+      // persisted `ownerId` — that's an identity decision (the reviewer
+      // must NOT impersonate the org owner's GitHub account), not a
+      // billing one. See `spawn-identity-isolation-universal-reviewer-lock`
+      // in the wiki for the rationale.
+      const credsOwnerId: string | null = resolveSpawnCredsOwnerUserId(ownerId);
+
       // Per-user MCP servers (claude-code only — cursor/gemini/codex have
       // their own MCP loading rules and don't take --mcp-config). Resolved
       // BEFORE the engine arg branch so the Claude branch can append
@@ -2397,12 +2421,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const spawnEnv: NodeJS.ProcessEnv = await (async () => {
         // ownerId resolved above. The lookup is reused here for per-user
         // Claude auth (below) and per-user GitHub auth (further down).
+        // `credsOwnerId` mirrors `ownerId` for sessions with a real owner
+        // but falls back to the org owner when the session has none —
+        // see the rationale block above the resolver.
 
         // Per-user CLI auth: when the session has a recorded owner with
         // their own keys for Claude / Cursor / Gemini / Codex, those win
         // over the host config. Each field is resolved independently;
         // falsy / missing fields fall back to the host config so
         // unconfigured users keep working transparently.
+        //
+        // For reviewer / system-spawn sessions (NULL `ownerId`),
+        // `credsOwnerId` resolves to the org owner so a host operator
+        // that configured their own per-account Anthropic OAuth token in
+        // Settings is billed to that quota instead of the shared host
+        // subscription. The reviewer session row itself stays owner-NULL
+        // — this is a CLI-billing fallback, not an identity rewrite.
         let userOverride: {
           anthropicApiKey?: string | null;
           claudeCodeOAuthToken?: string | null;
@@ -2411,11 +2445,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           codexApiKey?: string | null;
         } | null = null;
         try {
-          if (ownerId) {
-            const userClaude = getUserClaudeAuth(ownerId);
-            const userCursor = getUserCursorAuth(ownerId);
-            const userGemini = getUserGeminiAuth(ownerId);
-            const userCodex = getUserCodexAuth(ownerId);
+          if (credsOwnerId) {
+            const userClaude = getUserClaudeAuth(credsOwnerId);
+            const userCursor = getUserCursorAuth(credsOwnerId);
+            const userGemini = getUserGeminiAuth(credsOwnerId);
+            const userCodex = getUserCodexAuth(credsOwnerId);
             const hasAny =
               !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
               !!(userCursor && userCursor.apiKey) ||
@@ -2454,7 +2488,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
           );
         }
-        const base = buildSpawnEnv(config, { userOverride, userId: ownerId });
+        // HOME swap policy: sessions with a real persisted owner always
+        // swap to that user's per-user HOME (current behavior). Sessions
+        // with no owner only swap when we actually have a `userOverride`
+        // to flow — without one, the per-user HOME would be an empty dir
+        // and the spawn would lose the host `~/.claude/.credentials.json`
+        // fallback (regression). Net: reviewer with org-owner per-user
+        // creds → org-owner HOME so cached OAuth files line up with the
+        // env-var creds; reviewer with neither → host HOME preserved.
+        const homeUserId = ownerId ?? (userOverride ? credsOwnerId : null);
+        const base = buildSpawnEnv(config, { userOverride, userId: homeUserId });
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
         // We always perform the lookup so non-reviewer spawns get the
         // human-identity path; the reviewer policy in
