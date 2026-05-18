@@ -292,6 +292,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
       anthropicApiKeySet: !!config.anthropicApiKey,
       codexDangerBypass: !!config.codexDangerBypass,
+      // LAN mode flag (poll-only PR workflow, no webhooks). Surfaced so the
+      // client can render a banner / hide the "configure webhook" prompts.
+      lanMode: !!config.lanMode,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
@@ -347,6 +350,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'publicUrl',
       'botGithubToken',
       'codexDangerBypass',
+      'lanMode',
     ] as const;
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
@@ -355,6 +359,12 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
+    }
+    if (updates.lanMode !== undefined) {
+      // Accept boolean or common string forms ("true"/"on"/"1") so the
+      // settings page can post the value as either a checkbox boolean or
+      // the JSON-stringified version of one.
+      updates.lanMode = coerceConfigBooleanLoose(updates.lanMode, false);
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid config fields provided' });

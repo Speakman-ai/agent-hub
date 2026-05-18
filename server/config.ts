@@ -363,6 +363,21 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
   })(),
 
+  // LAN mode: skip webhook auto-registration, lean on the existing 3-minute
+  // reconciliation poller for PR state, and let the poller dispatch reviewers
+  // on freshly-opened PRs in place of the `pull_request.opened` webhook.
+  // Default false; opt in with AGENT_HUB_LAN_MODE=true or `"lanMode": true`
+  // in config.json (or PATCH /api/config { lanMode: true }).
+  lanMode: (() => {
+    const k = 'AGENT_HUB_LAN_MODE' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], false);
+    }
+    return coerceConfigBooleanLoose(fileConfig.lanMode, false);
+  })(),
+
   // ── Host browser sessions (Stagehand / Playwright Chromium) ──
   browserMaxConcurrentContexts: clampFiniteInt(
     resolveInt('AGENT_HUB_BROWSER_MAX_CONTEXTS', 'browserMaxConcurrentContexts', 3),
