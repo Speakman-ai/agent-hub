@@ -105,6 +105,7 @@ import {
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
+import { deriveHeuristicTitle, generateLlmTitle } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
@@ -3662,6 +3663,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const sess = S.getSession.get(sessionId) as SessionRow | undefined;
         if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
           let autoName: string | undefined;
+          // `usedHeuristic` is true when the synchronous rename used the
+          // first-message heuristic (i.e. no explicit hint and no linked
+          // card). In that case we kick off an async LLM upgrade below.
+          let usedHeuristic = false;
 
           if (hookSpecificOutput?.sessionTitle) {
             autoName = hookSpecificOutput.sessionTitle;
@@ -3681,7 +3686,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
 
           if (!autoName) {
-            autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
+            autoName = deriveHeuristicTitle(content);
+            usedHeuristic = true;
           }
 
           S.updateSessionName.run(autoName, sessionId);
@@ -3689,6 +3695,33 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             type: 'session-updated',
             session: enrichSessionForClient({ ...sess, name: autoName } as SessionRow),
           });
+
+          // Async upgrade: when the sync rename used the heuristic and an LLM
+          // API key is configured, ask a fast model for a sharper title and
+          // broadcast a second `session-updated` once it returns. Guarded so
+          // we never clobber a user rename or a later automated rename.
+          if (usedHeuristic && (config.anthropicApiKey || config.openaiApiKey)) {
+            const heuristicTitle = autoName;
+            void generateLlmTitle({
+              content,
+              anthropicApiKey: config.anthropicApiKey ?? null,
+              openaiApiKey: config.openaiApiKey ?? null,
+            })
+              .then((llmTitle) => {
+                if (!llmTitle || llmTitle === heuristicTitle) return;
+                const current = S.getSession.get(sessionId) as SessionRow | undefined;
+                if (!current) return;
+                if (current.name !== heuristicTitle) return; // user/system renamed in the meantime
+                S.updateSessionName.run(llmTitle, sessionId);
+                broadcast({
+                  type: 'session-updated',
+                  session: enrichSessionForClient({ ...current, name: llmTitle } as SessionRow),
+                });
+              })
+              .catch(() => {
+                /* generateLlmTitle never rejects, but belt-and-braces. */
+              });
+          }
         }
 
         // Enrich the broadcast with agent + session names so push-notification
