@@ -9,18 +9,12 @@ import type { Project, KanbanCardRow, KanbanColumnRow, ChatMessage } from '../ty
 // CLI is authed as the maintainer's personal account. The original filter
 // skipped any review whose `sender.login` matched that account — which also
 // silently dropped *manual* human CHANGES_REQUESTED reviews, leaving the
-// author agent unable to wake up. The first fix added a body-sentinel gate
-// for the CLI-user branch.
+// author agent unable to wake up.
 //
-// A second bug (card 8303f269): the reviewer App now posts formal reviews
-// via `POST /api/pr/review` under `${ghAppSlug}[bot]`, and the blanket
-// bot-identity skip swallowed those `changes_requested` reviews too — same
-// failure mode (card stranded in Review, autofix never dispatched). The
-// fix narrows the bot-identity skip to non-actionable states only:
-// `approved` and `commented` from bot identities are still suppressed (loop
-// prevention), but `changes_requested` from bot identities now propagates
-// so the kanban handler can move the card back to In Progress and call
-// `dispatchReviewAutofix`.
+// The fix: require a bot sentinel in the review body before treating a
+// match-by-CLI-identity review as self-posted. Other bot identities
+// (`ghBotUser` PAT, `${ghAppSlug}[bot]` App) are still blanket-filtered
+// because they are unambiguously bots.
 
 const CARD: KanbanCardRow = {
   id: 'card-1',
@@ -222,53 +216,7 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
-  it('skips an APPROVED review from the bot PAT user (ghBotUser) — loop prevention', async () => {
-    // `approved` from a bot identity is the canonical self-trigger loop:
-    // bot pushes → synchronize → reviewer dispatches → bot posts approval
-    // → suppress here so we don't auto-confirm our own work.
-    const deps = makeDeps({ ghBotUser: 'agent-hub-bot' });
-
-    const handled = await handleWebhookPrReview(
-      deps as never,
-      CARD,
-      PROJECT,
-      COLS,
-      payload({
-        state: 'approved',
-        body: 'Looks good to me.',
-        senderLogin: 'agent-hub-bot',
-      }) as never,
-      'agent-hub-bot',
-    );
-
-    expect(handled).toBe(false);
-    expect(deps.handleChat).not.toHaveBeenCalled();
-  });
-
-  it('skips an APPROVED review from the GitHub App bot — loop prevention', async () => {
-    const deps = makeDeps({ ghAppSlug: 'ryan-s-agent-hub-reviewer' });
-
-    const handled = await handleWebhookPrReview(
-      deps as never,
-      CARD,
-      PROJECT,
-      COLS,
-      payload({
-        state: 'approved',
-        body: 'App-posted approval.',
-        senderLogin: 'ryan-s-agent-hub-reviewer[bot]',
-      }) as never,
-      'ryan-s-agent-hub-reviewer[bot]',
-    );
-
-    expect(handled).toBe(false);
-    expect(deps.handleChat).not.toHaveBeenCalled();
-  });
-
-  it('dispatches a CHANGES_REQUESTED review from the bot PAT user (ghBotUser)', async () => {
-    // Card 8303f269: the reviewer pipeline posts formal reviews under a bot
-    // identity. CHANGES_REQUESTED from a bot is the signal that the author
-    // agent needs to wake up — must propagate, not skip.
+  it('skips when sender is the bot PAT user (ghBotUser), regardless of body content', async () => {
     const deps = makeDeps({ ghBotUser: 'agent-hub-bot' });
 
     const handled = await handleWebhookPrReview(
@@ -278,23 +226,17 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
       COLS,
       payload({
         state: 'changes_requested',
-        body: 'Bot-authored REQUEST_CHANGES — fix the null-pointer.',
+        body: 'Plain bot-authored critique, no sentinel.',
         senderLogin: 'agent-hub-bot',
       }) as never,
       'agent-hub-bot',
     );
 
-    expect(handled).toBe(true);
-    expect(deps.stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-in-progress', 0, 'card-1');
-    expect(deps.handleChat).toHaveBeenCalledTimes(1);
-    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
+    expect(handled).toBe(false);
+    expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
-  it('dispatches a CHANGES_REQUESTED review from the GitHub App bot (${ghAppSlug}[bot])', async () => {
-    // This is the exact prod failure mode on mcsteen/surveytracker#678: the
-    // reviewer App posted REQUEST_CHANGES via `POST /api/pr/review`, sender
-    // was `${ghAppSlug}[bot]`, the old blanket-skip swallowed it, card sat
-    // stranded in Review. After the fix the same payload must propagate.
+  it('skips when sender is the GitHub App bot (${ghAppSlug}[bot]), regardless of body content', async () => {
     const deps = makeDeps({ ghAppSlug: 'ryan-s-agent-hub-reviewer' });
 
     const handled = await handleWebhookPrReview(
@@ -304,16 +246,14 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
       COLS,
       payload({
         state: 'changes_requested',
-        body: 'REQUEST_CHANGES — silent regression of MCS-2173 block-transform handling.',
+        body: 'App-posted review body.',
         senderLogin: 'ryan-s-agent-hub-reviewer[bot]',
       }) as never,
       'ryan-s-agent-hub-reviewer[bot]',
     );
 
-    expect(handled).toBe(true);
-    expect(deps.stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-in-progress', 0, 'card-1');
-    expect(deps.handleChat).toHaveBeenCalledTimes(1);
-    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
+    expect(handled).toBe(false);
+    expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
   it('still dispatches for a different human reviewer not tied to any bot identity', async () => {

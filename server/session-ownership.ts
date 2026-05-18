@@ -227,48 +227,6 @@ export function inheritOwnerFromSession(targetSessionId: string, sourceSessionId
 }
 
 /**
- * Resolve the user id whose **per-account CLI credentials** (Anthropic
- * OAuth token / API key, Cursor / Gemini / Codex keys) should flow into
- * a session's spawn env.
- *
- * Precedence:
- *   1. **`persistedOwnerId`** — the value `getSessionOwner` returned for
- *      this session. Caller does the lookup so chat.ts can reuse the
- *      single up-front read it already makes for hooks / MCP / GitHub
- *      branches.
- *   2. **Org owner** — reviewer sessions and other system spawns leave
- *      `owner_user_id` NULL so the thread stays shared/read-only across
- *      the org. For CLI billing purposes that's the wrong signal: the
- *      shared host subscription gets hammered while the operator's
- *      per-account quota sits idle. Falling back to the org owner means
- *      the human who configured per-account creds in Settings actually
- *      pays for the reviewer's tokens, instead of every reviewer dispatch
- *      sharing one limit.
- *   3. **`null`** — no users in the install yet (pre-`/api/auth/setup`).
- *
- * **Billing-only**: this resolver is NOT a substitute for `getSessionOwner`.
- * Identity-bearing decisions (GitHub token attribution, per-session
- * ownership writes, per-user MCP / skill credential injection) must
- * continue to gate on the persisted owner, never on this fallback.
- *
- * Mirrors the `getSessionOwner() || getOrgOwnerUserId()` chain
- * `auto-git.ts:resolveAutoGitGithubToken` uses for GitHub PR-push
- * tokens; the two chains live in different files because their guard
- * conditions diverge (GitHub has reviewer identity-isolation rules
- * that don't apply to CLI billing).
- */
-export function resolveSpawnCredsOwnerUserId(
-  persistedOwnerId: string | null | undefined,
-): string | null {
-  if (persistedOwnerId) return persistedOwnerId;
-  try {
-    return getOrgOwnerUserId();
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Reviewer sessions are spawned by the GitHub webhook handler when a PR
  * opens or syncs (see `runReviewerDispatch` in `server/routes/webhooks.ts`).
  * They are shared across all users in the org: the review thread is a

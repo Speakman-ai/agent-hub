@@ -1900,39 +1900,28 @@ export async function handleWebhookPrReview(
   // Self-trigger filter.
   //
   // `ghBotUser` (bot PAT user) and `appBotLogin` (GitHub App bot) are
-  // distinct bot identities — reviews under them are produced by us, either
-  // automatically (CI nudges, reviewer dispatch posting via `POST /api/pr/review`)
-  // or by the reviewer App itself. To prevent review→fix→review loops we
-  // suppress `approved` / `commented` reviews from these identities.
-  //
-  // `changes_requested` from our own reviewer is the one signal we MUST
-  // propagate — it's what flips the card back to In Progress and dispatches
-  // `dispatchReviewAutofix`. Skipping it leaves the card stranded in Review
-  // with the originating session idle and no follow-up agent ever waking up.
-  // There's no loop risk: autofix pushes → synchronize → reviewer re-runs;
-  // a fresh CHANGES_REQUESTED on the new head is the correct retry signal,
-  // and `recordDispatchedChangesRequestedReview` dedupes by review id so a
-  // single review can never dispatch autofix twice.
+  // distinct bot identities — any review under them is unambiguously
+  // automated and must be skipped to break the review→fix→review loop.
   //
   // `ghAuthenticatedUser` is the login of the server's default `gh` CLI
   // auth, which is typically a *human* personal account on single-maintainer
   // deployments. We can't skip all reviews from that identity — that was
-  // silently dropping legitimate human CHANGES_REQUESTED reviews. Instead,
-  // only skip when the review body carries our bot sentinel, the same
-  // convention used for review/issue comments.
+  // silently dropping legitimate human CHANGES_REQUESTED reviews, leaving
+  // the author agent permanently asleep. Instead, only skip when the review
+  // body carries our bot sentinel, which is the same convention already used
+  // for review/issue comments.
   const reviewBodyHasBotSentinel =
     typeof review.body === 'string' && review.body.includes(AGENT_HUB_BOT_SENTINEL);
   const isAutoReviewFromCliUser =
     !!ghAuthenticatedUser && sender === ghAuthenticatedUser && reviewBodyHasBotSentinel;
-  const senderIsBotIdentity =
-    (!!ghBotUser && sender === ghBotUser) || (!!appBotLogin && sender === appBotLogin);
-  // Bot-identity short-circuit: only suppress non-actionable states.
-  // `changes_requested` must always flow through — see comment above.
-  const suppressBotIdentity = senderIsBotIdentity && review.state !== 'changes_requested';
 
-  if (isAutoReviewFromCliUser || suppressBotIdentity) {
+  if (
+    isAutoReviewFromCliUser ||
+    (ghBotUser && sender === ghBotUser) ||
+    (appBotLogin && sender === appBotLogin)
+  ) {
     console.log(
-      `[Webhook/Kanban] Skipping self-triggered review on "${card.title}" from ${sender} (state=${review.state})`,
+      `[Webhook/Kanban] Skipping self-triggered review on "${card.title}" from ${sender}`,
     );
     return false;
   }

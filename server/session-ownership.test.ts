@@ -20,7 +20,6 @@ import {
   isReviewerSession,
   resolveOwnerUserId,
   resolveAutonomousOwnerUserId,
-  resolveSpawnCredsOwnerUserId,
   resetOrgOwnerCache,
   backfillSessionOwners,
   getOrgOwnerUserId,
@@ -245,74 +244,6 @@ describe('resolveAutonomousOwnerUserId — owner resolution chain', () => {
   it('handles null card and null epic without throwing', () => {
     expect(() => resolveAutonomousOwnerUserId(null, null)).not.toThrow();
     expect(resolveAutonomousOwnerUserId(null, null)).toBe(getOrgOwnerUserId());
-  });
-});
-
-describe('resolveSpawnCredsOwnerUserId — per-account CLI billing fallback', () => {
-  let firstUser: string;
-
-  beforeEach(() => {
-    getDb().exec('DELETE FROM sessions');
-    resetOrgOwnerCache();
-    // Seed orgs.db so getOrgOwnerUserId() resolves to a real id.
-    // Without this the fallback degrades to null and the "reviewer
-    // falls through to org owner" assertion is indistinguishable from
-    // a no-op.
-    const dir = mkdtempSync(path.join(tmpdir(), 'spawn-creds-owner-test-'));
-    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
-    initOrgsDb();
-    firstUser = createUser({
-      username: `first-${Date.now()}-${Math.random()}`,
-      passwordHash: 'h',
-    }).id;
-    // Second user proves we pick the *first* (oldest) — i.e. the org
-    // owner — not "any user".
-    createUser({
-      username: `second-${Date.now()}-${Math.random()}`,
-      passwordHash: 'h',
-    });
-    resetOrgOwnerCache();
-  });
-
-  it('returns the persisted owner verbatim when one is set', () => {
-    // Sessions with a real human attached (regular interactive chat,
-    // autonomous dispatch with a resolved owner) must always bill to
-    // that human — the helper never substitutes another user when the
-    // persisted owner is non-null.
-    expect(resolveSpawnCredsOwnerUserId('user-abc')).toBe('user-abc');
-    // Even when the org owner exists (firstUser !== 'user-abc'), the
-    // persisted id wins.
-    expect(getOrgOwnerUserId()).toBe(firstUser);
-    expect(resolveSpawnCredsOwnerUserId('user-abc')).not.toBe(firstUser);
-  });
-
-  it('falls back to the org owner when the persisted owner is null (reviewer / system spawn)', () => {
-    // Reproduces the production miss: reviewer sessions store
-    // owner_user_id = NULL on purpose (the thread is shared/read-only
-    // across the org). Pre-fix, chat.ts skipped per-user CLI auth
-    // entirely on NULL, so the spawn hit the shared host subscription
-    // and 429'd ("You've hit your limit") while operators with their
-    // own per-account Anthropic OAuth tokens sat idle.
-    expect(resolveSpawnCredsOwnerUserId(null)).toBe(firstUser);
-  });
-
-  it('falls back to the org owner when the persisted owner is undefined', () => {
-    // Defensive — the chat.ts caller passes the already-resolved
-    // `ownerId` which is typed `string | null`, but every call site
-    // that may shrink the type should keep working.
-    expect(resolveSpawnCredsOwnerUserId(undefined)).toBe(firstUser);
-  });
-
-  it('returns null when the persisted owner is null AND no users exist', () => {
-    // Fresh install state — pre `/api/auth/setup`. The org has no
-    // users yet so there is nobody to bill; the helper returns null
-    // and the spawn path keeps its existing host-config behaviour.
-    const dir = mkdtempSync(path.join(tmpdir(), 'spawn-creds-empty-test-'));
-    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
-    initOrgsDb();
-    resetOrgOwnerCache();
-    expect(getOrgOwnerUserId()).toBeNull();
-    expect(resolveSpawnCredsOwnerUserId(null)).toBeNull();
   });
 });
 

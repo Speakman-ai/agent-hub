@@ -280,6 +280,136 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect(body.error).toMatch(/captureRoutes/);
   });
 
+  it('persists a preview.compose block round-trip through PATCH', async () => {
+    // Smoke test for the compose-pivot PR 1 schema addition. Mirrors
+    // the existing "fully-populated preview block" test above but uses
+    // the new `compose` sub-block instead of the spawn-mode fields.
+    // The validator must accept the shape and round-trip it cleanly.
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            idleTTL: 600,
+            compose: {
+              file: 'compose.preview.yml',
+              entryService: 'web',
+              entryPort: 8000,
+              envFile: '.env.preview',
+              healthPath: '/healthz',
+              hostPortRange: { min: 4500, max: 4600 },
+              readyTimeoutMs: 120_000,
+            },
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: 3000,
+      preview: {
+        enabled: true,
+        idleTTL: 600,
+        compose: {
+          file: 'compose.preview.yml',
+          entryService: 'web',
+          entryPort: 8000,
+          envFile: '.env.preview',
+          healthPath: '/healthz',
+          hostPortRange: { min: 4500, max: 4600 },
+          readyTimeoutMs: 120_000,
+        },
+      },
+    });
+  });
+
+  it('rejects with 400 when preview.compose.entryService is missing', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: { enabled: true, compose: { entryPort: 8000 } },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/entryService/);
+  });
+
+  it('rejects with 400 when preview.compose.entryPort is out of range', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: { enabled: true, compose: { entryService: 'web', entryPort: 0 } },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/entryPort/);
+  });
+
+  it('rejects with 400 when preview.compose.file traverses out of the worktree', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            compose: {
+              entryService: 'web',
+              entryPort: 8000,
+              file: '../../etc/compose.yml',
+            },
+          },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/\.\./);
+  });
+
+  it('rejects with 400 when preview declares both compose and startScript (mutual exclusivity)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            startScript: 'npm run preview',
+            compose: { entryService: 'web', entryPort: 8000 },
+          },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/mutually exclusive/);
+  });
+
   it('clears the prEnv slot when sent as null', async () => {
     const project = await createProject();
     const projectId = project.id as string;
