@@ -71,6 +71,23 @@ vi.mock('../prompts/autofix/index.js', async (importOriginal) => {
   };
 });
 
+// Stub the repo-aware token resolver so the test controls the token the
+// fan-out gh exec gets, without standing up a real orgs.db / OAuth path.
+// The `autoGitChildEnv` passthrough wraps the token into a NodeJS env
+// shape — keep the real implementation so we can assert on what the env
+// actually looks like at the spawn boundary.
+let mockResolveOrgOwnerGithubToken: () => Promise<string | null> = async () => 'fanout-test-token';
+vi.mock('../auto-git.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../auto-git.js');
+  return {
+    ...actual,
+    resolveOrgOwnerGithubToken: (...args: unknown[]) => {
+      void args;
+      return mockResolveOrgOwnerGithubToken();
+    },
+  };
+});
+
 import { fanOutMergeConflictAutofix, type FanOutResult } from './webhooks.js';
 import type { Project, KanbanCardRow, RouteDeps, ChatMessage } from '../types.js';
 
@@ -316,5 +333,71 @@ describe('fanOutMergeConflictAutofix — merge cascade', () => {
     expect(result).toEqual({ checked: 0, dirty: 0, dispatched: [] });
     // No view calls were attempted because the list step failed.
     expect(ghCalls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view')).toHaveLength(0);
+  });
+
+  it('threads a resolved GitHub token into the `gh` exec env (regression for unauthenticated fan-out)', async () => {
+    // Pre-fix the `gh pr list` / `gh pr view` execs in fanOutMergeConflictAutofix
+    // had no env override and silently relied on host gh auth login. On
+    // PM2-managed servers that meant "gh: not authenticated" failures.
+    // The fix calls `resolveOrgOwnerGithubToken(config, repoFullName)` and
+    // passes the token through `autoGitChildEnv` so every spawn sees a
+    // valid `GH_TOKEN`.
+    mockResolveOrgOwnerGithubToken = async () => 'fanout-test-token';
+    ghHandler = (args) => {
+      if (args[0] === 'pr' && args[1] === 'list') {
+        return { stdout: JSON.stringify([{ number: 101, url: SIBLING_PR_URL }]) };
+      }
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return {
+          stdout: JSON.stringify({
+            number: 101,
+            title: 'Sibling',
+            url: SIBLING_PR_URL,
+            mergeable: 'CONFLICTING',
+            mergeStateStatus: 'DIRTY',
+            headRefName: 'feature/sib',
+            baseRefName: BASE_REF,
+          }),
+        };
+      }
+      return { stdout: '' };
+    };
+
+    const deps = buildDeps({ cardForPrUrl: makeCard(SIBLING_PR_URL) });
+    await fanOutMergeConflictAutofix(deps, makeProject(), REPO, BASE_REF, MERGED_PR);
+
+    const listCall = ghCalls.find((c) => c.args[0] === 'pr' && c.args[1] === 'list');
+    const viewCall = ghCalls.find((c) => c.args[0] === 'pr' && c.args[1] === 'view');
+    expect(listCall?.opts).toBeDefined();
+    expect(viewCall?.opts).toBeDefined();
+    const listEnv = (listCall!.opts as { env?: NodeJS.ProcessEnv }).env;
+    const viewEnv = (viewCall!.opts as { env?: NodeJS.ProcessEnv }).env;
+    expect(listEnv?.GH_TOKEN).toBe('fanout-test-token');
+    expect(viewEnv?.GH_TOKEN).toBe('fanout-test-token');
+  });
+
+  it('still no-ops gracefully when no GitHub token can be resolved (env-less fan-out)', async () => {
+    // When the install has no Owner whose token can see the repo AND no
+    // legacy org-owner token either, `resolveOrgOwnerGithubToken` returns
+    // null. The fan-out must still attempt the gh exec — the spawn will
+    // fail loudly with the same "gh: not authenticated" error it always
+    // would, but the function itself must not crash on the null token.
+    mockResolveOrgOwnerGithubToken = async () => null;
+    ghHandler = (args) => {
+      if (args[0] === 'pr' && args[1] === 'list') {
+        return new Error('gh: not authenticated');
+      }
+      return { stdout: '' };
+    };
+
+    const deps = buildDeps({ cardForPrUrl: makeCard(SIBLING_PR_URL) });
+    const result = await fanOutMergeConflictAutofix(deps, makeProject(), REPO, BASE_REF, MERGED_PR);
+    expect(result).toEqual({ checked: 0, dirty: 0, dispatched: [] });
+
+    const listCall = ghCalls.find((c) => c.args[0] === 'pr' && c.args[1] === 'list');
+    const listEnv = (listCall!.opts as { env?: NodeJS.ProcessEnv }).env;
+    // env may be undefined (autoGitChildEnv preserves process.env shape
+    // even without GH_TOKEN) but it must NOT carry a stray token.
+    expect(listEnv?.GH_TOKEN ?? null).toBeNull();
   });
 });

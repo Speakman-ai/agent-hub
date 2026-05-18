@@ -335,6 +335,44 @@ try {
   console.warn('[skills] Startup sync failed:', (err as Error).message);
 }
 
+// ─── Missing-webhook audit ───────────────────────────────────────────
+//
+// A project with `githubRepo` set but NO enabled `webhook_configs` row
+// will never receive PR events from GitHub — and therefore its
+// reviewer agent will never be dispatched and its PRs will be merged
+// (or rot) un-reviewed. This loop logs a one-line WARN per offender at
+// startup so operators see the gap at a glance instead of debugging
+// "why isn't the reviewer firing on this repo".
+//
+// Best-effort: any failure (db not yet up, prepared statement absent
+// during mid-migration boot) is swallowed silently. We never want this
+// audit to block the server starting.
+try {
+  if (stmts) {
+    const projectsWithGithubRepo = getProjects().filter((p) => {
+      const r = (p as { githubRepo?: string | null }).githubRepo;
+      return typeof r === 'string' && r.trim().length > 0;
+    });
+    for (const project of projectsWithGithubRepo) {
+      try {
+        const rows = stmts.getWebhookConfigsByProject.all(project.id) as Array<{
+          enabled: number | null;
+        }>;
+        const hasEnabled = rows.some((r) => r?.enabled === 1);
+        if (!hasEnabled) {
+          console.warn(
+            `[ProjectAudit] github_repo=${(project as { githubRepo?: string }).githubRepo} project=${project.id} has no enabled webhook config — PRs from this repo will not be reviewed.`,
+          );
+        }
+      } catch {
+        /* per-project lookup failure is not fatal */
+      }
+    }
+  }
+} catch (err) {
+  console.warn('[ProjectAudit] Startup webhook audit failed:', (err as Error).message);
+}
+
 function ensureWorktree(
   session: SessionRow,
   projectCwd: string,
@@ -352,6 +390,15 @@ function ensureWorktree(
    * clones or no-drift cases — see `BaseBranchAdvancedInfo`.
    */
   onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
+  /**
+   * `Project.githubRepo` (e.g. `Speakman-ai/agent-hub`). Threaded through
+   * for system-spawned sessions (reviewer / autonomous probe with
+   * `owner_user_id` NULL) so the token resolver in worktree.ts can pick
+   * an Owner whose stored OAuth/PAT actually has access to this repo
+   * instead of always falling back to `listUsers()[0]`. See
+   * `resolveOwnerWithRepoAccess`.
+   */
+  githubRepo?: string | null,
 ): Promise<string> {
   return ensureSessionWorkspace(
     session,
@@ -374,6 +421,7 @@ function ensureWorktree(
     repoUrl ?? null,
     projectId,
     onBaseBranchAdvanced,
+    githubRepo ?? null,
   );
 }
 

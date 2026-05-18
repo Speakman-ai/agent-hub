@@ -272,6 +272,7 @@ export interface ChatHandlerDeps {
     repoUrl?: string | null,
     projectId?: string,
     onBaseBranchAdvanced?: import('./worktree.js').OnBaseBranchAdvancedFn,
+    githubRepo?: string | null,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
@@ -1860,6 +1861,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           (info) => {
             baseBranchAdvanced = info;
           },
+          (project as Project).githubRepo ?? null,
         );
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (session) {

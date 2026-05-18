@@ -40,6 +40,7 @@ import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup
 import { buildResolvePrompt } from './pr-resolve.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
+import { resolveOrgOwnerGithubToken, autoGitChildEnv } from '../auto-git.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
 import type {
@@ -2259,6 +2260,17 @@ export async function fanOutMergeConflictAutofix(
   const { stmts } = deps;
   const result: FanOutResult = { checked: 0, dirty: 0, dispatched: [] };
 
+  // Resolve a GitHub token for the `gh` subprocess. Pre-fix this exec
+  // had no env override and silently relied on host `gh auth login` /
+  // `GH_TOKEN` — which on PM2-managed servers is the host user's
+  // identity, not the install's. Prefer a repo-aware Owner lookup so
+  // we pick a user whose stored OAuth token actually has access to
+  // `repoFullName`; fall back to the legacy resolver when no Owner
+  // probes 2xx (preserves prior behaviour for installs whose probe
+  // machinery hasn't been seeded).
+  const ghToken = await resolveOrgOwnerGithubToken(config, repoFullName);
+  const ghEnv = autoGitChildEnv(ghToken);
+
   let siblings: FanOutSiblingPr[];
   try {
     const { stdout } = await execFileAsync(
@@ -2277,7 +2289,7 @@ export async function fanOutMergeConflictAutofix(
         '--limit',
         '100',
       ],
-      { timeout: 15000 },
+      { timeout: 15000, env: ghEnv },
     );
     siblings = JSON.parse(stdout || '[]') as FanOutSiblingPr[];
   } catch (err) {
@@ -2306,7 +2318,7 @@ export async function fanOutMergeConflictAutofix(
           '--json',
           'number,title,url,mergeable,mergeStateStatus,headRefName,baseRefName',
         ],
-        { timeout: 15000 },
+        { timeout: 15000, env: ghEnv },
       );
       view = JSON.parse(stdout || '{}') as FanOutPrView;
     } catch (err) {

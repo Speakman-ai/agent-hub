@@ -953,6 +953,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json({ cloneId, repoName, clonePath });
   });
 
+  /**
+   * Report whether this project has at least one enabled webhook config
+   * row pointing at its GitHub remote. Drives the missing-webhook nudge
+   * on the project settings page — projects with `githubRepo` set but
+   * no enabled webhook will never see PR events from GitHub and the
+   * reviewer pipeline silently never fires.
+   *
+   * Returns:
+   *   - `null` — project has no `githubRepo` (non-GitHub remote, scratch
+   *     project). No webhook is even meaningful; the UI hides the field.
+   *   - `true` — at least one `webhook_configs` row with `enabled=1`.
+   *   - `false` — `githubRepo` set but no enabled row.
+   */
+  function computeWebhookConfigured(project: Project): boolean | null {
+    const repo = (project as { githubRepo?: string | null }).githubRepo;
+    if (!repo || !repo.trim()) return null;
+    try {
+      const rows = stmts.getWebhookConfigsByProject.all(project.id) as Array<{
+        enabled: number | null;
+      }>;
+      return rows.some((r) => r?.enabled === 1);
+    } catch {
+      // db not initialised / lookup outage — treat as "unknown"; the UI
+      // is free to render "checking…" or just hide the nudge.
+      return null;
+    }
+  }
+
   router.get('/api/projects', (req: Request, res: Response) => {
     const caller = resolveVisibilityCaller(req);
     // Visibility gate: shared projects always pass; private projects only
@@ -1231,7 +1259,16 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    res.json(project);
+    // `webhookConfigured` tells the operator at a glance whether this
+    // project will see PR events from GitHub. Projects without a
+    // `githubRepo` set (non-GitHub remotes, scratch projects) report
+    // `null` — N/A, no webhook is even meaningful. Projects with a
+    // `githubRepo` but zero enabled `webhook_configs` rows report
+    // `false` — the reviewer pipeline will never fire because GitHub
+    // can't reach us. This drives the missing-webhook nudge surfaced
+    // in the project settings panel.
+    const webhookConfigured = computeWebhookConfigured(project);
+    res.json({ ...project, webhookConfigured });
   });
 
   // ─── Re-detect preview defaults from the project's checkout ──────
