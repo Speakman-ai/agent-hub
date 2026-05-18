@@ -1319,6 +1319,7 @@ export type CommitPushPrFailureCode =
   | 'nothing_to_publish'
   | 'commit_failed'
   | 'push_failed'
+  | 'no_diff_vs_base'
   | 'pr_failed';
 
 /** User-facing outcome of `manualCommitAndPR` (Create PR button / API). */
@@ -1336,6 +1337,8 @@ function humanizeCommitPrFailure(r: Extract<CommitPushPrResult, { ok: false }>):
       return `Could not open a pull request: ${r.error}`;
     case 'commit_failed':
       return `Git commit failed: ${r.error}`;
+    case 'no_diff_vs_base':
+      return `No pull request opened: ${r.error}`;
     default:
       return r.error;
   }
@@ -1911,6 +1914,90 @@ async function commitPushAndCreatePR(
       );
       await broadcastAndMove(existingPrForBranch);
       return { ok: true, prUrl: existingPrForBranch };
+    }
+
+    // ── Empty-diff guard ───────────────────────────────────────────────
+    //
+    // `checkWorktreeChanges` (line ~1545) only measures commits against the
+    // branch's upstream or repo default branch. That misses the case where
+    // `resolvedBaseBranch` is a feature / session / epic branch that already
+    // contains every commit on the head branch — `gh pr create` would then
+    // bounce off GitHub with `GraphQL: No commits between <head> and <base>`,
+    // which the catch-block below surfaces as the noisy `pr_failed` code.
+    //
+    // Counted via `git rev-list --count <base-ref>..origin/<head>` AFTER the
+    // push above, so both refs exist on `origin`. If we can't resolve a
+    // base ref locally, fall through and let `gh` decide — preserve the
+    // current loud-fail behavior rather than silently skip.
+    const headRef = `origin/${changes.branch}`;
+    let diffBaseRef: string | null = null;
+    if (resolvedBaseBranch) {
+      // Branch was already validated as existing on `origin` at the
+      // `git ls-remote --heads origin <base>` check above. Make sure we have
+      // it locally before diffing — `git fetch` is a no-op if up-to-date.
+      try {
+        await execFileAsync('git', ['fetch', '--no-tags', 'origin', resolvedBaseBranch], {
+          cwd: effectiveCwd,
+          timeout: 30_000,
+          env: autoGitChildEnv(githubToken),
+        });
+        diffBaseRef = `origin/${resolvedBaseBranch}`;
+      } catch (fetchErr: unknown) {
+        console.warn(
+          `[auto-commit] Empty-diff guard: failed to fetch origin/${resolvedBaseBranch}: ${
+            fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
+          } — skipping pre-check, letting gh pr create decide`,
+        );
+      }
+    } else {
+      const defaultBranch = await resolveDefaultBranch(effectiveCwd);
+      if (defaultBranch) {
+        try {
+          await execFileAsync('git', ['fetch', '--no-tags', 'origin', defaultBranch], {
+            cwd: effectiveCwd,
+            timeout: 30_000,
+            env: autoGitChildEnv(githubToken),
+          });
+          diffBaseRef = `origin/${defaultBranch}`;
+        } catch (fetchErr: unknown) {
+          console.warn(
+            `[auto-commit] Empty-diff guard: failed to fetch origin/${defaultBranch}: ${
+              fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
+            } — skipping pre-check, letting gh pr create decide`,
+          );
+        }
+      }
+    }
+
+    if (diffBaseRef) {
+      try {
+        const { stdout: countOut } = await execFileAsync(
+          'git',
+          ['rev-list', '--count', `${diffBaseRef}..${headRef}`],
+          { cwd: effectiveCwd, timeout: 15_000 },
+        );
+        const aheadCount = parseInt(countOut.trim(), 10);
+        if (Number.isFinite(aheadCount) && aheadCount === 0) {
+          const baseLabel = resolvedBaseBranch
+            ? `\`${resolvedBaseBranch}\``
+            : `the default branch (\`${diffBaseRef.replace(/^origin\//, '')}\`)`;
+          const msg = `Branch \`${changes.branch}\` has no commits ahead of ${baseLabel}; skipping \`gh pr create\` (would have failed with "No commits between …").`;
+          console.log(`[auto-commit] ${msg}`);
+          prLog(`\n${msg}\n`);
+          return {
+            ok: false,
+            error: msg,
+            code: 'no_diff_vs_base',
+            branch: changes.branch,
+          };
+        }
+      } catch (countErr: unknown) {
+        console.warn(
+          `[auto-commit] Empty-diff guard: rev-list ${diffBaseRef}..${headRef} failed: ${
+            countErr instanceof Error ? countErr.message : String(countErr)
+          } — letting gh pr create decide`,
+        );
+      }
     }
 
     try {
