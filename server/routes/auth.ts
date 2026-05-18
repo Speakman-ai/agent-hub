@@ -85,6 +85,12 @@ import {
   MAX_PASSWORD_LEN,
 } from '../auth-validation.js';
 import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
+import { detectCodexAuthMode } from '../codex-auth.js';
+import { computeCodexUiStatus } from '../codex-device-auth-parse.js';
+import {
+  isCodexDeviceLoginInProgress,
+  perUserCodexHomePath,
+} from '../per-user-codex-device-login.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
 import { recoverActiveSessionsAfterSetup } from '../spawn-creds-setup-recovery.js';
 import {
@@ -287,7 +293,32 @@ registerPath({
   },
 });
 
-for (const engine of ['cursor', 'gemini', 'codex'] as const) {
+// Common "single-key" shape — cursor / gemini share it exactly. Codex
+// uses an extended shape (adds `deviceLogin`) so it's registered
+// separately below.
+const SingleKeyAuthGetResponse = z.object({
+  engine: z.string(),
+  apiKey: z.string().nullable(),
+  updatedAt: z.union([z.string(), z.number()]).nullable().optional(),
+  hostConfigFallback: z.object({ apiKey: z.boolean() }),
+});
+
+const CodexAuthDeviceLoginShape = z.object({
+  uiStatus: z.enum(['missing', 'pending', 'authenticated']),
+  loginInProgress: z.boolean(),
+  oauth: z.object({
+    loggedIn: z.boolean(),
+    mode: z.string().nullable(),
+    authJsonPath: z.string().nullable(),
+  }),
+  codexHomePath: z.string().nullable(),
+});
+
+const CodexAuthGetResponse = SingleKeyAuthGetResponse.extend({
+  deviceLogin: CodexAuthDeviceLoginShape,
+});
+
+for (const engine of ['cursor', 'gemini'] as const) {
   registerPath({
     method: 'get',
     path: `/api/auth/me/${engine}-auth`,
@@ -296,16 +327,7 @@ for (const engine of ['cursor', 'gemini', 'codex'] as const) {
     responses: {
       200: {
         description: 'Stored credentials with masking.',
-        content: {
-          'application/json': {
-            schema: z.object({
-              engine: z.string(),
-              apiKey: z.string().nullable(),
-              updatedAt: z.union([z.string(), z.number()]).nullable().optional(),
-              hostConfigFallback: z.object({ apiKey: z.boolean() }),
-            }),
-          },
-        },
+        content: { 'application/json': { schema: SingleKeyAuthGetResponse } },
       },
       401: {
         description: 'Not authenticated.',
@@ -326,16 +348,7 @@ for (const engine of ['cursor', 'gemini', 'codex'] as const) {
     responses: {
       200: {
         description: 'Updated.',
-        content: {
-          'application/json': {
-            schema: z.object({
-              engine: z.string(),
-              apiKey: z.string().nullable(),
-              updatedAt: z.union([z.string(), z.number()]).nullable().optional(),
-              hostConfigFallback: z.object({ apiKey: z.boolean() }),
-            }),
-          },
-        },
+        content: { 'application/json': { schema: SingleKeyAuthGetResponse } },
       },
       400: {
         description: 'Invalid body.',
@@ -352,6 +365,53 @@ for (const engine of ['cursor', 'gemini', 'codex'] as const) {
     },
   });
 }
+
+// Codex — same single-key shape PLUS the per-user device-login probe.
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/codex-auth',
+  tags: ['Auth'],
+  summary: 'Per-user Codex credentials (masked) + device-login (CODEX_HOME) status.',
+  responses: {
+    200: {
+      description: 'Stored API key + per-user CODEX_HOME inspection.',
+      content: { 'application/json': { schema: CodexAuthGetResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/codex-auth',
+  tags: ['Auth'],
+  summary: 'Update per-user Codex credentials.',
+  request: { body: { content: { 'application/json': { schema: UpdateSingleKeyAuthBody } } } },
+  responses: {
+    200: {
+      description: 'Updated.',
+      content: { 'application/json': { schema: SingleKeyAuthGetResponse } },
+    },
+    400: {
+      description: 'Invalid body.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 registerPath({
   method: 'get',
@@ -1641,12 +1701,53 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         res.status(404).json({ error: 'User not found' });
         return;
       }
-      res.json({
+      const base = {
         engine: route.engine,
         apiKey: maskCredential(stored.apiKey),
         updatedAt: stored.updatedAt,
         hostConfigFallback: { apiKey: route.hostHasKey() },
-      });
+      };
+      if (route.engine === 'codex') {
+        // P4: inspect the per-user CODEX_HOME (carved by
+        // POST /api/auth/me/codex-auth/login) so the UI can render
+        // "Signed in with ChatGPT" alongside the API-key state.
+        // Never throws — bad userIds / missing dirs collapse to
+        // "missing".
+        let codexHomePath: string | null = null;
+        try {
+          codexHomePath = perUserCodexHomePath(authedReq.authUserId, config.dataDir);
+        } catch {
+          codexHomePath = null;
+        }
+        const authModeInfo = codexHomePath
+          ? detectCodexAuthMode(codexHomePath)
+          : { present: false, mode: 'unknown' as const, path: '' };
+        const chatgptOAuth = authModeInfo.present && authModeInfo.mode === 'chatgpt';
+        const cliApiKey = authModeInfo.present && authModeInfo.mode === 'apikey';
+        const loginInProgress = isCodexDeviceLoginInProgress(authedReq.authUserId);
+        const uiStatus = computeCodexUiStatus({
+          binaryPresent: true,
+          loginInProgress,
+          apiKeyConfigured: !!stored.apiKey || route.hostHasKey(),
+          chatgptOAuthFromFile: chatgptOAuth,
+          cliApiKeyFromFile: cliApiKey,
+        });
+        res.json({
+          ...base,
+          deviceLogin: {
+            uiStatus,
+            loginInProgress,
+            oauth: {
+              loggedIn: chatgptOAuth,
+              mode: authModeInfo.present ? authModeInfo.mode : null,
+              authJsonPath: authModeInfo.present ? authModeInfo.path : null,
+            },
+            codexHomePath,
+          },
+        });
+        return;
+      }
+      res.json(base);
     });
 
     router.put(route.path, (req: Request, res: Response) => {

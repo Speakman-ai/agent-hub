@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, statSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, statSync, writeFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } from './config.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { perUserHomePath } from './per-user-home.js';
+import { perUserCliHomePath } from './per-user-cli-home.js';
 
 describe('buildSpawnEnv — PATH propagation', () => {
   beforeEach(() => {
@@ -388,6 +389,99 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
     // throw so a malformed id can never block a spawn.
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '../escape' });
     expect(env.HOME).toBe(process.env.HOME);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P4 — Per-user CODEX_HOME injection. When a user has completed a per-user
+// device login via POST /api/auth/me/codex-auth/login, an auth.json lands in
+// <dataDir>/per-user-cli-home/codex/<userId>. Subsequent spawns owned by that
+// user must point the codex CLI at the same path via CODEX_HOME — otherwise
+// codex falls back to ~/.codex (the per-user HOME's .codex, which is empty)
+// and re-prompts for login.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildSpawnEnv — per-user CODEX_HOME injection (P4)', () => {
+  let tmpDataDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-codex-home-'));
+  });
+
+  function seedCodexAuth(userId: string, mode: 'chatgpt' | 'apikey'): string {
+    const codexHome = perUserCliHomePath('codex', userId, tmpDataDir);
+    mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    const auth =
+      mode === 'chatgpt'
+        ? { auth_mode: 'chatgpt', tokens: { access_token: 'x', id_token: 'y' } }
+        : { auth_mode: 'apikey', OPENAI_API_KEY: 'sk-codex-from-cli' };
+    writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify(auth));
+    return codexHome;
+  }
+
+  it('injects CODEX_HOME when user has a chatgpt-mode auth.json under per-user-cli-home/codex/<uid>', () => {
+    const userId = 'codex-chatgpt-user';
+    const expected = seedCodexAuth(userId, 'chatgpt');
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId });
+    expect(env.CODEX_HOME).toBe(expected);
+  });
+
+  it('injects CODEX_HOME when the per-user CLI cache uses apikey mode', () => {
+    const userId = 'codex-apikey-user';
+    const expected = seedCodexAuth(userId, 'apikey');
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId });
+    expect(env.CODEX_HOME).toBe(expected);
+  });
+
+  it('does NOT inject CODEX_HOME when the per-user dir is missing entirely', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'codex-no-login-yet' });
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('does NOT inject CODEX_HOME when the per-user dir exists but auth.json is missing', () => {
+    // An aborted login leaves an empty CODEX_HOME tree behind; treat that
+    // as "no login" so codex falls back to the per-user HOME's .codex
+    // instead of pointing at an empty dir.
+    const userId = 'codex-aborted-login';
+    const home = perUserCliHomePath('codex', userId, tmpDataDir);
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId });
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('does NOT inject CODEX_HOME when no userId is supplied (legacy global-apiKey path)', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir });
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('drops a stale process.env.CODEX_HOME for a per-user spawn with no per-user login', () => {
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/leaked/host/codex/home';
+    try {
+      const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'codex-leak-guard' });
+      // Without a per-user login, the host-process CODEX_HOME must NOT
+      // leak into the spawn — that would point the user's codex at the
+      // operator's cache and silently sign them in as the wrong account.
+      expect(env.CODEX_HOME).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
+  });
+
+  it('different users get different CODEX_HOME paths once both have logged in', () => {
+    const homeA = seedCodexAuth('codex-A', 'chatgpt');
+    const homeB = seedCodexAuth('codex-B', 'chatgpt');
+    const envA = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'codex-A' });
+    const envB = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: 'codex-B' });
+    expect(envA.CODEX_HOME).toBe(homeA);
+    expect(envB.CODEX_HOME).toBe(homeB);
+    expect(envA.CODEX_HOME).not.toBe(envB.CODEX_HOME);
+  });
+
+  it('falls back gracefully (no CODEX_HOME) for a path-traversal userId', () => {
+    const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '../escape' });
+    expect(env.CODEX_HOME).toBeUndefined();
   });
 });
 
