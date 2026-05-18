@@ -42,10 +42,19 @@ FROM node:22-slim AS runtime
 # the repo; lint-staged / husky pre-commit then fail. Trust all paths in this
 # single-tenant agent image.
 #
-# Python 3 (+ venv + pip) is included so agents can run Python scripts and,
-# under PEP 668, create a venv to pip-install ad-hoc deps. The build stage
-# already installs python3 to compile better-sqlite3, but that stage is
-# discarded, so we install it again here for the runtime container.
+# Python 3 runtime — agents shell out to python3 for ad-hoc scripts and
+# skill helpers. The build stage's python3 only exists to compile
+# better-sqlite3 and is discarded with that stage, so the interpreter is
+# installed again here.
+#
+# PEP 668: node:22-slim is Debian Bookworm-based, which marks the system
+# Python as "externally-managed". A bare `pip install <pkg>` is intentionally
+# refused; the supported pattern inside this container is a venv:
+#
+#     python3 -m venv /tmp/venv && /tmp/venv/bin/pip install <pkg>
+#
+# python3-venv supplies the venv module; python3-pip is the pip that lives
+# inside the venv once it's created.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \

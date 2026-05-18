@@ -24,19 +24,37 @@ describe('server/Dockerfile', () => {
     expect(copyWithChown).toBeGreaterThanOrEqual(5);
   });
 
-  it('installs python3 + venv + pip in the runtime stage', () => {
-    // Agents shell out to python3 (e.g. data wrangling, ad-hoc scripts). The
-    // build stage installs python only to compile better-sqlite3; that stage
-    // is discarded. The runtime stage (FROM node:22-slim AS runtime) must
-    // install python3 itself so `python3` is on PATH inside the container.
+  it('installs python3 + venv + pip in an apt-get install line of the runtime stage', () => {
+    // Agents shell out to python3 (data wrangling, ad-hoc scripts, skill
+    // helpers). The build stage installs python3 only to compile
+    // better-sqlite3 and is discarded, so the runtime stage
+    // (FROM node:22-slim AS runtime) needs its own copy.
+    //
+    // Two scoping safeguards to prevent a vacuous pass:
+    //  - Slice the Dockerfile to the runtime stage only — the build stage
+    //    already has `python3` on its own apt-get line, which would
+    //    otherwise satisfy a naive grep even if the PR's additions were
+    //    reverted.
+    //  - Strip `#` comment lines — the rationale comment in this stage
+    //    mentions `python3` in prose, and that must not be allowed to
+    //    satisfy the assertion either.
+    //  - Require each package to appear as a standalone token after an
+    //    `apt-get install`, so e.g. `python3-venv` cannot stand in for a
+    //    missing bare `python3`.
     const dockerfile = readFileSync(dockerfilePath, 'utf8');
     const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
     expect(runtimeIdx).toBeGreaterThan(-1);
-    const runtimeStage = dockerfile.slice(runtimeIdx);
+    const runtimeCode = dockerfile
+      .slice(runtimeIdx)
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n');
     for (const pkg of ['python3', 'python3-venv', 'python3-pip']) {
-      expect(runtimeStage, `expected runtime stage to install \`${pkg}\``).toMatch(
-        new RegExp(`(^|\\s)${pkg}(\\s|$|\\\\)`, 'm'),
-      );
+      const re = new RegExp(`apt-get install[\\s\\S]*?(?<![\\w-])${pkg}(?![\\w-])`);
+      expect(
+        re.test(runtimeCode),
+        `expected runtime stage apt-get install to include \`${pkg}\` as a standalone token`,
+      ).toBe(true);
     }
   });
 });
