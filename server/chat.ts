@@ -105,6 +105,7 @@ import {
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
+import { deriveHeuristicTitle, scheduleTitleUpgrade } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
@@ -3662,6 +3663,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const sess = S.getSession.get(sessionId) as SessionRow | undefined;
         if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
           let autoName: string | undefined;
+          // `usedHeuristic` is true when the synchronous rename used the
+          // first-message heuristic (i.e. no explicit hint and no linked
+          // card). In that case we kick off an async LLM upgrade below.
+          let usedHeuristic = false;
 
           if (hookSpecificOutput?.sessionTitle) {
             autoName = hookSpecificOutput.sessionTitle;
@@ -3681,7 +3686,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
 
           if (!autoName) {
-            autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
+            autoName = deriveHeuristicTitle(content);
+            usedHeuristic = true;
           }
 
           S.updateSessionName.run(autoName, sessionId);
@@ -3689,6 +3695,41 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             type: 'session-updated',
             session: enrichSessionForClient({ ...sess, name: autoName } as SessionRow),
           });
+
+          // Async upgrade: when the sync rename used the heuristic and an LLM
+          // API key is configured, ask a fast model for a sharper title and
+          // broadcast a second `session-updated` once it returns. The
+          // TOCTOU guard inside `scheduleTitleUpgrade` ensures a concurrent
+          // user/system rename is never clobbered.
+          if (usedHeuristic) {
+            const sessSnapshot = sess;
+            const heuristicTitle = autoName;
+            void scheduleTitleUpgrade({
+              sessionId,
+              heuristicTitle,
+              content,
+              config: {
+                anthropicApiKey: config.anthropicApiKey ?? null,
+                openaiApiKey: config.openaiApiKey ?? null,
+              },
+              getSessionName: (id) => {
+                const row = S.getSession.get(id) as SessionRow | undefined;
+                return row?.name ?? null;
+              },
+              updateSessionName: (title, id) => {
+                S.updateSessionName.run(title, id);
+              },
+              onUpgrade: (newTitle) => {
+                broadcast({
+                  type: 'session-updated',
+                  session: enrichSessionForClient({
+                    ...sessSnapshot,
+                    name: newTitle,
+                  } as SessionRow),
+                });
+              },
+            });
+          }
         }
 
         // Enrich the broadcast with agent + session names so push-notification
