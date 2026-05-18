@@ -103,8 +103,8 @@ export default function ForwardSessionModal({
           {candidates.length === 0 ? (
             <View style={styles.empty}>
               <Text style={styles.emptyText}>
-                No other agents in this project to forward to. Add another
-                agent in Settings to use this feature.
+                No agents in this project to forward to. Add an agent in
+                Settings to use this feature.
               </Text>
             </View>
           ) : (
@@ -112,6 +112,7 @@ export default function ForwardSessionModal({
               <ScrollView style={styles.agentList} keyboardShouldPersistTaps="handled">
                 {candidates.map((agent) => {
                   const selected = selectedAgentId === agent.id;
+                  const isSelf = agent.id === sourceAgent?.id;
                   return (
                     <TouchableOpacity
                       key={agent.id}
@@ -120,12 +121,20 @@ export default function ForwardSessionModal({
                     >
                       <View style={[styles.agentDot, { backgroundColor: agent.color }]} />
                       <View style={styles.agentText}>
-                        <Text style={styles.agentName} numberOfLines={1}>
-                          {agent.name}
-                        </Text>
+                        <View style={styles.agentNameRow}>
+                          <Text style={styles.agentName} numberOfLines={1}>
+                            {agent.name}
+                          </Text>
+                          {isSelf && (
+                            <View style={styles.selfBadge}>
+                              <Text style={styles.selfBadgeText}>THIS AGENT</Text>
+                            </View>
+                          )}
+                        </View>
                         <Text style={styles.agentMeta} numberOfLines={1}>
-                          {agent.engine}
-                          {agent.projectName ? ` · ${agent.projectName}` : ''}
+                          {isSelf
+                            ? 'Fork this conversation into a new session'
+                            : `${agent.engine}${agent.projectName ? ` · ${agent.projectName}` : ''}`}
                         </Text>
                       </View>
                       {selected && <Text style={styles.check}>✓</Text>}
@@ -265,9 +274,28 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  agentNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   agentName: {
     color: colors.white,
     fontSize: 13,
+    flexShrink: 1,
+  },
+  selfBadge: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  selfBadgeText: {
+    color: colors.gray500,
+    fontSize: 9,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
   agentMeta: {
     color: colors.gray500,
