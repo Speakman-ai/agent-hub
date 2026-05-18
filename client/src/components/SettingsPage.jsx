@@ -2031,6 +2031,25 @@ export function GitHubSection({ onProjectsChange }) {
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
 
+  const handleToggleLanMode = async (next) => {
+    // Optimistic update — flip in-memory first so the toggle responds
+    // immediately. On failure we roll back AND re-fetch the config so a
+    // half-applied state can't linger.
+    setConfig((prev) => ({ ...prev, lanMode: next }));
+    try {
+      await api.updateConfig({ lanMode: next });
+    } catch (err) {
+      setConfig((prev) => ({ ...prev, lanMode: !next }));
+      try {
+        const fresh = await api.getConfig();
+        setConfig(fresh);
+      } catch {
+        /* leave the rollback in place */
+      }
+      alert((err && err.message) || 'Failed to update LAN mode');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -2043,6 +2062,51 @@ export function GitHubSection({ onProjectsChange }) {
           reviews). Per-project repo links live on the{' '}
           <span className="text-gray-300">Projects</span> tab.
         </p>
+      </div>
+
+      {/* LAN / air-gapped mode toggle. Lives at the top of the GitHub
+          section because every other block on this page assumes inbound
+          webhooks are reachable — LAN mode flips that assumption to
+          polling-only. The same field is also exposed on the first-run
+          SetupWizard so users opt in before any webhook setup is
+          attempted. Disabled state is the cloud-default. */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-2">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <h4 className="text-sm font-medium text-gray-300">LAN / air-gapped mode</h4>
+            <p className="text-xs text-gray-500 mt-1">
+              Turn this on if Agent Hub is running on a private network where GitHub cannot reach
+              it. Webhook auto-registration is disabled; PR state, reviews, and CI failures are
+              detected by polling GitHub every 3 minutes using your personal access token. Turning
+              it off restores the normal webhook-driven path — no other settings change.
+            </p>
+          </div>
+          <label
+            className="relative inline-flex items-center cursor-pointer shrink-0 mt-1"
+            aria-label="Toggle LAN mode"
+          >
+            <input
+              type="checkbox"
+              className="sr-only peer"
+              checked={!!config.lanMode}
+              onChange={(e) => handleToggleLanMode(e.target.checked)}
+              data-testid="lan-mode-toggle"
+            />
+            <span className="w-10 h-6 bg-gray-700 peer-checked:bg-blue-600 rounded-full transition-colors relative">
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                  config.lanMode ? 'translate-x-4' : ''
+                }`}
+              />
+            </span>
+          </label>
+        </div>
+        {config.lanMode && (
+          <div className="bg-blue-900/20 border border-blue-700/40 rounded-lg p-2.5 text-xs text-blue-200">
+            <strong>LAN mode is on.</strong> New webhook registrations are skipped — the
+            reconciliation poller is the source of truth for PR state.
+          </div>
+        )}
       </div>
 
       {/* Personal GitHub OAuth — moved here so the connected account is visible

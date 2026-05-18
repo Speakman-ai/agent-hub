@@ -723,3 +723,94 @@ describe('ProjectsSection — visibility toggle', () => {
     });
   });
 });
+
+/**
+ * LAN mode toggle on the GitHub settings page. The polling / webhook-skip
+ * behavior itself is covered server-side; these tests guard the UI wiring:
+ *
+ *   • Initial state mirrors `data.lanMode` from GET /api/config.
+ *   • Toggling fires PATCH /api/config { lanMode } and reflects the new
+ *     state in the rendered banner.
+ *   • Failure rolls back the optimistic update so the toggle never
+ *     claims a state the server didn't accept.
+ */
+describe('GitHubSection — LAN mode toggle', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/bin/claude',
+      cursorBin: '/bin/cursor',
+      defaultModel: 'claude-opus-4-7',
+      defaultCwd: '/tmp',
+      port: 3051,
+      publicUrl: '',
+      githubApp: null,
+      botGithubTokenSet: false,
+      botGithubUser: null,
+      anthropicApiKeySet: false,
+      lanMode: false,
+      _file: {},
+    });
+    api.get.mockResolvedValue({});
+    api.updateConfig.mockResolvedValue({ ok: true });
+    api.getModelConfig?.mockResolvedValue?.({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the toggle reflecting the loaded lanMode value', async () => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/bin/claude',
+      cursorBin: '/bin/cursor',
+      defaultModel: 'claude-opus-4-7',
+      defaultCwd: '/tmp',
+      port: 3051,
+      publicUrl: '',
+      githubApp: null,
+      botGithubTokenSet: false,
+      botGithubUser: null,
+      anthropicApiKeySet: false,
+      lanMode: true,
+      _file: {},
+    });
+
+    const { findByTestId, findByText } = render(<GitHubSection projects={[]} />);
+    const toggle = await findByTestId('lan-mode-toggle');
+    expect(toggle.checked).toBe(true);
+    expect(await findByText(/LAN mode is on/i)).toBeInTheDocument();
+  });
+
+  it('PATCHes /api/config { lanMode: true } when toggled on', async () => {
+    const { findByTestId } = render(<GitHubSection projects={[]} />);
+    const toggle = await findByTestId('lan-mode-toggle');
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith({ lanMode: true });
+    });
+  });
+
+  it('rolls back the toggle when the PATCH fails', async () => {
+    api.updateConfig.mockRejectedValueOnce(new Error('network down'));
+    // Silence the alert() we fire on failure so the test doesn't pop a real dialog.
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    const { findByTestId } = render(<GitHubSection projects={[]} />);
+    const toggle = await findByTestId('lan-mode-toggle');
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(api.updateConfig).toHaveBeenCalledTimes(1));
+    // After the rollback the toggle should be back to its original state.
+    await waitFor(() => expect(toggle.checked).toBe(false));
+    alertSpy.mockRestore();
+  });
+});
