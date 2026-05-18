@@ -1,105 +1,30 @@
 name: CI
 
+# PR baseline. Every PR runs the same jobs regardless of which files changed —
+# no path-based skipping, no conditional matrix. The whole point is a
+# CONSISTENT signal: if `CI` is green, the PR built, typechecked, and passed
+# the server + client test suites.
+#
+# Heavier checks (lint, format, terraform, OpenAPI freshness, skill-coupling,
+# electron, mobile) run on `push: main` via `main-checks.yml` and are NOT
+# blocking. We check the main branch periodically and fix what's broken.
+#
+# Branch protection should require **CI** (the gate job below).
+
 on:
-  # PR-only. We deliberately do NOT run on push:main — tests already gate the
-  # PR before merge, so a duplicate post-merge run on main would just burn
-  # runner minutes. The deploy workflows (deploy-dev.yml, release-prod.yml,
-  # deploy-prod-2.yml) also no longer re-run tests; if you push directly to
-  # main without a PR, run `gh workflow run ci.yml --ref main` manually before
-  # triggering a deploy.
-  #
-  # Path-based job skipping: see `jobs.changes`, `scripts/ci-path-plan.mjs`, and
-  # `scripts/ci-path-scope.mjs` (git-diff catch-all for paths no `dorny` group hits).
-  # Point branch protection at **CI (gate)** — not optional lint/build/test jobs.
   pull_request:
     branches: [main]
 
-# `dorny/paths-filter` lists PR files via the REST API; `pull-requests: read` is
-# required or the action fails with "Resource not accessible by integration".
 permissions:
   contents: read
-  pull-requests: read
-  packages: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Path scope
-    runs-on: ubuntu-latest
-    outputs:
-      run_lint: ${{ steps.plan.outputs.run_lint }}
-      run_terraform: ${{ steps.plan.outputs.run_terraform }}
-      run_build: ${{ steps.plan.outputs.run_build }}
-      run_tests: ${{ steps.plan.outputs.run_tests }}
-      test_matrix: ${{ steps.plan.outputs.test_matrix }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            global:
-              - '.github/workflows/ci.yml'
-              - 'eslint.config.js'
-              - '.prettierrc'
-              - '.prettierignore'
-              - 'package.json'
-              - 'package-lock.json'
-              - 'server/package.json'
-              - 'server/package-lock.json'
-              - 'client/package.json'
-              - 'client/package-lock.json'
-              - 'mobile/package.json'
-              - 'mobile/package-lock.json'
-            server:
-              - 'server/**'
-            client:
-              - 'client/**'
-            electron:
-              - 'electron/**'
-            mobile:
-              - 'mobile/**'
-            shared:
-              - 'shared/**'
-            terraform:
-              - 'ops/terraform/**'
-            scripts:
-              - 'scripts/**'
-            e2e:
-              - 'e2e/**'
-
-      - name: Detect paths outside dorny filter scope
-        id: uncovered
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/ci-uncovered-paths.mjs >> "$GITHUB_OUTPUT"
-
-      - name: Plan jobs from diff
-        id: plan
-        env:
-          FILTER_GLOBAL: ${{ steps.filter.outputs.global }}
-          FILTER_SERVER: ${{ steps.filter.outputs.server }}
-          FILTER_CLIENT: ${{ steps.filter.outputs.client }}
-          FILTER_ELECTRON: ${{ steps.filter.outputs.electron }}
-          FILTER_MOBILE: ${{ steps.filter.outputs.mobile }}
-          FILTER_SHARED: ${{ steps.filter.outputs.shared }}
-          FILTER_TERRAFORM: ${{ steps.filter.outputs.terraform }}
-          FILTER_SCRIPTS: ${{ steps.filter.outputs.scripts }}
-          FILTER_E2E: ${{ steps.filter.outputs.e2e }}
-          FILTER_UNCOVERED: ${{ steps.uncovered.outputs.uncovered }}
-        run: node scripts/ci-path-plan.mjs >> "$GITHUB_OUTPUT"
-
-  lint:
-    name: Lint & Format
-    needs: changes
-    if: needs.changes.outputs.run_lint == 'true'
+  build:
+    name: Build & typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,6 +39,15 @@ jobs:
           for attempt in 1 2 3 4; do
             npm ci --ignore-scripts --include=dev && exit 0
             echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Install client dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd client && npm ci --include=dev) && exit 0
+            echo "npm ci (client) failed attempt $attempt/4; retry in 15s..."
             sleep 15
           done
           exit 1
@@ -123,79 +57,6 @@ jobs:
           for attempt in 1 2 3 4; do
             (cd server && npm ci --include=dev) && exit 0
             echo "npm ci (server) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Install client dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd client && npm ci --include=dev) && exit 0
-            echo "npm ci (client) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Check Prettier formatting
-        run: npm run format:check
-
-      - name: Check server types
-        run: cd server && npx tsc --noEmit
-
-  terraform:
-    name: Terraform
-    needs: changes
-    if: needs.changes.outputs.run_terraform == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ops/terraform
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.10.0
-
-      - name: Terraform fmt (check)
-        run: terraform fmt -check -recursive
-
-      - name: Terraform init (no backend)
-        run: terraform init -backend=false
-
-      - name: Terraform validate
-        run: terraform validate
-
-  build:
-    name: Build
-    needs: changes
-    if: needs.changes.outputs.run_build == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            npm ci --ignore-scripts --include=dev && exit 0
-            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Install client dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd client && npm ci --include=dev) && exit 0
-            echo "npm ci (client) failed attempt $attempt/4; retry in 15s..."
             sleep 15
           done
           exit 1
@@ -203,25 +64,20 @@ jobs:
       - name: Build client
         run: npm run build
 
-      - name: Install server dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd server && npm ci --include=dev) && exit 0
-            echo "npm ci (server) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
+      - name: Server typecheck (tsc --noEmit)
+        run: cd server && npx tsc --noEmit
 
   test:
-    # Fan out suites across runners; shard server with `vitest run --shard`.
-    # Matrix rows are computed in the `changes` job from path filters.
-    name: Test (${{ matrix.label }})
-    needs: changes
-    if: needs.changes.outputs.run_tests == 'true'
+    name: Tests (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.changes.outputs.test_matrix) }}
+      matrix:
+        include:
+          - { suite: server, shard: 1, shards: 3, label: 'server 1/3' }
+          - { suite: server, shard: 2, shards: 3, label: 'server 2/3' }
+          - { suite: server, shard: 3, shards: 3, label: 'server 3/3' }
+          - { suite: client, label: 'client' }
     steps:
       - uses: actions/checkout@v4
 
@@ -263,58 +119,27 @@ jobs:
           done
           exit 1
 
-      - name: Install mobile dependencies
-        if: matrix.suite == 'mobile'
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd mobile && npm ci --include=dev) && exit 0
-            echo "npm ci (mobile) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
+      - name: Run server tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
+        if: matrix.suite == 'server'
+        run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
       - name: Run client tests
         if: matrix.suite == 'client'
         run: cd client && npm test
 
-      - name: Run electron tests
-        if: matrix.suite == 'electron'
-        run: cd electron && npx vitest run
-
-      - name: Run mobile tests
-        if: matrix.suite == 'mobile'
-        run: cd mobile && npm test
-
-      - name: Run server tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
-        if: matrix.suite == 'server'
-        run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
-
-  ci-gate:
-    # Single required status check. Downstream jobs skip when scoped paths do not
-    # need them. Out-of-scope paths (see `ci-uncovered-paths.mjs`) force the full
-    # lint/build/test matrix so the gate cannot pass with every leg skipped.
-    name: CI (gate)
-    needs: [changes, lint, terraform, build, test]
+  ci:
+    # Single required status check. Aggregates the always-on jobs above.
+    name: CI
+    needs: [build, test]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Verify path planning succeeded
-        if: needs.changes.result != 'success'
-        run: |
-          echo "::error::Path scope job failed — fix the workflow or checkout."
-          exit 1
-
-      - name: Verify runnable jobs
+      - name: Verify all jobs succeeded
         env:
-          LINT: ${{ needs.lint.result }}
-          TF: ${{ needs.terraform.result }}
           BUILD: ${{ needs.build.result }}
           TEST: ${{ needs.test.result }}
         run: |
           set -euo pipefail
-          # failure / cancelled on a non-skipped job should fail the gate
-          case "$LINT" in success|skipped) ;; *) echo "::error::Lint & Format job: $LINT"; exit 1 ;; esac
-          case "$TF" in success|skipped) ;; *) echo "::error::Terraform job: $TF"; exit 1 ;; esac
-          case "$BUILD" in success|skipped) ;; *) echo "::error::Build job: $BUILD"; exit 1 ;; esac
-          case "$TEST" in success|skipped) ;; *) echo "::error::Test job: $TEST"; exit 1 ;; esac
-          echo "CI gate: OK (lint=$LINT terraform=$TF build=$BUILD test=$TEST)"
+          case "$BUILD" in success) ;; *) echo "::error::Build & typecheck job: $BUILD"; exit 1 ;; esac
+          case "$TEST" in success) ;; *) echo "::error::Tests job: $TEST"; exit 1 ;; esac
+          echo "CI: OK (build=$BUILD test=$TEST)"

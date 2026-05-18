@@ -252,11 +252,13 @@ Server tests must never spawn the real `claude`, `cursor-agent`, `gemini`, or `c
 
 ## OpenAPI Schema Coverage — Every Route Needs a Zod Registration
 
-The published REST surface is auto-documented from Zod schemas registered at module load. The committed `docs/api/openapi.yaml` is the output of `npm run generate:openapi`, which imports every `server/routes/*.ts` and walks the singleton `OpenAPIRegistry`. Two CI gates keep this honest:
+The published REST surface is auto-documented from Zod schemas registered at module load. The committed `docs/api/openapi.yaml` is the output of `npm run generate:openapi`, which imports every `server/routes/*.ts` and walks the singleton `OpenAPIRegistry`. Two checks keep this honest — both run on `push: main` in `.github/workflows/api-docs.yml` (post-merge informational, NOT a PR gate as of the CI baseline cleanup):
 
 1. **Coverage ratchet** — `scripts/check-openapi-coverage.ts` (`npm run check:openapi-coverage`).
-   Counts `router.<verb>(...)` handlers vs. `registry.registerPath(...)` calls per file (inline + `<name>.openapi.ts` companion). Per-file allowances live in `scripts/openapi-coverage-baseline.json`; any file exceeding its allowance fails CI. New files default to **0 allowed** — they must come with schemas.
-2. **Freshness gate** — `scripts/check-openapi-freshness.ts` (`npm run check:openapi-freshness`) regenerates the spec into a tmp file and diffs against the committed `docs/api/openapi.yaml`. CI also runs `git diff --exit-code` on the same path after `generate:openapi` in `.github/workflows/api-docs.yml`. Any drift fails the build with instructions to run `npm run generate:openapi`.
+   Counts `router.<verb>(...)` handlers vs. `registry.registerPath(...)` calls per file (inline + `<name>.openapi.ts` companion). Per-file allowances live in `scripts/openapi-coverage-baseline.json`; any file exceeding its allowance fails the post-merge run. New files default to **0 allowed** — they must come with schemas.
+2. **Freshness gate** — `scripts/check-openapi-freshness.ts` (`npm run check:openapi-freshness`) regenerates the spec into a tmp file and diffs against the committed `docs/api/openapi.yaml`. The api-docs workflow also runs `git diff --exit-code` on the same path after `generate:openapi`. Any drift fails the post-merge build with instructions to run `npm run generate:openapi`.
+
+Because these only fire on main, you can land a PR that breaks them. The convention is: regenerate locally and commit before pushing — run `npm run check:openapi` (alias for coverage + freshness) before opening the PR.
 
 ### Workflow when adding or changing a route
 

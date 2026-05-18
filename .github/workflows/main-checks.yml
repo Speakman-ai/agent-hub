@@ -1,0 +1,194 @@
+name: Main Checks
+
+# Post-merge informational suite. Runs on every push to main and on manual
+# dispatch. NOT a PR gate — these checks can go red and we fix on a cadence.
+#
+# What lives here (instead of `ci.yml`):
+#   - Lint + format
+#   - Server typecheck duplicate signal (kept on PR baseline too)
+#   - Terraform fmt / init / validate
+#   - Skill-coupling enforcement
+#   - Electron tests
+#   - Mobile tests
+#
+# OpenAPI freshness + coverage + filter unit tests live in `api-docs.yml`
+# alongside the docs deploy — keeping them together avoids re-implementing
+# the better-sqlite3 native-rebuild dance in two workflows.
+#
+# If you add a check here, do NOT add a corresponding required status to
+# branch protection — the whole point is that these never block merge.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: main-checks
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            npm ci --ignore-scripts --include=dev && exit 0
+            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Install server dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd server && npm ci --include=dev) && exit 0
+            echo "npm ci (server) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Install client dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd client && npm ci --include=dev) && exit 0
+            echo "npm ci (client) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Check Prettier formatting
+        run: npm run format:check
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ops/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Terraform fmt (check)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+  skill-coupling:
+    name: Platform module ↔ SKILL.md coupling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Collect changed files (push range)
+        id: diff
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          # On a normal push, github.event.before is the previous tip of main.
+          # On the very first push (branch creation) or a workflow_dispatch run,
+          # `before` is either all-zeros or unset — fall back to HEAD~1 so the
+          # check still has a sensible diff to look at.
+          if [ -z "${PUSH_BEFORE:-}" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable github.event.before; falling back to HEAD~1"
+            git diff --name-only HEAD~1 HEAD > changed-files.txt
+          else
+            git diff --name-only "$PUSH_BEFORE" "$PUSH_AFTER" > changed-files.txt
+          fi
+          echo "Changed files in this push:"
+          cat changed-files.txt
+
+      - name: Check skill coupling
+        env:
+          CHANGED_FILES_PATH: changed-files.txt
+          # No PR labels available on push events — the override label only
+          # affects the PR-time use case (which no longer exists). Leave blank.
+          PR_LABELS: ''
+        run: node .github/scripts/skill-coupling.mjs
+
+  electron-tests:
+    name: Electron tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            npm ci --ignore-scripts --include=dev && exit 0
+            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Run electron tests
+        run: cd electron && npx vitest run
+
+  mobile-tests:
+    name: Mobile tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            npm ci --ignore-scripts --include=dev && exit 0
+            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Install mobile dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd mobile && npm ci --include=dev) && exit 0
+            echo "npm ci (mobile) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Run mobile tests
+        run: cd mobile && npm test

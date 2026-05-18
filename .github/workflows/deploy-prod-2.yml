@@ -30,8 +30,8 @@ permissions:
 
 jobs:
   # Tests are not re-run here. The tag was already gated by ci.yml on the PR
-  # that produced it AND by release-prod.yml at tag-cut time. Re-verifying on
-  # every prod-2 rollout duplicates known-green work and slows the rollout.
+  # that produced it (build + typecheck + server/client baseline). Re-verifying
+  # on every prod-2 rollout duplicates known-green work and slows the rollout.
   # If you need to re-run tests against the tag before rolling, do it manually
   # via `gh workflow run ci.yml --ref <tag>` (or run `npm test` locally).
   deploy-prod-2:
