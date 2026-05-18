@@ -1832,6 +1832,8 @@ export function GitHubSection({ onProjectsChange }) {
   // GitHub App state
   const [appStatus, setAppStatus] = useState(null);
   const [refreshingApp, setRefreshingApp] = useState(false);
+  const [syncingSecret, setSyncingSecret] = useState(false);
+  const [syncSecretMessage, setSyncSecretMessage] = useState(null);
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [connectForm, setConnectForm] = useState({ appId: '', privateKey: '', installationId: '' });
   const [connectError, setConnectError] = useState(null);
@@ -1976,6 +1978,42 @@ export function GitHubSection({ onProjectsChange }) {
       window.open(data.installUrl, '_blank');
     } catch (err) {
       alert(err.message || 'Failed to get install URL');
+    }
+  };
+
+  const handleSyncWebhookSecret = async (rotate = false) => {
+    // Push our local App webhook secret to GitHub via
+    // POST /api/github-app/sync-webhook-secret. This is the manual
+    // recovery for "the App's webhook secret on GitHub drifted out of
+    // sync with our copy in config.json" — symptom is
+    // `[Webhook] HMAC verification failed ... tried=repo + github-app`
+    // in the server log. Most drift now self-heals on the next failed
+    // delivery (see routes/webhooks.ts), but this button is the
+    // explicit operator escape hatch.
+    if (
+      rotate &&
+      !confirm(
+        'Generate a fresh webhook secret and push it to GitHub? Any other agents using ' +
+          "the App's current secret will need to be reconfigured.",
+      )
+    ) {
+      return;
+    }
+    setSyncingSecret(true);
+    setSyncSecretMessage(null);
+    try {
+      const result = await api.post('/github-app/sync-webhook-secret', rotate ? { rotate } : {});
+      setSyncSecretMessage({
+        kind: 'ok',
+        text: `Synced — pushed secret to GitHub (${result.generated ? 'newly generated, ' : ''}prefix ${result.secretPrefix}…, ${result.secretLength} chars).`,
+      });
+    } catch (err) {
+      setSyncSecretMessage({
+        kind: 'error',
+        text: err.message || 'Failed to sync webhook secret to GitHub',
+      });
+    } finally {
+      setSyncingSecret(false);
     }
   };
 
@@ -2169,17 +2207,55 @@ export function GitHubSection({ onProjectsChange }) {
           </div>
         ) : (
           /* State C — Fully configured */
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-            <span className="text-sm text-emerald-400">
-              Connected: {appStatus.appName || appStatus.appSlug || `App #${appStatus.appId}`}
-            </span>
-            <button
-              onClick={handleRemoveApp}
-              className="text-xs text-red-400 hover:text-red-300 ml-auto"
-            >
-              Remove
-            </button>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-sm text-emerald-400">
+                Connected: {appStatus.appName || appStatus.appSlug || `App #${appStatus.appId}`}
+              </span>
+              <button
+                onClick={handleRemoveApp}
+                className="text-xs text-red-400 hover:text-red-300 ml-auto"
+              >
+                Remove
+              </button>
+            </div>
+            <div className="border-t border-gray-800 pt-3 space-y-2">
+              <p className="text-xs text-gray-500">
+                <span className="text-gray-400">Webhook secret —</span> if the server log shows{' '}
+                <code className="text-[10px] text-gray-400">
+                  [Webhook] HMAC verification failed
+                </code>{' '}
+                for GitHub-App deliveries, push our local secret to GitHub to put both sides back in
+                sync. (GitHub never returns the secret on read, so we can only push.)
+              </p>
+              <div className="flex gap-2 items-center">
+                <button
+                  onClick={() => handleSyncWebhookSecret(false)}
+                  disabled={syncingSecret}
+                  className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                  title="Push the stored webhook secret to GitHub"
+                >
+                  <RefreshCw size={12} className={syncingSecret ? 'animate-spin' : ''} />
+                  {syncingSecret ? 'Syncing…' : 'Sync webhook secret to GitHub'}
+                </button>
+                <button
+                  onClick={() => handleSyncWebhookSecret(true)}
+                  disabled={syncingSecret}
+                  className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50"
+                  title="Generate a fresh secret and push it to GitHub (destructive)"
+                >
+                  Rotate
+                </button>
+              </div>
+              {syncSecretMessage && (
+                <p
+                  className={`text-xs ${syncSecretMessage.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}
+                >
+                  {syncSecretMessage.text}
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>

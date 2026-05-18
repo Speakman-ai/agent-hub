@@ -236,3 +236,80 @@ export async function getAppInstallations(
 
   return (await res.json()) as Array<Record<string, unknown>>;
 }
+
+/**
+ * Reads the GitHub App's webhook configuration. Note that GitHub returns
+ * the `secret` field MASKED (`"********"`) — you cannot use this endpoint
+ * to recover an unknown App webhook secret. It is useful only for
+ * diagnostic purposes: confirming the `url` and `content_type` match what
+ * we expect, and that the App is configured with *some* secret at all.
+ *
+ * Docs: https://docs.github.com/en/rest/apps/webhooks#get-a-webhook-configuration-for-an-app
+ */
+export interface AppWebhookConfig {
+  url: string;
+  content_type: string;
+  insecure_ssl: string;
+  /** Always returned as `"********"` by GitHub. */
+  secret?: string;
+}
+
+export async function getAppWebhookConfig(
+  appId: string | number,
+  privateKey: string,
+): Promise<AppWebhookConfig> {
+  const jwt = generateJWT(appId, privateKey);
+  const res = await fetch('https://api.github.com/app/hook/config', {
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Failed to get app webhook config (${res.status}): ${text}`);
+  }
+
+  return (await res.json()) as AppWebhookConfig;
+}
+
+/**
+ * Pushes a webhook secret to the GitHub App's webhook configuration. This
+ * is the "push-sync" leg of self-heal: if our locally stored
+ * `config.githubApp.webhookSecret` drifts out of sync with whatever
+ * GitHub has on the App, calling this with our local value puts both
+ * sides back in agreement. GitHub immediately starts signing future
+ * deliveries with the new secret.
+ *
+ * Caller is responsible for throttling — see `shouldAttemptAppSecretHeal`
+ * in `webhook-hmac-failures.ts`.
+ *
+ * Docs: https://docs.github.com/en/rest/apps/webhooks#update-a-webhook-configuration-for-an-app
+ */
+export async function patchAppWebhookSecret(
+  appId: string | number,
+  privateKey: string,
+  newSecret: string,
+): Promise<void> {
+  if (!newSecret) {
+    throw new Error('patchAppWebhookSecret: refusing to set an empty webhook secret');
+  }
+  const jwt = generateJWT(appId, privateKey);
+  const res = await fetch('https://api.github.com/app/hook/config', {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({ secret: newSecret }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Failed to patch app webhook secret (${res.status}): ${text}`);
+  }
+}

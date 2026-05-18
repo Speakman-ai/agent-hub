@@ -1,15 +1,17 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { localDateStr } from '../memory.js';
+import crypto from 'crypto';
 import {
   getAppInfo,
   getAppInstallations,
   buildAppManifest,
   clearTokenCache,
+  patchAppWebhookSecret,
 } from '../github-app.js';
 import type {
   RouteDeps,
@@ -654,6 +656,105 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent((err as Error).message)}`,
       );
     }
+  });
+
+  // ── GitHub App webhook secret sync ──────────────────────────────
+  // Operator escape hatch for "the webhook secret drifted." GitHub does
+  // NOT let us read back the App's current webhook secret (the GET
+  // endpoint returns `"secret": "********"`), so we can only push-sync:
+  // ensure we have a local value (generate a fresh one if missing),
+  // PATCH it onto the App's webhook config on GitHub, persist the new
+  // value to ~/.agent-hub/data/config.json. After this call, GitHub
+  // will sign every subsequent App delivery with this exact secret.
+  //
+  // This is also wired automatically into the HMAC-failure path in
+  // routes/webhooks.ts (throttled), so most drift will self-heal
+  // within one delivery; this button is the explicit recovery for
+  // operators who want to force the sync immediately.
+  router.post('/api/github-app/sync-webhook-secret', async (req: Request, res: Response) => {
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+
+    const { rotate } = (req.body as { rotate?: boolean }) || {};
+    const shouldGenerate = rotate === true || !app.webhookSecret;
+    const secretToPush = shouldGenerate
+      ? crypto.randomBytes(32).toString('hex')
+      : (app.webhookSecret as string);
+
+    try {
+      await patchAppWebhookSecret(app.appId, app.privateKey, secretToPush);
+    } catch (err: unknown) {
+      return res.status(502).json({
+        error: `Failed to push webhook secret to GitHub: ${(err as Error).message}`,
+      });
+    }
+
+    // GitHub has now been mutated. From this point on, any failure to
+    // persist locally means in-memory and disk would disagree at restart,
+    // which is the exact "drift" failure this PR exists to prevent. Wrap
+    // the persist step so that on disk-write failure we:
+    //  - roll back the in-memory secret to its pre-call value
+    //  - surface a 500 telling the operator GitHub holds the new value
+    //    and how to recover (re-run with rotate: true).
+    const previousSecret = app.webhookSecret;
+    app.webhookSecret = secretToPush;
+    config.githubApp = app;
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    try {
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = app;
+      const serialized = JSON.stringify(fileConfig, null, 2);
+      // Atomic write: stage into a sibling temp file then rename. Either
+      // the rename flips the file or we're left with the prior contents.
+      const tmpPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmpPath, serialized, 'utf-8');
+      try {
+        renameSync(tmpPath, configPath);
+      } catch (renameErr) {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          /* best-effort cleanup */
+        }
+        throw renameErr;
+      }
+    } catch (err: unknown) {
+      // Disk persist failed AFTER GitHub already accepted the new secret.
+      // Restore in-memory state so we don't lie about what's on disk, and
+      // surface the GitHub-mutated condition explicitly.
+      app.webhookSecret = previousSecret;
+      config.githubApp = app;
+      console.error(
+        `[GitHub App] Webhook secret synced to GitHub but local persist failed ` +
+          `(appId=${app.appId}): ${(err as Error).message}`,
+      );
+      return res.status(500).json({
+        error:
+          'Pushed to GitHub but failed to persist locally. Re-run with rotate: true to recover.',
+        githubMutated: true,
+        cause: (err as Error).message,
+      });
+    }
+
+    console.log(
+      `[GitHub App] Webhook secret synced to GitHub ` +
+        `(appId=${app.appId}, generated=${shouldGenerate}, length=${secretToPush.length})`,
+    );
+
+    res.json({
+      ok: true,
+      generated: shouldGenerate,
+      secretLength: secretToPush.length,
+      secretPrefix: secretToPush.slice(0, 4),
+    });
   });
 
   router.get('/api/github-app/install-url', async (_req: Request, res: Response) => {

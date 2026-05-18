@@ -595,6 +595,78 @@ registerPath({
   },
 });
 
+const GithubAppSyncWebhookSecretResponse = registerComponent(
+  'GithubAppSyncWebhookSecretResponse',
+  z
+    .object({
+      ok: z.literal(true),
+      generated: z
+        .boolean()
+        .openapi({ description: 'True if a fresh secret was generated rather than re-using.' }),
+      secretLength: z.number().int(),
+      secretPrefix: z
+        .string()
+        .openapi({ description: 'First 4 chars of the secret for diagnostic display only.' }),
+    })
+    .openapi({
+      description:
+        'Result of pushing the GitHub App webhook secret to GitHub. Never returns the full secret.',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/github-app/sync-webhook-secret',
+  tags: ['GitHub App'],
+  summary: "Push the App's webhook secret to GitHub (drift recovery)",
+  description:
+    'Calls `PATCH /app/hook/config` on GitHub with our locally-stored ' +
+    "`config.githubApp.webhookSecret`. If we don't have a local secret, " +
+    'a fresh 32-byte hex secret is generated, pushed, and persisted. ' +
+    'Pass `{ rotate: true }` to force generation of a new secret even ' +
+    'when a local one exists. GitHub returns its current secret as ' +
+    '`********` on read, so this push-sync is the only way to put both ' +
+    'sides back in lockstep after drift.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            rotate: z.boolean().optional().openapi({
+              description:
+                'Generate and push a brand-new secret even if one already exists locally.',
+            }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Secret pushed to GitHub and persisted locally.',
+      content: jsonContent(GithubAppSyncWebhookSecretResponse),
+    },
+    400: errorResponse('No GitHub App configured.'),
+    500: {
+      description:
+        'GitHub accepted the PATCH but persisting locally failed; in-memory has been rolled back.',
+      content: jsonContent(
+        z.object({
+          error: z.string(),
+          githubMutated: z.literal(true).openapi({
+            description:
+              'Always true when this 500 shape is returned. Signals the operator that GitHub already holds the new secret and a re-run with rotate:true is the recovery path.',
+          }),
+          cause: z.string().optional().openapi({
+            description: 'Underlying filesystem error message (e.g. ENOENT, EACCES).',
+          }),
+        }),
+      ),
+    },
+    502: errorResponse('GitHub rejected the PATCH call.'),
+  },
+});
+
 registerPath({
   method: 'get',
   path: '/api/github-app/setup-complete',

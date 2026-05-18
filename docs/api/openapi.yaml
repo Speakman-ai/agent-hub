@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.25.1
+  version: 1.25.2
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -1583,6 +1583,27 @@ components:
         - message
         - results
       description: Per-section result map — each entry is either `true`/`false` or a human-readable summary like `"3 new, 5 skipped"`.
+    GithubAppSyncWebhookSecretResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        generated:
+          type: boolean
+          description: True if a fresh secret was generated rather than re-using.
+        secretLength:
+          type: integer
+        secretPrefix:
+          type: string
+          description: First 4 chars of the secret for diagnostic display only.
+      required:
+        - ok
+        - generated
+        - secretLength
+        - secretPrefix
+      description: Result of pushing the GitHub App webhook secret to GitHub. Never returns the full secret.
     Cron:
       type: object
       properties:
@@ -2502,6 +2523,50 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    WebhookHmacFailureEntry:
+      type: object
+      properties:
+        ts:
+          type: integer
+        repoFullName:
+          type: string
+        eventLabel:
+          type: string
+        deliveryId:
+          type: string
+          nullable: true
+        triedSources:
+          type: string
+        isAppDelivery:
+          type: boolean
+        healAttempted:
+          type: boolean
+        healResult:
+          type: string
+          enum:
+            - ok
+            - failed
+            - skipped
+        healError:
+          type: string
+      required:
+        - ts
+        - repoFullName
+        - eventLabel
+        - deliveryId
+        - triedSources
+        - isAppDelivery
+        - healAttempted
+      description: One GitHub webhook delivery that failed HMAC signature verification. Entries are kept in an in-memory ring buffer; restart-volatile.
+    WebhookHmacFailureList:
+      type: object
+      properties:
+        failures:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookHmacFailureEntry"
+      required:
+        - failures
     WikiPage:
       type: object
       properties:
@@ -7337,6 +7402,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/github-app/sync-webhook-secret:
+    post:
+      tags:
+        - GitHub App
+      summary: Push the App's webhook secret to GitHub (drift recovery)
+      description: "Calls `PATCH /app/hook/config` on GitHub with our locally-stored `config.githubApp.webhookSecret`. If we don't have a local secret, a fresh 32-byte hex secret is generated, pushed, and persisted. Pass `{ rotate: true }` to force generation of a new secret even when a local one exists. GitHub returns its current secret as `********` on read, so this push-sync is the only way to put both sides back in lockstep after drift."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rotate:
+                  type: boolean
+                  description: Generate and push a brand-new secret even if one already exists locally.
+      responses:
+        "200":
+          description: Secret pushed to GitHub and persisted locally.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppSyncWebhookSecretResponse"
+        "400":
+          description: No GitHub App configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: GitHub accepted the PATCH but persisting locally failed; in-memory has been rolled back.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  githubMutated:
+                    type: boolean
+                    enum:
+                      - true
+                    description: Always true when this 500 shape is returned. Signals the operator that GitHub already holds the new secret and a re-run with rotate:true is the recovery path.
+                  cause:
+                    type: string
+                    description: Underlying filesystem error message (e.g. ENOENT, EACCES).
+                required:
+                  - error
+                  - githubMutated
+        "502":
+          description: GitHub rejected the PATCH call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
   /api/github-app/setup-complete:
     get:
       tags:
@@ -9986,6 +10105,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/webhooks/hmac-failures:
+    get:
+      tags:
+        - Webhooks
+      summary: Recent webhook HMAC verification failures (in-memory ring buffer)
+      description: Returns the most-recent webhook deliveries that the server rejected because neither the per-repo secret nor the GitHub App webhook secret could verify the `x-hub-signature-256` header. Used by the web client to surface a banner when drift is happening live.
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Up to `limit` (default 20, max 100) recent failures, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookHmacFailureList"
   /api/projects/{projectId}/wiki:
     get:
       tags:

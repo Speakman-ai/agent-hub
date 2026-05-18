@@ -9,7 +9,17 @@ import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
 import { runCapture, postPrComment } from '../capture-engine.js';
-import { githubApiRequest, resolveInstallationId, getInstallationToken } from '../github-app.js';
+import {
+  githubApiRequest,
+  resolveInstallationId,
+  getInstallationToken,
+  patchAppWebhookSecret,
+} from '../github-app.js';
+import {
+  recordHmacFailure,
+  getRecentHmacFailures,
+  shouldAttemptAppSecretHeal,
+} from '../webhook-hmac-failures.js';
 import {
   CHECK_RUN_NAME,
   DEFAULT_REVIEWER_PHASES,
@@ -2597,7 +2607,7 @@ function handleWebhookReviewComment(
 // verification for large `check_run` / `check_suite` payloads.
 
 export function createGithubWebhookHandler(deps: RouteDeps): Router {
-  const { stmts } = deps;
+  const { stmts, broadcast } = deps;
   const router = Router();
 
   const githubRawBodyParser = express.raw({
@@ -2676,6 +2686,75 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
             `check that the signing secret in GitHub repo/App settings matches Agent Hub’s ` +
             `webhook config (and that the server build includes raw-body HMAC verification).`,
         );
+
+        // ── Loud-fail surface: ring-buffer + WS broadcast ───────────
+        // GitHub-App installations send this header on every delivery
+        // (value "integration"); per-repo webhooks omit it. We use it
+        // to decide whether a self-heal PATCH is even worth trying.
+        const installationTargetType =
+          (req.headers['x-github-hook-installation-target-type'] as string | undefined) || '';
+        const isAppDelivery = installationTargetType.toLowerCase() === 'integration';
+
+        const failure = recordHmacFailure({
+          repoFullName,
+          eventLabel,
+          deliveryId: deliveryId || null,
+          triedSources,
+          isAppDelivery,
+        });
+
+        try {
+          broadcast({
+            type: 'webhook_hmac_failure',
+            repoFullName,
+            eventLabel,
+            deliveryId: deliveryId || null,
+            triedSources,
+            isAppDelivery,
+            projectId: webhookConfig.project_id,
+            webhookConfigId: webhookConfig.id,
+          });
+        } catch (broadcastErr: unknown) {
+          console.warn(
+            `[Webhook] failed to broadcast webhook_hmac_failure event: ` +
+              `${(broadcastErr as Error).message}`,
+          );
+        }
+
+        // ── Self-heal: push-sync our App webhook secret to GitHub ───
+        // GitHub's GET /app/hook/config returns the secret as "********"
+        // (masked), so we cannot pull-sync. Instead, when an App delivery
+        // fails HMAC and we have a local App secret, push our copy via
+        // PATCH /app/hook/config so the *next* delivery verifies cleanly.
+        // Throttled to one attempt per 60s window across the whole
+        // process to avoid hammering GitHub during a delivery burst.
+        const appConfig = config.githubApp;
+        if (
+          isAppDelivery &&
+          appConfig?.appId &&
+          appConfig?.privateKey &&
+          appConfig?.webhookSecret &&
+          shouldAttemptAppSecretHeal()
+        ) {
+          failure.healAttempted = true;
+          void patchAppWebhookSecret(appConfig.appId, appConfig.privateKey, appConfig.webhookSecret)
+            .then(() => {
+              failure.healResult = 'ok';
+              console.log(
+                `[Webhook] Self-heal OK — pushed local App webhook secret to GitHub ` +
+                  `(appId=${appConfig.appId}). Future deliveries should verify cleanly.`,
+              );
+            })
+            .catch((healErr: unknown) => {
+              failure.healResult = 'failed';
+              failure.healError = (healErr as Error).message;
+              console.warn(
+                `[Webhook] Self-heal FAILED — could not push App webhook secret to GitHub: ` +
+                  `${(healErr as Error).message}`,
+              );
+            });
+        }
+
         return res.status(401).json({ error: 'Invalid signature' });
       }
     }
@@ -3182,6 +3261,42 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     }
 
     if (autoRegister) {
+      // Skip the per-repo webhook registration entirely when the GitHub App
+      // is already installed on this repo's owner. The App installation
+      // delivers every repository event to the same `/api/webhooks/github`
+      // endpoint and signs with `config.githubApp.webhookSecret`, so a
+      // per-repo webhook would be a redundant second delivery path — and
+      // the second secret-source-of-truth is exactly what caused the
+      // 2026-05-18 HMAC drift incident (see wiki: "Webhook HMAC drift &
+      // self-heal"). The per-repo `secret` column is still generated and
+      // stored so users without a GitHub App configured continue to work.
+      try {
+        const { owner } = parseGitHubRepo(repoUrl);
+        const installToken = config.githubApp?.appId ? await tryGetInstallationToken(owner) : null;
+        if (installToken) {
+          return res.json({
+            ...created,
+            registration: {
+              ok: true,
+              skipped: true,
+              reason: 'github_app_installed',
+              message:
+                `The GitHub App is installed on ${owner}; it will deliver events ` +
+                `directly. A per-repo webhook would duplicate deliveries and add ` +
+                `a second signing-secret to keep in sync.`,
+            },
+          });
+        }
+      } catch (parseErr: unknown) {
+        // If we can't parse the owner or the token lookup blows up, fall
+        // through to the legacy registration path — better to over-register
+        // than to silently fail to set up webhooks at all.
+        console.warn(
+          `[Webhooks] App-install check failed for ${repoUrl}, ` +
+            `falling back to per-repo webhook registration: ${(parseErr as Error).message}`,
+        );
+      }
+
       try {
         const regResult = await registerWebhookOnGitHub(created);
         return res.json({ ...created, registration: regResult });
@@ -3192,6 +3307,18 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     }
 
     res.json(created);
+  });
+
+  // ── HMAC failure log (loud-fail surface) ─────────────────────────
+  // Returns the most-recent webhook HMAC verification failures so the
+  // operator can see, on the project's webhook config page, that
+  // GitHub deliveries are being rejected and why. The list is an
+  // in-memory ring buffer (see server/webhook-hmac-failures.ts) — it
+  // resets on server restart and is intentionally bounded so a
+  // delivery storm cannot exhaust disk.
+  router.get('/api/webhooks/hmac-failures', (req: Request, res: Response) => {
+    const limit = Math.min(parseInt((req.query.limit as string) || '20', 10) || 20, 100);
+    res.json({ failures: getRecentHmacFailures(limit) });
   });
 
   router.put('/api/webhooks/:id', (req: Request, res: Response) => {

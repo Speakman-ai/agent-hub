@@ -1516,6 +1516,37 @@ export default function App() {
           refreshAgents();
           break;
 
+        case 'webhook_hmac_failure': {
+          // The webhook handler rejected a GitHub delivery because neither
+          // the per-repo nor the GitHub App webhook secret could verify
+          // the `x-hub-signature-256` header. Banner it loudly so the
+          // operator can rotate / re-sync the secret instead of finding
+          // out hours later via "why hasn't the reviewer agent responded?".
+          const where = data.repoFullName || 'a repo';
+          const what = data.eventLabel || 'a webhook event';
+          const triedBoth = data.triedSources === 'repo + github-app';
+          const hint = data.isAppDelivery
+            ? 'GitHub App delivery — the App webhook secret on GitHub may have rotated. ' +
+              'Settings → GitHub → Sync webhook secret will push our local copy.'
+            : triedBoth
+              ? 'Neither the per-repo nor the App webhook secret matched.'
+              : 'Per-repo webhook secret mismatch.';
+          const banner = `Webhook rejected for ${where} (${what}). ${hint}`;
+          const toast = {
+            id: `webhook-hmac-fail-${data.deliveryId || Date.now()}`,
+            type: 'error',
+            message: banner,
+            duration: 15000,
+          };
+          setToasts((prev) => [...prev, toast]);
+          notify({
+            title: 'Webhook HMAC failure',
+            body: banner,
+            type: 'error',
+          });
+          break;
+        }
+
         case 'dispatch_failure': {
           const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
           const toast = {
