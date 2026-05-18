@@ -285,6 +285,34 @@ export function summarizeTranscript(
 export default function createSessionRoutes(deps: RouteDeps): Router {
   const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses } = deps;
 
+  /**
+   * Best-effort teardown of any preview groups owned by `sessionId`.
+   * Runs across both runtimes — `stopBySessionId` is a no-op on each
+   * for rows it doesn't own (compose runtime ignores spawn rows;
+   * legacy runtime ignores compose rows). Fire-and-forget: a
+   * teardown failure must never block the archive itself.
+   */
+  function stopPreviewsBestEffort(sessionId: string): void {
+    const composeRuntime = deps.getPreviewComposeRuntime?.();
+    const legacyRuntime = deps.getPreviewRuntime?.();
+    if (composeRuntime) {
+      void composeRuntime.stopBySessionId(sessionId).catch((err) => {
+        console.warn(
+          `[sessions] preview-compose stopBySessionId failed (${sessionId}):`,
+          (err as Error).message,
+        );
+      });
+    }
+    if (legacyRuntime) {
+      void legacyRuntime.stopBySessionId(sessionId).catch((err) => {
+        console.warn(
+          `[sessions] preview stopBySessionId failed (${sessionId}):`,
+          (err as Error).message,
+        );
+      });
+    }
+  }
+
   const router = Router();
 
   router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
@@ -615,6 +643,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         activeProcesses.delete(session.id);
       }
       closeBrowserBestEffort(session.id);
+      stopPreviewsBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -636,6 +665,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
       closeBrowserBestEffort(session.id);
+      stopPreviewsBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -673,6 +703,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     closeBrowserBestEffort(sessionId);
+    stopPreviewsBestEffort(sessionId);
 
     stmts.softDeleteSession.run(sessionId);
 

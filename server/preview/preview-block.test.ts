@@ -604,3 +604,70 @@ describe('handlePreviewBlock — preview_starting', () => {
     expect(Date.now() - before).toBeLessThan(1_000);
   });
 });
+
+// ─── Compose runtime dispatch ──────────────────────────────────────────
+
+describe('handlePreviewBlock — accepts a PreviewComposeRuntime', () => {
+  it('emits a preview attachment when the compose runtime reports ready', async () => {
+    // The compose runtime is structurally a `PreviewRuntimeLike` (the
+    // compile-time assertion in preview-block.ts pins this). We exercise
+    // the shape contract here with a thin manual fake whose
+    // `startPreview` return + `getById` flip exactly mirror what the
+    // real PreviewComposeRuntime produces (no docker / fetch loop, so
+    // the test is deterministic). The full compose runtime end-to-end is
+    // covered by preview-compose-runtime.test.ts.
+    let gets = 0;
+    const composeRuntimeShape = {
+      startPreview: async () => ({
+        previewId: 'compose-prev',
+        url: 'http://localhost:4111',
+        port: 4111,
+        composeProjectName: 'agenthub-session-sess-c',
+      }),
+      getById: () => {
+        gets++;
+        return {
+          id: 'compose-prev',
+          session_id: 'sess-c',
+          project_id: 'proj-1',
+          port: 4111,
+          url: 'http://localhost:4111',
+          compose_project_name: 'agenthub-session-sess-c',
+          status: (gets >= 2 ? 'ready' : 'starting') as 'ready' | 'starting',
+          started_at: '2026-05-18T00:00:00Z',
+          last_active_at: '2026-05-18T00:00:00Z',
+        };
+      },
+      getLogTail: () => [],
+    };
+
+    const project = configuredProject({
+      prEnv: {
+        enabled: true,
+        startScript: 'npm run dev',
+        internalPort: 3000,
+        preview: {
+          enabled: true,
+          compose: { entryService: 'web', entryPort: 8000 },
+        },
+      },
+    });
+
+    const deps = makeDeps({
+      project,
+      runtime: composeRuntimeShape as unknown as PreviewRuntime,
+      readyTimeoutMs: 1_000,
+      readyPollIntervalMs: 1,
+      startingRebroadcastIntervalMs: 0,
+    });
+
+    await handlePreviewBlock('sess-c', { target: 'client', route: '/' }, deps);
+
+    // Terminal event is `preview` with the compose-runtime's allocated port.
+    const terminal = deps.events[deps.events.length - 1];
+    expect(terminal.kind).toBe('preview');
+    expect(terminal.port).toBe(4111);
+    expect(terminal.previewUrl).toBe('http://localhost:4111');
+    expect(terminal.fullUrl).toBe('http://localhost:4111/');
+  });
+});

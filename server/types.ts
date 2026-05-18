@@ -2301,6 +2301,20 @@ export interface RouteDeps {
   getGhAuthenticatedUser?: () => string | null;
   tryAutonomousDispatch?: () => void;
   runClaude?: (...args: unknown[]) => unknown;
+  /**
+   * Per-session preview runtimes — wired at server startup. `null` is
+   * returned when the singletons aren't constructed yet (e.g. test
+   * harnesses that exercise the route layer without the full
+   * `createPreviewRuntimes` boot). The session archive/delete handlers
+   * call `stopBySessionId` on both so spawn-managed and compose-managed
+   * preview groups for the deleted session are torn down.
+   */
+  getPreviewRuntime?: () => {
+    stopBySessionId: (sessionId: string) => Promise<number>;
+  } | null;
+  getPreviewComposeRuntime?: () => {
+    stopBySessionId: (sessionId: string) => Promise<number>;
+  } | null;
 }
 
 // ─── Room with Agents ────────────────────────────────────────────
