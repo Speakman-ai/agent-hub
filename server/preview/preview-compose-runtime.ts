@@ -859,6 +859,13 @@ export class PreviewComposeRuntime {
    * remaining additions.
    */
   private addComposeProjectNameColumnIfMissing(): void {
+    // `compose_project_name` was promoted to the base schema (see
+    // `preview-schema.ts`) so PreviewRuntime can read it for the
+    // cross-runtime ownership guard without needing the compose runtime
+    // to be constructed first. The ALTER below stays as a no-op on fresh
+    // DBs (the duplicate-column error is swallowed) and the column-
+    // backfill remains the source of truth for legacy DBs that predate
+    // the base-schema promotion.
     const additions = [
       `ALTER TABLE worktree_preview_groups ADD COLUMN compose_project_name TEXT`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN worktree_path TEXT`,

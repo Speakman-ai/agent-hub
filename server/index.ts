@@ -677,14 +677,18 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // both runtimes through the same tick so a compose-mode preview that
   // never received a `touch` (e.g. the WS session dropped) doesn't
   // accumulate.
+  //
+  // Cross-runtime ownership is enforced at the runtime layer: each
+  // runtime's `stopPreview` short-circuits when the row's
+  // `compose_project_name` doesn't match its mode (compose runtime
+  // skips NULL; legacy runtime skips non-NULL). So both passes scan
+  // the same table but only act on the rows they own — a compose-only
+  // row passed to the legacy reaper is a guarded no-op rather than a
+  // silent `DELETE FROM worktree_preview_groups` that would leak the
+  // docker stack.
   cron.schedule(
     PREVIEW_REAPER_CRON,
     () => {
-      // Two ticks: the legacy reaper queries `worktree_preview_groups`
-      // and dispatches `previewRuntime.stopPreview`; we run a second
-      // pass with `previewComposeRuntime.stopPreview` for compose-managed
-      // rows (those carry `compose_project_name`). Each runtime's
-      // `stopPreview` is a no-op against rows owned by the other.
       void runPreviewReaper({
         db: getDb(),
         runtime: previewRuntime,

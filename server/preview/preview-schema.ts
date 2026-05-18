@@ -84,7 +84,16 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     project_id      TEXT NOT NULL,
     status          TEXT NOT NULL CHECK(status IN ('starting','ready','failed')),
     started_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    last_active_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    last_active_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- compose-runtime ownership discriminator. NULL for spawn-managed
+    -- rows; set to "agenthub-session-<sessionId>" by the compose
+    -- runtime. Both runtimes filter on this column when scanning the
+    -- shared table to enforce one-runtime-per-row ownership. Compose
+    -- companion columns (worktree_path, compose_file, entry_port,
+    -- override_file_path) are added idempotently by the compose
+    -- runtime migration to keep this base schema minimal for callers
+    -- that do not enable compose mode.
+    compose_project_name TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_worktree_preview_groups_session
     ON worktree_preview_groups(session_id);

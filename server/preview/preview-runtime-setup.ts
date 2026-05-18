@@ -119,7 +119,12 @@ export function buildDiskOverrideFileDeleter(composeOverrideDir: string): Delete
   return (overrideFilePath: string) => {
     const resolved = path.resolve(overrideFilePath);
     const root = path.resolve(composeOverrideDir);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    // Must live *inside* `composeOverrideDir` — the root itself is never
+    // a valid target. Equality would be the override directory itself,
+    // which `rmSync({ force: true })` without `recursive: true` would
+    // refuse with EISDIR anyway; rejecting it explicitly is the cleaner
+    // invariant.
+    if (!resolved.startsWith(root + path.sep)) {
       console.warn(
         `[preview-compose] deleteOverrideFile: refusing path outside composeOverrideDir (${overrideFilePath})`,
       );

@@ -120,16 +120,28 @@ describe('buildDiskOverrideFileDeleter', () => {
     expect(() => deleter(path.join(dir, 'missing.yml'))).not.toThrow();
   });
 
-  it('refuses paths that resolve outside the scope dir', () => {
+  it('returns silently for paths outside the scope dir and leaves siblings intact', () => {
     const dir = freshTmpDir();
     const deleter = buildDiskOverrideFileDeleter(dir);
-    // Hostile path — must NOT delete /etc/passwd. We can't easily
-    // observe non-deletion of a system file, but we can verify the
-    // call returns silently and a sibling file in `dir` is untouched.
+    // Hostile path — must NOT touch /etc/passwd. Inside the test we
+    // assert two observable signals: (a) a sibling file in the scope
+    // dir survives (proves the deleter didn't somehow widen its
+    // target), and (b) a console.warn fires naming the rejected path
+    // so an operator can see the attempt in production logs.
     const sibling = path.join(dir, 'keep.yml');
     writeFileSync(sibling, 'keep me\n');
-    expect(() => deleter('/etc/passwd')).not.toThrow();
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      expect(() => deleter('/etc/passwd')).not.toThrow();
+    } finally {
+      console.warn = orig;
+    }
     expect(existsSync(sibling)).toBe(true);
+    expect(warns.some((w) => w.includes('refusing path outside'))).toBe(true);
   });
 });
 

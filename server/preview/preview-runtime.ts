@@ -506,10 +506,30 @@ export class PreviewRuntime {
    * the process rows + frees the ports for the allocator).
    */
   async stopPreview(groupId: string): Promise<void> {
+    // Two layers of ownership: the row must exist AND it must NOT be a
+    // compose-managed group (those carry `compose_project_name`). Without
+    // the second guard, the legacy reaper's pass over the shared
+    // `worktree_preview_groups` table would SIGTERM nothing (no in-memory
+    // handle is registered for compose groups) and then DELETE the row —
+    // leaking `docker compose` stacks + the host port until manual
+    // cleanup. The compose runtime owns teardown for those rows; we
+    // bail out so its `stopPreview` can run them through
+    // `docker compose down -v --remove-orphans` instead.
+    //
+    // The column is added by the compose runtime's idempotent
+    // `ALTER TABLE ... ADD COLUMN` migration. On a DB that predates the
+    // compose runtime entirely, the SELECT returns NULL — same as a
+    // legitimate spawn-managed row — so the guard is a no-op on those.
     const groupRow = this.db
-      .prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`)
-      .get(groupId) as { id: string } | undefined;
+      .prepare(`SELECT id, compose_project_name FROM worktree_preview_groups WHERE id = ?`)
+      .get(groupId) as { id: string; compose_project_name: string | null } | undefined;
     if (!groupRow) return;
+    if (groupRow.compose_project_name) {
+      this.logger.warn(
+        `[preview] stopPreview(${groupId}) called for a compose-managed group; ignoring (PreviewComposeRuntime owns teardown)`,
+      );
+      return;
+    }
     const handles = this.groups.get(groupId) ?? [];
     // Teardown in reverse-dependency order so dependents go down before
     // their dependencies — protects against the dependent throwing
@@ -536,10 +556,18 @@ export class PreviewRuntime {
    * the session-delete hook. Returns the number of groups torn down.
    */
   async stopBySessionId(sessionId: string): Promise<number> {
+    // Filter to spawn-managed rows only — `compose_project_name IS NULL`.
+    // The session-archive hook and reaper both fire this against the
+    // shared DB after dispatching the compose runtime's own
+    // `stopBySessionId`. Without this filter we would DELETE the
+    // compose row out from under the compose runtime mid-`docker
+    // compose down`, leaking the container stack + the host port.
     const rows = this.db
       .prepare(
         `SELECT id FROM worktree_preview_groups
-          WHERE session_id = ? AND status IN ('starting','ready','failed')`,
+          WHERE session_id = ?
+            AND status IN ('starting','ready','failed')
+            AND compose_project_name IS NULL`,
       )
       .all(sessionId) as Array<{ id: string }>;
     for (const r of rows) {
