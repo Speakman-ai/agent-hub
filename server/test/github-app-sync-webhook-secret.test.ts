@@ -144,6 +144,48 @@ describe('POST /api/github-app/sync-webhook-secret', () => {
     expect(onDisk.githubApp.webhookSecret).toHaveLength(64);
   });
 
+  it('rolls back in-memory and returns 500 githubMutated when disk persist fails after GitHub accepts', async () => {
+    const { default: config } = await import('../config.js');
+    (config as unknown as { githubApp: unknown }).githubApp = {
+      appId: '7777',
+      privateKey: appPrivateKey,
+      webhookSecret: 'previous-on-disk-secret',
+    };
+
+    // Point dataDir at a non-existent directory so writeFileSync ENOENTs.
+    // The readFileSync that loads the existing file is already wrapped in
+    // its own try/catch (no-op if missing); the writeFileSync is the one
+    // that must trip the new outer guard.
+    const missingDir = join(tempDataDir, 'does-not-exist');
+    (config as { dataDir: string }).dataDir = missingDir;
+
+    fetchSpy.mockResolvedValueOnce(new Response('', { status: 200 }));
+
+    const res = await request
+      .post('/api/github-app/sync-webhook-secret')
+      .send({ rotate: true })
+      .expect(500);
+
+    expect(res.body).toMatchObject({
+      githubMutated: true,
+      error: expect.stringMatching(/Pushed to GitHub but failed to persist locally/),
+    });
+    expect(typeof res.body.cause).toBe('string');
+
+    // The PATCH was made (GitHub got the new secret)…
+    expect(fetchSpy.mock.calls).toHaveLength(1);
+    const patchedBody = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(typeof patchedBody.secret).toBe('string');
+    expect(patchedBody.secret).toHaveLength(64); // rotated → 32-byte hex
+    expect(patchedBody.secret).not.toBe('previous-on-disk-secret');
+
+    // …but in-memory rolled back to the previous value so we don't lie
+    // about what's on disk. Restart would have re-read the prior file.
+    expect(
+      (config as unknown as { githubApp: { webhookSecret: string } }).githubApp.webhookSecret,
+    ).toBe('previous-on-disk-secret');
+  });
+
   it('returns 502 and does NOT persist when GitHub rejects the PATCH', async () => {
     const { default: config } = await import('../config.js');
     (config as unknown as { githubApp: unknown }).githubApp = {

@@ -7430,6 +7430,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigErrorResponse"
+        "500":
+          description: GitHub accepted the PATCH but persisting locally failed; in-memory has been rolled back.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  githubMutated:
+                    type: boolean
+                    enum:
+                      - true
+                    description: Always true when this 500 shape is returned. Signals the operator that GitHub already holds the new secret and a re-run with rotate:true is the recovery path.
+                  cause:
+                    type: string
+                    description: Underlying filesystem error message (e.g. ENOENT, EACCES).
+                required:
+                  - error
+                  - githubMutated
         "502":
           description: GitHub rejected the PATCH call.
           content:

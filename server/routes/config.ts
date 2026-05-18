@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
@@ -691,18 +691,58 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       });
     }
 
+    // GitHub has now been mutated. From this point on, any failure to
+    // persist locally means in-memory and disk would disagree at restart,
+    // which is the exact "drift" failure this PR exists to prevent. Wrap
+    // the persist step so that on disk-write failure we:
+    //  - roll back the in-memory secret to its pre-call value
+    //  - surface a 500 telling the operator GitHub holds the new value
+    //    and how to recover (re-run with rotate: true).
+    const previousSecret = app.webhookSecret;
     app.webhookSecret = secretToPush;
     config.githubApp = app;
 
     const configPath = path.join(config.dataDir, 'config.json');
-    let fileConfig: FileConfig = {};
     try {
-      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-    } catch {
-      /* no file yet */
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = app;
+      const serialized = JSON.stringify(fileConfig, null, 2);
+      // Atomic write: stage into a sibling temp file then rename. Either
+      // the rename flips the file or we're left with the prior contents.
+      const tmpPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmpPath, serialized, 'utf-8');
+      try {
+        renameSync(tmpPath, configPath);
+      } catch (renameErr) {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          /* best-effort cleanup */
+        }
+        throw renameErr;
+      }
+    } catch (err: unknown) {
+      // Disk persist failed AFTER GitHub already accepted the new secret.
+      // Restore in-memory state so we don't lie about what's on disk, and
+      // surface the GitHub-mutated condition explicitly.
+      app.webhookSecret = previousSecret;
+      config.githubApp = app;
+      console.error(
+        `[GitHub App] Webhook secret synced to GitHub but local persist failed ` +
+          `(appId=${app.appId}): ${(err as Error).message}`,
+      );
+      return res.status(500).json({
+        error:
+          'Pushed to GitHub but failed to persist locally. Re-run with rotate: true to recover.',
+        githubMutated: true,
+        cause: (err as Error).message,
+      });
     }
-    fileConfig.githubApp = app;
-    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
 
     console.log(
       `[GitHub App] Webhook secret synced to GitHub ` +

@@ -647,6 +647,22 @@ registerPath({
       content: jsonContent(GithubAppSyncWebhookSecretResponse),
     },
     400: errorResponse('No GitHub App configured.'),
+    500: {
+      description:
+        'GitHub accepted the PATCH but persisting locally failed; in-memory has been rolled back.',
+      content: jsonContent(
+        z.object({
+          error: z.string(),
+          githubMutated: z.literal(true).openapi({
+            description:
+              'Always true when this 500 shape is returned. Signals the operator that GitHub already holds the new secret and a re-run with rotate:true is the recovery path.',
+          }),
+          cause: z.string().optional().openapi({
+            description: 'Underlying filesystem error message (e.g. ENOENT, EACCES).',
+          }),
+        }),
+      ),
+    },
     502: errorResponse('GitHub rejected the PATCH call.'),
   },
 });
