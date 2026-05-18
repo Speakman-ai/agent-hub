@@ -267,9 +267,21 @@ string. Mirrors the fix landed for the host-config path in PR #723.
 `Object.prototype.hasOwnProperty.call`; stray keys are ignored, never
 forwarded to the DB. Both endpoints return `401` when `authUserId` is
 missing (apiKey-only callers + local-bundled-server bypass) and `404`
-when the user row is unknown. Encryption-at-rest is tracked as a
-follow-up — credentials currently sit on the users row in plaintext,
-mirroring the existing `github_user_token` precedent.
+when the user row is unknown.
+
+**Encryption-at-rest.** The two secret columns
+(`users.anthropic_api_key`, `users.claude_code_oauth_token`) are
+encrypted with the shared AES-256-GCM helper in `server/secret-crypto.ts`
+— same `pr-env-secret.key` keyfile already used by Slack tokens and per-
+user skill credentials. Writes always produce an `iv:tag:ciphertext`
+base64 blob; empty / whitespace-only inputs collapse to SQL `NULL` so a
+"clear field" PUT lands cleanly. Reads transparently decrypt and, when
+they encounter a legacy plaintext row (installs predating this change),
+rewrite the column with an encrypted blob in place — the on-disk shape
+converges to encrypted-only over time without a one-shot migration.
+Corrupt blobs whose auth-tag check fails degrade to `null` rather than
+throwing into the spawn path. The OAuth-expiry timestamp and
+`claude_auth_updated_at` stay plaintext — they are non-secret metadata.
 
 ## Per-user engine credentials (Cursor / Gemini / Codex)
 
@@ -309,15 +321,71 @@ the spawn env injects the right variable for each engine:
 `PUT` whitelists exactly `apiKey` via
 `Object.prototype.hasOwnProperty.call`; stray keys are ignored. Both
 endpoints return `401` when `authUserId` is missing and `404` when the
-user row is unknown. Encryption-at-rest is tracked as a follow-up —
-keys currently sit on the `users` row in plaintext, mirroring the
-Claude precedent.
+user row is unknown.
+
+**Encryption-at-rest.** All three engine API-key columns
+(`users.cursor_api_key`, `users.gemini_api_key`, `users.codex_api_key`)
+are encrypted via `server/secret-crypto.ts` on write and decrypted
+transparently on read, with the same lazy plaintext-backfill behaviour
+documented for the Claude columns above. The per-engine
+`<engine>_auth_updated_at` column stays plaintext (non-secret
+bookkeeping).
 
 **Helpers.** `server/users-store.ts` exposes
 `getUser{Cursor,Gemini,Codex}Auth` / `setUser{Cursor,Gemini,Codex}Auth`
 implemented atop a generic `getSingleKeyAuth` / `setSingleKeyAuth`
 pair. The DB columns (`<engine>_api_key`, `<engine>_auth_updated_at`)
 are added via idempotent `ensureColumn` migrations on boot.
+
+## Per-engine HOME shim (P3/P4 foundation)
+
+The legacy single-HOME path documented above
+(`<dataDir>/per-user-creds/<userId>/home`) keeps Cursor and Codex
+sharing one filesystem subtree per user. The follow-up
+`server/per-user-cli-home.ts` helper carves out a separate tree **per
+(engine, user) pair**:
+
+```
+<dataDir>/per-user-cli-home/<engine>/<userId>/
+```
+
+Used as `HOME` (Cursor) or `CODEX_HOME` (Codex) so the two engines'
+caches can never read each other and a single-engine logout cannot
+damage the other. The helper exposes `perUserCliHomePath` (path math,
+no FS), `ensurePerUserCliHome` (mode-0700 create + UID ownership guard
+that refuses to hand a misowned dir to a spawn), and
+`clearPerUserCliHome` (logout-leaf removal that keeps the parent
+`<engine>/` dir). Engine names are an allowlist (`cursor`, `codex`,
+`gemini`) and user ids are constrained to a strict path-safe charset
+before becoming a path segment. Wiring of the per-user login flows
+(P3/P4) is deliberately separate; this module just provides the safe
+primitive those endpoints pick up.
+
+## Per-user engine-credential audit (`user_engine_auth_audit`)
+
+Every secret-field write on `PUT /api/auth/me/{claude,cursor,gemini,codex}-auth`
+appends one row to `user_engine_auth_audit` in `orgs.db`. The table
+parallels `user_skill_credential_audit` and is created alongside it in
+`initOrgsDb()` from `server/auth-credential-audit-schema.ts`:
+
+| Column          | Notes                                                             |
+| --------------- | ----------------------------------------------------------------- |
+| `id`            | UUID                                                              |
+| `user_id`       | Owner of the credential row that changed                          |
+| `engine`        | `claude` \| `cursor` \| `gemini` \| `codex` (CHECK-constrained)   |
+| `field`         | Column name (e.g. `anthropic_api_key`, `cursor_api_key`)          |
+| `action`        | `upsert` for set / rotate, `delete` when the new value clears a previously-set field |
+| `actor_user_id` | Who performed the write (today: same as `user_id`; left distinct for a future admin-impersonation surface) |
+| `created_at`    | `datetime('now')` default                                         |
+
+A single PUT that touches multiple secret fields (e.g. claude-auth
+sending both `anthropicApiKey` and `claudeCodeOAuthToken`) emits
+**one row per field** so operator attribution stays field-level.
+Metadata-only writes (`claudeCodeOAuthExpiresAt`) and patches that omit
+the credential field entirely do not pollute the audit log. Audit
+inserts are best-effort: a failed audit write never blocks the
+credential update itself (matches `skill-credentials-store::appendAudit`).
+Read via `listUserEngineAuthAudit(userId, { engine? })`, newest-first.
 
 ## Per-user model preferences (`preferences_json`)
 
