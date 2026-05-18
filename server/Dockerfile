@@ -41,6 +41,11 @@ FROM node:22-slim AS runtime
 # Git 2.35+ "dubious ownership": bind mounts and mixed UIDs make git refuse
 # the repo; lint-staged / husky pre-commit then fail. Trust all paths in this
 # single-tenant agent image.
+#
+# Python 3 (+ venv + pip) is included so agents can run Python scripts and,
+# under PEP 668, create a venv to pip-install ad-hoc deps. The build stage
+# already installs python3 to compile better-sqlite3, but that stage is
+# discarded, so we install it again here for the runtime container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
@@ -52,6 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     tini \
     gnupg \
+    python3 \
+    python3-venv \
+    python3-pip \
  && git config --system --add safe.directory '*' \
  && rm -rf /var/lib/apt/lists/*
 
