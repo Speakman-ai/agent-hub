@@ -23,4 +23,20 @@ describe('server/Dockerfile', () => {
     const copyWithChown = [...dockerfile.matchAll(/^COPY --chown=node:node --from=/gm)].length;
     expect(copyWithChown).toBeGreaterThanOrEqual(5);
   });
+
+  it('installs python3 + venv + pip in the runtime stage', () => {
+    // Agents shell out to python3 (e.g. data wrangling, ad-hoc scripts). The
+    // build stage installs python only to compile better-sqlite3; that stage
+    // is discarded. The runtime stage (FROM node:22-slim AS runtime) must
+    // install python3 itself so `python3` is on PATH inside the container.
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+    for (const pkg of ['python3', 'python3-venv', 'python3-pip']) {
+      expect(runtimeStage, `expected runtime stage to install \`${pkg}\``).toMatch(
+        new RegExp(`(^|\\s)${pkg}(\\s|$|\\\\)`, 'm'),
+      );
+    }
+  });
 });

@@ -352,6 +352,33 @@ export default function App() {
     newProjectWizardReturnRef.current = isWizardView(cur) ? 'chat' : cur;
     setCurrentView('import-project-wizard');
   }, []);
+  // Persist a new sidebar project order. Optimistic: reorder the local
+  // projects array immediately so the UI doesn't flicker, then PUT to the
+  // server. On failure, roll back by refetching the canonical list. The
+  // server also broadcasts `projects_updated` over the WebSocket, which
+  // makes other open clients (and ourselves, harmlessly) refetch.
+  const handleReorderProjects = useCallback((newOrderIds) => {
+    setProjects((prev) => {
+      const byId = new Map(prev.map((p) => [p.id, p]));
+      const reordered = newOrderIds.map((id) => byId.get(id)).filter(Boolean);
+      // Belt-and-suspenders: if newOrderIds dropped any project we knew
+      // about (shouldn't happen — Sidebar passes the full set), append
+      // those back at the end so we never lose rows from the UI.
+      for (const p of prev) {
+        if (!newOrderIds.includes(p.id)) reordered.push(p);
+      }
+      return reordered;
+    });
+    api.reorderProjects(newOrderIds).catch((err) => {
+      console.error('[reorderProjects] failed, refetching:', err);
+      api
+        .getProjects()
+        .then((data) => setProjects(data))
+        .catch(() => {
+          /* best-effort rollback; surfacing the original error already happened */
+        });
+    });
+  }, []);
   const pullsProjectIdRef = useRef(pullsProjectId);
   pullsProjectIdRef.current = pullsProjectId;
 
@@ -3216,6 +3243,7 @@ export default function App() {
             onDeleteRoom={handleDeleteRoom}
             onOpenProject={openAdaptiveProjectWizard}
             onImportProject={openImportProjectWizard}
+            onReorderProjects={handleReorderProjects}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}

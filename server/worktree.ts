@@ -209,6 +209,16 @@ interface CloneRetryOptions extends RetryOptions {
   cleanup?: (cloneDir: string) => void;
 }
 
+async function resolveWorktreeTokenOwnerId(sessionOwnerId: string | null): Promise<string | null> {
+  if (sessionOwnerId) return sessionOwnerId;
+  try {
+    const mod = await import('./session-ownership.js');
+    return mod.getOrgOwnerUserId();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Generic transient-retry loop shared by clone and fetch paths.
  *
@@ -1276,7 +1286,8 @@ export async function ensureSessionWorkspace(
   //   3. null — session owner missing or unauthenticated owner; downstream
   //      git calls fall back to unauthenticated access (public repos only)
   const sessionOwnerId = session.owner_user_id ?? null;
-  const userToken: string | null = await resolveUserGithubToken(sessionOwnerId, {
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(sessionOwnerId);
+  const userToken: string | null = await resolveUserGithubToken(tokenOwnerId, {
     oauthCredentials: resolveOAuthAppCredentials(config),
   });
   const authArgs: string[] = userToken ? gitAuthArgsForGithubPat(userToken) : [];

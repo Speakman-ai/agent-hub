@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Loader2,
   Lock,
+  GripVertical,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -63,6 +64,13 @@ export default function Sidebar({
   onDeleteRoom,
   onOpenProject,
   onImportProject,
+  /**
+   * Persist a new sidebar project order. Called with the full `projects`
+   * id list in the desired order (the parent is responsible for the
+   * optimistic local-state update + API call). When omitted, drag-and-drop
+   * is disabled and project headers render without the grip handle.
+   */
+  onReorderProjects,
   cronSessions = [],
   wikiProjectId,
   notesProjectId,
@@ -95,6 +103,11 @@ export default function Sidebar({
   const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
+  // Project drag-and-drop state. `draggedProjectId` is the row the user
+  // is currently dragging; `dragOverProjectId` is whichever other row has
+  // a pending drop indicator. Both reset on dragend / drop / cancel.
+  const [draggedProjectId, setDraggedProjectId] = useState(null);
+  const [dragOverProjectId, setDragOverProjectId] = useState(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
@@ -145,6 +158,24 @@ export default function Sidebar({
   const toggleAgentCollapse = (agentId, e) => {
     e.stopPropagation();
     setCollapsedAgents((prev) => ({ ...prev, [agentId]: !prev[agentId] }));
+  };
+
+  // Move `sourceId` into the slot currently occupied by `targetId`,
+  // preserving the order of every other project. Hands the resulting
+  // full id list (every project the sidebar received, not just the
+  // rendered subset) back to the parent so the server reorder payload
+  // matches the caller-visible set.
+  const handleReorderDrop = (sourceId, targetId) => {
+    if (!onReorderProjects) return;
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const ids = projects.map((p) => p.id);
+    const srcIdx = ids.indexOf(sourceId);
+    const tgtIdx = ids.indexOf(targetId);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    ids.splice(srcIdx, 1);
+    const insertIdx = srcIdx < tgtIdx ? tgtIdx - 1 : tgtIdx;
+    ids.splice(insertIdx, 0, sourceId);
+    onReorderProjects(ids);
   };
 
   const isRecent = (dateStr) => {
@@ -286,11 +317,83 @@ export default function Sidebar({
             const isActiveProject = activeProject?.id === project.id;
             const isCollapsed = collapsedProjects[project.id];
 
+            const isBeingDragged = draggedProjectId === project.id;
+            const isDropTarget =
+              dragOverProjectId === project.id &&
+              draggedProjectId &&
+              draggedProjectId !== project.id;
+            const dragEnabled = !!onReorderProjects;
+
             return (
-              <div key={project.id} className="mb-1">
-                {index > 0 && <div className="border-t border-gray-800/50 my-2 mx-2" />}
+              <div
+                key={project.id}
+                className={`mb-1 ${isBeingDragged ? 'opacity-40' : ''} ${
+                  isDropTarget ? 'border-t-2 border-emerald-500' : 'border-t-2 border-transparent'
+                }`}
+                data-testid={`sidebar-project-row-${project.id}`}
+                draggable={dragEnabled}
+                onDragStart={
+                  dragEnabled
+                    ? (e) => {
+                        e.dataTransfer.effectAllowed = 'move';
+                        try {
+                          e.dataTransfer.setData('text/plain', project.id);
+                        } catch {
+                          /* some browsers block setData under certain conditions */
+                        }
+                        setDraggedProjectId(project.id);
+                      }
+                    : undefined
+                }
+                onDragOver={
+                  dragEnabled
+                    ? (e) => {
+                        if (!draggedProjectId || draggedProjectId === project.id) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverProjectId !== project.id) setDragOverProjectId(project.id);
+                      }
+                    : undefined
+                }
+                onDragLeave={
+                  dragEnabled
+                    ? () => {
+                        if (dragOverProjectId === project.id) setDragOverProjectId(null);
+                      }
+                    : undefined
+                }
+                onDrop={
+                  dragEnabled
+                    ? (e) => {
+                        e.preventDefault();
+                        const sourceId = e.dataTransfer.getData('text/plain') || draggedProjectId;
+                        handleReorderDrop(sourceId, project.id);
+                        setDraggedProjectId(null);
+                        setDragOverProjectId(null);
+                      }
+                    : undefined
+                }
+                onDragEnd={
+                  dragEnabled
+                    ? () => {
+                        setDraggedProjectId(null);
+                        setDragOverProjectId(null);
+                      }
+                    : undefined
+                }
+              >
+                {index > 0 && !isDropTarget && (
+                  <div className="border-t border-gray-800/50 my-2 mx-2" />
+                )}
                 {/* Project header */}
                 <div className="group flex items-center">
+                  {dragEnabled && (
+                    <GripVertical
+                      size={12}
+                      className="text-gray-700 group-hover:text-gray-500 flex-shrink-0 cursor-grab active:cursor-grabbing ml-0.5"
+                      aria-label="Drag to reorder project"
+                    />
+                  )}
                   <button
                     onClick={(e) => {
                       // If project only has one agent, select it directly

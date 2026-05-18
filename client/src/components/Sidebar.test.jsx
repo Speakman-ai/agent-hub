@@ -475,3 +475,99 @@ describe('Sidebar — reviewer agents do not expose "+ New Session"', () => {
     expect(screen.getByText('+ New Session')).toBeInTheDocument();
   });
 });
+
+describe('Sidebar — project reordering (drag & drop)', () => {
+  const THREE_PROJECTS = [
+    {
+      id: 'p-alpha',
+      name: 'Alpha',
+      color: '#22d3ee',
+      agents: [{ id: 'p-alpha-a', name: 'Alpha A', color: '#22d3ee', active: true }],
+    },
+    {
+      id: 'p-beta',
+      name: 'Beta',
+      color: '#a78bfa',
+      agents: [{ id: 'p-beta-a', name: 'Beta A', color: '#a78bfa', active: true }],
+    },
+    {
+      id: 'p-gamma',
+      name: 'Gamma',
+      color: '#fb7185',
+      agents: [{ id: 'p-gamma-a', name: 'Gamma A', color: '#fb7185', active: true }],
+    },
+  ];
+
+  // Helper: fire a drag sequence that mirrors what the browser does.
+  // jsdom's DataTransfer is incomplete, so we stub setData/getData via a
+  // shared Map and pass that through every event's dataTransfer.
+  const buildDataTransfer = () => {
+    const store = new Map();
+    return {
+      setData: (k, v) => store.set(k, v),
+      getData: (k) => store.get(k) || '',
+      effectAllowed: '',
+      dropEffect: '',
+    };
+  };
+
+  it('makes project rows draggable when onReorderProjects is provided', () => {
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects: vi.fn() })} />);
+    const alphaRow = screen.getByTestId('sidebar-project-row-p-alpha');
+    expect(alphaRow.getAttribute('draggable')).toBe('true');
+  });
+
+  it('does not make rows draggable when onReorderProjects is omitted', () => {
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS })} />);
+    const alphaRow = screen.getByTestId('sidebar-project-row-p-alpha');
+    // React serializes draggable={false} as the attribute value "false" when
+    // the prop is explicitly false; when the prop is omitted (our path) the
+    // attribute is absent. Both states satisfy "not draggable".
+    expect(alphaRow.getAttribute('draggable')).not.toBe('true');
+  });
+
+  it('invokes onReorderProjects with the new id order when a project is dragged onto another', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const alpha = screen.getByTestId('sidebar-project-row-p-alpha');
+    const gamma = screen.getByTestId('sidebar-project-row-p-gamma');
+
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(alpha, { dataTransfer: dt });
+    fireEvent.dragOver(gamma, { dataTransfer: dt });
+    fireEvent.drop(gamma, { dataTransfer: dt });
+
+    // Drop-on semantics: dropping Alpha onto Gamma inserts Alpha at
+    // Gamma's slot (Gamma shifts down). Source travelling forward (idx 0
+    // → idx 2) so insertIdx = 2 - 1 = 1. Result: [beta, alpha, gamma].
+    expect(onReorderProjects).toHaveBeenCalledTimes(1);
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-beta', 'p-alpha', 'p-gamma']);
+  });
+
+  it('inserts at the target slot when dragging backward', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const gamma = screen.getByTestId('sidebar-project-row-p-gamma');
+    const alpha = screen.getByTestId('sidebar-project-row-p-alpha');
+
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(gamma, { dataTransfer: dt });
+    fireEvent.dragOver(alpha, { dataTransfer: dt });
+    fireEvent.drop(alpha, { dataTransfer: dt });
+
+    // Source travelling backward (idx 2 → idx 0) so insertIdx stays at 0.
+    // Result: [gamma, alpha, beta].
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-gamma', 'p-alpha', 'p-beta']);
+  });
+
+  it('is a no-op when a project is dropped on itself', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const beta = screen.getByTestId('sidebar-project-row-p-beta');
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(beta, { dataTransfer: dt });
+    fireEvent.dragOver(beta, { dataTransfer: dt });
+    fireEvent.drop(beta, { dataTransfer: dt });
+    expect(onReorderProjects).not.toHaveBeenCalled();
+  });
+});
