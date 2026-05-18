@@ -25,7 +25,6 @@ import {
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
-import { getOrgOwnerUserId } from './session-ownership.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -208,6 +207,16 @@ interface RetryOptions {
 interface CloneRetryOptions extends RetryOptions {
   /** Override the post-failure cleanup (test seam). */
   cleanup?: (cloneDir: string) => void;
+}
+
+async function resolveWorktreeTokenOwnerId(sessionOwnerId: string | null): Promise<string | null> {
+  if (sessionOwnerId) return sessionOwnerId;
+  try {
+    const mod = await import('./session-ownership.js');
+    return mod.getOrgOwnerUserId();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1277,7 +1286,7 @@ export async function ensureSessionWorkspace(
   //   3. null — session owner missing or unauthenticated owner; downstream
   //      git calls fall back to unauthenticated access (public repos only)
   const sessionOwnerId = session.owner_user_id ?? null;
-  const tokenOwnerId = sessionOwnerId ?? getOrgOwnerUserId();
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(sessionOwnerId);
   const userToken: string | null = await resolveUserGithubToken(tokenOwnerId, {
     oauthCredentials: resolveOAuthAppCredentials(config),
   });
