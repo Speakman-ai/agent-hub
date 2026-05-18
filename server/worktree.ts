@@ -587,6 +587,15 @@ const installChildEnv: NodeJS.ProcessEnv = {
   // Provisioning and some hosts run the server with NODE_ENV=production, which
   // would otherwise make npm omit devDependencies despite --include=dev in some paths.
   NODE_ENV: 'development',
+  // PEP 668: Debian/Ubuntu mark the system Python as "externally managed", so any
+  // project install command that runs `pip install ...` outside a venv fails with
+  // `error: externally-managed-environment`. Session clones are ephemeral / scoped,
+  // which is the case pip's PEP 668 doc carves out as safe to opt out of. The env
+  // var is inert for venv-based install commands, so it costs nothing when users
+  // create a venv themselves. Operators who want PEP 668 enforcement back can set
+  // `PIP_REQUIRE_VIRTUALENV=1` in their host environment — pip honours that over
+  // PIP_BREAK_SYSTEM_PACKAGES.
+  PIP_BREAK_SYSTEM_PACKAGES: '1',
 };
 
 interface NodeModulesEntry {
@@ -1727,4 +1736,5 @@ export const __test = {
   needsDependencyInstall,
   sessionWorkspaceDependencyInstallOpts,
   setupDependencies,
+  installChildEnv,
 };
