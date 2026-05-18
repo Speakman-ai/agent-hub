@@ -605,8 +605,8 @@ export default function TopBar({
             disabled={!canForward}
             title={
               canForward
-                ? 'Forward this session to another agent'
-                : 'No other agents in this project to forward to'
+                ? 'Forward this session to another agent (or fork into a new session on this agent)'
+                : 'No agents in this project to forward to'
             }
             className="text-gray-400 hover:text-white p-2 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label="Forward session to another agent"

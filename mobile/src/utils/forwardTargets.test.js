@@ -37,20 +37,27 @@ const inactiveSibling = {
 };
 
 describe('filterForwardTargets (mobile)', () => {
-  it('keeps only active agents from the same project, minus the source', () => {
+  it('keeps active agents from the same project with source pinned first', () => {
     const agents = [source, siblingA, siblingB, otherProject, inactiveSibling];
     const result = filterForwardTargets(agents, source);
-    expect(result.map((a) => a.id)).toEqual(['sib-a', 'sib-b']);
+    // Source agent is now included (self-forward) and comes first
+    expect(result.map((a) => a.id)).toEqual(['src-1', 'sib-a', 'sib-b']);
+  });
+
+  it('returns just the source when no siblings exist (self-forward only)', () => {
+    const result = filterForwardTargets([source, otherProject, inactiveSibling], source);
+    expect(result.map((a) => a.id)).toEqual(['src-1']);
   });
 
   it('drops agents from other projects even if active', () => {
     const result = filterForwardTargets([source, otherProject], source);
-    expect(result).toEqual([]);
+    // Only the source remains — other project agent is filtered out
+    expect(result.map((a) => a.id)).toEqual(['src-1']);
   });
 
-  it('drops inactive agents from the same project', () => {
+  it('drops inactive agents from the same project but keeps the source', () => {
     const result = filterForwardTargets([source, inactiveSibling], source);
-    expect(result).toEqual([]);
+    expect(result.map((a) => a.id)).toEqual(['src-1']);
   });
 
   it('returns [] when source is missing or has no project', () => {
@@ -63,5 +70,11 @@ describe('filterForwardTargets (mobile)', () => {
   it('returns [] on non-array input', () => {
     expect(filterForwardTargets(null, source)).toEqual([]);
     expect(filterForwardTargets(undefined, source)).toEqual([]);
+  });
+
+  it('omits the source when the source is inactive', () => {
+    const inactiveSource = { ...source, active: false };
+    const result = filterForwardTargets([inactiveSource, siblingA], inactiveSource);
+    expect(result.map((a) => a.id)).toEqual(['sib-a']);
   });
 });
