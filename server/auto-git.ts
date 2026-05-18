@@ -216,10 +216,19 @@ export async function resolveAutoGitGithubToken(
  * before any per-card dispatch and therefore predates the session that will
  * later own the work).
  *
- * Falls back to the org owner. Mirrors `resolveAutoGitGithubToken` in error
- * handling — best-effort, always returns `null` on failure so the caller can
- * still attempt the git operation and surface a clearer "Authentication
- * failed" if there really are no usable creds.
+ * When `githubRepo` is provided, prefers a repo-aware Owner lookup
+ * (`resolveOwnerWithRepoAccess`) so the token actually has access to
+ * the target repo — the legacy "first user wins" shortcut silently
+ * returns a token from an Owner whose OAuth scope can't see the repo,
+ * which is the bug that broke the PR reviewer for ~2 days. Falls back
+ * to `getOrgOwnerUserId()` when no `githubRepo` is provided or no
+ * Owner probes 2xx (preserves prior behaviour for callers without a
+ * repo signal — e.g. tests).
+ *
+ * Mirrors `resolveAutoGitGithubToken` in error handling — best-effort,
+ * always returns `null` on failure so the caller can still attempt the
+ * git operation and surface a clearer "Authentication failed" if
+ * there really are no usable creds.
  *
  * Pair the returned token with `autoGitChildEnv(token)` for any `git` /
  * `gh` exec so the credential helper / `GH_TOKEN` are wired the same way the
@@ -227,9 +236,20 @@ export async function resolveAutoGitGithubToken(
  */
 export async function resolveOrgOwnerGithubToken(
   config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
+  githubRepo?: string | null,
 ): Promise<string | null> {
   try {
-    const ownerId = getOrgOwnerUserId();
+    let ownerId: string | null = null;
+    if (githubRepo && githubRepo.trim()) {
+      try {
+        const probe = await import('./repo-aware-token.js');
+        ownerId = await probe.resolveOwnerWithRepoAccess(githubRepo);
+      } catch {
+        // Probe machinery failed (orgs.db not initialised in mid-boot,
+        // network panic) — fall through to the legacy resolver below.
+      }
+    }
+    if (!ownerId) ownerId = getOrgOwnerUserId();
     if (!ownerId) return null;
     const oauthCreds = resolveOAuthAppCredentials(config);
     return (await getActiveAccessToken(ownerId, oauthCreds)) ?? null;

@@ -209,9 +209,38 @@ interface CloneRetryOptions extends RetryOptions {
   cleanup?: (cloneDir: string) => void;
 }
 
-async function resolveWorktreeTokenOwnerId(sessionOwnerId: string | null): Promise<string | null> {
+/**
+ * Resolve the user id whose GitHub token should be used to clone /
+ * fetch the session worktree.
+ *
+ *   1. **`sessionOwnerId`** — when the session has a persisted owner
+ *      (chat, autonomous dispatch with a real card creator, kanban
+ *      assign), that user pays for their own work.
+ *   2. **Repo-aware Owner probe** — when the session is system-spawned
+ *      (`owner_user_id` is NULL, e.g. PR reviewer, fan-out, bug-report
+ *      intake) AND we know the project's `githubRepo`, ask
+ *      `resolveOwnerWithRepoAccess` for an Owner whose stored token
+ *      actually has access. This is the fix for the "first user wins
+ *      even when their OAuth scope can't see the repo" bug that broke
+ *      the reviewer pipeline for ~2 days. The helper itself falls back
+ *      to `getOrgOwnerUserId()` when no Owner probes 2xx, so the
+ *      legacy attribution path stays intact for installs without the
+ *      probe machinery available.
+ *   3. **Legacy `getOrgOwnerUserId()` fallback** — for callers without
+ *      a `githubRepo` (the rare project that does not point at a
+ *      GitHub remote, plus tests that don't seed memberships).
+ */
+async function resolveWorktreeTokenOwnerId(
+  sessionOwnerId: string | null,
+  githubRepo?: string | null,
+): Promise<string | null> {
   if (sessionOwnerId) return sessionOwnerId;
   try {
+    if (githubRepo && githubRepo.trim()) {
+      const probe = await import('./repo-aware-token.js');
+      const userId = await probe.resolveOwnerWithRepoAccess(githubRepo);
+      if (userId) return userId;
+    }
     const mod = await import('./session-ownership.js');
     return mod.getOrgOwnerUserId();
   } catch {
@@ -1259,6 +1288,15 @@ export async function ensureSessionWorkspace(
    * no-drift cases. See {@link BaseBranchAdvancedInfo}.
    */
   onBaseBranchAdvanced?: OnBaseBranchAdvancedFn,
+  /**
+   * `Project.githubRepo` (e.g. `Speakman-ai/agent-hub`). When set, drives
+   * the repo-aware Owner-token resolution used for system-spawned
+   * sessions (reviewer, autonomous probes) whose `owner_user_id` is NULL
+   * — so we pick an Owner whose stored OAuth/PAT actually has access to
+   * the repo, not just "the user with the earliest `created_at`". See
+   * `resolveOwnerWithRepoAccess` in `repo-aware-token.ts`.
+   */
+  githubRepo?: string | null,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     try {
@@ -1286,7 +1324,7 @@ export async function ensureSessionWorkspace(
   //   3. null — session owner missing or unauthenticated owner; downstream
   //      git calls fall back to unauthenticated access (public repos only)
   const sessionOwnerId = session.owner_user_id ?? null;
-  const tokenOwnerId = await resolveWorktreeTokenOwnerId(sessionOwnerId);
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(sessionOwnerId, githubRepo ?? null);
   const userToken: string | null = await resolveUserGithubToken(tokenOwnerId, {
     oauthCredentials: resolveOAuthAppCredentials(config),
   });

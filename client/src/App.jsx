@@ -3308,6 +3308,17 @@ export default function App() {
                   agents={agents}
                   refreshKey={kanbanRefreshKey}
                   showToast={showToast}
+                  onProjectsRefresh={() => {
+                    // Re-pull the project list so derived flags like
+                    // `webhookConfigured` flip after a successful
+                    // auto-configure click in WebhookConfigBanner.
+                    // Errors are swallowed — the banner already
+                    // surfaced its own error UI on the API call itself.
+                    api
+                      .getProjects()
+                      .then((data) => setProjects(data))
+                      .catch(() => undefined);
+                  }}
                   onNavigateToSession={(agentId, sessionId) => {
                     pendingSessionIdRef.current = sessionId;
                     setActiveAgentId(agentId);
