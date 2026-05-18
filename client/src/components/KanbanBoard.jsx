@@ -21,6 +21,7 @@ import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js
 import { epicFormToUpdateBody, epicFormToCreateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
+import WebhookConfigBanner from './WebhookConfigBanner.jsx';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -49,6 +50,7 @@ export default function KanbanBoard({
   agents = [],
   refreshKey,
   onNavigateToSession,
+  onProjectsRefresh,
   showToast: _showToast,
 }) {
   const [_board, setBoard] = useState(null);
@@ -751,6 +753,21 @@ export default function KanbanBoard({
           </button>
         </div>
       </div>
+
+      {/* Missing-webhook nudge — visible whenever the project has a
+          GitHub repo set but no enabled webhook_configs row. Drops out
+          automatically once `onProjectsRefresh` flips webhookConfigured
+          to `true`. Backed by POST /api/projects/:id/webhook/auto-configure. */}
+      {project?.webhookConfigured === false && (
+        <div className="px-6 pt-3">
+          <WebhookConfigBanner
+            projectId={projectId}
+            onConfigured={() => {
+              if (typeof onProjectsRefresh === 'function') onProjectsRefresh();
+            }}
+          />
+        </div>
+      )}
 
       {/* Review Activity Panel */}
       {showReviewPanel && (

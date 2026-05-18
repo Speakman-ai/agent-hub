@@ -90,6 +90,18 @@ export const api = {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
+  /**
+   * One-click GitHub webhook setup for a project that has `githubRepo`
+   * but no enabled `webhook_configs` row. Powers the missing-webhook
+   * banner — see `WebhookConfigBanner.jsx`. Returns `{ config,
+   * registration }` from POST /api/projects/:projectId/webhook/auto-configure.
+   * Throws on HTTP errors (400 no-githubRepo, 409 already-exists, 500).
+   */
+  autoConfigureProjectWebhook: (projectId) =>
+    fetchJSON(`/projects/${projectId}/webhook/auto-configure`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),
   getProjectWorkflow: (projectId, workflowId) =>

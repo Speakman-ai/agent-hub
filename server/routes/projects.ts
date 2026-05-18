@@ -35,6 +35,8 @@ import {
 } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
+import { registerWebhookOnGitHub, tryGetInstallationToken } from './webhooks.js';
+import type { WebhookConfigRow } from '../types.js';
 
 const execAsync = promisify(exec);
 import type {
@@ -990,6 +992,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const projects = filterVisibleProjects(getProjects(), caller);
     const enriched = projects.map((p) => ({
       ...p,
+      webhookConfigured: computeWebhookConfigured(p),
       agents: p.agents.map((a) => {
         const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
         let lastActivity: string | null = null;
@@ -1270,6 +1273,147 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const webhookConfigured = computeWebhookConfigured(project);
     res.json({ ...project, webhookConfigured });
   });
+
+  /**
+   * One-click webhook setup for a project that has `githubRepo` set but
+   * no enabled `webhook_configs` row. Powered by the existing
+   * `registerWebhookOnGitHub` helper — same code path the explicit
+   * `POST /api/webhooks` route uses.
+   *
+   * Behavior:
+   *   - Returns 400 if the project has no `githubRepo`.
+   *   - Returns 409 if at least one enabled webhook config already
+   *     exists (idempotent; UI banner won't show in this case, but
+   *     defend in depth so a stale client click doesn't duplicate).
+   *   - When a GitHub App installation token resolves for the repo
+   *     owner, skips per-repo registration (the App delivers events
+   *     directly to `/api/webhooks/github`). Still creates the local
+   *     `webhook_configs` row so the missing-webhook banner clears.
+   *   - Otherwise resolves a token via `registerWebhookOnGitHub`'s
+   *     gh-CLI fallback. When that fails (no `GH_TOKEN`, no host gh
+   *     auth, no installation, no PAT) we return a structured error
+   *     instead of 500 so the UI can render a "configure manually"
+   *     link rather than a generic crash.
+   *
+   * Mirrors the events / allowlist defaults of the existing onboard
+   * path in this file so a freshly-onboarded project and an existing
+   * project that backfilled via this endpoint have the same shape.
+   */
+  router.post(
+    '/api/projects/:projectId/webhook/auto-configure',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const githubRepo = (project as { githubRepo?: string | null }).githubRepo;
+      if (!githubRepo || !githubRepo.trim()) {
+        return res.status(400).json({
+          error:
+            'Project has no GitHub repo configured. Set `githubRepo` (owner/repo) in project settings before configuring a webhook.',
+        });
+      }
+
+      // Idempotency: if any enabled row already exists, do nothing.
+      try {
+        const existing = stmts.getWebhookConfigsByProject.all(project.id) as Array<{
+          id: number;
+          enabled: number | null;
+        }>;
+        const enabledRow = existing.find((r) => r?.enabled === 1);
+        if (enabledRow) {
+          return res.status(409).json({
+            error: 'A webhook config is already enabled for this project.',
+            existingConfigId: enabledRow.id,
+          });
+        }
+      } catch (err: unknown) {
+        // db lookup blew up — surface so the UI doesn't keep retrying.
+        return res.status(500).json({
+          error: `Failed to read existing webhook configs: ${(err as Error).message}`,
+        });
+      }
+
+      // Canonical https://github.com/<owner>/<repo> form (no `.git`
+      // suffix) — matches the existing two production rows so the
+      // missing-webhook predicate clears immediately on success.
+      const cleanedRepo = githubRepo.trim().replace(/\.git$/, '');
+      const repoUrl = `https://github.com/${cleanedRepo}`;
+      const secret = crypto.randomBytes(32).toString('hex');
+      const defaultEvents = JSON.stringify({
+        'pull_request.opened': { enabled: true },
+        'pull_request.synchronize': { enabled: true },
+        'pull_request_review_comment.created': { enabled: true },
+        'pull_request.closed': { enabled: false },
+        'pull_request_review.submitted': { enabled: false },
+        'check_suite.completed': { enabled: false },
+      });
+
+      let created: WebhookConfigRow;
+      try {
+        const result = stmts.createWebhookConfig.run(
+          project.id,
+          repoUrl,
+          secret,
+          defaultEvents,
+          1,
+          '[]',
+        );
+        created = stmts.getWebhookConfig.get(result.lastInsertRowid) as WebhookConfigRow;
+      } catch (err: unknown) {
+        return res
+          .status(500)
+          .json({ error: `Failed to create webhook config: ${(err as Error).message}` });
+      }
+
+      // Seed reviewer agents now that the project has GitHub integration.
+      try {
+        const reviewersChanged = ensureReviewerAgents();
+        if (reviewersChanged) {
+          broadcast({ type: 'projects_updated', reason: 'webhook-auto-configured' });
+        }
+      } catch (err: unknown) {
+        console.warn(`[Webhooks] ensureReviewerAgents failed: ${(err as Error).message}`);
+      }
+
+      // Path A: GitHub App installation already covers this owner — no
+      // per-repo registration needed. The App delivers events to
+      // `/api/webhooks/github` signed with `config.githubApp.webhookSecret`.
+      try {
+        const owner = cleanedRepo.split('/')[0];
+        const installToken = config.githubApp?.appId ? await tryGetInstallationToken(owner) : null;
+        if (installToken) {
+          return res.json({
+            config: created,
+            registration: {
+              ok: true,
+              skipped: true,
+              reason: 'github_app_installed',
+              message: `The GitHub App is installed on ${owner}; PR events will reach Agent Hub automatically.`,
+            },
+          });
+        }
+      } catch (parseErr: unknown) {
+        // Token lookup blew up — fall through to per-repo registration.
+        console.warn(
+          `[Webhooks] App-install check failed for ${repoUrl}, falling back to per-repo registration: ${(parseErr as Error).message}`,
+        );
+      }
+
+      // Path B: per-repo webhook registration via `gh` / installation
+      // token. Returns a structured error envelope on failure so the UI
+      // banner can render a "configure manually" hint.
+      try {
+        const regResult = await registerWebhookOnGitHub(created);
+        return res.json({ config: created, registration: regResult });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.json({
+          config: created,
+          registration: { ok: false, error: msg },
+        });
+      }
+    },
+  );
 
   // ─── Re-detect preview defaults from the project's checkout ──────
   //
