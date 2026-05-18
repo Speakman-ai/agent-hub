@@ -331,20 +331,6 @@ export default function Sidebar({
                   isDropTarget ? 'border-t-2 border-emerald-500' : 'border-t-2 border-transparent'
                 }`}
                 data-testid={`sidebar-project-row-${project.id}`}
-                draggable={dragEnabled}
-                onDragStart={
-                  dragEnabled
-                    ? (e) => {
-                        e.dataTransfer.effectAllowed = 'move';
-                        try {
-                          e.dataTransfer.setData('text/plain', project.id);
-                        } catch {
-                          /* some browsers block setData under certain conditions */
-                        }
-                        setDraggedProjectId(project.id);
-                      }
-                    : undefined
-                }
                 onDragOver={
                   dragEnabled
                     ? (e) => {
@@ -357,7 +343,12 @@ export default function Sidebar({
                 }
                 onDragLeave={
                   dragEnabled
-                    ? () => {
+                    ? (e) => {
+                        // dragleave fires when the pointer crosses into a
+                        // child element too — guard against the indicator
+                        // flickering as the cursor moves over agent rows
+                        // inside the same project block.
+                        if (e.currentTarget.contains(e.relatedTarget)) return;
                         if (dragOverProjectId === project.id) setDragOverProjectId(null);
                       }
                     : undefined
@@ -373,14 +364,6 @@ export default function Sidebar({
                       }
                     : undefined
                 }
-                onDragEnd={
-                  dragEnabled
-                    ? () => {
-                        setDraggedProjectId(null);
-                        setDragOverProjectId(null);
-                      }
-                    : undefined
-                }
               >
                 {index > 0 && !isDropTarget && (
                   <div className="border-t border-gray-800/50 my-2 mx-2" />
@@ -388,11 +371,48 @@ export default function Sidebar({
                 {/* Project header */}
                 <div className="group flex items-center">
                   {dragEnabled && (
-                    <GripVertical
-                      size={12}
-                      className="text-gray-700 group-hover:text-gray-500 flex-shrink-0 cursor-grab active:cursor-grabbing ml-0.5"
+                    // Grip is the only drag source — making the entire row
+                    // `draggable` would steal the gesture from agent clicks
+                    // and the collapse chevron, which feel like buttons.
+                    // The row keeps its drop-target handlers above.
+                    <span
+                      draggable
+                      data-drag-handle
+                      data-testid={`sidebar-project-drag-handle-${project.id}`}
+                      role="button"
+                      tabIndex={-1}
                       aria-label="Drag to reorder project"
-                    />
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        e.dataTransfer.effectAllowed = 'move';
+                        try {
+                          e.dataTransfer.setData('text/plain', project.id);
+                        } catch {
+                          /* some browsers block setData under certain conditions */
+                        }
+                        // Use the surrounding row as the drag preview so the
+                        // ghost matches what the user is actually moving,
+                        // not a 12px icon.
+                        const row = e.currentTarget.closest(
+                          `[data-testid="sidebar-project-row-${project.id}"]`,
+                        );
+                        if (row) {
+                          try {
+                            e.dataTransfer.setDragImage(row, 0, 0);
+                          } catch {
+                            /* setDragImage can throw in some embedded contexts */
+                          }
+                        }
+                        setDraggedProjectId(project.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedProjectId(null);
+                        setDragOverProjectId(null);
+                      }}
+                      className="flex-shrink-0 cursor-grab active:cursor-grabbing px-0.5 py-1 text-gray-700 group-hover:text-gray-500"
+                    >
+                      <GripVertical size={12} />
+                    </span>
                   )}
                   <button
                     onClick={(e) => {
@@ -1073,6 +1093,43 @@ export default function Sidebar({
               </div>
             );
           })}
+
+          {/* End-of-list drop zone — gives users a target for "move to the
+              bottom." Insert-before semantics on the project rows above
+              mean dropping on the last row puts the dragged project at
+              second-to-last, never last. This sentinel closes that gap.
+              Rendered only mid-drag so it doesn't take up sidebar real
+              estate the rest of the time. */}
+          {onReorderProjects && draggedProjectId && (
+            <div
+              data-testid="sidebar-project-drop-zone-end"
+              className={`h-3 mx-2 mt-1 rounded-sm transition-colors ${
+                dragOverProjectId === '__end__'
+                  ? 'border-t-2 border-emerald-500 bg-emerald-500/10'
+                  : 'border-t-2 border-transparent'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverProjectId !== '__end__') setDragOverProjectId('__end__');
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget)) return;
+                if (dragOverProjectId === '__end__') setDragOverProjectId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const sourceId = e.dataTransfer.getData('text/plain') || draggedProjectId;
+                if (sourceId) {
+                  const ids = projects.map((p) => p.id).filter((id) => id !== sourceId);
+                  ids.push(sourceId);
+                  onReorderProjects(ids);
+                }
+                setDraggedProjectId(null);
+                setDragOverProjectId(null);
+              }}
+            />
+          )}
 
           {/* Ad-hoc Conference Rooms (not tied to a project) */}
           {(() => {
