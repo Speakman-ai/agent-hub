@@ -362,6 +362,25 @@ function cancelLogin(engine: 'cursor' | 'codex', userId: string): boolean {
   return true;
 }
 
+/**
+ * Cancel any in-flight P4 (`/codex-auth/login`) device login for the
+ * given user. Mirrors `cancelLogin('codex', userId)` for the legacy
+ * `/browser/device-login` flow — the two flows write to different
+ * on-disk locations but share the same OpenAI device-code endpoint, so
+ * letting both run concurrently risks invalidating each other's codes.
+ */
+function cancelP4CodexLogin(userId: string): boolean {
+  const rec = getActiveCodexDeviceLogin(userId);
+  if (!rec) return false;
+  try {
+    killProcessGroup(rec.proc, 'SIGTERM');
+  } catch {
+    /* already dead */
+  }
+  clearActiveCodexDeviceLogin(userId);
+  return true;
+}
+
 // ── Router factory ─────────────────────────────────────────────────────
 export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin, getCodexBin } = deps;
@@ -647,6 +666,11 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
     cancelLogin('codex', userId);
+    // Also clobber any in-flight P4 (`/codex-auth/login`) attempt for
+    // this user so we never have two `codex login --device-auth`
+    // processes racing on the same identity (different on-disk caches
+    // but identical OAuth device codes upstream).
+    cancelP4CodexLogin(userId);
 
     const bin = codexBinPath();
     if (!existsSync(bin)) {
@@ -797,6 +821,10 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       }
       clearActiveCodexDeviceLogin(userId);
     }
+    // Also clobber any in-flight legacy (`/browser/device-login`)
+    // attempt for this user so we never have two `codex login
+    // --device-auth` processes racing on the same identity.
+    cancelLogin('codex', userId);
 
     const bin = codexBinPath();
     if (!existsSync(bin)) {
@@ -828,12 +856,24 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     let allOutput = '';
     let responded = false;
 
+    // Capture the 45 s timeout so close / error paths can release the
+    // closure (which otherwise pins `proc` and `res` in memory for the
+    // full window). Matches the `runCli` helper's pattern.
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const clearLoginTimeout = (): void => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    };
+
     const trySend = (): void => {
       if (responded) return;
       const url = extractCodexDeviceUrl(allOutput);
       const userCode = extractCodexDeviceUserCode(allOutput);
       if (url && userCode) {
         responded = true;
+        clearLoginTimeout();
         res.json({ ok: true, loginId, deviceAuthUrl: url, userCode });
       }
     };
@@ -847,6 +887,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     proc.stderr?.on('data', onData);
 
     proc.on('close', (code) => {
+      clearLoginTimeout();
       clearActiveCodexDeviceLogin(userId, loginId);
 
       if (!responded) {
@@ -879,6 +920,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     });
 
     proc.on('error', (err) => {
+      clearLoginTimeout();
       clearActiveCodexDeviceLogin(userId, loginId);
       if (!responded) {
         responded = true;
@@ -886,7 +928,8 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       }
     });
 
-    setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
+      timeoutHandle = null;
       if (!responded) {
         responded = true;
         res.json({

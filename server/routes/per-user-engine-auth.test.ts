@@ -44,6 +44,15 @@ function buildApp(opts: {
   dataDir: string;
   userId?: string | null;
 }): express.Express {
+  return buildAppWithDeps(opts).app;
+}
+
+function buildAppWithDeps(opts: {
+  cursorBin: string;
+  codexBin: string;
+  dataDir: string;
+  userId?: string | null;
+}): { app: express.Express; broadcast: ReturnType<typeof vi.fn> } {
   const app = express();
   app.use(express.json());
 
@@ -56,6 +65,7 @@ function buildApp(opts: {
     next();
   });
 
+  const broadcast = vi.fn();
   const deps = {
     config: {
       cursorBin: opts.cursorBin,
@@ -63,13 +73,13 @@ function buildApp(opts: {
       dataDir: opts.dataDir,
       codexApiKey: null,
     },
-    broadcast: vi.fn(),
+    broadcast,
     getCursorBin: () => opts.cursorBin,
     getCodexBin: () => opts.codexBin,
   } as unknown as RouteDeps;
 
   app.use(createPerUserEngineAuthRoutes(deps));
-  return app;
+  return { app, broadcast };
 }
 
 const sampleCursorLoginOutput = 'Visit https://cursor.com/loginDeepControl?token=abc123 to log in';
@@ -369,6 +379,67 @@ describe('per-user engine auth routes', () => {
       expect(res.body.ok).toBe(true);
       expect(res.body.loginId).toBeTruthy();
       expect(res.body.output).toMatch(/logged in/i);
+    });
+
+    it('broadcasts per-user-codex-auth-update on the post-URL-emit close path', async () => {
+      // Once the URL has been returned to the caller, the CLI keeps
+      // running until the user completes the device flow. When it
+      // finally exits we must broadcast the outcome over the WS so the
+      // UI can flip "pending → authenticated" (or surface the error).
+      // Without this, a future regression that drops the broadcast
+      // silently leaves users staring at a stale spinner.
+      const { app, broadcast } = buildAppWithDeps({
+        cursorBin,
+        codexBin,
+        dataDir: tmpDir,
+        userId: 'codex-broadcast',
+      });
+      spawnMock.mockImplementation(() =>
+        // URL+code emit → res.json fires → then close(0) → broadcast.
+        fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 0 }),
+      );
+
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.deviceAuthUrl).toContain('auth.openai.com/codex/device');
+
+      // The close emit runs synchronously after the data emit inside
+      // the fake proc's queueMicrotask, so by the time supertest
+      // resolves both have fired. One macrotask of slack to be safe
+      // across Node versions.
+      await new Promise<void>((r) => setImmediate(r));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'per-user-codex-auth-update',
+          userId: 'codex-broadcast',
+          status: 'success',
+          loginId: res.body.loginId,
+        }),
+      );
+    });
+
+    it('broadcasts failure on the post-URL-emit close path when the CLI errors', async () => {
+      const { app, broadcast } = buildAppWithDeps({
+        cursorBin,
+        codexBin,
+        dataDir: tmpDir,
+        userId: 'codex-broadcast-fail',
+      });
+      spawnMock.mockImplementation(() =>
+        fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 1 }),
+      );
+
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+
+      await new Promise<void>((r) => setImmediate(r));
+      const call = broadcast.mock.calls.find(
+        (c) => (c[0] as { type?: string }).type === 'per-user-codex-auth-update',
+      );
+      expect(call).toBeTruthy();
+      const payload = call![0] as { status?: string; error?: string };
+      expect(payload.status).toBe('failed');
+      expect(payload.error).toBeTruthy();
     });
   });
 

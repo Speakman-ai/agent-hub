@@ -25,6 +25,7 @@
  * authentication. Everything else goes through the auth middleware.
  */
 import { Router, Request, Response } from 'express';
+import { existsSync } from 'fs';
 import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
 import config from '../config.js';
 import { signJwt } from '../jwt.js';
@@ -1725,8 +1726,16 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         const chatgptOAuth = authModeInfo.present && authModeInfo.mode === 'chatgpt';
         const cliApiKey = authModeInfo.present && authModeInfo.mode === 'apikey';
         const loginInProgress = isCodexDeviceLoginInProgress(authedReq.authUserId);
+        // Gate `uiStatus` on the actual Codex binary, not a hardcoded
+        // `true`. Without this check the endpoint would happily report
+        // `deviceLogin.uiStatus = 'authenticated'` on hosts that have an
+        // API key stored but no Codex CLI installed — and any subsequent
+        // chat / heartbeat / `POST /api/auth/me/codex-auth/login` would
+        // then fail with "Codex binary not found". Matches the legacy
+        // `/api/auth/me/codex-auth/browser` handler.
+        const binaryPresent = existsSync(config.codexBin);
         const uiStatus = computeCodexUiStatus({
-          binaryPresent: true,
+          binaryPresent,
           loginInProgress,
           apiKeyConfigured: !!stored.apiKey || route.hostHasKey(),
           chatgptOAuthFromFile: chatgptOAuth,
