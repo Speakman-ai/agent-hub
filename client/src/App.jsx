@@ -2645,7 +2645,7 @@ export default function App() {
     (engine) => {
       const fromConfig = modelConfig?.engineDefaultModels?.[engine];
       if (fromConfig) return fromConfig;
-      if (engine === 'cursor-agent') return 'composer-2';
+      if (engine === 'cursor-agent') return 'composer-2.5';
       if (engine === 'codex-cli') return 'gpt-5.3-codex';
       return 'claude-opus-4-7';
     },

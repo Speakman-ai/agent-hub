@@ -503,12 +503,12 @@ describe('runAutonomousLoop — dispatch', () => {
   });
 
   // ── Cross-engine model override (regression for "Autonomous model
-  // selection not applied (Composer 2 ignored, runs as Claude Opus)") ─────
+  // selection not applied (Composer 2.5 ignored, runs as Claude Opus)") ─────
   it('spawns under the model-owning engine when epic autonomous_model is from a different engine', async () => {
     const card = makeCard();
     const epicWithModel = {
       ...ACTIVE_EPIC,
-      autonomous_model: 'composer-2',
+      autonomous_model: 'composer-2.5',
     } as KanbanEpicRow;
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
@@ -521,7 +521,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.getConfig.mockReturnValue({
       engineValidModels: {
         'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
       },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -531,13 +531,13 @@ describe('runAutonomousLoop — dispatch', () => {
 
     // Agent's default engine is claude-code, but the operator picked a
     // Cursor model. Honour the selection by spawning under cursor-agent
-    // with composer-2 — rather than silently falling back to opus.
+    // with composer-2.5 — rather than silently falling back to opus.
     expect(stmts.createSession.run).toHaveBeenCalledWith(
       expect.any(String),
       'dev-1',
       'Build feature',
       'cursor-agent',
-      'composer-2',
+      'composer-2.5',
       1,
       0,
       1,
@@ -545,7 +545,7 @@ describe('runAutonomousLoop — dispatch', () => {
   });
 
   it('spawns under the model-owning engine when card assign_model is from a different engine', async () => {
-    const card = makeCard({ assign_model: 'composer-2' });
+    const card = makeCard({ assign_model: 'composer-2.5' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
@@ -557,7 +557,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.getConfig.mockReturnValue({
       engineValidModels: {
         'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
-        'cursor-agent': ['composer-2', 'composer-3'],
+        'cursor-agent': ['composer-2.5', 'composer-3'],
       },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -572,7 +572,7 @@ describe('runAutonomousLoop — dispatch', () => {
       'dev-1',
       'Build feature',
       'cursor-agent',
-      'composer-2',
+      'composer-2.5',
       1,
       0,
       1,
@@ -596,7 +596,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.getConfig.mockReturnValue({
       engineValidModels: {
         'claude-code': ['claude-sonnet-4-6'],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
       },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -628,9 +628,9 @@ describe('engineForModel', () => {
   it('returns the engine when the model is in its allowlist', async () => {
     const { engineForModel } = await import('./autonomous.js');
     expect(
-      engineForModel('composer-2', {
+      engineForModel('composer-2.5', {
         'claude-code': ['claude-opus-4-7'],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
       }),
     ).toBe('cursor-agent');
   });
@@ -640,7 +640,7 @@ describe('engineForModel', () => {
     expect(
       engineForModel('ghost-model', {
         'claude-code': ['claude-opus-4-7'],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
       }),
     ).toBeNull();
   });

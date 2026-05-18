@@ -16,13 +16,13 @@ function makeConfig(): AppConfig {
     defaultModel: 'claude-opus-4-7',
     engineDefaultModels: {
       'claude-code': 'claude-opus-4-7',
-      'cursor-agent': 'composer-2',
+      'cursor-agent': 'composer-2.5',
       'gemini-cli': 'gemini-2.5-pro',
       'codex-cli': 'gpt-5.3-codex',
     },
     engineValidModels: {
       'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
-      'cursor-agent': ['composer-2'],
+      'cursor-agent': ['composer-2.5'],
       'gemini-cli': ['gemini-2.5-pro'],
       'codex-cli': ['gpt-5.3-codex'],
     },
@@ -81,6 +81,7 @@ describe('buildAuthenticatedModelConfig', () => {
     cfg.engineValidModels['cursor-agent'] = [
       'gpt-5.3-codex-high',
       'composer-2',
+      'composer-2.5',
       'composer-2-fast',
       'auto',
     ];
@@ -93,7 +94,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'codex-cli': false,
     });
 
-    expect(out.engineValidModels['cursor-agent']).toEqual(['composer-2']);
-    expect(out.engineDefaultModels['cursor-agent']).toBe('composer-2');
+    expect(out.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
+    expect(out.engineDefaultModels['cursor-agent']).toBe('composer-2.5');
   });
 });

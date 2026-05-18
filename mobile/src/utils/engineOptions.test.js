@@ -43,17 +43,17 @@ describe('mobile engine picker constants', () => {
     expect(models).not.toContain('gpt-5.1-codex-max');
   });
 
-  it('exposes only composer-2 as the model for cursor-agent', () => {
+  it('exposes only composer-2.5 as the model for cursor-agent', () => {
     const models = ENGINE_MODELS['cursor-agent'].map((m) => m.id);
-    expect(models).toEqual(['composer-2']);
+    expect(models).toEqual(['composer-2.5']);
   });
 
-  it('defaults cursor-agent to composer-2 (matches the TopBar list)', () => {
+  it('defaults cursor-agent to composer-2.5 (matches the TopBar list)', () => {
     // Regression: mobile's ENGINE_DEFAULT_MODELS previously set
-    // cursor-agent → gpt-5.3-codex-high while TopBar only exposed composer-2,
+    // cursor-agent → gpt-5.3-codex-high while TopBar only exposed composer-2.5,
     // causing the stored model to diverge from the displayed label on the
     // first engine switch. Keep the default aligned with the model list.
-    expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('composer-2');
+    expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('composer-2.5');
     const allowed = ENGINE_MODELS['cursor-agent'].map((m) => m.id);
     expect(allowed).toContain(ENGINE_DEFAULT_MODELS['cursor-agent']);
   });

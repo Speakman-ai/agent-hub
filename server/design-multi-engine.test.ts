@@ -152,7 +152,7 @@ describe('buildDesignSpawnArgs', () => {
       buildDesignSpawnArgs({
         ...baseInput,
         engine: 'cursor-agent',
-        model: 'composer-2',
+        model: 'composer-2.5',
         engineSessionId: null,
         isNewEngineSession: true,
       }),
@@ -163,7 +163,7 @@ describe('buildDesignSpawnArgs', () => {
     const { bin, args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'cursor-agent',
-      model: 'composer-2',
+      model: 'composer-2.5',
       engineSessionId: 'cur-abc',
       isNewEngineSession: true,
     });
@@ -180,7 +180,7 @@ describe('buildDesignSpawnArgs', () => {
     const { args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'cursor-agent',
-      model: 'composer-2',
+      model: 'composer-2.5',
       engineSessionId: 'cur-abc',
       isNewEngineSession: false,
       cliContent: 'Second turn',

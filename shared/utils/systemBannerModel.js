@@ -16,7 +16,7 @@ const MODEL_KNOWN_LABELS = {
   'claude-opus-4-7': 'Opus 4.7',
   'claude-opus-4-6': 'Opus 4.6',
   'claude-sonnet-4-6': 'Sonnet',
-  'composer-2': 'Composer 2',
+  'composer-2.5': 'Composer 2.5',
   'gpt-5.3-codex': 'GPT-5.3 Codex',
   'gpt-5.4': 'GPT-5.4',
   'gpt-5.4-mini': 'GPT-5.4 Mini',

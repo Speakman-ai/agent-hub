@@ -121,9 +121,9 @@ describe('epicFormToUpdateBody', () => {
     const body = epicFormToUpdateBody({
       name: 'x',
       autonomous: 1,
-      autonomous_model: '  composer-2  ',
+      autonomous_model: '  composer-2.5  ',
     });
-    expect(body.autonomousModel).toBe('composer-2');
+    expect(body.autonomousModel).toBe('composer-2.5');
   });
 });
 

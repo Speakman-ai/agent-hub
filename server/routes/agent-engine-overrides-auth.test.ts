@@ -41,7 +41,7 @@ const mockConfig: {
   engineValidModels: {
     'claude-code': ['claude-sonnet-4.5'],
     'codex-cli': ['gpt-5-codex'],
-    'cursor-agent': ['composer-2'],
+    'cursor-agent': ['composer-2.5'],
   },
   get dataDir() {
     return TMP_DIR;

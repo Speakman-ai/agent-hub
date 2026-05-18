@@ -430,7 +430,7 @@ function getDeps(): AutonomousDeps {
  * Reverse lookup: which engine owns this model id? Returns null when the
  * model isn't in any configured engine's allowlist. Used to honour a
  * cross-engine model override at dispatch time (e.g. an operator picks
- * `composer-2`, a Cursor model, for an autonomous epic whose dispatchable
+ * `composer-2.5`, a Cursor model, for an autonomous epic whose dispatchable
  * agents default to `claude-code` — without this we'd silently drop the
  * override and fall back to the agent's default model).
  *
@@ -909,7 +909,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
 
       // Resolve the (engine, model) pair for the spawn. Card-level
       // `assign_model` wins over epic-level `autonomous_model`; either may
-      // cross engines (e.g. operator picks `composer-2` for an agent whose
+      // cross engines (e.g. operator picks `composer-2.5` for an agent whose
       // default engine is `claude-code`), in which case we spawn under the
       // engine that owns the model so the operator's selection isn't
       // silently dropped.

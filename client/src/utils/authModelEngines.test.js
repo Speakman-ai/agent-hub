@@ -10,7 +10,7 @@ describe('authModelEngines', () => {
     const mc = {
       engineValidModels: {
         'claude-code': [],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
         'codex-cli': ['gpt-5.3-codex'],
       },
     };
@@ -21,7 +21,7 @@ describe('authModelEngines', () => {
     const mc = {
       engineValidModels: {
         'claude-code': ['claude-opus-4-7'],
-        'cursor-agent': ['composer-2'],
+        'cursor-agent': ['composer-2.5'],
       },
     };
     expect(firstEngineWithAuthenticatedModels(mc)).toBe('claude-code');
