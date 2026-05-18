@@ -5,11 +5,13 @@ import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { localDateStr } from '../memory.js';
+import crypto from 'crypto';
 import {
   getAppInfo,
   getAppInstallations,
   buildAppManifest,
   clearTokenCache,
+  patchAppWebhookSecret,
 } from '../github-app.js';
 import type {
   RouteDeps,
@@ -654,6 +656,65 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent((err as Error).message)}`,
       );
     }
+  });
+
+  // ── GitHub App webhook secret sync ──────────────────────────────
+  // Operator escape hatch for "the webhook secret drifted." GitHub does
+  // NOT let us read back the App's current webhook secret (the GET
+  // endpoint returns `"secret": "********"`), so we can only push-sync:
+  // ensure we have a local value (generate a fresh one if missing),
+  // PATCH it onto the App's webhook config on GitHub, persist the new
+  // value to ~/.agent-hub/data/config.json. After this call, GitHub
+  // will sign every subsequent App delivery with this exact secret.
+  //
+  // This is also wired automatically into the HMAC-failure path in
+  // routes/webhooks.ts (throttled), so most drift will self-heal
+  // within one delivery; this button is the explicit recovery for
+  // operators who want to force the sync immediately.
+  router.post('/api/github-app/sync-webhook-secret', async (req: Request, res: Response) => {
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+
+    const { rotate } = (req.body as { rotate?: boolean }) || {};
+    const shouldGenerate = rotate === true || !app.webhookSecret;
+    const secretToPush = shouldGenerate
+      ? crypto.randomBytes(32).toString('hex')
+      : (app.webhookSecret as string);
+
+    try {
+      await patchAppWebhookSecret(app.appId, app.privateKey, secretToPush);
+    } catch (err: unknown) {
+      return res.status(502).json({
+        error: `Failed to push webhook secret to GitHub: ${(err as Error).message}`,
+      });
+    }
+
+    app.webhookSecret = secretToPush;
+    config.githubApp = app;
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    fileConfig.githubApp = app;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    console.log(
+      `[GitHub App] Webhook secret synced to GitHub ` +
+        `(appId=${app.appId}, generated=${shouldGenerate}, length=${secretToPush.length})`,
+    );
+
+    res.json({
+      ok: true,
+      generated: shouldGenerate,
+      secretLength: secretToPush.length,
+      secretPrefix: secretToPush.slice(0, 4),
+    });
   });
 
   router.get('/api/github-app/install-url', async (_req: Request, res: Response) => {
