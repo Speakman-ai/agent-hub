@@ -87,6 +87,21 @@ describe('PATCH /api/config — engine bin paths', () => {
     expect(readFileConfig().codexDangerBypass).toBe(false);
   });
 
+  it('persists lanMode and exposes it on GET /api/config', async () => {
+    // Defaults to false on fresh installs — GET surfaces it so the client
+    // can render the right webhook setup UI.
+    const initial = await request.get('/api/config').expect(200);
+    expect(typeof initial.body.lanMode).toBe('boolean');
+
+    await request.patch('/api/config').send({ lanMode: true }).expect(200);
+    expect(readFileConfig().lanMode).toBe(true);
+    const after = await request.get('/api/config').expect(200);
+    expect(after.body.lanMode).toBe(true);
+
+    await request.patch('/api/config').send({ lanMode: false }).expect(200);
+    expect(readFileConfig().lanMode).toBe(false);
+  });
+
   it('still rejects updates with no allowlisted fields', async () => {
     const res = await request.patch('/api/config').send({ madeUpField: 'nope' }).expect(400);
     expect(res.body.error).toMatch(/No valid config fields/);

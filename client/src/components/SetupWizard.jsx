@@ -117,6 +117,17 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Step 4 — LAN mode toggle. Mirrors `config.lanMode` on the server
+  // (see SettingsPage GitHub section for the same control post-setup).
+  // First-run users on a private network can flip this on before any
+  // webhook setup is attempted, sparing the "configure public URL"
+  // round-trip. Loaded from the server on Step 4 mount so subsequent
+  // re-entries see the current value; the toggle handler PATCHes
+  // /api/config so the change is persisted before the user advances.
+  const [lanMode, setLanMode] = useState(false);
+  const [lanModeLoaded, setLanModeLoaded] = useState(false);
+  const [lanModeSaving, setLanModeSaving] = useState(false);
+
   // The Local/Remote toggle is only meaningful when the client is decoupled
   // from the server it talks to. The web build is *served by* its server, so
   // the page's origin is the server URL — there's no other server it could
@@ -176,6 +187,48 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   // a 15-minute device-login window would keep firing GETs against a
   // detached component.
   useEffect(() => () => clearCodexDeviceTimers(), []);
+
+  // Load the current `lanMode` value when the user lands on Step 4 so the
+  // toggle reflects whatever was previously persisted (env override,
+  // config.json, or an earlier wizard run that already flipped it). Idle
+  // on other steps so we don't fetch eagerly on every wizard mount.
+  useEffect(() => {
+    if (step !== 4 || lanModeLoaded) return;
+    let cancelled = false;
+    api
+      .getConfig()
+      .then((data) => {
+        if (cancelled) return;
+        setLanMode(!!data.lanMode);
+        setLanModeLoaded(true);
+      })
+      .catch(() => {
+        // GET /api/config can fail on a half-bootstrapped server (auth
+        // setup mid-flight). Mark loaded anyway so the toggle is usable
+        // — it just starts at the React default (off), and the server
+        // stays untouched until the user explicitly flips it.
+        if (!cancelled) setLanModeLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [step, lanModeLoaded]);
+
+  const handleToggleLanMode = async (next) => {
+    const prev = lanMode;
+    setLanMode(next);
+    setLanModeSaving(true);
+    try {
+      await api.updateConfig({ lanMode: next });
+    } catch (err) {
+      // Roll back on failure so the toggle never claims a state the
+      // server didn't accept.
+      setLanMode(prev);
+      setError((err && err.message) || 'Failed to update LAN mode');
+    } finally {
+      setLanModeSaving(false);
+    }
+  };
 
   useEffect(() => {
     const c = setupStatus?.engines?.['claude-code'];
@@ -1317,6 +1370,39 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 user connects their own account. Skip if you&apos;re starting non-repo work; you can
                 finish this later in Settings.
               </p>
+            </div>
+
+            {/* LAN / air-gapped mode. Lives at the top of Step 4 so users on
+                private networks see the opt-out before the OAuth App and
+                webhook setup blocks below. The same toggle is also on the
+                Settings → GitHub page for post-setup changes. */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <h2 className="text-sm font-semibold text-white">LAN / air-gapped mode</h2>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Turn this on if Agent Hub is on a private network where GitHub cannot reach it.
+                    Webhook auto-registration is skipped; PR state is detected by polling GitHub
+                    every 3 minutes using your personal access token. You can flip it back off any
+                    time in Settings — nothing else changes.
+                  </p>
+                </div>
+                <div className="shrink-0 pt-1" data-testid="lan-mode-toggle-wrapper">
+                  <ToggleSwitch
+                    enabled={lanMode}
+                    onChange={(next) => {
+                      if (lanModeSaving) return;
+                      handleToggleLanMode(next);
+                    }}
+                  />
+                </div>
+              </div>
+              {lanMode && (
+                <div className="mt-3 bg-blue-900/20 border border-blue-700/40 rounded-lg p-2.5 text-xs text-blue-200">
+                  <strong>LAN mode is on.</strong> Webhook setup below is optional — Agent Hub will
+                  poll GitHub instead.
+                </div>
+              )}
             </div>
 
             {/* Optional: register an OAuth App so "Sign in with GitHub" works

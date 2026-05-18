@@ -80,6 +80,10 @@ export const AppConfigComponent = registerComponent(
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
       codexDangerBypass: z.boolean().optional(),
+      lanMode: z.boolean().optional().openapi({
+        description:
+          'When true, Agent Hub skips webhook auto-registration (suitable for LAN / air-gapped installs that cannot receive inbound webhooks) and relies on the polling fallback for PR state and reviewer dispatch.',
+      }),
       _file: z.object({
         claudeBin: z.string().nullable(),
         cursorBin: z.string().nullable(),
@@ -346,6 +350,7 @@ export const PatchConfigRequestSchema = z
     publicUrl: z.string().optional(),
     botGithubToken: z.string().nullable().optional(),
     codexDangerBypass: z.boolean().optional(),
+    lanMode: z.boolean().optional(),
   })
   .passthrough()
   .openapi({
@@ -431,7 +436,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

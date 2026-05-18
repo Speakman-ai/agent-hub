@@ -3284,6 +3284,30 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     }
 
     if (autoRegister) {
+      // LAN mode: this Agent Hub instance is on a private network and has
+      // no public URL that GitHub can POST to. There is no point — and
+      // no way — to register a webhook on GitHub against an unreachable
+      // callback. The reconciliation poller in `server/autonomous.ts`
+      // (`*/3 * * * *`) provides the equivalent state transitions by
+      // polling `gh api` for PR state, reviews, check runs, and inline
+      // review comments. Return a non-fatal skip so the UI can surface
+      // "LAN mode — using poller" without flagging the registration as a
+      // failure.
+      if (config.lanMode) {
+        return res.json({
+          ...created,
+          registration: {
+            ok: true,
+            skipped: true,
+            reason: 'lan_mode',
+            message:
+              'LAN mode is enabled — no inbound webhook was registered. ' +
+              'PR state, reviews, and CI failures will be detected via the ' +
+              'GitHub polling fallback (every 3 minutes). Disable LAN mode ' +
+              'in Settings if this Agent Hub now has a public URL.',
+          },
+        });
+      }
       // Skip the per-repo webhook registration entirely when the GitHub App
       // is already installed on this repo's owner. The App installation
       // delivers every repository event to the same `/api/webhooks/github`

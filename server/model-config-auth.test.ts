@@ -44,6 +44,7 @@ function makeConfig(): AppConfig {
     geminiApiKey: null,
     codexApiKey: null,
     codexDangerBypass: true,
+    lanMode: false,
     cursorApiKey: null,
     slackWebhookUrl: null,
     capturesEnabled: false,

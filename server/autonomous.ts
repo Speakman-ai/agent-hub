@@ -6,7 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Database } from 'better-sqlite3';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateBoard } from './routes/board.js';
-import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
+import {
+  notifyDispatchFailure,
+  dispatchReviewFeedback,
+  dispatchReviewerForPR,
+  isReviewerDispatchPending,
+} from './routes/webhooks.js';
 import { dispatchAutofixFeedback } from './autofix-dispatch.js';
 import { createEscalation } from './routes/escalations.js';
 import {
@@ -1135,6 +1140,7 @@ export function startReviewPollingFallback(): void {
       console.log('[ReviewPoll] Running initial startup reconciliation...');
       await reconcileKanbanWithGitHub();
       await pollForMissedReviews();
+      await pollForLanModeReviewerDispatch();
       console.log('[ReviewPoll] Startup reconciliation complete');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1148,6 +1154,7 @@ export function startReviewPollingFallback(): void {
       try {
         await reconcileKanbanWithGitHub();
         await pollForMissedReviews();
+        await pollForLanModeReviewerDispatch();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[ReviewPoll] Polling error:', msg);
@@ -1753,6 +1760,161 @@ ${commentSummary}${newComments.length > 5 ? `\n…and ${newComments.length - 5} 
         }
       } catch {
         // pulls/comments API error — skip silently and try again next poll.
+      }
+    }
+  }
+}
+
+/**
+ * LAN-mode equivalent of the `pull_request.opened` webhook → `dispatchReviewerForPR`
+ * path. In cloud mode the webhook handler in `server/routes/webhooks.ts` fires
+ * the reviewer the moment GitHub delivers `pull_request.opened`. On a LAN
+ * install GitHub can't reach us, so a freshly-opened PR never gets reviewed
+ * unless someone manually nudges it. This poller closes that gap by finding
+ * cards whose PR is open, has no recorded reviewer dispatch yet, and isn't
+ * already in flight, then routing them through the same
+ * `dispatchReviewerForPR` entry point as the webhook path.
+ *
+ * Hard-gated by `config.lanMode`: when LAN mode is off the webhook is the
+ * single source of truth and double-firing here would produce duplicate
+ * reviews. When LAN mode is on, the webhook can't fire at all, so there is
+ * nothing to double-fire with.
+ *
+ * Subsequent reviewer dispatches (after `synchronize`, after a
+ * `CHANGES_REQUESTED`, etc.) are NOT handled here — `pollForMissedReviews`
+ * already covers the post-first-review cases via `dispatchReviewFeedback`.
+ * This function is strictly the "we've never reviewed this PR" path.
+ *
+ * Exported for Vitest; production only schedules it via
+ * `startReviewPollingFallback`.
+ */
+export async function pollForLanModeReviewerDispatch(): Promise<void> {
+  const d = getDeps();
+  const cfg = d.getConfig();
+  if (!cfg.lanMode) return;
+
+  const projects = d.getProjects();
+  // `getWebhookHandlerDeps()` returns the same shared deps object the
+  // webhook handler uses, so the reviewer it dispatches here will run
+  // through the identical chat / broadcast / DB writes — there is no
+  // second "LAN" dispatch path.
+  const reviewerDeps = d.getWebhookHandlerDeps();
+
+  for (const project of projects) {
+    const reviewer = project.agents?.find((a) => a.role === 'reviewer');
+    if (!reviewer) continue;
+
+    const boardData = getOrCreateBoard(d.stmts, project.id);
+    if (!boardData?.board) continue;
+
+    const cols = d.stmts.getKanbanColumns.all(boardData.board.id) as Array<{
+      id: string;
+      name: string;
+    }>;
+    const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
+    if (!reviewCol) continue;
+
+    const cards = d.stmts.getKanbanCardsByColumn.all(reviewCol.id) as KanbanCardRow[];
+    for (const card of cards) {
+      if (!card.pr_url) continue;
+      // Already dispatched at least once via webhook / manual nudge / a
+      // previous pass of this poller — the post-first-review surface
+      // (changes-requested replay, CI failure, inline comments) is
+      // handled by `pollForMissedReviews`.
+      if (card.last_dispatched_review_id != null) continue;
+      // Approved PRs don't need a reviewer dispatch.
+      if (card.review_status === 'approved') continue;
+
+      const prMatch = card.pr_url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+      if (!prMatch) continue;
+      const [, repoFullName, prNumberStr] = prMatch;
+      const prNumber = Number.parseInt(prNumberStr, 10);
+      if (!Number.isFinite(prNumber)) continue;
+
+      // Defense-in-depth dedup: same key the webhook handler uses, so an
+      // in-flight debounce (set by either path) blocks us.
+      if (
+        isReviewerDispatchPending(project.id, prNumber, {
+          stmts: d.stmts,
+          repoFullName,
+        })
+      ) {
+        continue;
+      }
+
+      // Fetch PR title + head SHA + state. Closed PRs are skipped — the
+      // reviewer should never run against a merged or abandoned PR.
+      //
+      // Uses the raw `execFile` callback form (matching `pollForMissedReviews`
+      // and `reconcileKanbanWithGitHub` above) rather than the promisified
+      // `execFileAsync`. Vitest's `child_process` mock replaces `execFile`
+      // with a `vi.fn()` that lacks the `util.promisify.custom` symbol, so
+      // the promisified form would lose the `{ stdout, stderr }` packing
+      // and tests would see `undefined`. Callback form sidesteps that.
+      let pr: { title: string; state: string; head_sha: string | null } | null = null;
+      try {
+        const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+          execFile(
+            'gh',
+            [
+              'api',
+              `repos/${repoFullName}/pulls/${prNumber}`,
+              '--jq',
+              '{title: .title, state: .state, head_sha: .head.sha}',
+            ],
+            { timeout: 15000 },
+            (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            },
+          );
+        });
+        const trimmed = stdout.trim();
+        if (trimmed) {
+          pr = JSON.parse(trimmed) as { title: string; state: string; head_sha: string | null };
+        }
+      } catch {
+        // gh CLI unavailable or PR fetch errored — try again next tick.
+        continue;
+      }
+      if (!pr || pr.state !== 'open') continue;
+
+      // Persist the dispatch marker BEFORE firing so a crash mid-dispatch
+      // can't loop the same PR through the reviewer on every tick. The
+      // webhook path sets this on review submission via `pr-review`; we
+      // can't wait for that here because the whole point of this function
+      // is to bootstrap the first review when no webhook will arrive. Use
+      // a sentinel of `0` ("dispatched but no review submitted yet") so
+      // the value is clearly distinguishable from a real review id; any
+      // subsequent real submission will overwrite it via
+      // `recordDispatchedChangesRequestedReview` / the `/api/pr/review`
+      // path.
+      try {
+        d.stmts.setCardLastDispatchedReviewId?.run(0, card.id);
+      } catch (persistErr) {
+        console.warn(
+          `[ReviewPoll/LAN] Failed to persist initial dispatch marker for card ${card.id}:`,
+          (persistErr as Error).message,
+        );
+        // Keep going — a missing marker just means we'll retry next tick.
+      }
+
+      const scheduled = dispatchReviewerForPR(
+        reviewerDeps as unknown as Parameters<typeof dispatchReviewerForPR>[0],
+        project,
+        {
+          prUrl: card.pr_url,
+          prNumber,
+          prTitle: pr.title || card.title,
+          repoFullName,
+          reason: 'opened',
+          headSha: pr.head_sha ?? undefined,
+        },
+      );
+      if (scheduled) {
+        console.log(
+          `[ReviewPoll/LAN] Dispatched reviewer for PR #${prNumber} on "${project.name}" (card "${card.title}")`,
+        );
       }
     }
   }

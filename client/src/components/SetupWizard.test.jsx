@@ -15,7 +15,24 @@ vi.mock('../utils/orgs.js', () => ({
   updateOrg: vi.fn(),
 }));
 
+// Stub only the methods the LAN-mode tests inspect; preserve everything
+// else (api.startCodexDeviceLogin, api.getCodexAuth, etc.) via
+// importActual so the Step 3 Codex device-login flow still uses its real
+// fetch-stubbed paths.
+vi.mock('../utils/api.js', async () => {
+  const actual = await vi.importActual('../utils/api.js');
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      getConfig: vi.fn(),
+      updateConfig: vi.fn(),
+    },
+  };
+});
+
 import SetupWizard from './SetupWizard.jsx';
+import { api } from '../utils/api.js';
 import { saveConnectionConfig, testConnection } from '../utils/connection.js';
 import { createOrg, switchOrg, updateOrg, getActiveOrg } from '../utils/orgs.js';
 
@@ -27,6 +44,8 @@ beforeEach(() => {
   updateOrg.mockReset();
   getActiveOrg.mockReset();
   getActiveOrg.mockReturnValue(null);
+  api.getConfig.mockReset().mockResolvedValue({ lanMode: false });
+  api.updateConfig.mockReset().mockResolvedValue({ ok: true });
   delete window.electronAPI;
 });
 
@@ -558,5 +577,65 @@ describe('SetupWizard — web build hides the Connection Mode toggle', () => {
     });
     expect(switchOrg).toHaveBeenCalledWith('org-web');
     expect(saveConnectionConfig).not.toHaveBeenCalled();
+  });
+});
+
+// Step 4 = "Connect GitHub". The LAN-mode toggle lives at the top of
+// this step (mirrored on Settings → GitHub for post-setup changes). The
+// toggle is purely a passthrough to PATCH /api/config { lanMode } — the
+// LAN-mode behavior itself is verified server-side in
+// server/autonomous-lan-mode-reviewer-poll.test.ts and
+// server/test/webhook-skip-autoregister-lan-mode.test.ts. These tests
+// guard the wiring: GET on entry, PATCH on toggle, rollback on error.
+describe('SetupWizard — Step 4 LAN mode toggle', () => {
+  it('loads the current lanMode value from /api/config on Step 4 entry', async () => {
+    api.getConfig.mockResolvedValue({ lanMode: true });
+
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
+    // "LAN mode is on" banner only renders when the load succeeds AND
+    // returns lanMode: true — guards the round-trip end-to-end.
+    expect(await screen.findByText(/LAN mode is on/i)).toBeInTheDocument();
+  });
+
+  it('PATCHes /api/config { lanMode: true } when the user toggles on', async () => {
+    api.getConfig.mockResolvedValue({ lanMode: false });
+
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
+    expect(screen.queryByText(/LAN mode is on/i)).not.toBeInTheDocument();
+
+    // The toggle wrapper carries the testid; click the inner button.
+    const wrapper = screen.getByTestId('lan-mode-toggle-wrapper');
+    const toggle = wrapper.querySelector('button');
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith({ lanMode: true });
+    });
+    expect(await screen.findByText(/LAN mode is on/i)).toBeInTheDocument();
+  });
+
+  it('rolls back the toggle when PATCH /api/config fails', async () => {
+    api.getConfig.mockResolvedValue({ lanMode: false });
+    api.updateConfig.mockRejectedValueOnce(new Error('boom'));
+
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
+
+    const wrapper = screen.getByTestId('lan-mode-toggle-wrapper');
+    const toggle = wrapper.querySelector('button');
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    // PATCH attempted exactly once; banner must NOT appear (state rolled back).
+    await waitFor(() => expect(api.updateConfig).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/LAN mode is on/i)).not.toBeInTheDocument();
   });
 });

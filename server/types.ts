@@ -1900,6 +1900,26 @@ export interface AppConfig {
    * (`false` / `0` / `off` to disable).
    */
   codexDangerBypass: boolean;
+  /**
+   * LAN / air-gapped mode. When true, Agent Hub assumes GitHub webhooks
+   * cannot reach this host (no public URL, no tunnel) and:
+   *
+   *   • `POST /api/webhooks` with `autoRegister: true` short-circuits with
+   *     `{ ok: true, skipped: true, reason: 'lan_mode' }` instead of calling
+   *     GitHub's hook-create API — no inbound webhook is provisioned.
+   *   • The reconciliation poller (`server/autonomous.ts`) takes over the
+   *     `pull_request.opened` reviewer-dispatch path that the webhook handler
+   *     normally fires, so freshly-opened PRs still get an automated review.
+   *
+   * The rest of the polling story (PR merge → Done, merge-conflict escalation,
+   * missed `changes_requested` reviews, failed CI, inline review comments)
+   * already runs unconditionally via `startReviewPollingFallback`, so LAN mode
+   * is purely "skip webhook setup + close the reviewer-dispatch gap".
+   *
+   * Configure via `lanMode` in config.json or `PATCH /api/config`. Defaults to
+   * false (webhook-driven behavior unchanged for cloud deployments).
+   */
+  lanMode: boolean;
   /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
   cursorApiKey: string | null;
   slackWebhookUrl: string | null;
