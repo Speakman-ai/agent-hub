@@ -62,6 +62,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libasound2 libxshmfence1 libx11-xcb1 \
  && rm -rf /var/lib/apt/lists/*
 
+# Python 3 + pip — required for any project whose `commands.install` shells
+# out to `pip` / `python` during the pre-commit dependency-install step
+# (`server/auto-git.ts` → `ensureSessionWorktreeDependenciesInstalled`).
+# Without these, projects like surveytracker (Django backend, `pip install -r
+# requirements.txt` in their install command) crash with `pip: not found`,
+# write the sticky `.agent-hub-dependency-install-failed` marker into the
+# session worktree, and every subsequent commit short-circuits with a 422.
+#
+# `python-is-python3` provides /usr/bin/python → python3 for projects that
+# call `python` directly. Debian 12's `python3-pip` only ships `pip3`, so
+# we symlink `pip → pip3` so commands like `pip install -r requirements.txt`
+# work without modification.
+#
+# PEP 668 (enforced on Debian 12 + Python 3.11+) marks system Python as
+# externally-managed and refuses `pip install` outside a venv. Since the
+# Agent Hub container IS the isolation boundary for every spawned session,
+# we opt out at the env level so projects' install commands don't have to
+# learn about `--break-system-packages` to run.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv python-is-python3 \
+ && ln -sf /usr/bin/pip3 /usr/local/bin/pip \
+ && rm -rf /var/lib/apt/lists/*
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
