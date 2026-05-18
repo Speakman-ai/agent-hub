@@ -185,7 +185,62 @@ function SessionTail({
     );
   }
 
+  // Retry click handler: bump the fetch counter AND optimistically flip the
+  // state to 'loading' in the same render. Without the optimistic flip the
+  // UI keeps showing the error UI until the next effect tick fires the
+  // fetch, which can feel like "nothing happened" when the API is slow —
+  // user-reported as "if you hit retry it doesnt do anything".
+  const handleRetryFetch = () => {
+    setEventFetchState('loading');
+    setEventFetchRetry((n) => n + 1);
+  };
+
   if (timelineFetchFailed) {
+    // If the message has persisted content, the rich timeline is just a
+    // nice-to-have — the user should still be able to read what the model
+    // said. Render the legacy bubble (markdown content) plus a small inline
+    // banner explaining the gap. Without this fallback the user is locked
+    // out of their own reply for every transient fetch hiccup.
+    if (message?.content) {
+      return (
+        <div data-testid="session-tail-events-error-with-content">
+          <LegacyAssistantBubble
+            message={message}
+            agentColor={agentColor}
+            fromAgent={fromAgent}
+            agents={agents}
+            sessionHandoffs={sessionHandoffs}
+            sessionDelegations={sessionDelegations}
+            delegationDispatchError={delegationDispatchError}
+            onOpenSession={onOpenSession}
+          />
+          <div className="flex justify-start -mt-2 mb-4 min-w-0">
+            <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3">
+              <div
+                className="flex items-center justify-between gap-3 rounded-md border border-amber-800/40 bg-amber-950/20 px-2.5 py-1.5 text-[11px] text-amber-100"
+                data-testid="session-tail-events-error-banner"
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <AlertTriangle size={12} className="text-amber-400 shrink-0" />
+                  <span className="truncate">
+                    Showing plain text; rich timeline (tools, pickers, streaming blocks)
+                    couldn&apos;t load.
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRetryFetch}
+                  className="shrink-0 rounded-md bg-amber-700/40 px-2 py-0.5 text-[11px] font-medium text-amber-50 hover:bg-amber-600/50"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // No persisted content to fall back on — keep the block-level error UI.
     return (
       <div className="flex justify-start mb-4 min-w-0">
         <div
@@ -211,7 +266,7 @@ function SessionTail({
             </span>
             <button
               type="button"
-              onClick={() => setEventFetchRetry((n) => n + 1)}
+              onClick={handleRetryFetch}
               className="self-start rounded-md bg-amber-700/40 px-2.5 py-1 text-[11px] font-medium text-amber-50 hover:bg-amber-600/50"
             >
               Retry
