@@ -395,12 +395,23 @@ export class PreviewComposeRuntime {
     // Allocate a host port + insert the group row + the single `entry`
     // process row inside one DB transaction so a half-inserted group
     // never lingers if a UNIQUE collision fires on the process row.
+    //
+    // We persist worktreePath + composeFile + entryPort on the group row
+    // so stopPreview can reproduce the up spawn's environment exactly:
+    // same cwd (relative `-f` resolves consistently), same compose file
+    // (a project that overrides `compose.file` still tears down cleanly),
+    // and the same env-var contract (so compose's `down`-time variable
+    // interpolation doesn't emit "variable is not set" warnings against
+    // services that reference `${AGENTHUB_HOST_PORT}` etc. outside `ports:`).
     const { port, entryRowId } = this.reserveGroup({
       groupId,
       sessionId,
       projectId: project.id,
       hostPortRange: cfg.hostPortRange,
       composeProjectName: projectName,
+      worktreePath,
+      composeFile: cfg.file,
+      entryPort: cfg.entryPort,
     });
 
     const url = this.urlBase(port);
@@ -485,11 +496,24 @@ export class PreviewComposeRuntime {
    * Stop the compose group with `groupId`. Idempotent. Shells out to
    * `docker compose down -v --remove-orphans` against the persisted
    * project name + compose file, then deletes the group row.
+   *
+   * Reproduces the up call's spawn environment exactly:
+   *
+   *   - `cwd = worktree_path` so a relative `-f docker-compose.yml`
+   *     resolves against the same directory the up call used.
+   *   - `-f` carries the up call's resolved compose file path (a project
+   *     that overrides `compose.file` tears down the same file it
+   *     brought up — not whatever the runtime default happens to be).
+   *   - env pins the same `AGENTHUB_*` contract the up call set, so
+   *     compose's variable interpolation during `down` doesn't emit
+   *     "variable is not set" warnings against services that reference
+   *     `${AGENTHUB_HOST_PORT}` etc. outside `ports:` mappings.
    */
   async stopPreview(groupId: string): Promise<void> {
     const row = this.db
       .prepare(
         `SELECT g.id, g.session_id, g.project_id, g.compose_project_name,
+                g.worktree_path, g.compose_file, g.entry_port,
                 p.port, p.url
            FROM worktree_preview_groups g
            LEFT JOIN worktree_preview_processes p
@@ -502,6 +526,9 @@ export class PreviewComposeRuntime {
           session_id: string;
           project_id: string;
           compose_project_name: string | null;
+          worktree_path: string | null;
+          compose_file: string | null;
+          entry_port: number | null;
           port: number | null;
           url: string | null;
         }
@@ -516,20 +543,25 @@ export class PreviewComposeRuntime {
       );
       return;
     }
-    // The compose file path is not persisted (the group row doesn't
-    // carry it) — re-derive from the runtime default. If a project
-    // customised `compose.file`, the down command picks up the same
-    // default; compose tolerates `-f` pointing at the original file or
-    // at none-at-all (it falls back to the on-disk `docker-compose.yml`)
-    // when tearing down by project name. We pass `-f` for consistency
-    // with the up command.
+    // Fall back to the runtime default if a legacy compose row predates
+    // the worktree_path / compose_file columns — null guards make this
+    // defensible even though startPreview always persists both now.
+    const composeFile = row.compose_file ?? this.defaultComposeFile;
     const downArgs = buildComposeDownArgs({
       composeProjectName: row.compose_project_name,
-      composeFile: this.defaultComposeFile,
+      composeFile,
     });
+    const downEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      AGENTHUB_HOST_PORT: row.port != null ? String(row.port) : '',
+      AGENTHUB_ENTRY_PORT: row.entry_port != null ? String(row.entry_port) : '',
+      AGENTHUB_SESSION_ID: row.session_id,
+      AGENTHUB_PROJECT_ID: row.project_id,
+    };
     try {
       const child = this.spawn('docker', downArgs, {
-        env: process.env,
+        cwd: row.worktree_path ?? undefined,
+        env: downEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       child.stdout?.resume();
@@ -663,17 +695,43 @@ export class PreviewComposeRuntime {
 
   /**
    * Idempotent migration: ensure `worktree_preview_groups` carries the
-   * `compose_project_name` discriminator. SQLite's ALTER TABLE … ADD
-   * COLUMN is fast and atomic; re-running it on a freshly-migrated DB
-   * throws a `duplicate column name` SQLITE_ERROR which we swallow.
+   * compose-managed metadata columns.
+   *
+   * Columns:
+   *   - `compose_project_name` — discriminator separating compose
+   *     groups from legacy spawn groups (NULL for spawn rows).
+   *   - `worktree_path` — the up call's `cwd`; reused by stopPreview so
+   *     `-f <relative-file>` resolves against the same directory.
+   *   - `compose_file` — the resolved compose-file path from the up call
+   *     (default or `prEnv.preview.compose.file`); reused verbatim by
+   *     stopPreview so projects that override the file don't trigger
+   *     `no such file or directory` on teardown.
+   *   - `entry_port` — the container's internal entry port, persisted so
+   *     stopPreview can reconstruct the same `AGENTHUB_ENTRY_PORT` env
+   *     that the up call set (compose interpolates env on `down` too;
+   *     mismatched env emits "variable is not set" warnings and can
+   *     refuse to stop services).
+   *
+   * SQLite's `ALTER TABLE … ADD COLUMN` is fast and atomic; re-running
+   * on a freshly-migrated DB throws `duplicate column name` which we
+   * swallow per-column so a partially-migrated DB still picks up the
+   * remaining additions.
    */
   private addComposeProjectNameColumnIfMissing(): void {
-    try {
-      this.db.exec(`ALTER TABLE worktree_preview_groups ADD COLUMN compose_project_name TEXT`);
-    } catch (err) {
-      const msg = (err as Error).message ?? '';
-      if (msg.includes('duplicate column name')) return;
-      throw err;
+    const additions = [
+      `ALTER TABLE worktree_preview_groups ADD COLUMN compose_project_name TEXT`,
+      `ALTER TABLE worktree_preview_groups ADD COLUMN worktree_path TEXT`,
+      `ALTER TABLE worktree_preview_groups ADD COLUMN compose_file TEXT`,
+      `ALTER TABLE worktree_preview_groups ADD COLUMN entry_port INTEGER`,
+    ];
+    for (const stmt of additions) {
+      try {
+        this.db.exec(stmt);
+      } catch (err) {
+        const msg = (err as Error).message ?? '';
+        if (msg.includes('duplicate column name')) continue;
+        throw err;
+      }
     }
   }
 
@@ -691,6 +749,9 @@ export class PreviewComposeRuntime {
     projectId: string;
     hostPortRange: PortRange;
     composeProjectName: string;
+    worktreePath: string;
+    composeFile: string;
+    entryPort: number;
   }): { port: number; entryRowId: string } {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -701,10 +762,19 @@ export class PreviewComposeRuntime {
         this.db
           .prepare(
             `INSERT INTO worktree_preview_groups
-               (id, session_id, project_id, status, compose_project_name)
-             VALUES (?, ?, ?, 'starting', ?)`,
+               (id, session_id, project_id, status, compose_project_name,
+                worktree_path, compose_file, entry_port)
+             VALUES (?, ?, ?, 'starting', ?, ?, ?, ?)`,
           )
-          .run(args.groupId, args.sessionId, args.projectId, args.composeProjectName);
+          .run(
+            args.groupId,
+            args.sessionId,
+            args.projectId,
+            args.composeProjectName,
+            args.worktreePath,
+            args.composeFile,
+            args.entryPort,
+          );
         this.db
           .prepare(
             `INSERT INTO worktree_preview_processes
@@ -722,10 +792,8 @@ export class PreviewComposeRuntime {
           this.logger.warn(
             `[preview-compose] port ${port} collision on attempt ${attempt + 1}, retrying`,
           );
-          // Clean up any partial group row left behind by the
-          // transaction (transactions roll back on throw so this is a
-          // safety net, not a hot path).
-          this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(args.groupId);
+          // `db.transaction(...)` rolls back on throw, so no partial group
+          // row survives this catch — proceed straight to the next attempt.
           continue;
         }
         throw err;
@@ -890,13 +958,8 @@ export class PreviewComposeRuntime {
   }
 }
 
-// ─── Test-only re-exports ───────────────────────────────────────────────
-
-/**
- * Exposed for the unit test that pins the `agenthub-session-` prefix
- * + length-cap behaviour. Production callers should use
- * {@link composeProjectName} directly.
- */
-export const __test_COMPOSE_PROJECT_MAX_LEN = COMPOSE_PROJECT_MAX_LEN;
-export const __test_COMPOSE_PROJECT_PREFIX = COMPOSE_PROJECT_PREFIX;
-export const __test_ENTRY_PROCESS_NAME = ENTRY_PROCESS_NAME;
+// Test fixtures live in `preview-compose-runtime.test-helpers.ts` so the
+// production module ships zero test-only exports. The contract values
+// (project-name prefix, max length, entry-process row name) are pinned
+// in tests against literals so the assertion is the spec rather than a
+// renamed re-export of an internal constant.

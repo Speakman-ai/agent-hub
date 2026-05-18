@@ -38,15 +38,20 @@ import {
   composeProjectName,
   resolveComposeConfig,
   systemClock,
-  __test_COMPOSE_PROJECT_MAX_LEN,
-  __test_COMPOSE_PROJECT_PREFIX,
-  __test_ENTRY_PROCESS_NAME,
   type Clock,
   type HealthFetchFn,
   type SpawnFn,
 } from './preview-compose-runtime.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 import type { Project } from '../types.js';
+
+// Contract values pinned by the runtime. Inlined here (rather than
+// imported as `__test_*` re-exports from the production module) so the
+// assertion *is* the spec — if the prefix, length cap, or entry-process
+// name ever changes intentionally the test diff makes the rename visible.
+const COMPOSE_PROJECT_PREFIX = 'agenthub-session-';
+const COMPOSE_PROJECT_MAX_LEN = 63;
+const ENTRY_PROCESS_NAME = 'entry';
 
 // ─── Test doubles ──────────────────────────────────────────────────────
 
@@ -194,19 +199,19 @@ async function flushMicrotasks(): Promise<void> {
 
 describe('composeProjectName', () => {
   it('prefixes the session id', () => {
-    expect(composeProjectName('abc123')).toBe(`${__test_COMPOSE_PROJECT_PREFIX}abc123`);
+    expect(composeProjectName('abc123')).toBe(`${COMPOSE_PROJECT_PREFIX}abc123`);
   });
 
   it('throws when the resulting name exceeds the docker cap', () => {
-    const longId = 'x'.repeat(__test_COMPOSE_PROJECT_MAX_LEN);
+    const longId = 'x'.repeat(COMPOSE_PROJECT_MAX_LEN);
     expect(() => composeProjectName(longId)).toThrow(/exceeds 63 chars/);
   });
 
   it('accepts a uuid-shaped session id (well under the cap)', () => {
     const uuid = '8cc39aaf-d30b-4e60-848f-8c70f20a2f93';
     const name = composeProjectName(uuid);
-    expect(name).toBe(`${__test_COMPOSE_PROJECT_PREFIX}${uuid}`);
-    expect(name.length).toBeLessThanOrEqual(__test_COMPOSE_PROJECT_MAX_LEN);
+    expect(name).toBe(`${COMPOSE_PROJECT_PREFIX}${uuid}`);
+    expect(name.length).toBeLessThanOrEqual(COMPOSE_PROJECT_MAX_LEN);
   });
 });
 
@@ -584,7 +589,7 @@ describe('PreviewComposeRuntime.startPreview — failure paths', () => {
       .prepare(`SELECT name, status, port FROM worktree_preview_processes WHERE group_id = ?`)
       .all(result.previewId) as Array<{ name: string; status: string; port: number }>;
     expect(procs).toHaveLength(1);
-    expect(procs[0].name).toBe(__test_ENTRY_PROCESS_NAME);
+    expect(procs[0].name).toBe(ENTRY_PROCESS_NAME);
     expect(procs[0].status).toBe('failed');
     expect(warnings.some((w) => w.includes('health check timed out'))).toBe(true);
   });
@@ -745,6 +750,107 @@ describe('PreviewComposeRuntime — teardown', () => {
     );
 
     expect(runtime.getById(result.previewId)).toBeNull();
+  });
+
+  it("reuses the up call's worktree cwd + custom compose file on the down spawn", async () => {
+    // Regression test for the asymmetric teardown bug: a project that
+    // overrides `compose.file` (e.g. `compose.preview.yml`) brings the
+    // stack up correctly, but on `main` the down spawn was passing the
+    // runtime default (`docker-compose.yml`) and no cwd at all — so
+    // compose tried to resolve a non-existent file against the server
+    // process's cwd and exited non-zero, the row was deleted anyway,
+    // and the containers + named volumes + the host port stayed
+    // claimed. This test pins (a) down cwd matches up cwd, (b) down's
+    // `-f` references the same compose file the up call used.
+    const db = freshDb();
+    const harness = makeSpawn({ exitImmediately: true });
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+    });
+
+    const project = makeProject({
+      prEnv: {
+        enabled: true,
+        startScript: 'npm run dev',
+        internalPort: 3000,
+        preview: {
+          enabled: true,
+          compose: {
+            entryService: 'frontend',
+            entryPort: 5173,
+            file: 'compose.preview.yml',
+            envFile: '.env.preview',
+          },
+        },
+      },
+    });
+
+    const worktreePath = '/wt/sess-override';
+    const result = await runtime.startPreview('sess-override', project, worktreePath);
+    await runtime.stopPreview(result.previewId);
+
+    expect(harness.calls.length).toBeGreaterThanOrEqual(2);
+    const upCall = harness.calls[0];
+    const downCall = harness.calls[harness.calls.length - 1];
+
+    // (a) cwd parity — both spawns resolve relative `-f` against the
+    // same directory.
+    expect(downCall.cwd).toBe(worktreePath);
+    expect(downCall.cwd).toBe(upCall.cwd);
+
+    // (b) compose-file parity — the down `-f` argument references the
+    // same file the up call used, not the runtime default.
+    expect(downCall.args).toEqual(
+      buildComposeDownArgs({
+        composeProjectName: 'agenthub-session-sess-override',
+        composeFile: 'compose.preview.yml',
+      }),
+    );
+    const upFileIdx = upCall.args.indexOf('-f');
+    const downFileIdx = downCall.args.indexOf('-f');
+    expect(upFileIdx).toBeGreaterThan(-1);
+    expect(downFileIdx).toBeGreaterThan(-1);
+    expect(downCall.args[downFileIdx + 1]).toBe(upCall.args[upFileIdx + 1]);
+  });
+
+  it('pins the same AGENTHUB_* env contract on up and down spawns', async () => {
+    // Compose interpolates env vars on `down` too — if a service body
+    // references `${AGENTHUB_HOST_PORT}` (or similar) outside `ports:`,
+    // a down spawn without those vars emits "variable is not set"
+    // warnings and may refuse to act on the referencing service. Pin
+    // the env-var parity so a regression that drops env from the down
+    // spawn (the original bug) is caught here.
+    const db = freshDb();
+    const harness = makeSpawn({ exitImmediately: true });
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+    });
+
+    const result = await runtime.startPreview('sess-env-contract', makeProject(), '/wt/env');
+    await runtime.stopPreview(result.previewId);
+
+    const upCall = harness.calls[0];
+    const downCall = harness.calls[harness.calls.length - 1];
+    expect(downCall.env.AGENTHUB_HOST_PORT).toBe(upCall.env.AGENTHUB_HOST_PORT);
+    expect(downCall.env.AGENTHUB_ENTRY_PORT).toBe(upCall.env.AGENTHUB_ENTRY_PORT);
+    expect(downCall.env.AGENTHUB_SESSION_ID).toBe(upCall.env.AGENTHUB_SESSION_ID);
+    expect(downCall.env.AGENTHUB_PROJECT_ID).toBe(upCall.env.AGENTHUB_PROJECT_ID);
+    // Sanity: the values are actually populated (not both undefined).
+    expect(downCall.env.AGENTHUB_HOST_PORT).toBe(String(result.port));
+    expect(downCall.env.AGENTHUB_ENTRY_PORT).toBe('8000');
+    expect(downCall.env.AGENTHUB_SESSION_ID).toBe('sess-env-contract');
   });
 
   it('is idempotent — stopPreview on a missing id is a no-op', async () => {
