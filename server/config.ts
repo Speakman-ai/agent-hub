@@ -7,6 +7,10 @@ import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
 import { getActualPort } from './server-port.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import {
+  hasPopulatedCodexDeviceAuth,
+  perUserCodexHomePath,
+} from './per-user-codex-device-login.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -554,6 +558,36 @@ export function buildSpawnEnv(
     } catch {
       // Best-effort: a transient FS error must never block a spawn.
       // Fall through to the host HOME inherited via process.env.
+    }
+
+    // Per-user CODEX_HOME — see per-user-codex-device-login.ts.
+    //
+    // We set CODEX_HOME (engine-isolated, separate from the per-user
+    // HOME above) ONLY when the user has actually completed a per-user
+    // device login. Setting it eagerly for every user would point the
+    // codex CLI at an empty directory and break the API-key fallback
+    // path (no cached chatgpt auth + no apikey on disk → codex prompts
+    // for login, which never works headless).
+    //
+    // Note: there is a deliberate small window where a user has finished
+    // logging in to per-user CODEX_HOME but `buildSpawnEnv` runs before
+    // the on-disk `auth.json` is durable — in that case the spawn falls
+    // back to the per-user HOME's `.codex` (which is empty), and the
+    // next spawn picks up CODEX_HOME normally. Acceptable: the user
+    // re-issues their request and it works.
+    if (hasPopulatedCodexDeviceAuth(ownerUserId, cfg.dataDir)) {
+      try {
+        env.CODEX_HOME = perUserCodexHomePath(ownerUserId, cfg.dataDir);
+      } catch {
+        // Invalid userId — leave CODEX_HOME alone. The HOME pin above
+        // already gave us a useful fallback.
+      }
+    } else {
+      // Defence-in-depth: a server started with CODEX_HOME in its env
+      // would otherwise leak that value into spawns owned by users
+      // who have not signed in per-user. Drop it so codex falls back
+      // to `<HOME>/.codex` under the per-user HOME pin instead.
+      delete env.CODEX_HOME;
     }
   }
 

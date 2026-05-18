@@ -3892,10 +3892,10 @@ paths:
     get:
       tags:
         - Auth
-      summary: Per-user codex credentials (masked).
+      summary: Per-user Codex credentials (masked) + device-login (CODEX_HOME) status.
       responses:
         "200":
-          description: Stored credentials with masking.
+          description: Stored API key + per-user CODEX_HOME inspection.
           content:
             application/json:
               schema:
@@ -3918,10 +3918,45 @@ paths:
                         type: boolean
                     required:
                       - apiKey
+                  deviceLogin:
+                    type: object
+                    properties:
+                      uiStatus:
+                        type: string
+                        enum:
+                          - missing
+                          - pending
+                          - authenticated
+                      loginInProgress:
+                        type: boolean
+                      oauth:
+                        type: object
+                        properties:
+                          loggedIn:
+                            type: boolean
+                          mode:
+                            type: string
+                            nullable: true
+                          authJsonPath:
+                            type: string
+                            nullable: true
+                        required:
+                          - loggedIn
+                          - mode
+                          - authJsonPath
+                      codexHomePath:
+                        type: string
+                        nullable: true
+                    required:
+                      - uiStatus
+                      - loginInProgress
+                      - oauth
+                      - codexHomePath
                 required:
                   - engine
                   - apiKey
                   - hostConfigFallback
+                  - deviceLogin
         "401":
           description: Not authenticated.
           content:
@@ -3937,7 +3972,7 @@ paths:
     put:
       tags:
         - Auth
-      summary: Update per-user codex credentials.
+      summary: Update per-user Codex credentials.
       requestBody:
         content:
           application/json:
@@ -10234,6 +10269,71 @@ paths:
       tags:
         - Auth
       summary: Cancel an in-progress per-user Codex device login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/codex-auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Start a per-user Codex ChatGPT device-auth login (CODEX_HOME isolation).
+      responses:
+        "200":
+          description: Device code emitted, or login completed/failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Codex binary missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/codex-auth/login/cancel:
+    post:
+      tags:
+        - Auth
+      summary: Cancel the active per-user Codex device-auth login.
       responses:
         "200":
           description: Cancellation receipt.

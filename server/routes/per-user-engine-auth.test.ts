@@ -16,6 +16,7 @@ vi.mock('child_process', () => ({
 }));
 
 import createPerUserEngineAuthRoutes from './per-user-engine-auth.js';
+import { resetActiveCodexDeviceLoginsForTest } from '../per-user-codex-device-login.js';
 
 function fakeSpawnProc(events: {
   stdoutChunks?: string[];
@@ -43,6 +44,15 @@ function buildApp(opts: {
   dataDir: string;
   userId?: string | null;
 }): express.Express {
+  return buildAppWithDeps(opts).app;
+}
+
+function buildAppWithDeps(opts: {
+  cursorBin: string;
+  codexBin: string;
+  dataDir: string;
+  userId?: string | null;
+}): { app: express.Express; broadcast: ReturnType<typeof vi.fn> } {
   const app = express();
   app.use(express.json());
 
@@ -55,6 +65,7 @@ function buildApp(opts: {
     next();
   });
 
+  const broadcast = vi.fn();
   const deps = {
     config: {
       cursorBin: opts.cursorBin,
@@ -62,13 +73,13 @@ function buildApp(opts: {
       dataDir: opts.dataDir,
       codexApiKey: null,
     },
-    broadcast: vi.fn(),
+    broadcast,
     getCursorBin: () => opts.cursorBin,
     getCodexBin: () => opts.codexBin,
   } as unknown as RouteDeps;
 
   app.use(createPerUserEngineAuthRoutes(deps));
-  return app;
+  return { app, broadcast };
 }
 
 const sampleCursorLoginOutput = 'Visit https://cursor.com/loginDeepControl?token=abc123 to log in';
@@ -92,6 +103,7 @@ describe('per-user engine auth routes', () => {
     writeFileSync(cursorBin, '');
     writeFileSync(codexBin, '');
     spawnMock.mockReset();
+    resetActiveCodexDeviceLoginsForTest();
   });
 
   afterEach(() => {
@@ -282,6 +294,162 @@ describe('per-user engine auth routes', () => {
     const res = await request(app).delete('/api/auth/me/codex-auth/browser').expect(200);
     expect(res.body.ok).toBe(true);
     expect(existsSync(join(home, '.codex'))).toBe(false);
+  });
+
+  // ── P4: per-user Codex device-login (engine-isolated CODEX_HOME) ──
+  describe('POST /api/auth/me/codex-auth/login', () => {
+    it('spawns codex login --device-auth with CODEX_HOME pinned at <dataDir>/per-user-cli-home/codex/<uid>', async () => {
+      const userId = 'codex-p4-user';
+      const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId });
+
+      const observed: {
+        env?: Record<string, string>;
+        cwd?: string;
+        args?: string[];
+      } = {};
+      spawnMock.mockImplementation((cmd, args, opts) => {
+        expect(cmd).toBe(codexBin);
+        observed.args = args as string[];
+        observed.cwd = (opts as { cwd: string }).cwd;
+        observed.env = (opts as { env: Record<string, string> }).env;
+        return fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 0 });
+      });
+
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.deviceAuthUrl).toContain('auth.openai.com/codex/device');
+      expect(res.body.userCode).toBe('UYG9-Q1Q9N');
+      expect(res.body.loginId).toBeTruthy();
+
+      expect(observed.args).toEqual(['login', '--device-auth']);
+      const expectedHome = join(tmpDir, 'per-user-cli-home', 'codex', userId);
+      // CODEX_HOME is the engine-isolated knob — that's what makes this
+      // distinct from the older /browser/device-login flow which pinned HOME.
+      expect(observed.env?.CODEX_HOME).toBe(expectedHome);
+      expect(observed.cwd).toBe(expectedHome);
+      // The directory must have been created (mode 0700).
+      expect(existsSync(expectedHome)).toBe(true);
+      const st = statSync(expectedHome);
+      expect(st.mode & 0o777).toBe(0o700);
+    });
+
+    it('returns 401 when the caller is unauthenticated', async () => {
+      const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: null });
+      await request(app).post('/api/auth/me/codex-auth/login').expect(401);
+      await request(app).post('/api/auth/me/codex-auth/login/cancel').expect(401);
+    });
+
+    it('returns 400 when the codex binary is missing', async () => {
+      const missingBin = join(tmpDir, 'no-codex');
+      const app = buildApp({ cursorBin, codexBin: missingBin, dataDir: tmpDir, userId: 'u-1' });
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(400);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toContain('Codex binary not found');
+    });
+
+    it('two users get isolated CODEX_HOME trees', async () => {
+      const observedHomes: string[] = [];
+      spawnMock.mockImplementation((_cmd, _args, opts) => {
+        const env = (opts as { env: Record<string, string> }).env;
+        observedHomes.push(env.CODEX_HOME);
+        return fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 0 });
+      });
+
+      const appA = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: 'codex-A' });
+      const appB = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: 'codex-B' });
+
+      await request(appA).post('/api/auth/me/codex-auth/login').expect(200);
+      await request(appB).post('/api/auth/me/codex-auth/login').expect(200);
+
+      expect(observedHomes).toHaveLength(2);
+      expect(observedHomes[0]).toBe(join(tmpDir, 'per-user-cli-home', 'codex', 'codex-A'));
+      expect(observedHomes[1]).toBe(join(tmpDir, 'per-user-cli-home', 'codex', 'codex-B'));
+      expect(observedHomes[0]).not.toBe(observedHomes[1]);
+    });
+
+    it('reports loginId + completion when the CLI exits 0 before emitting a device code', async () => {
+      // Edge case: codex sometimes finds cached credentials and exits 0
+      // immediately. We should report that as a successful no-op rather
+      // than a timeout.
+      const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: 'fast-codex' });
+      spawnMock.mockImplementation(() =>
+        fakeSpawnProc({ stdoutChunks: ['already logged in'], closeCode: 0 }),
+      );
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.loginId).toBeTruthy();
+      expect(res.body.output).toMatch(/logged in/i);
+    });
+
+    it('broadcasts per-user-codex-auth-update on the post-URL-emit close path', async () => {
+      // Once the URL has been returned to the caller, the CLI keeps
+      // running until the user completes the device flow. When it
+      // finally exits we must broadcast the outcome over the WS so the
+      // UI can flip "pending → authenticated" (or surface the error).
+      // Without this, a future regression that drops the broadcast
+      // silently leaves users staring at a stale spinner.
+      const { app, broadcast } = buildAppWithDeps({
+        cursorBin,
+        codexBin,
+        dataDir: tmpDir,
+        userId: 'codex-broadcast',
+      });
+      spawnMock.mockImplementation(() =>
+        // URL+code emit → res.json fires → then close(0) → broadcast.
+        fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 0 }),
+      );
+
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.deviceAuthUrl).toContain('auth.openai.com/codex/device');
+
+      // The close emit runs synchronously after the data emit inside
+      // the fake proc's queueMicrotask, so by the time supertest
+      // resolves both have fired. One macrotask of slack to be safe
+      // across Node versions.
+      await new Promise<void>((r) => setImmediate(r));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'per-user-codex-auth-update',
+          userId: 'codex-broadcast',
+          status: 'success',
+          loginId: res.body.loginId,
+        }),
+      );
+    });
+
+    it('broadcasts failure on the post-URL-emit close path when the CLI errors', async () => {
+      const { app, broadcast } = buildAppWithDeps({
+        cursorBin,
+        codexBin,
+        dataDir: tmpDir,
+        userId: 'codex-broadcast-fail',
+      });
+      spawnMock.mockImplementation(() =>
+        fakeSpawnProc({ stdoutChunks: [sampleCodexDeviceOutput], closeCode: 1 }),
+      );
+
+      const res = await request(app).post('/api/auth/me/codex-auth/login').expect(200);
+      expect(res.body.ok).toBe(true);
+
+      await new Promise<void>((r) => setImmediate(r));
+      const call = broadcast.mock.calls.find(
+        (c) => (c[0] as { type?: string }).type === 'per-user-codex-auth-update',
+      );
+      expect(call).toBeTruthy();
+      const payload = call![0] as { status?: string; error?: string };
+      expect(payload.status).toBe('failed');
+      expect(payload.error).toBeTruthy();
+    });
+  });
+
+  describe('POST /api/auth/me/codex-auth/login/cancel', () => {
+    it('is idempotent — returns ok even when no login is in progress', async () => {
+      const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: 'cancel-clean' });
+      const res = await request(app).post('/api/auth/me/codex-auth/login/cancel').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.output).toMatch(/no device login in progress/i);
+    });
   });
 
   // ── Per-user isolation ─────────────────────────────────────────────

@@ -43,6 +43,14 @@ import {
 } from '../codex-device-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { ensurePerUserHome, perUserHomePath, clearPerUserCliCache } from '../per-user-home.js';
+import { ensurePerUserCliHome } from '../per-user-cli-home.js';
+import {
+  clearActiveCodexDeviceLogin,
+  getActiveCodexDeviceLogin,
+  isCodexDeviceLoginInProgress,
+  perUserCodexHomePath,
+  setActiveCodexDeviceLogin,
+} from '../per-user-codex-device-login.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { registerPath, z } from '../openapi/registry.js';
 import { ErrorResponse } from '../openapi/schemas/auth.js';
@@ -236,6 +244,52 @@ registerPath({
   },
 });
 
+// ── P4: per-user Codex device-login (engine-isolated CODEX_HOME) ──────
+//
+// These supersede the `/browser/device-login` shape above for the Codex
+// engine. Instead of HOME-pinning the whole spawn we set `CODEX_HOME`
+// so the cache lands in a per-engine, per-user subtree at
+// `<dataDir>/per-user-cli-home/codex/<userId>` (see per-user-cli-home.ts).
+// The matching `buildSpawnEnv` extension reads the same path so every
+// downstream spawn owned by the user inherits the same auth.
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/codex-auth/login',
+  tags: ['Auth'],
+  summary: 'Start a per-user Codex ChatGPT device-auth login (CODEX_HOME isolation).',
+  responses: {
+    200: {
+      description: 'Device code emitted, or login completed/failed.',
+      content: { 'application/json': { schema: PerUserCodexLoginResponse } },
+    },
+    400: {
+      description: 'Codex binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/codex-auth/login/cancel',
+  tags: ['Auth'],
+  summary: 'Cancel the active per-user Codex device-auth login.',
+  responses: {
+    200: {
+      description: 'Cancellation receipt.',
+      content: { 'application/json': { schema: CancelResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────
 interface RunResult {
   stdout: string;
@@ -305,6 +359,25 @@ function cancelLogin(engine: 'cursor' | 'codex', userId: string): boolean {
     /* already dead */
   }
   activeLogins.delete(key);
+  return true;
+}
+
+/**
+ * Cancel any in-flight P4 (`/codex-auth/login`) device login for the
+ * given user. Mirrors `cancelLogin('codex', userId)` for the legacy
+ * `/browser/device-login` flow — the two flows write to different
+ * on-disk locations but share the same OpenAI device-code endpoint, so
+ * letting both run concurrently risks invalidating each other's codes.
+ */
+function cancelP4CodexLogin(userId: string): boolean {
+  const rec = getActiveCodexDeviceLogin(userId);
+  if (!rec) return false;
+  try {
+    killProcessGroup(rec.proc, 'SIGTERM');
+  } catch {
+    /* already dead */
+  }
+  clearActiveCodexDeviceLogin(userId);
   return true;
 }
 
@@ -593,6 +666,11 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
     cancelLogin('codex', userId);
+    // Also clobber any in-flight P4 (`/codex-auth/login`) attempt for
+    // this user so we never have two `codex login --device-auth`
+    // processes racing on the same identity (different on-disk caches
+    // but identical OAuth device codes upstream).
+    cancelP4CodexLogin(userId);
 
     const bin = codexBinPath();
     if (!existsSync(bin)) {
@@ -725,6 +803,162 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
 
     const summary = [cliOutput, 'Per-user Codex cache cleared'].filter(Boolean).join(' — ');
     res.json({ ok: true, output: summary });
+  });
+
+  // ── P4: per-user Codex device-login (CODEX_HOME isolated tree) ──────
+  router.post('/api/auth/me/codex-auth/login', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+
+    // Replace any in-flight login for this user — the user clicked
+    // "Login" a second time, treat the new attempt as authoritative.
+    const existing = getActiveCodexDeviceLogin(userId);
+    if (existing) {
+      try {
+        killProcessGroup(existing.proc, 'SIGTERM');
+      } catch {
+        /* ignore */
+      }
+      clearActiveCodexDeviceLogin(userId);
+    }
+    // Also clobber any in-flight legacy (`/browser/device-login`)
+    // attempt for this user so we never have two `codex login
+    // --device-auth` processes racing on the same identity.
+    cancelLogin('codex', userId);
+
+    const bin = codexBinPath();
+    if (!existsSync(bin)) {
+      return res.status(400).json({ ok: false, error: `Codex binary not found at ${bin}` });
+    }
+
+    // Carve the per-engine, per-user CODEX_HOME on demand. Mode 0700 +
+    // ownership guard inside `ensurePerUserCliHome`.
+    let codexHome: string;
+    try {
+      codexHome = ensurePerUserCliHome('codex', userId, config.dataDir);
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+
+    const loginId = Date.now().toString(36);
+    const proc = spawn(bin, ['login', '--device-auth'], {
+      // `cwd` is intentionally `codexHome` so any auxiliary files (eg.
+      // verifier state) the CLI writes relative to its working dir also
+      // land in the per-user tree.
+      cwd: codexHome,
+      env: { ...process.env, CODEX_HOME: codexHome },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    trackChild(proc);
+    setActiveCodexDeviceLogin(userId, { proc, loginId });
+
+    let allOutput = '';
+    let responded = false;
+
+    // Capture the 45 s timeout so close / error paths can release the
+    // closure (which otherwise pins `proc` and `res` in memory for the
+    // full window). Matches the `runCli` helper's pattern.
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const clearLoginTimeout = (): void => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    };
+
+    const trySend = (): void => {
+      if (responded) return;
+      const url = extractCodexDeviceUrl(allOutput);
+      const userCode = extractCodexDeviceUserCode(allOutput);
+      if (url && userCode) {
+        responded = true;
+        clearLoginTimeout();
+        res.json({ ok: true, loginId, deviceAuthUrl: url, userCode });
+      }
+    };
+
+    const onData = (chunk: Buffer): void => {
+      allOutput += chunk.toString();
+      trySend();
+    };
+
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+
+    proc.on('close', (code) => {
+      clearLoginTimeout();
+      clearActiveCodexDeviceLogin(userId, loginId);
+
+      if (!responded) {
+        responded = true;
+        if (code === 0) {
+          res.json({
+            ok: true,
+            loginId,
+            output: allOutput.trim() || 'Device login completed',
+          });
+        } else {
+          res.json({
+            ok: false,
+            loginId,
+            output: allOutput.trim() || `Device login exited with code ${code}`,
+          });
+        }
+      } else if (broadcast) {
+        const status = code === 0 ? 'success' : 'failed';
+        broadcast({
+          type: 'per-user-codex-auth-update',
+          userId,
+          loginId,
+          status,
+          ...(status === 'failed' && {
+            error: allOutput.trim().slice(0, 500) || 'Device login failed',
+          }),
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearLoginTimeout();
+      clearActiveCodexDeviceLogin(userId, loginId);
+      if (!responded) {
+        responded = true;
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    timeoutHandle = setTimeout(() => {
+      timeoutHandle = null;
+      if (!responded) {
+        responded = true;
+        res.json({
+          ok: false,
+          output: allOutput.trim() || 'Timed out waiting for Codex device code',
+        });
+        try {
+          killProcessGroup(proc, 'SIGTERM');
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 45_000);
+  });
+
+  router.post('/api/auth/me/codex-auth/login/cancel', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+    const rec = getActiveCodexDeviceLogin(userId);
+    if (!rec) {
+      return res.json({ ok: true, output: 'No device login in progress' });
+    }
+    try {
+      killProcessGroup(rec.proc, 'SIGTERM');
+    } catch {
+      /* already dead */
+    }
+    clearActiveCodexDeviceLogin(userId);
+    res.json({ ok: true, output: 'Device login cancelled' });
   });
 
   return router;

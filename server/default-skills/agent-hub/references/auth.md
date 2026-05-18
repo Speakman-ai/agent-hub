@@ -187,8 +187,10 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `PUT  /me/cursor-auth`                         | any          | upsert per-user Cursor API key           |
 | `GET  /me/gemini-auth`                         | any          | masked per-user Gemini API key           |
 | `PUT  /me/gemini-auth`                         | any          | upsert per-user Gemini API key           |
-| `GET  /me/codex-auth`                          | any          | masked per-user Codex (OpenAI) API key   |
+| `GET  /me/codex-auth`                          | any          | masked Codex API key + `deviceLogin` (per-user `CODEX_HOME` probe) |
 | `PUT  /me/codex-auth`                          | any          | upsert per-user Codex (OpenAI) API key   |
+| `POST /me/codex-auth/login`                    | any          | start per-user `codex login --device-auth` (engine-isolated `CODEX_HOME`) |
+| `POST /me/codex-auth/login/cancel`             | any          | kill the active per-user Codex device login |
 | `GET  /me/skill-credentials`                   | any          | masked per-user skill secrets (optional `?skillId=`) |
 | `PUT  /me/skill-credentials`                   | any          | upsert one skill credential key (schema-enforced)    |
 | `DELETE /me/skill-credentials/:id`             | any          | revoke a stored skill credential row                 |
@@ -424,9 +426,38 @@ damage the other. The helper exposes
 dir to a spawn), and `clearPerUserCliHome` (logout-leaf removal that
 keeps the parent `<engine>/` dir). Engine names are an allowlist
 (`cursor`, `codex`, `gemini`) and user ids are constrained to a strict
-path-safe charset before becoming a path segment. Wiring of the per-
-user login flows (P3/P4) is deliberately separate; this module just
-provides the safe primitive those endpoints pick up.
+path-safe charset before becoming a path segment.
+
+### P4 — Per-user Codex device login (`CODEX_HOME`-isolated)
+
+Codex is the first engine wired to the per-engine HOME shim. The
+endpoints are mounted by `server/routes/per-user-engine-auth.ts` and the
+shared state lives in `server/per-user-codex-device-login.ts`:
+
+| Verb + path                                  | Behavior                                                                                          |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/me/codex-auth/login`         | Spawns `codex login --device-auth` with `CODEX_HOME=<dataDir>/per-user-cli-home/codex/<userId>`. Streams stdout/stderr until a device URL + user code parse, then returns `{ ok, loginId, deviceAuthUrl, userCode }`. Fast-exit (CLI exits 0 before emitting a code, e.g. cache hit) returns `{ ok: true, loginId, output }`; a 45s timeout collapses to `{ ok: false, output: 'Timed out…' }`. A second `POST` for the same user kills the prior proc and starts fresh — the latest click wins. |
+| `POST /api/auth/me/codex-auth/login/cancel`  | Idempotent — kills the per-user proc if one is running, otherwise returns `{ ok: true, output: 'No device login in progress' }`. |
+| `GET  /api/auth/me/codex-auth`               | Extends the single-key apiKey response with `deviceLogin: { uiStatus, loginInProgress, oauth: { loggedIn, mode, authJsonPath }, codexHomePath }` — the UI uses this to render "Signed in with ChatGPT" alongside the API-key state. Cursor / Gemini GETs keep the compact apiKey-only shape. |
+
+The active-login map is keyed by `userId` so two users can sign in
+simultaneously without stomping each other (mirrors the per-user
+isolation that `ensurePerUserCliHome` enforces at the FS layer).
+
+**`buildSpawnEnv` injection.** `server/config.ts:buildSpawnEnv(cfg, {
+userId })` now also sets `env.CODEX_HOME = perUserCliHomePath('codex',
+userId, cfg.dataDir)` whenever the per-user `auth.json` is populated
+(detected by `hasPopulatedCodexDeviceAuth`, which accepts both
+`chatgpt` and `apikey` modes). When the user has not signed in,
+`CODEX_HOME` is **explicitly deleted** from the spawn env so a stale
+host-process value cannot leak the operator's Codex cache into a user
+spawn. Net effect: once a user completes the per-user device login,
+every chat / heartbeat / cron / room / Slack / delegation spawn owned
+by them reads the same `~/.codex` clone without re-prompting.
+
+The matching Cursor/Gemini wiring is a planned follow-up (the cleanup
+of the older `/api/auth/me/cursor-auth/browser/*` flow onto the
+engine-isolated shim).
 
 ## Per-user engine-credential audit (`user_engine_auth_audit`)
 

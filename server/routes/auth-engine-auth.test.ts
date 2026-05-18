@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
 import supertest from 'supertest';
 import { tmpdir } from 'os';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import path from 'path';
 
 let TMP_DIR = '';
@@ -28,6 +28,7 @@ const mockConfig: {
   cursorApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;
+  codexBin: string;
   dataDir: string;
 } = {
   apiKey: null,
@@ -36,6 +37,7 @@ const mockConfig: {
   cursorApiKey: null,
   geminiApiKey: null,
   codexApiKey: null,
+  codexBin: '',
   get dataDir() {
     return TMP_DIR;
   },
@@ -98,6 +100,10 @@ beforeEach(() => {
   mockConfig.cursorApiKey = null;
   mockConfig.geminiApiKey = null;
   mockConfig.codexApiKey = null;
+  // Default to a binary path that does NOT exist on disk. Individual
+  // tests that need the binary "installed" can stamp a fixture into
+  // `TMP_DIR` and point `codexBin` at it.
+  mockConfig.codexBin = path.join(TMP_DIR, 'codex-not-installed');
 });
 
 type EngineFixture = {
@@ -286,6 +292,56 @@ for (const fx of engineFixtures) {
     });
   });
 }
+
+// Regression: `GET /api/auth/me/codex-auth` enriches the response with a
+// `deviceLogin.uiStatus` derived from `computeCodexUiStatus`. The
+// `binaryPresent` gate MUST reflect the actual `codexBin` on disk —
+// otherwise an operator who stored an API key but never installed the
+// CLI would see `uiStatus: 'authenticated'` and any downstream Codex
+// spawn would fail with "Codex binary not found". This was flagged on
+// PR #1022.
+describe('GET /api/auth/me/codex-auth — deviceLogin.uiStatus binary gate', () => {
+  it("returns uiStatus 'missing' when the codex binary is absent, even with an API key set", async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+
+    // Store a per-user API key so the apiKey branch of
+    // computeCodexUiStatus would otherwise return 'authenticated'.
+    await supertest(app)
+      .put('/api/auth/me/codex-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ apiKey: 'sk-codex-Test' });
+
+    // `mockConfig.codexBin` defaults to a path that does not exist.
+    const res = await supertest(app)
+      .get('/api/auth/me/codex-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.deviceLogin).toBeTruthy();
+    expect(res.body.deviceLogin.uiStatus).toBe('missing');
+  });
+
+  it("returns uiStatus 'authenticated' when the codex binary exists and an API key is set", async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+
+    // Stamp a fake binary into TMP_DIR and point codexBin at it.
+    const fakeBin = path.join(TMP_DIR, 'codex-installed');
+    writeFileSync(fakeBin, '');
+    mockConfig.codexBin = fakeBin;
+
+    await supertest(app)
+      .put('/api/auth/me/codex-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ apiKey: 'sk-codex-Test' });
+
+    const res = await supertest(app)
+      .get('/api/auth/me/codex-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.deviceLogin.uiStatus).toBe('authenticated');
+  });
+});
 
 // One cross-engine isolation check to verify that the route handlers
 // each touch the right column — i.e. that the per-route store wiring
