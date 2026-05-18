@@ -30,6 +30,12 @@ WORKDIR /app
 COPY client/package.json client/package-lock.json ./client/
 RUN cd client && npm ci
 
+# vite.config.js reads the canonical app version from the repo-root
+# package.json (the only one that release-all.yml bumps). Without this COPY
+# the build falls back to client/package.json (stuck at 1.2.1) — or, with
+# the loud-fail resolver, fails outright. Copy it before `vite build` so
+# the bundle's VITE_APP_VERSION matches the released version.
+COPY package.json ./
 COPY client/ ./client/
 COPY shared/ ./shared/
 RUN cd client && VITE_API_PORT="" npm run build

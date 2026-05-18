@@ -2,21 +2,25 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'fs';
 import { execSync } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { resolveBuildVersion } from './src/utils/resolveBuildVersion.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // In Docker production builds, set VITE_API_PORT="" so the client uses
 // same-origin WebSocket via nginx. In dev, defaults to 3051.
 const apiPort = process.env.VITE_API_PORT ?? '3051';
-let clientVersion = '0.0.0';
-try {
-  clientVersion = JSON.parse(readFileSync('../package.json', 'utf-8')).version;
-} catch {
-  // In Docker, the root package.json isn't available — fall back gracefully
-  try {
-    clientVersion = JSON.parse(readFileSync('./package.json', 'utf-8')).version || '0.0.0';
-  } catch {
-    /* use fallback */
-  }
-}
+
+// Resolve the app version baked into the bundle. Implementation lives in
+// `./src/utils/resolveBuildVersion.js` so it's directly unit-testable; see
+// that file for the priority order (env var → repo-root package.json) and
+// for the rationale on why we no longer fall back to client/package.json.
+const clientVersion = resolveBuildVersion({
+  env: process.env,
+  rootPkgPath: path.resolve(__dirname, '..', 'package.json'),
+  readFile: readFileSync,
+});
 
 // Bake the current git short SHA into the bundle so a stale client is
 // diagnosable at a glance. Prefer the VITE_GIT_HASH env (e.g. CI builds
