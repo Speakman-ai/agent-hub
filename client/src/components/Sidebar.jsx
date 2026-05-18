@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Loader2,
   Lock,
+  GripVertical,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -63,6 +64,13 @@ export default function Sidebar({
   onDeleteRoom,
   onOpenProject,
   onImportProject,
+  /**
+   * Persist a new sidebar project order. Called with the full `projects`
+   * id list in the desired order (the parent is responsible for the
+   * optimistic local-state update + API call). When omitted, drag-and-drop
+   * is disabled and project headers render without the grip handle.
+   */
+  onReorderProjects,
   cronSessions = [],
   wikiProjectId,
   notesProjectId,
@@ -95,6 +103,11 @@ export default function Sidebar({
   const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
+  // Project drag-and-drop state. `draggedProjectId` is the row the user
+  // is currently dragging; `dragOverProjectId` is whichever other row has
+  // a pending drop indicator. Both reset on dragend / drop / cancel.
+  const [draggedProjectId, setDraggedProjectId] = useState(null);
+  const [dragOverProjectId, setDragOverProjectId] = useState(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
@@ -145,6 +158,24 @@ export default function Sidebar({
   const toggleAgentCollapse = (agentId, e) => {
     e.stopPropagation();
     setCollapsedAgents((prev) => ({ ...prev, [agentId]: !prev[agentId] }));
+  };
+
+  // Move `sourceId` into the slot currently occupied by `targetId`,
+  // preserving the order of every other project. Hands the resulting
+  // full id list (every project the sidebar received, not just the
+  // rendered subset) back to the parent so the server reorder payload
+  // matches the caller-visible set.
+  const handleReorderDrop = (sourceId, targetId) => {
+    if (!onReorderProjects) return;
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const ids = projects.map((p) => p.id);
+    const srcIdx = ids.indexOf(sourceId);
+    const tgtIdx = ids.indexOf(targetId);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    ids.splice(srcIdx, 1);
+    const insertIdx = srcIdx < tgtIdx ? tgtIdx - 1 : tgtIdx;
+    ids.splice(insertIdx, 0, sourceId);
+    onReorderProjects(ids);
   };
 
   const isRecent = (dateStr) => {
@@ -286,11 +317,103 @@ export default function Sidebar({
             const isActiveProject = activeProject?.id === project.id;
             const isCollapsed = collapsedProjects[project.id];
 
+            const isBeingDragged = draggedProjectId === project.id;
+            const isDropTarget =
+              dragOverProjectId === project.id &&
+              draggedProjectId &&
+              draggedProjectId !== project.id;
+            const dragEnabled = !!onReorderProjects;
+
             return (
-              <div key={project.id} className="mb-1">
-                {index > 0 && <div className="border-t border-gray-800/50 my-2 mx-2" />}
+              <div
+                key={project.id}
+                className={`mb-1 ${isBeingDragged ? 'opacity-40' : ''} ${
+                  isDropTarget ? 'border-t-2 border-emerald-500' : 'border-t-2 border-transparent'
+                }`}
+                data-testid={`sidebar-project-row-${project.id}`}
+                onDragOver={
+                  dragEnabled
+                    ? (e) => {
+                        if (!draggedProjectId || draggedProjectId === project.id) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverProjectId !== project.id) setDragOverProjectId(project.id);
+                      }
+                    : undefined
+                }
+                onDragLeave={
+                  dragEnabled
+                    ? (e) => {
+                        // dragleave fires when the pointer crosses into a
+                        // child element too — guard against the indicator
+                        // flickering as the cursor moves over agent rows
+                        // inside the same project block.
+                        if (e.currentTarget.contains(e.relatedTarget)) return;
+                        if (dragOverProjectId === project.id) setDragOverProjectId(null);
+                      }
+                    : undefined
+                }
+                onDrop={
+                  dragEnabled
+                    ? (e) => {
+                        e.preventDefault();
+                        const sourceId = e.dataTransfer.getData('text/plain') || draggedProjectId;
+                        handleReorderDrop(sourceId, project.id);
+                        setDraggedProjectId(null);
+                        setDragOverProjectId(null);
+                      }
+                    : undefined
+                }
+              >
+                {index > 0 && !isDropTarget && (
+                  <div className="border-t border-gray-800/50 my-2 mx-2" />
+                )}
                 {/* Project header */}
                 <div className="group flex items-center">
+                  {dragEnabled && (
+                    // Grip is the only drag source — making the entire row
+                    // `draggable` would steal the gesture from agent clicks
+                    // and the collapse chevron, which feel like buttons.
+                    // The row keeps its drop-target handlers above.
+                    <span
+                      draggable
+                      data-drag-handle
+                      data-testid={`sidebar-project-drag-handle-${project.id}`}
+                      role="button"
+                      tabIndex={-1}
+                      aria-label="Drag to reorder project"
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        e.dataTransfer.effectAllowed = 'move';
+                        try {
+                          e.dataTransfer.setData('text/plain', project.id);
+                        } catch {
+                          /* some browsers block setData under certain conditions */
+                        }
+                        // Use the surrounding row as the drag preview so the
+                        // ghost matches what the user is actually moving,
+                        // not a 12px icon.
+                        const row = e.currentTarget.closest(
+                          `[data-testid="sidebar-project-row-${project.id}"]`,
+                        );
+                        if (row) {
+                          try {
+                            e.dataTransfer.setDragImage(row, 0, 0);
+                          } catch {
+                            /* setDragImage can throw in some embedded contexts */
+                          }
+                        }
+                        setDraggedProjectId(project.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedProjectId(null);
+                        setDragOverProjectId(null);
+                      }}
+                      className="flex-shrink-0 cursor-grab active:cursor-grabbing px-0.5 py-1 text-gray-700 group-hover:text-gray-500"
+                    >
+                      <GripVertical size={12} />
+                    </span>
+                  )}
                   <button
                     onClick={(e) => {
                       // If project only has one agent, select it directly
@@ -970,6 +1093,43 @@ export default function Sidebar({
               </div>
             );
           })}
+
+          {/* End-of-list drop zone — gives users a target for "move to the
+              bottom." Insert-before semantics on the project rows above
+              mean dropping on the last row puts the dragged project at
+              second-to-last, never last. This sentinel closes that gap.
+              Rendered only mid-drag so it doesn't take up sidebar real
+              estate the rest of the time. */}
+          {onReorderProjects && draggedProjectId && (
+            <div
+              data-testid="sidebar-project-drop-zone-end"
+              className={`h-3 mx-2 mt-1 rounded-sm transition-colors ${
+                dragOverProjectId === '__end__'
+                  ? 'border-t-2 border-emerald-500 bg-emerald-500/10'
+                  : 'border-t-2 border-transparent'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverProjectId !== '__end__') setDragOverProjectId('__end__');
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget)) return;
+                if (dragOverProjectId === '__end__') setDragOverProjectId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const sourceId = e.dataTransfer.getData('text/plain') || draggedProjectId;
+                if (sourceId) {
+                  const ids = projects.map((p) => p.id).filter((id) => id !== sourceId);
+                  ids.push(sourceId);
+                  onReorderProjects(ids);
+                }
+                setDraggedProjectId(null);
+                setDragOverProjectId(null);
+              }}
+            />
+          )}
 
           {/* Ad-hoc Conference Rooms (not tied to a project) */}
           {(() => {

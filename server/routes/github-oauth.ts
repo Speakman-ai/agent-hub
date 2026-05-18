@@ -33,6 +33,7 @@ import {
   getGithubConnectionStatus,
   deleteGithubConnection,
 } from '../github-connections-store.js';
+import { resetRepoAccessCache } from '../repo-aware-token.js';
 import { createUser, getUserByUsername } from '../users-store.js';
 import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 import { registerPath, z } from '../openapi/registry.js';
@@ -448,6 +449,13 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
         refreshToken,
         refreshExpiresAt,
       });
+      // Drop the per-repo "which Owner can read this?" cache so any
+      // system-spawned session (PR reviewer, autonomous probe) that
+      // was being routed to an Owner with a stale/scoped-too-narrow
+      // token immediately re-probes against the freshly-connected
+      // user. Without this, the 5-minute TTL would silently delay the
+      // fix.
+      resetRepoAccessCache();
 
       // Defense-in-depth: re-validate returnTo at render time even though
       // the /start route already filters it before signing the state JWT.
@@ -497,6 +505,10 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     const uid = resolveOAuthUserId(req);
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     deleteGithubConnection(uid);
+    // Same reasoning as the callback path — drop the per-repo cache
+    // so disconnecting an Owner doesn't keep routing system spawns
+    // to a now-invalid token for the next 5 minutes.
+    resetRepoAccessCache();
     return res.json({ ok: true });
   });
 
@@ -550,6 +562,10 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
         refreshToken: token,
         refreshExpiresAt: farFuture,
       });
+      // Drop the per-repo Owner-access cache so a freshly pasted PAT
+      // takes effect immediately for system-spawned sessions instead
+      // of waiting out the 5-min probe TTL.
+      resetRepoAccessCache();
       return res.json({ ok: true, login: userInfo.login });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

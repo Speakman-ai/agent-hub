@@ -72,6 +72,13 @@ vi.mock('./spawn-github-credentials.js', () => ({
   resolveOAuthAppCredentials: () => null,
 }));
 
+// Reviewer/system sessions intentionally persist owner_user_id = NULL.
+// Worktree clone auth should fall back to org owner for token lookup.
+const mockGetOrgOwnerUserId = vi.fn(() => 'org-owner-1');
+vi.mock('./session-ownership.js', () => ({
+  getOrgOwnerUserId: () => mockGetOrgOwnerUserId(),
+}));
+
 // ── child_process.execFile intercept ─────────────────────────────────────────
 // Recorded git calls: each entry is { args, opts } for one execFile call.
 type GitCallRecord = { args: string[]; opts: Record<string, unknown> };
@@ -233,6 +240,29 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     createdWorkspace = ws;
 
     expect(mockGetGithubPatForUser).toHaveBeenCalledWith('user-42');
+  });
+
+  it('falls back to org owner token lookup when session owner_user_id is null', async () => {
+    currentRemoteUrl = 'https://github.com/owner/repo.git';
+    mockGetGithubPatForUser.mockImplementation((userId?: string | null) =>
+      userId === 'org-owner-1' ? 'ghp_org_owner_token_123' : null,
+    );
+    const persist = vi.fn();
+
+    const ws = await ensureSessionWorkspace(
+      makeSession(uniqueSessionId(), null),
+      sourceDir,
+      'agent-1',
+      persist,
+    );
+    createdWorkspace = ws;
+
+    expect(mockGetOrgOwnerUserId).toHaveBeenCalled();
+    expect(mockGetGithubPatForUser).toHaveBeenCalledWith('org-owner-1');
+    const cloneCall = recorded.calls.find((c) => c.args.includes('clone'));
+    expect(cloneCall, 'expected a git clone call').toBeDefined();
+    expect(cloneCall!.args).toContain('-c');
+    expect(cloneCall!.args.join(' ')).toContain('extraheader=Authorization: basic');
   });
 
   // ── No PAT passthrough ────────────────────────────────────────────────────

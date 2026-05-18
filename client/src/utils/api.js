@@ -43,6 +43,14 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Persist the sidebar project order. `projectIds` must be a permutation
+  // of the caller-visible project ids (see PUT /api/projects/order). The
+  // server broadcasts `projects_updated` so other open clients refresh.
+  reorderProjects: (projectIds) =>
+    fetchJSON('/projects/order', {
+      method: 'PUT',
+      body: JSON.stringify({ projectIds }),
+    }),
   // Re-detect preview defaults by sniffing the project's checkout. Pure
   // read — server does not mutate `projects.json`. Returns
   // `{ detected: { stack, startScript, port, captureRoutes, idleTTL } | null }`.
@@ -81,6 +89,19 @@ export const api = {
     }).then((res) => {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
+    }),
+  /**
+   * One-click GitHub webhook setup for a project that has `githubRepo`
+   * but no enabled `webhook_configs` row. Powers the missing-webhook
+   * banner — see `WebhookConfigBanner.jsx`. Returns `{ config,
+   * registration }` from POST /api/projects/:projectId/webhook/auto-configure.
+   * Throws on HTTP errors (400 no-githubRepo, 409 already-exists, 500).
+   *
+   * The route reads no body — params are derived from the path slug.
+   */
+  autoConfigureProjectWebhook: (projectId) =>
+    fetchJSON(`/projects/${projectId}/webhook/auto-configure`, {
+      method: 'POST',
     }),
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),

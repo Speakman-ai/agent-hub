@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.25.3
+  version: 1.25.4
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -2523,6 +2523,158 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    ProjectOrderResponse:
+      type: object
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+          description: Caller-visible project ids in their persisted order after the reorder commit.
+      required:
+        - projectIds
+      description: Confirmation of the new project order. Mirrors the visibility-filtered slice the caller would see from GET /api/projects.
+    ProjectOrderErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope returned when the reorder payload is malformed or references projects the caller cannot see.
+    ProjectDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Project slug — unique within the install.
+        name:
+          type: string
+          description: Human-readable project name.
+        cwd:
+          type: string
+          description: Absolute path to the project working directory on disk.
+        githubRepo:
+          type: string
+          nullable: true
+          description: GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.
+        webhookConfigured:
+          type: boolean
+          nullable: true
+          description: Whether this project has at least one enabled webhook_configs row. `true` — at least one enabled row delivers events. `false` — `githubRepo` is set but no enabled row exists; PR events will NOT reach the reviewer pipeline. Drives the missing-webhook UI banner. `null` — `githubRepo` is unset (non-GitHub remote or scratch project); webhook config is not applicable.
+      required:
+        - id
+        - name
+        - webhookConfigured
+      additionalProperties:
+        nullable: true
+      description: Project detail response. Includes the full Project shape stored in `projects.json` plus the derived `webhookConfigured` flag. Additional fields beyond the documented ones (agents, githubWorkflow, prEnv, …) flow through via passthrough — schematise as that legacy surface migrates onto the schema-first contract.
+    ProjectDetailErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope returned when the project slug is unknown.
+    WebhookConfigRow:
+      type: object
+      properties:
+        id:
+          type: number
+        project_id:
+          type: string
+        repo_url:
+          type: string
+        secret:
+          type: string
+          nullable: true
+        events:
+          type: string
+          description: JSON-encoded event-toggle map.
+        enabled:
+          type: number
+          description: 1 if enabled, 0 if disabled.
+        author_allowlist:
+          type: string
+          description: JSON-encoded array of GitHub logins whose PRs trigger the reviewer.
+        created_at:
+          type: string
+        updated_at:
+          type: string
+          nullable: true
+      required:
+        - id
+        - project_id
+        - repo_url
+        - secret
+        - events
+        - enabled
+        - author_allowlist
+        - created_at
+        - updated_at
+      description: Persisted webhook_configs row.
+    WebhookRegistrationResult:
+      anyOf:
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - true
+            skipped:
+              type: boolean
+              enum:
+                - true
+            reason:
+              type: string
+            message:
+              type: string
+            hookId:
+              type: number
+            url:
+              type: string
+            events:
+              type: array
+              items:
+                type: string
+            updated:
+              type: boolean
+          required:
+            - ok
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - false
+            error:
+              type: string
+          required:
+            - ok
+            - error
+      description: 'Outcome of the GitHub-side webhook registration. `skipped: true` with `reason: "github_app_installed"` means the GitHub App already delivers events for this repo, so no per-repo registration is needed — the local `webhook_configs` row is still created for UI clarity.'
+    WebhookAutoConfigureResponse:
+      type: object
+      properties:
+        config:
+          $ref: "#/components/schemas/WebhookConfigRow"
+        registration:
+          $ref: "#/components/schemas/WebhookRegistrationResult"
+      required:
+        - config
+        - registration
+      description: "Auto-configure result: the created `webhook_configs` row plus the registration outcome from GitHub."
+    WebhookAutoConfigureErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        existingConfigId:
+          type: number
+      required:
+        - error
+      description: Error envelope. `existingConfigId` is set on 409 conflicts to point the UI at the row already in place.
     WebhookHmacFailureEntry:
       type: object
       properties:
@@ -10105,6 +10257,112 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/order:
+    put:
+      tags:
+        - Projects
+      summary: Reorder the caller-visible project list
+      description: Reorders `projects.json` so the caller-visible slice matches the supplied id list. Projects the caller cannot see (e.g. private projects owned by other users) keep their absolute slot — only the visible subset is permuted. Broadcasts `projects_updated` over the WebSocket on success so other open clients refresh their sidebars.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  description: Permutation of the caller-visible project ids. Must cover the same set GET /api/projects returns for this user — no missing ids, no extras, no duplicates.
+              required:
+                - projectIds
+              description: Body for PUT /api/projects/order — the new project order.
+      responses:
+        "200":
+          description: Reorder accepted; returns the new caller-visible order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrderResponse"
+        "400":
+          description: Validation failed — body shape was wrong, an id was unknown or inaccessible, an id was missing, or duplicates were supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrderErrorResponse"
+  /api/projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get a single project by slug
+      description: "Returns the full project record from `projects.json` plus the derived `webhookConfigured` flag the missing-webhook UI banner depends on. The response is a superset of the `Project` row shape — extra fields flow through via `passthrough()` while the schema-first migration is in progress. Visibility-filtered: private projects only resolve for their owner (and the local-bypass / Owner-via-admin paths); other callers see a 404."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "404":
+          description: No project with this slug, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
+  /api/projects/{projectId}/webhook/auto-configure:
+    post:
+      tags:
+        - Projects
+      summary: One-click GitHub webhook setup for a project
+      description: "Creates a `webhook_configs` row with the standard event bundle (pull_request.opened / .synchronize / .review_comment.created enabled; .closed / review.submitted / check_suite.completed disabled) and registers the webhook on GitHub via the installation-token path when a GitHub App is configured, or the gh-CLI fallback otherwise. Idempotent: returns 409 with `existingConfigId` if an enabled webhook config already exists for the project. Requires `githubRepo` set on the project; returns 400 otherwise. When the GitHub App is installed on the repo owner, the per-repo registration is skipped — the local row is still created so the missing-webhook UI banner clears, but the App is the active delivery path."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Webhook config created + registration attempted. Inspect `registration.ok` to learn whether the GitHub side succeeded; the local row is created either way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAutoConfigureResponse"
+        "400":
+          description: Project has no `githubRepo` configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+        "404":
+          description: No project with this slug, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+        "409":
+          description: An enabled webhook config already exists for this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+        "500":
+          description: Server-side failure (DB outage, GitHub API exception).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
   /api/webhooks/hmac-failures:
     get:
       tags:

@@ -475,3 +475,169 @@ describe('Sidebar — reviewer agents do not expose "+ New Session"', () => {
     expect(screen.getByText('+ New Session')).toBeInTheDocument();
   });
 });
+
+describe('Sidebar — project reordering (drag & drop)', () => {
+  const THREE_PROJECTS = [
+    {
+      id: 'p-alpha',
+      name: 'Alpha',
+      color: '#22d3ee',
+      agents: [{ id: 'p-alpha-a', name: 'Alpha A', color: '#22d3ee', active: true }],
+    },
+    {
+      id: 'p-beta',
+      name: 'Beta',
+      color: '#a78bfa',
+      agents: [{ id: 'p-beta-a', name: 'Beta A', color: '#a78bfa', active: true }],
+    },
+    {
+      id: 'p-gamma',
+      name: 'Gamma',
+      color: '#fb7185',
+      agents: [{ id: 'p-gamma-a', name: 'Gamma A', color: '#fb7185', active: true }],
+    },
+  ];
+
+  // Helper: fire a drag sequence that mirrors what the browser does.
+  // jsdom's DataTransfer is incomplete, so we stub setData/getData via a
+  // shared Map and pass that through every event's dataTransfer.
+  const buildDataTransfer = () => {
+    const store = new Map();
+    return {
+      setData: (k, v) => store.set(k, v),
+      getData: (k) => store.get(k) || '',
+      effectAllowed: '',
+      dropEffect: '',
+    };
+  };
+
+  it('exposes a draggable grip handle on each project when onReorderProjects is provided', () => {
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects: vi.fn() })} />);
+    const grip = screen.getByTestId('sidebar-project-drag-handle-p-alpha');
+    expect(grip.getAttribute('draggable')).toBe('true');
+    expect(grip.getAttribute('data-drag-handle')).not.toBeNull();
+    // The row itself stays non-draggable so clicks on agent links and the
+    // collapse chevron don't accidentally initiate a reorder gesture.
+    const alphaRow = screen.getByTestId('sidebar-project-row-p-alpha');
+    expect(alphaRow.getAttribute('draggable')).not.toBe('true');
+  });
+
+  it('does not render the grip handle when onReorderProjects is omitted', () => {
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS })} />);
+    expect(screen.queryByTestId('sidebar-project-drag-handle-p-alpha')).not.toBeInTheDocument();
+  });
+
+  it('invokes onReorderProjects with the new id order when a project is dragged onto another', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const alphaHandle = screen.getByTestId('sidebar-project-drag-handle-p-alpha');
+    const gammaRow = screen.getByTestId('sidebar-project-row-p-gamma');
+
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(alphaHandle, { dataTransfer: dt });
+    fireEvent.dragOver(gammaRow, { dataTransfer: dt });
+    fireEvent.drop(gammaRow, { dataTransfer: dt });
+
+    // Drop-on semantics: dropping Alpha onto Gamma inserts Alpha at
+    // Gamma's slot (Gamma shifts down). Source travelling forward (idx 0
+    // → idx 2) so insertIdx = 2 - 1 = 1. Result: [beta, alpha, gamma].
+    expect(onReorderProjects).toHaveBeenCalledTimes(1);
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-beta', 'p-alpha', 'p-gamma']);
+  });
+
+  it('inserts at the target slot when dragging backward', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const gammaHandle = screen.getByTestId('sidebar-project-drag-handle-p-gamma');
+    const alphaRow = screen.getByTestId('sidebar-project-row-p-alpha');
+
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(gammaHandle, { dataTransfer: dt });
+    fireEvent.dragOver(alphaRow, { dataTransfer: dt });
+    fireEvent.drop(alphaRow, { dataTransfer: dt });
+
+    // Source travelling backward (idx 2 → idx 0) so insertIdx stays at 0.
+    // Result: [gamma, alpha, beta].
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-gamma', 'p-alpha', 'p-beta']);
+  });
+
+  it('is a no-op when a project is dropped on itself', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const betaHandle = screen.getByTestId('sidebar-project-drag-handle-p-beta');
+    const betaRow = screen.getByTestId('sidebar-project-row-p-beta');
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(betaHandle, { dataTransfer: dt });
+    // The row's onDragOver early-returns when source === target, so the
+    // drop indicator never lights up and onReorderProjects stays unused.
+    fireEvent.dragOver(betaRow, { dataTransfer: dt });
+    fireEvent.drop(betaRow, { dataTransfer: dt });
+    expect(onReorderProjects).not.toHaveBeenCalled();
+  });
+
+  it('exposes an end-of-list drop zone only while a drag is in progress', () => {
+    const onReorderProjects = vi.fn();
+    const { rerender: _rerender } = render(
+      <Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />,
+    );
+    // No drag yet → no sentinel.
+    expect(screen.queryByTestId('sidebar-project-drop-zone-end')).not.toBeInTheDocument();
+
+    const alphaHandle = screen.getByTestId('sidebar-project-drag-handle-p-alpha');
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(alphaHandle, { dataTransfer: dt });
+
+    // Mid-drag → sentinel is present.
+    expect(screen.getByTestId('sidebar-project-drop-zone-end')).toBeInTheDocument();
+  });
+
+  it('moves the dragged project to the last position when dropped on the end-of-list zone', () => {
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const alphaHandle = screen.getByTestId('sidebar-project-drag-handle-p-alpha');
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(alphaHandle, { dataTransfer: dt });
+
+    const endZone = screen.getByTestId('sidebar-project-drop-zone-end');
+    fireEvent.dragOver(endZone, { dataTransfer: dt });
+    fireEvent.drop(endZone, { dataTransfer: dt });
+
+    // Alpha removed from slot 0, pushed to the back. Result: [beta, gamma, alpha].
+    expect(onReorderProjects).toHaveBeenCalledTimes(1);
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-beta', 'p-gamma', 'p-alpha']);
+  });
+
+  it('survives a dragLeave whose relatedTarget is a descendant (no throw, drop still wires)', () => {
+    // Reviewer feedback (3/10 non-blocking): leaving the project row into
+    // a child (e.g. an agent link in the same row) used to clear
+    // `dragOverProjectId`, making the drop indicator flicker. The
+    // handler now guards with `currentTarget.contains(relatedTarget)`.
+    //
+    // Verifying the flicker visually requires React state to propagate
+    // across separate `fireEvent` calls, which it does not reliably do
+    // in jsdom under React 18's auto-batching. Instead this test pins
+    // the handler's surface contract: passing a Node-valued
+    // relatedTarget must not throw and must not break the subsequent
+    // drop. The visual behaviour is exercised by the production code
+    // path (`currentTarget.contains(relatedTarget)`) and is small enough
+    // to verify by reading.
+    const onReorderProjects = vi.fn();
+    render(<Sidebar {...buildProps({ projects: THREE_PROJECTS, onReorderProjects })} />);
+    const alphaHandle = screen.getByTestId('sidebar-project-drag-handle-p-alpha');
+    const gammaRow = screen.getByTestId('sidebar-project-row-p-gamma');
+    const dt = buildDataTransfer();
+    fireEvent.dragStart(alphaHandle, { dataTransfer: dt });
+    fireEvent.dragOver(gammaRow, { dataTransfer: dt });
+
+    // Simulate the pointer crossing into a child element of gammaRow.
+    const childOfGamma = gammaRow.querySelector('button');
+    expect(childOfGamma).not.toBeNull();
+    expect(() => {
+      fireEvent.dragLeave(gammaRow, { relatedTarget: childOfGamma, dataTransfer: dt });
+    }).not.toThrow();
+
+    // Drop still routes through dataTransfer and produces the expected reorder.
+    fireEvent.drop(gammaRow, { dataTransfer: dt });
+    expect(onReorderProjects).toHaveBeenCalledWith(['p-beta', 'p-alpha', 'p-gamma']);
+  });
+});
