@@ -294,6 +294,23 @@ export interface ValidatedPrEnvPreviewConfig {
   port?: number;
   captureRoutes?: string[];
   idleTTL?: number;
+  compose?: ValidatedPreviewComposeConfig;
+}
+
+/**
+ * Validated shape of the optional `preview.compose` sub-block.
+ * Mirrors {@link PreviewComposeConfig} on the type side with the same
+ * defaulting semantics — defaults are NOT filled in here so the stored
+ * config round-trips exactly what the user supplied.
+ */
+export interface ValidatedPreviewComposeConfig {
+  file?: string;
+  entryService: string;
+  entryPort: number;
+  envFile?: string;
+  healthPath?: string;
+  hostPortRange?: { min: number; max: number };
+  readyTimeoutMs?: number;
 }
 
 // Caps for the `env` map. The builder ultimately translates these into
@@ -413,6 +430,199 @@ const PR_ENV_PREVIEW_PORT_MAX = 65535;
 const PR_ENV_PREVIEW_IDLE_TTL_MIN = 60;
 const PR_ENV_PREVIEW_IDLE_TTL_MAX = 86400;
 
+// Compose sub-config caps — see PreviewComposeConfig in server/types.ts.
+// The compose service-name pattern matches Docker's own
+// `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` rule, transcribed here so a misconfigured
+// service-name surfaces at save time instead of when `docker compose`
+// rejects it minutes into a build.
+const PREVIEW_COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+const PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS = 5_000;
+const PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS = 1_800_000;
+const PREVIEW_COMPOSE_FILE_MAX_LEN = 256;
+// Path-traversal guard for `file` / `envFile`. These resolve relative to
+// the worktree root at runtime; a `..` segment could escape the worktree
+// and let a misconfigured project mount the host filesystem. We refuse
+// at save time so an operator can't accidentally publish such a config.
+const PREVIEW_COMPOSE_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
+
+/**
+ * Validate the optional `preview.compose` sub-block. Returns the
+ * normalised value on success, `undefined` on absent input, or an error
+ * string on the first failure. Defaults are NOT applied here — the
+ * runtime fills them in at start time so an operator's stored config
+ * round-trips exactly what they typed.
+ *
+ * Cross-field exclusivity (compose vs. `processes[]` vs. non-default
+ * `startScript`) is checked by the caller in `validatePrEnvPreview` so
+ * the error message can point at all three fields at once.
+ */
+function validatePreviewCompose(
+  raw: unknown,
+): { ok: true; value: ValidatedPreviewComposeConfig | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'prEnv.preview.compose must be an object' };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  // entryService — required, non-empty, matches the compose service-name rule.
+  if (typeof obj.entryService !== 'string') {
+    return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
+  }
+  const entryService = obj.entryService.trim();
+  if (!entryService) {
+    return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
+  }
+  if (!PREVIEW_COMPOSE_SERVICE_NAME_RE.test(entryService)) {
+    return {
+      ok: false,
+      error:
+        'prEnv.preview.compose.entryService must match [a-zA-Z0-9][a-zA-Z0-9_.-]* ' +
+        '(Docker compose service-name rule)',
+    };
+  }
+
+  // entryPort — required, integer in [1, 65535].
+  let entryPort: number | null = null;
+  if (typeof obj.entryPort === 'number' && Number.isFinite(obj.entryPort)) {
+    entryPort = Math.floor(obj.entryPort);
+  } else if (typeof obj.entryPort === 'string' && /^\d+$/.test(obj.entryPort.trim())) {
+    entryPort = parseInt(obj.entryPort.trim(), 10);
+  }
+  if (
+    entryPort === null ||
+    !Number.isInteger(entryPort) ||
+    entryPort < 1 ||
+    entryPort > PR_ENV_PREVIEW_PORT_MAX
+  ) {
+    return {
+      ok: false,
+      error: `prEnv.preview.compose.entryPort must be an integer between 1 and ${PR_ENV_PREVIEW_PORT_MAX}`,
+    };
+  }
+
+  // file / envFile — optional relative paths, no traversal, length-capped.
+  const validatePath = (
+    field: 'file' | 'envFile',
+    val: unknown,
+  ): { ok: true; value: string | undefined } | { ok: false; error: string } => {
+    if (val === undefined || val === null || val === '') return { ok: true, value: undefined };
+    if (typeof val !== 'string') {
+      return { ok: false, error: `prEnv.preview.compose.${field} must be a string` };
+    }
+    const t = val.trim();
+    if (!t) return { ok: true, value: undefined };
+    if (t.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
+      return {
+        ok: false,
+        error: `prEnv.preview.compose.${field} exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
+      };
+    }
+    if (t.startsWith('/')) {
+      return {
+        ok: false,
+        error: `prEnv.preview.compose.${field} must be relative to the worktree root (got absolute path)`,
+      };
+    }
+    if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(t)) {
+      return {
+        ok: false,
+        error: `prEnv.preview.compose.${field} must not contain '..' path segments`,
+      };
+    }
+    return { ok: true, value: t };
+  };
+
+  const fileResult = validatePath('file', obj.file);
+  if (!fileResult.ok) return fileResult;
+  const envFileResult = validatePath('envFile', obj.envFile);
+  if (!envFileResult.ok) return envFileResult;
+
+  // healthPath — optional, must start with `/`.
+  let healthPath: string | undefined;
+  if (obj.healthPath !== undefined && obj.healthPath !== null && obj.healthPath !== '') {
+    if (typeof obj.healthPath !== 'string') {
+      return { ok: false, error: 'prEnv.preview.compose.healthPath must be a string' };
+    }
+    const hp = obj.healthPath.trim();
+    if (hp && !hp.startsWith('/')) {
+      return { ok: false, error: 'prEnv.preview.compose.healthPath must start with `/`' };
+    }
+    if (hp) healthPath = hp;
+  }
+
+  // hostPortRange — optional `{min, max}` pair. Both must be integers,
+  // 1..65535, and min <= max. We don't enforce overlap with the legacy
+  // 4100–4999 range here — operators may intentionally pick a disjoint
+  // range to keep compose and spawn previews on separate port windows.
+  let hostPortRange: { min: number; max: number } | undefined;
+  if (obj.hostPortRange !== undefined && obj.hostPortRange !== null) {
+    if (typeof obj.hostPortRange !== 'object' || Array.isArray(obj.hostPortRange)) {
+      return {
+        ok: false,
+        error: 'prEnv.preview.compose.hostPortRange must be an object {min, max}',
+      };
+    }
+    const range = obj.hostPortRange as Record<string, unknown>;
+    const parsePort = (v: unknown): number | null => {
+      if (typeof v === 'number' && Number.isFinite(v)) return Math.floor(v);
+      if (typeof v === 'string' && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+      return null;
+    };
+    const min = parsePort(range.min);
+    const max = parsePort(range.max);
+    if (min === null || max === null || min < 1 || max < 1 || min > 65535 || max > 65535) {
+      return {
+        ok: false,
+        error: 'prEnv.preview.compose.hostPortRange.{min,max} must be integers between 1 and 65535',
+      };
+    }
+    if (min > max) {
+      return {
+        ok: false,
+        error: 'prEnv.preview.compose.hostPortRange.min must be ≤ max',
+      };
+    }
+    hostPortRange = { min, max };
+  }
+
+  // readyTimeoutMs — optional integer in bounds.
+  let readyTimeoutMs: number | undefined;
+  if (
+    obj.readyTimeoutMs !== undefined &&
+    obj.readyTimeoutMs !== null &&
+    obj.readyTimeoutMs !== ''
+  ) {
+    let parsed: number | null = null;
+    if (typeof obj.readyTimeoutMs === 'number' && Number.isFinite(obj.readyTimeoutMs)) {
+      parsed = Math.floor(obj.readyTimeoutMs);
+    } else if (typeof obj.readyTimeoutMs === 'string' && /^\d+$/.test(obj.readyTimeoutMs.trim())) {
+      parsed = parseInt(obj.readyTimeoutMs.trim(), 10);
+    }
+    if (
+      parsed === null ||
+      parsed < PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS ||
+      parsed > PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS
+    ) {
+      return {
+        ok: false,
+        error:
+          `prEnv.preview.compose.readyTimeoutMs must be an integer between ` +
+          `${PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS} and ${PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS} ms`,
+      };
+    }
+    readyTimeoutMs = parsed;
+  }
+
+  const value: ValidatedPreviewComposeConfig = { entryService, entryPort };
+  if (fileResult.value) value.file = fileResult.value;
+  if (envFileResult.value) value.envFile = envFileResult.value;
+  if (healthPath) value.healthPath = healthPath;
+  if (hostPortRange) value.hostPortRange = hostPortRange;
+  if (readyTimeoutMs !== undefined) value.readyTimeoutMs = readyTimeoutMs;
+  return { ok: true, value };
+}
+
 /**
  * Validate the optional `preview` sub-object on a per-project PR-env
  * config. Returns the normalized value on success (or `undefined` when
@@ -527,11 +737,37 @@ function validatePrEnvPreview(
     }
   }
 
+  // Compose sub-block. When present, it's mutually exclusive with the
+  // spawn-mode fields (`startScript`, `processes[]`) — picking both is
+  // almost certainly a typo and the runtime would silently pick one.
+  // We surface the conflict at save time so the operator can pick.
+  const composeResult = validatePreviewCompose(obj.compose);
+  if (!composeResult.ok) return { ok: false, error: composeResult.error };
+  if (composeResult.value) {
+    if (startScript) {
+      return {
+        ok: false,
+        error:
+          'prEnv.preview.compose and prEnv.preview.startScript are mutually exclusive ' +
+          "— compose runs the project's docker-compose stack and has no startScript hook",
+      };
+    }
+    if (Array.isArray(obj.processes) && obj.processes.length > 0) {
+      return {
+        ok: false,
+        error:
+          'prEnv.preview.compose and prEnv.preview.processes[] are mutually exclusive ' +
+          "— compose owns the full multi-service graph via the project's compose file",
+      };
+    }
+  }
+
   const value: ValidatedPrEnvPreviewConfig = { enabled: true };
   if (startScript) value.startScript = startScript;
   if (port !== undefined) value.port = port;
   if (captureRoutes && captureRoutes.length > 0) value.captureRoutes = captureRoutes;
   if (idleTTL !== undefined) value.idleTTL = idleTTL;
+  if (composeResult.value) value.compose = composeResult.value;
   return { ok: true, value };
 }
 
