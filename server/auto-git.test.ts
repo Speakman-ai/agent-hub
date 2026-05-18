@@ -2975,6 +2975,85 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
     expect(String(commentArgs[3])).toMatch(/falling back/i);
   });
 
+  it('skips gh pr create when head has no commits ahead of resolved base (empty-diff guard)', async () => {
+    // Regression: when `pr_base_branch` (or any non-default base GitHub
+    // ends up comparing against) already contains every commit on the
+    // head branch, `gh pr create` returns
+    //   GraphQL: No commits between <head> and <base> (createPullRequest)
+    // which used to cascade into the noisy `pr_failed` code. The
+    // empty-diff guard inserted after the push must short-circuit BEFORE
+    // `gh pr create` is invoked and return `no_diff_vs_base` instead.
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmtsWithCard({
+      id: 'card-empty-diff',
+      title: 'Empty diff vs parent',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/parent-branch',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        // Override branch exists on origin → ls-remote yields a SHA.
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/parent-branch\n');
+        // The guard's pre-flight fetch of the base ref.
+        if (cmd.includes('git fetch') && cmd.includes('feature/parent-branch')) return ok('');
+        // The empty-diff guard itself: head has 0 commits ahead of base.
+        if (
+          cmd.includes('git rev-list') &&
+          cmd.includes('--count') &&
+          cmd.includes('origin/feature/parent-branch..origin/feature/child')
+        ) {
+          return ok('0\n');
+        }
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        // MUST NOT be called — fail loudly if the guard regresses.
+        if (cmd.startsWith('gh pr create')) {
+          return fail('gh pr create should not be called when head has no commits vs base');
+        }
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-empty-diff', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(0);
+
+    // The guard must surface to the user via the create_pr_log broadcast so
+    // the UI's "Create PR" log explains the skip.
+    const prLogTexts = mockBroadcast.mock.calls
+      .map((call: unknown[]) => call[0] as Record<string, unknown>)
+      .filter((evt) => evt && evt.type === 'create_pr_log')
+      .map((evt) => String(evt.text || ''));
+    expect(prLogTexts.some((t) => /no commits ahead/i.test(t))).toBe(true);
+  });
+
   it('no --base arg and no fallback comment when card has no pr_base_branch', async () => {
     const execCalls: string[] = [];
     const stmts = makeAutonomousStmtsWithCard({
