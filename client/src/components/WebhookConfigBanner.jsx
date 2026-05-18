@@ -3,25 +3,35 @@ import { api } from '../utils/api.js';
 
 /**
  * WebhookConfigBanner — drives the "missing webhook" nudge surfaced on
- * any project view whose `webhookConfigured === false`. Two paths:
+ * any project view whose `webhookConfigured === false`. Two outcomes
+ * from the API call:
  *
- *   - **Configure automatically** → POST
- *     `/api/projects/:id/webhook/auto-configure`. On success the banner
- *     hides (the parent refetches and `webhookConfigured` flips to true).
- *     On a structured `registration.ok: false` response we keep the
- *     banner visible and render an inline error explaining that the
- *     local row exists but GitHub registration didn't take, with a
- *     pointer to the manual flow.
+ *   - **Full success** (`registration.ok === true`): we fire
+ *     `onConfigured(result)` so the parent refetches projects;
+ *     `webhookConfigured` flips to `true`; the banner naturally drops
+ *     out of the tree.
  *
- *   - **Configure manually** → tooltip/text link pointing at the GitHub
- *     Settings docs. Operators with installs that don't have a GitHub
- *     App configured AND no `gh auth login` on the host need this
- *     escape hatch.
+ *   - **Local row created but GitHub-side registration failed**
+ *     (`registration.ok === false`): we deliberately do NOT fire
+ *     `onConfigured`. If we did, the parent would refetch, see the new
+ *     `enabled=1` row, flip `webhookConfigured` to `true`, and unmount
+ *     the banner before the operator could read the warning. Keeping
+ *     `onConfigured` un-fired means the banner stays mounted with the
+ *     warning visible. We *also* call `showToast` (when provided) so
+ *     even if some other path (WebSocket `projects_updated` broadcast,
+ *     an unrelated refresh) unmounts the banner, the operator still
+ *     sees the failure surfaced in the global toast tray. The original
+ *     PR review caught a missed end-to-end case where the warning was
+ *     painted and then immediately destroyed — this dual surfacing
+ *     closes that gap.
  *
  * Props:
  *   - `projectId` — required. The slug used to call the API.
- *   - `onConfigured` — required. Fired after a successful auto-configure
- *     so the parent can refetch projects and let the banner drop out.
+ *   - `onConfigured` — required. Fired only on full success so the
+ *     parent can refetch projects and let the banner drop out.
+ *   - `showToast` — optional. Global toast helper for failure
+ *     surfacing. Signature: `showToast(message, opts?: { level })`.
+ *     Same shape App.jsx hands to other components.
  *   - `compact` — optional. Renders a tighter layout for in-card use.
  *
  * Render policy: this component does **not** check `webhookConfigured`
@@ -29,7 +39,12 @@ import { api } from '../utils/api.js';
  * === false` so the banner stays out of trees where it doesn't apply
  * (null = N/A, true = already configured).
  */
-export default function WebhookConfigBanner({ projectId, onConfigured, compact = false }) {
+export default function WebhookConfigBanner({
+  projectId,
+  onConfigured,
+  showToast,
+  compact = false,
+}) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState(null);
   const [warning, setWarning] = useState(null);
@@ -43,19 +58,25 @@ export default function WebhookConfigBanner({ projectId, onConfigured, compact =
       const result = await api.autoConfigureProjectWebhook(projectId);
       const reg = result?.registration;
       if (reg && reg.ok === false) {
-        // Local row was created so the banner will drop on the next
-        // refetch, but GitHub-side registration failed — surface the
-        // raw error so the operator knows the webhook was NOT pushed
-        // to github.com and needs the manual flow.
-        setWarning(
-          `Local webhook config was created but GitHub registration failed: ${
-            reg.error || 'unknown error'
-          }. The reviewer will not receive events until the webhook is registered manually in Settings → Developer settings → Webhooks on github.com.`,
-        );
+        // GitHub-side registration failed. Surface the raw error inline
+        // AND via toast so the message survives even if the parent
+        // refetches for some other reason. Do NOT call onConfigured —
+        // see the docblock above for why an immediate refetch would
+        // destroy the message before the operator could read it.
+        const msg = `Webhook config saved locally but GitHub registration failed: ${
+          reg.error || 'unknown error'
+        }. The reviewer will not receive events until the webhook is registered manually on github.com (Settings → Developer settings → Webhooks).`;
+        setWarning(msg);
+        if (typeof showToast === 'function') {
+          try {
+            showToast(msg, { level: 'warning' });
+          } catch {
+            /* never let a toast surface throw stop the inline warning */
+          }
+        }
+        return;
       }
-      // Let the parent refetch (the parent is what reads
-      // `webhookConfigured` — once the new row exists, the banner
-      // naturally drops out of the tree).
+      // Full success — let the parent refetch so the banner drops out.
       if (typeof onConfigured === 'function') onConfigured(result);
     } catch (err) {
       setError(err?.message || 'Unknown error');
@@ -89,6 +110,7 @@ export default function WebhookConfigBanner({ projectId, onConfigured, compact =
           type="button"
           onClick={handleConfigure}
           disabled={working}
+          aria-busy={working}
           data-testid="webhook-config-banner-action"
           className="shrink-0 rounded-md bg-amber-700 px-3 py-1.5 text-xs font-semibold text-amber-50 transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60"
         >

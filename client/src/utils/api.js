@@ -96,11 +96,12 @@ export const api = {
    * banner — see `WebhookConfigBanner.jsx`. Returns `{ config,
    * registration }` from POST /api/projects/:projectId/webhook/auto-configure.
    * Throws on HTTP errors (400 no-githubRepo, 409 already-exists, 500).
+   *
+   * The route reads no body — params are derived from the path slug.
    */
   autoConfigureProjectWebhook: (projectId) =>
     fetchJSON(`/projects/${projectId}/webhook/auto-configure`, {
       method: 'POST',
-      body: JSON.stringify({}),
     }),
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),

@@ -51,7 +51,7 @@ export default function KanbanBoard({
   refreshKey,
   onNavigateToSession,
   onProjectsRefresh,
-  showToast: _showToast,
+  showToast,
 }) {
   const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
@@ -757,11 +757,15 @@ export default function KanbanBoard({
       {/* Missing-webhook nudge — visible whenever the project has a
           GitHub repo set but no enabled webhook_configs row. Drops out
           automatically once `onProjectsRefresh` flips webhookConfigured
-          to `true`. Backed by POST /api/projects/:id/webhook/auto-configure. */}
+          to `true`. Backed by POST /api/projects/:id/webhook/auto-configure.
+          `showToast` is threaded through so a GitHub-side registration
+          failure survives even if some other refetch happens to unmount
+          the banner before the operator could read the inline warning. */}
       {project?.webhookConfigured === false && (
         <div className="px-6 pt-3">
           <WebhookConfigBanner
             projectId={projectId}
+            showToast={showToast}
             onConfigured={() => {
               if (typeof onProjectsRefresh === 'function') onProjectsRefresh();
             }}

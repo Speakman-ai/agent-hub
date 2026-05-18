@@ -34,6 +34,15 @@ const mockRegisterWebhookOnGitHub = vi.fn(async () => ({
   updated: false,
 }));
 let mockInstallationToken: string | null = null;
+// `callGitHubApiWithToken` is used to probe `GET repos/<owner>/<repo>`
+// before short-circuiting the per-repo registration on App-installed
+// owners. The probe lets us tell apart "all repositories" installations
+// from "selected repositories" installations that don't include this
+// repo — the latter case must fall through to per-repo registration
+// even though `tryGetInstallationToken(owner)` returned a token.
+const mockCallGitHubApi = vi.fn<(endpoint: string, token: string) => Promise<unknown>>(
+  async () => ({}),
+);
 vi.mock('../routes/webhooks.js', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('../routes/webhooks.js');
   return {
@@ -41,6 +50,7 @@ vi.mock('../routes/webhooks.js', async (importOriginal) => {
     registerWebhookOnGitHub: (...args: unknown[]) =>
       (mockRegisterWebhookOnGitHub as unknown as (...a: unknown[]) => unknown)(...args),
     tryGetInstallationToken: async () => mockInstallationToken,
+    callGitHubApiWithToken: (endpoint: string, token: string) => mockCallGitHubApi(endpoint, token),
   };
 });
 
@@ -96,6 +106,8 @@ beforeEach(() => {
     updated: false,
   });
   mockInstallationToken = null;
+  mockCallGitHubApi.mockReset();
+  mockCallGitHubApi.mockResolvedValue({});
 });
 
 describe('POST /api/projects/:projectId/webhook/auto-configure', () => {
@@ -155,7 +167,7 @@ describe('POST /api/projects/:projectId/webhook/auto-configure', () => {
     expect(mockRegisterWebhookOnGitHub).toHaveBeenCalledTimes(1);
   });
 
-  it('skips per-repo registration when a GitHub App installation token is available', async () => {
+  it('skips per-repo registration when the GitHub App probe confirms repo access', async () => {
     // Override config.githubApp so tryGetInstallationToken is even consulted.
     const config = (await import('../config.js')).default as {
       githubApp?: { appId?: string; privateKey?: string } | null;
@@ -163,6 +175,8 @@ describe('POST /api/projects/:projectId/webhook/auto-configure', () => {
     const savedApp = config.githubApp;
     config.githubApp = { appId: 'app-1', privateKey: 'pk' };
     mockInstallationToken = 'ghs_installation_token_stub';
+    // App "All repositories" — probe returns 200-equivalent.
+    mockCallGitHubApi.mockResolvedValue({ full_name: 'owner/repo' });
 
     try {
       const project = await createProjectWithRepo('owner/repo');
@@ -176,8 +190,50 @@ describe('POST /api/projects/:projectId/webhook/auto-configure', () => {
       expect(body.config.id).toBeGreaterThan(0); // local row still created
       expect(body.registration.skipped).toBe(true);
       expect(body.registration.reason).toBe('github_app_installed');
-      // Per-repo registration must NOT have run.
+      // Probe must have hit `repos/<owner>/<repo>` with the install token.
+      expect(mockCallGitHubApi).toHaveBeenCalledWith('repos/owner/repo', mockInstallationToken);
+      // Per-repo registration must NOT have run — App delivers events directly.
       expect(mockRegisterWebhookOnGitHub).not.toHaveBeenCalled();
+    } finally {
+      config.githubApp = savedApp;
+    }
+  });
+
+  it('falls through to per-repo registration when the App lacks access to the repo (selected-repos scope)', async () => {
+    // Same shape as the previous test — App is installed on the owner —
+    // but the probe `GET repos/owner/repo` 404s because the App is
+    // installed with "selected repositories" scope and this repo is NOT
+    // in the selected list. The route must NOT report
+    // `skipped: github_app_installed` (banner would clear but no events
+    // would flow); it must fall through to per-repo registration.
+    const config = (await import('../config.js')).default as {
+      githubApp?: { appId?: string; privateKey?: string } | null;
+    };
+    const savedApp = config.githubApp;
+    config.githubApp = { appId: 'app-1', privateKey: 'pk' };
+    mockInstallationToken = 'ghs_installation_token_stub';
+    mockCallGitHubApi.mockRejectedValue(
+      new Error('GitHub API GET https://api.github.com/repos/owner/repo failed (404): Not Found'),
+    );
+
+    try {
+      const project = await createProjectWithRepo('owner/repo');
+      const res = await request
+        .post(`/api/projects/${project.id}/webhook/auto-configure`)
+        .expect(200);
+      const body = res.body as {
+        config: { id: number };
+        registration: { ok: boolean; skipped?: boolean; reason?: string; hookId?: number };
+      };
+      expect(body.config.id).toBeGreaterThan(0);
+      // Must NOT be the App-installed short-circuit. The reviewer would
+      // otherwise silently miss this repo.
+      expect(body.registration.skipped).not.toBe(true);
+      expect(body.registration.reason).not.toBe('github_app_installed');
+      // Must have called per-repo registration.
+      expect(mockRegisterWebhookOnGitHub).toHaveBeenCalledTimes(1);
+      // Probe was attempted.
+      expect(mockCallGitHubApi).toHaveBeenCalledWith('repos/owner/repo', mockInstallationToken);
     } finally {
       config.githubApp = savedApp;
     }

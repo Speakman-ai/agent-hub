@@ -35,7 +35,11 @@ import {
 } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
-import { registerWebhookOnGitHub, tryGetInstallationToken } from './webhooks.js';
+import {
+  registerWebhookOnGitHub,
+  tryGetInstallationToken,
+  callGitHubApiWithToken,
+} from './webhooks.js';
 import type { WebhookConfigRow } from '../types.js';
 
 const execAsync = promisify(exec);
@@ -1375,22 +1379,49 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         console.warn(`[Webhooks] ensureReviewerAgents failed: ${(err as Error).message}`);
       }
 
-      // Path A: GitHub App installation already covers this owner — no
-      // per-repo registration needed. The App delivers events to
-      // `/api/webhooks/github` signed with `config.githubApp.webhookSecret`.
+      // Path A: GitHub App installation already covers this OWNER and
+      // grants access to THIS REPO — no per-repo webhook needed. The App
+      // delivers events to `/api/webhooks/github` signed with
+      // `config.githubApp.webhookSecret`.
+      //
+      // We must probe repo access, not just owner-level installation:
+      // GitHub Apps can be installed with "selected repositories" scope,
+      // in which case `tryGetInstallationToken(owner)` happily returns a
+      // token but the App is NOT granted access to this specific repo
+      // and will silently never deliver its events. Without the probe
+      // the route would happily return `skipped: true`, the local row
+      // would clear the banner, and the reviewer pipeline would silently
+      // fail for the repo — the exact failure mode this PR set out to
+      // close.
       try {
         const owner = cleanedRepo.split('/')[0];
         const installToken = config.githubApp?.appId ? await tryGetInstallationToken(owner) : null;
         if (installToken) {
-          return res.json({
-            config: created,
-            registration: {
-              ok: true,
-              skipped: true,
-              reason: 'github_app_installed',
-              message: `The GitHub App is installed on ${owner}; PR events will reach Agent Hub automatically.`,
-            },
-          });
+          let repoAccessible = false;
+          try {
+            await callGitHubApiWithToken<unknown>(`repos/${cleanedRepo}`, installToken);
+            repoAccessible = true;
+          } catch (probeErr: unknown) {
+            console.warn(
+              `[Webhooks] App-install repo access probe failed for ${cleanedRepo}, falling back to per-repo registration: ${(probeErr as Error).message.split('\n')[0]}`,
+            );
+          }
+          if (repoAccessible) {
+            return res.json({
+              config: created,
+              registration: {
+                ok: true,
+                skipped: true,
+                reason: 'github_app_installed',
+                message: `The GitHub App is installed on ${owner} and has access to ${cleanedRepo}; PR events will reach Agent Hub automatically.`,
+              },
+            });
+          }
+          // Owner-installed but this repo isn't in the App's selected
+          // set — fall through. `registerWebhookOnGitHub`'s own
+          // install-token-then-gh-CLI ladder handles the per-repo
+          // registration correctly (and will 404 with a clean error if
+          // the gh CLI also lacks the scope).
         }
       } catch (parseErr: unknown) {
         // Token lookup blew up — fall through to per-repo registration.

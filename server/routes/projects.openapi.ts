@@ -78,13 +78,16 @@ export const ProjectDetailComponent = registerComponent(
         description:
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',
       }),
-      webhookConfigured: z.union([z.boolean(), z.null()]).openapi({
-        description:
-          'Whether this project has at least one enabled webhook_configs row. ' +
-          '`true` — at least one enabled row delivers events. ' +
-          '`false` — `githubRepo` is set but no enabled row exists; PR events will NOT reach the reviewer pipeline. Drives the missing-webhook UI banner. ' +
-          '`null` — `githubRepo` is unset (non-GitHub remote or scratch project); webhook config is not applicable.',
-      }),
+      webhookConfigured: z
+        .boolean()
+        .nullable()
+        .openapi({
+          description:
+            'Whether this project has at least one enabled webhook_configs row. ' +
+            '`true` — at least one enabled row delivers events. ' +
+            '`false` — `githubRepo` is set but no enabled row exists; PR events will NOT reach the reviewer pipeline. Drives the missing-webhook UI banner. ' +
+            '`null` — `githubRepo` is unset (non-GitHub remote or scratch project); webhook config is not applicable.',
+        }),
     })
     .passthrough()
     .openapi({
