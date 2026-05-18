@@ -4,16 +4,21 @@ import { Loader2, Send, X, ArrowLeftRight } from 'lucide-react';
 /**
  * Filter the flat agent list down to the subset that can be forwarded to
  * from a source agent. Rule: same project, active agents only. The source
- * agent is excluded — self-forward is allowed by the backend but adds noise
- * for users. Exported for testing.
+ * agent is **kept** and pinned at the top of the list so a user can fork
+ * the current conversation into a fresh session on the same agent
+ * (self-forward is supported end-to-end by the backend). Exported for
+ * testing.
  */
 export function filterForwardTargets(agents, sourceAgent) {
   if (!Array.isArray(agents) || !sourceAgent) return [];
   const sourceProjectId = sourceAgent.projectId;
   if (!sourceProjectId) return [];
-  return agents.filter(
-    (a) => a && a.active !== false && a.projectId === sourceProjectId && a.id !== sourceAgent.id,
-  );
+  const matches = agents.filter((a) => a && a.active !== false && a.projectId === sourceProjectId);
+  // Pin the source agent at the top so the self-forward option is the
+  // first thing the user sees. Order of the rest is preserved.
+  const self = matches.find((a) => a.id === sourceAgent.id);
+  const others = matches.filter((a) => a.id !== sourceAgent.id);
+  return self ? [self, ...others] : others;
 }
 
 export default function ForwardSessionModal({
@@ -114,8 +119,7 @@ export default function ForwardSessionModal({
 
         {!hasCandidates ? (
           <div className="p-6 text-sm text-gray-400">
-            No other agents in this project to forward to. Add another agent in Settings to use this
-            feature.
+            No agents in this project to forward to. Add an agent in Settings to use this feature.
           </div>
         ) : (
           <>
@@ -133,33 +137,44 @@ export default function ForwardSessionModal({
               {filtered.length === 0 && (
                 <p className="text-sm text-gray-500 px-4 py-3">No agents match.</p>
               )}
-              {filtered.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => setSelectedAgentId(agent.id)}
-                  className={`w-full text-left px-3 py-2 flex items-center gap-3 rounded-lg transition-colors ${
-                    selectedAgentId === agent.id
-                      ? 'bg-gray-800 border border-gray-600'
-                      : 'border border-transparent hover:bg-gray-800/60'
-                  }`}
-                >
-                  <span
-                    className="w-3 h-3 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: agent.color }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm text-gray-200 truncate">{agent.name}</div>
-                    <div className="text-xs text-gray-500 truncate">
-                      {agent.engine}
-                      {agent.projectName ? ` · ${agent.projectName}` : ''}
+              {filtered.map((agent) => {
+                const isSelf = agent.id === sourceAgent?.id;
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => setSelectedAgentId(agent.id)}
+                    className={`w-full text-left px-3 py-2 flex items-center gap-3 rounded-lg transition-colors ${
+                      selectedAgentId === agent.id
+                        ? 'bg-gray-800 border border-gray-600'
+                        : 'border border-transparent hover:bg-gray-800/60'
+                    }`}
+                  >
+                    <span
+                      className="w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-gray-200 truncate flex items-center gap-2">
+                        <span className="truncate">{agent.name}</span>
+                        {isSelf && (
+                          <span className="text-[10px] uppercase tracking-wide text-gray-500 border border-gray-700 rounded px-1 py-0.5 flex-shrink-0">
+                            this agent
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500 truncate">
+                        {isSelf
+                          ? 'Fork this conversation into a new session'
+                          : `${agent.engine}${agent.projectName ? ` · ${agent.projectName}` : ''}`}
+                      </div>
                     </div>
-                  </div>
-                  {selectedAgentId === agent.id && (
-                    <span className="text-xs text-emerald-400">✓</span>
-                  )}
-                </button>
-              ))}
+                    {selectedAgentId === agent.id && (
+                      <span className="text-xs text-emerald-400">✓</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
             <div className="px-4 py-3 border-t border-gray-800 space-y-3">
               <div>
