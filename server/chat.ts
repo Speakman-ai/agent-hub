@@ -105,7 +105,7 @@ import {
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
-import { deriveHeuristicTitle, generateLlmTitle } from './session-title.js';
+import { deriveHeuristicTitle, scheduleTitleUpgrade } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
@@ -3698,29 +3698,37 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
           // Async upgrade: when the sync rename used the heuristic and an LLM
           // API key is configured, ask a fast model for a sharper title and
-          // broadcast a second `session-updated` once it returns. Guarded so
-          // we never clobber a user rename or a later automated rename.
-          if (usedHeuristic && (config.anthropicApiKey || config.openaiApiKey)) {
+          // broadcast a second `session-updated` once it returns. The
+          // TOCTOU guard inside `scheduleTitleUpgrade` ensures a concurrent
+          // user/system rename is never clobbered.
+          if (usedHeuristic) {
+            const sessSnapshot = sess;
             const heuristicTitle = autoName;
-            void generateLlmTitle({
+            void scheduleTitleUpgrade({
+              sessionId,
+              heuristicTitle,
               content,
-              anthropicApiKey: config.anthropicApiKey ?? null,
-              openaiApiKey: config.openaiApiKey ?? null,
-            })
-              .then((llmTitle) => {
-                if (!llmTitle || llmTitle === heuristicTitle) return;
-                const current = S.getSession.get(sessionId) as SessionRow | undefined;
-                if (!current) return;
-                if (current.name !== heuristicTitle) return; // user/system renamed in the meantime
-                S.updateSessionName.run(llmTitle, sessionId);
+              config: {
+                anthropicApiKey: config.anthropicApiKey ?? null,
+                openaiApiKey: config.openaiApiKey ?? null,
+              },
+              getSessionName: (id) => {
+                const row = S.getSession.get(id) as SessionRow | undefined;
+                return row?.name ?? null;
+              },
+              updateSessionName: (title, id) => {
+                S.updateSessionName.run(title, id);
+              },
+              onUpgrade: (newTitle) => {
                 broadcast({
                   type: 'session-updated',
-                  session: enrichSessionForClient({ ...current, name: llmTitle } as SessionRow),
+                  session: enrichSessionForClient({
+                    ...sessSnapshot,
+                    name: newTitle,
+                  } as SessionRow),
                 });
-              })
-              .catch(() => {
-                /* generateLlmTitle never rejects, but belt-and-braces. */
-              });
+              },
+            });
           }
         }
 

@@ -1,7 +1,7 @@
 /**
  * session-title.ts — derive a concise session name from the user's first message.
  *
- * Two layers:
+ * Three layers:
  *  1. `deriveHeuristicTitle(content)` — pure, synchronous. Strips conversational
  *     filler, picks the first sentence, truncates at a word boundary, caps at
  *     60 chars. Always returns a non-empty string.
@@ -9,6 +9,8 @@
  *     Haiku or OpenAI gpt-4o-mini) to produce a 4–8 word title. Returns `null`
  *     on any failure (missing key, network error, malformed response). The
  *     caller is expected to fall back to the heuristic value.
+ *  3. `scheduleTitleUpgrade(opts)` — orchestrator. Glues 2 onto a session-name
+ *     store with a TOCTOU guard so a concurrent rename is never clobbered.
  *
  * The heuristic exists so the *initial* rename happens synchronously and the
  * sidebar updates immediately. The LLM path is a deferred upgrade that fires
@@ -16,7 +18,29 @@
  * second `session-updated`.
  */
 
+import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
+
 const MAX_TITLE_LEN = 60;
+
+/**
+ * Default fast model for LLM-backed title generation. Tracks the same Haiku
+ * generation as the rest of the codebase (see `config.ts`
+ * DEFAULT_ENGINE_VALID_MODELS['claude-code'] and `routes/claude-auth.ts`'s
+ * auth ping). Bump in lockstep when those bump.
+ */
+export const DEFAULT_TITLE_ANTHROPIC_MODEL = 'claude-haiku-4-6';
+
+/**
+ * Default fast model for LLM-backed title generation on the OpenAI path.
+ */
+export const DEFAULT_TITLE_OPENAI_MODEL = 'gpt-4o-mini';
+
+/**
+ * Maximum UTF-8 byte length of the user content forwarded to the title model.
+ * Plenty for a title prompt; matches typical first-message length even for
+ * verbose users.
+ */
+const MAX_CONTENT_BYTES = 4_000;
 
 // Conversational filler patterns. Each is applied repeatedly against the
 // start of the string until no further reduction happens.
@@ -152,9 +176,9 @@ export interface LlmTitleOptions {
   anthropicApiKey?: string | null;
   /** OpenAI API key. Used when no Anthropic key is set. */
   openaiApiKey?: string | null;
-  /** Override the Anthropic model. Defaults to `claude-haiku-4-5`. */
+  /** Override the Anthropic model. Defaults to `DEFAULT_TITLE_ANTHROPIC_MODEL`. */
   anthropicModel?: string;
-  /** Override the OpenAI model. Defaults to `gpt-4o-mini`. */
+  /** Override the OpenAI model. Defaults to `DEFAULT_TITLE_OPENAI_MODEL`. */
   openaiModel?: string;
   /** Abort after this many ms. Default: 8000. */
   timeoutMs?: number;
@@ -190,10 +214,17 @@ function sanitizeLlmTitle(raw: string): string {
  * throws.
  */
 export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | null> {
-  const content = (opts.content ?? '').toString();
-  if (!content.trim()) return null;
+  const rawContent = (opts.content ?? '').toString();
+  if (!rawContent.trim()) return null;
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') return null;
+  // Short-circuit before allocating the AbortController + timer when no key
+  // is configured — keeps the no-op path allocation-free.
+  if (!opts.anthropicApiKey && !opts.openaiApiKey) return null;
+
+  // Byte-aware clip so a 4-byte emoji at the boundary doesn't end up as a
+  // lone UTF-16 surrogate or a mojibake replacement char in the JSON body.
+  const content = clipUtf8StringToMaxBytes(rawContent, MAX_CONTENT_BYTES);
 
   const timeoutMs = Math.max(500, opts.timeoutMs ?? 8_000);
   const controller = new AbortController();
@@ -201,7 +232,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
 
   try {
     if (opts.anthropicApiKey) {
-      const model = opts.anthropicModel || 'claude-haiku-4-5';
+      const model = opts.anthropicModel || DEFAULT_TITLE_ANTHROPIC_MODEL;
       const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         signal: controller.signal,
@@ -214,7 +245,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
           model,
           max_tokens: 40,
           system: TITLE_PROMPT,
-          messages: [{ role: 'user', content: content.slice(0, 4_000) }],
+          messages: [{ role: 'user', content }],
         }),
       });
       if (!res.ok) return null;
@@ -226,7 +257,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
       return cleaned || null;
     }
     if (opts.openaiApiKey) {
-      const model = opts.openaiModel || 'gpt-4o-mini';
+      const model = opts.openaiModel || DEFAULT_TITLE_OPENAI_MODEL;
       const res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         signal: controller.signal,
@@ -239,7 +270,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
           max_tokens: 40,
           messages: [
             { role: 'system', content: TITLE_PROMPT },
-            { role: 'user', content: content.slice(0, 4_000) },
+            { role: 'user', content },
           ],
         }),
       });
@@ -256,5 +287,61 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// scheduleTitleUpgrade — orchestrator with TOCTOU guard
+// ---------------------------------------------------------------------------
+
+export interface ScheduleTitleUpgradeOptions {
+  sessionId: string;
+  /** Heuristic title we already wrote synchronously. The upgrade only takes
+   *  effect if `getSessionName(sessionId)` still equals this value, so a
+   *  concurrent user/system rename is never clobbered. */
+  heuristicTitle: string;
+  /** Raw user message text — passed unmodified to `generate`. */
+  content: string;
+  /** API-key config snapshot. If both are null/empty, the call is a no-op. */
+  config: {
+    anthropicApiKey?: string | null;
+    openaiApiKey?: string | null;
+  };
+  /** Read the session's current `name` from storage. Return null if missing. */
+  getSessionName: (sessionId: string) => string | null;
+  /** Persist the new title to storage. */
+  updateSessionName: (title: string, sessionId: string) => void;
+  /** Called after a successful rename; the caller broadcasts `session-updated`. */
+  onUpgrade: (newTitle: string) => void;
+  /** Generator override for tests. Defaults to `generateLlmTitle`. */
+  generate?: (opts: LlmTitleOptions) => Promise<string | null>;
+}
+
+/**
+ * Run the async title-upgrade flow. Never throws. Resolves to `true` when a
+ * rename actually happened, `false` otherwise (no key, no upgrade, TOCTOU
+ * miss, identical title, generator failure).
+ *
+ * The chat.ts caller does `void scheduleTitleUpgrade(...)`; the return value
+ * exists for tests so they can await completion.
+ */
+export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): Promise<boolean> {
+  const hasKey = Boolean(opts.config.anthropicApiKey || opts.config.openaiApiKey);
+  if (!hasKey) return false;
+  const generate = opts.generate ?? generateLlmTitle;
+  try {
+    const llmTitle = await generate({
+      content: opts.content,
+      anthropicApiKey: opts.config.anthropicApiKey ?? null,
+      openaiApiKey: opts.config.openaiApiKey ?? null,
+    });
+    if (!llmTitle || llmTitle === opts.heuristicTitle) return false;
+    const currentName = opts.getSessionName(opts.sessionId);
+    if (currentName !== opts.heuristicTitle) return false;
+    opts.updateSessionName(llmTitle, opts.sessionId);
+    opts.onUpgrade(llmTitle);
+    return true;
+  } catch {
+    return false;
   }
 }

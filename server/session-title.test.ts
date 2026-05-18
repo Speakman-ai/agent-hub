@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { deriveHeuristicTitle, generateLlmTitle } from './session-title.js';
+import {
+  DEFAULT_TITLE_ANTHROPIC_MODEL,
+  deriveHeuristicTitle,
+  generateLlmTitle,
+  scheduleTitleUpgrade,
+  type LlmTitleOptions,
+} from './session-title.js';
 
 describe('deriveHeuristicTitle', () => {
   it('returns "New chat" for empty input', () => {
@@ -141,7 +147,10 @@ describe('generateLlmTitle', () => {
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect((init.headers as Record<string, string>)['x-api-key']).toBe('sk-ant-test');
     const body = JSON.parse(init.body as string);
-    expect(body.model).toMatch(/haiku/);
+    // Pin to the shared default so the next Haiku bump touches the exported
+    // constant (and `claude-auth.ts` etc.) in lockstep, not this test.
+    expect(body.model).toBe(DEFAULT_TITLE_ANTHROPIC_MODEL);
+    expect(body.model).toBe('claude-haiku-4-6');
     expect(body.messages[0].content).toContain('chat.ts');
   });
 
@@ -242,5 +251,212 @@ describe('generateLlmTitle', () => {
     });
     expect(out).not.toBeNull();
     expect(out!.length).toBeLessThanOrEqual(60);
+  });
+
+  it('does not split a surrogate-pair emoji at the byte boundary', async () => {
+    // Construct a payload whose 4001th UTF-8 byte would land mid-emoji if we
+    // sliced naively. The clip should drop the trailing emoji entirely rather
+    // than emit a lone surrogate.
+    const filler = 'a'.repeat(3998);
+    const fourByteEmoji = '😀'; // U+1F600 — 4 bytes in UTF-8 (surrogate pair in UTF-16)
+    const content = filler + fourByteEmoji + 'tail';
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'Title' }] }),
+    })) as unknown as typeof fetch;
+
+    await generateLlmTitle({ content, anthropicApiKey: 'sk-ant', fetchImpl });
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<{ content: string }>;
+    };
+    const forwarded = body.messages[0].content;
+    // No lone surrogates and no U+FFFD replacement chars sneak through.
+    expect(forwarded).not.toMatch(/�/);
+    for (let i = 0; i < forwarded.length; i++) {
+      const code = forwarded.charCodeAt(i);
+      const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+      const isLowSurrogate = code >= 0xdc00 && code <= 0xdfff;
+      if (isHighSurrogate) {
+        const next = forwarded.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+        i += 1;
+      } else {
+        expect(isLowSurrogate).toBe(false);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('scheduleTitleUpgrade', () => {
+  function makeHarness(initialName: string) {
+    const store = { name: initialName };
+    return {
+      store,
+      getSessionName: vi.fn((_id: string) => store.name),
+      updateSessionName: vi.fn((title: string, _id: string) => {
+        store.name = title;
+      }),
+      onUpgrade: vi.fn((_newTitle: string) => {}),
+    };
+  }
+
+  it('renames + invokes onUpgrade when the LLM returns a different title and the name is unchanged', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(
+      async (_opts: LlmTitleOptions): Promise<string | null> => 'Fix the streaming reconnect bug',
+    );
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'Hey can you fix the streaming reconnect bug',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(h.updateSessionName).toHaveBeenCalledWith('Fix the streaming reconnect bug', 's1');
+    expect(h.onUpgrade).toHaveBeenCalledTimes(1);
+    expect(h.onUpgrade).toHaveBeenCalledWith('Fix the streaming reconnect bug');
+    expect(h.store.name).toBe('Fix the streaming reconnect bug');
+  });
+
+  it('short-circuits and never calls the generator when no API key is configured', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(async () => 'X');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: null, openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not clobber a concurrent rename (TOCTOU guard)', async () => {
+    const h = makeHarness('Fix the bug');
+    // Simulate the user / another caller renaming the session between the
+    // generator resolving and the upgrade attempting to write.
+    h.getSessionName.mockImplementation(() => 'User renamed me');
+    const generate = vi.fn(async () => 'Some LLM title');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not rename when the LLM returns null', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(async () => null);
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not rename when the LLM returns the identical heuristic title', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(async () => 'Fix the bug');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('swallows generator exceptions and reports failure', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(async () => {
+      throw new Error('boom');
+    });
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('forwards both API keys into the generator call', async () => {
+    const h = makeHarness('Heuristic');
+    const generate = vi.fn(async () => 'Upgraded');
+
+    await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Heuristic',
+      content: 'topic',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: 'sk-oai' },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'topic',
+        anthropicApiKey: 'sk-ant',
+        openaiApiKey: 'sk-oai',
+      }),
+    );
   });
 });
