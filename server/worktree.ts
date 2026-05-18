@@ -25,6 +25,7 @@ import {
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
+import { getOrgOwnerUserId } from './session-ownership.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -1276,7 +1277,8 @@ export async function ensureSessionWorkspace(
   //   3. null — session owner missing or unauthenticated owner; downstream
   //      git calls fall back to unauthenticated access (public repos only)
   const sessionOwnerId = session.owner_user_id ?? null;
-  const userToken: string | null = await resolveUserGithubToken(sessionOwnerId, {
+  const tokenOwnerId = sessionOwnerId ?? getOrgOwnerUserId();
+  const userToken: string | null = await resolveUserGithubToken(tokenOwnerId, {
     oauthCredentials: resolveOAuthAppCredentials(config),
   });
   const authArgs: string[] = userToken ? gitAuthArgsForGithubPat(userToken) : [];
