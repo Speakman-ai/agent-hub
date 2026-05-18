@@ -56,6 +56,7 @@ import {
   handlePreviewBlock,
 } from './preview/preview-block.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
+import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -302,6 +303,13 @@ export interface ChatHandlerDeps {
    * constructed at process start.
    */
   getPreviewRuntime?: () => PreviewRuntime | null;
+  /**
+   * Accessor for the per-session **compose** preview runtime. Selected
+   * over `getPreviewRuntime` when a project sets
+   * `prEnv.preview.compose.entryService`. Same null-when-unwired contract
+   * as the legacy accessor.
+   */
+  getPreviewComposeRuntime?: () => PreviewComposeRuntime | null;
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -1240,6 +1248,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     synthesizeResults,
     parseDelegateBlock,
     getPreviewRuntime,
+    getPreviewComposeRuntime,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -3900,7 +3909,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         if (previewDetection.task) {
           const previewTask = previewDetection.task;
-          const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
+          // Compose-vs-legacy dispatch: a project with
+          // `prEnv.preview.compose.entryService` set routes through the
+          // docker-compose runtime; everything else stays on the legacy
+          // spawn runtime. Both runtimes expose the same
+          // `startPreview` / `getById` / `getLogTail` shape `handlePreviewBlock`
+          // depends on, so the handler itself doesn't need to know which
+          // one it got.
+          const composeConfigured = !!project.prEnv?.preview?.compose?.entryService;
+          const previewRuntime = composeConfigured
+            ? getPreviewComposeRuntime
+              ? getPreviewComposeRuntime()
+              : null
+            : getPreviewRuntime
+              ? getPreviewRuntime()
+              : null;
           // Fire-and-forget — the chat flow must not block on preview boot.
           // The handler funnels every outcome (success, unconfigured, failure)
           // into a broadcast event so the UI gets a final state.

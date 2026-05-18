@@ -119,6 +119,32 @@ export const systemClock: Clock = {
 /** A 2xx-or-network-error fetch surface, same contract as PreviewRuntime. */
 export type HealthFetchFn = (url: string) => Promise<{ ok: boolean; status: number }>;
 
+/**
+ * Writes the per-group compose override YAML to disk and returns the
+ * absolute path docker should be pointed at, or `null` when no override
+ * should be passed (tests / opt-out installs).
+ *
+ * Production wires the disk-backed implementation in
+ * `preview-runtime-setup.ts`, which writes to
+ * `<dataDir>/preview-compose/<groupId>.yml` with 0600 perms. The runtime
+ * never reads the file itself; docker is the only consumer.
+ */
+export type WriteOverrideFileFn = (opts: {
+  groupId: string;
+  entryService: string;
+  hostPort: number;
+  entryPort: number;
+}) => string | null;
+
+/**
+ * Removes a previously-written override file. Best-effort — a missing
+ * file (because no override was ever written, because cleanup already
+ * ran, or because the operator nuked the dataDir) must not throw.
+ * Mirrors {@link WriteOverrideFileFn} as the cleanup half of the same
+ * disk seam so test doubles can pair the two without pulling in `fs`.
+ */
+export type DeleteOverrideFileFn = (overrideFilePath: string) => void;
+
 export interface PreviewComposeRuntimeConfig {
   /** Default host port range when a project doesn't override. */
   portRange?: PortRange;
@@ -154,6 +180,21 @@ export interface PreviewComposeRuntimeDeps {
     warn: (m: string) => void;
     error: (m: string) => void;
   };
+  /**
+   * Per-group override-file writer. Called once during `startPreview`
+   * after a host port has been allocated. The path it returns is passed
+   * to compose as a second `-f` flag on every up/down spawn for the
+   * group. Defaults to a no-op writer that returns `null` (tests +
+   * opt-out installs run without the override file).
+   */
+  writeOverrideFile?: WriteOverrideFileFn;
+  /**
+   * Cleanup hook for the override file. Called best-effort after
+   * `docker compose down` returns. Defaults to a no-op so the disk
+   * stays untouched in tests; production wires an `fs.rm`-based impl in
+   * `preview-runtime-setup.ts`.
+   */
+  deleteOverrideFile?: DeleteOverrideFileFn;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -204,11 +245,17 @@ export function composeProjectName(sessionId: string): string {
  *
  * Order of flags follows compose's own documented precedence:
  *
- *   docker compose -p <proj> -f <file> [--env-file <env>] up -d --build
+ *   docker compose -p <proj> -f <file> [-f <override>] [--env-file <env>] up -d --build
  *
  * `--build` is included unconditionally — for a worktree preview we
  * always want the entry-service container to reflect the agent's edits,
  * not a stale image from a prior run.
+ *
+ * When `overrideFile` is supplied, it is appended as a second `-f` after
+ * the primary compose file. Compose merges multiple `-f` files left to
+ * right (later wins for scalar fields, later replaces for `ports:`),
+ * which is exactly what we want for the disk-backed override injecting
+ * the host-port mapping for `entryService`.
  *
  * NOTE: this builder produces the **arguments to the `docker` binary**.
  * The caller spawns `docker` with these args; the first element is
@@ -217,9 +264,13 @@ export function composeProjectName(sessionId: string): string {
 export function buildComposeUpArgs(opts: {
   composeProjectName: string;
   composeFile: string;
+  overrideFile?: string | null;
   envFile?: string;
 }): string[] {
   const args: string[] = ['compose', '-p', opts.composeProjectName, '-f', opts.composeFile];
+  if (opts.overrideFile) {
+    args.push('-f', opts.overrideFile);
+  }
   if (opts.envFile) {
     args.push('--env-file', opts.envFile);
   }
@@ -232,21 +283,50 @@ export function buildComposeUpArgs(opts: {
  * `-v` flag drops compose-project-scoped named volumes so the next
  * `up` starts from a clean state (matches what users get on
  * `docker compose down -v` locally).
+ *
+ * Mirrors `buildComposeUpArgs` for the `overrideFile` flag so the
+ * teardown spawn reproduces the up call's `-f` chain exactly. Without
+ * this, a service body that references `${HOST_PORT}` via the override
+ * file would emit "variable is not set" warnings on `down` and may
+ * refuse to act on the referencing service.
  */
 export function buildComposeDownArgs(opts: {
   composeProjectName: string;
   composeFile: string;
+  overrideFile?: string | null;
 }): string[] {
+  const args: string[] = ['compose', '-p', opts.composeProjectName, '-f', opts.composeFile];
+  if (opts.overrideFile) {
+    args.push('-f', opts.overrideFile);
+  }
+  args.push('down', '-v', '--remove-orphans');
+  return args;
+}
+
+/**
+ * Build the YAML body for the disk-backed compose override file. Maps
+ * the runtime-allocated `hostPort` to the service's internal
+ * `entryPort` so the project's own `docker-compose.yml` can declare the
+ * entry service without any Agent-Hub-specific port plumbing.
+ *
+ * Pure helper — exported so tests can pin the exact YAML emitted to disk
+ * without standing up the full runtime.
+ */
+export function buildComposeOverrideYaml(opts: {
+  entryService: string;
+  hostPort: number;
+  entryPort: number;
+}): string {
   return [
-    'compose',
-    '-p',
-    opts.composeProjectName,
-    '-f',
-    opts.composeFile,
-    'down',
-    '-v',
-    '--remove-orphans',
-  ];
+    '# Auto-generated by Agent Hub PreviewComposeRuntime.',
+    '# Maps the runtime-allocated host port to the entry service.',
+    '# Do not edit by hand — regenerated per `startPreview`.',
+    'services:',
+    `  ${opts.entryService}:`,
+    `    ports:`,
+    `      - "${opts.hostPort}:${opts.entryPort}"`,
+    '',
+  ].join('\n');
 }
 
 /**
@@ -301,6 +381,8 @@ export class PreviewComposeRuntime {
   private readonly defaultComposeFile: string;
   private readonly defaultHealthPath: string;
   private readonly logger: NonNullable<PreviewComposeRuntimeDeps['logger']>;
+  private readonly writeOverrideFile: WriteOverrideFileFn;
+  private readonly deleteOverrideFile: DeleteOverrideFileFn;
 
   /** Per-session serialization lock — same shape as PreviewRuntime. */
   private readonly sessionLocks = new Map<string, Promise<unknown>>();
@@ -321,6 +403,8 @@ export class PreviewComposeRuntime {
       warn: (m) => console.warn(m),
       error: (m) => console.error(m),
     };
+    this.writeOverrideFile = deps.writeOverrideFile ?? (() => null);
+    this.deleteOverrideFile = deps.deleteOverrideFile ?? (() => undefined);
     if (this.portRange.min > this.portRange.max) {
       throw new Error(
         `Invalid compose preview port range: ${this.portRange.min}..${this.portRange.max}`,
@@ -416,6 +500,32 @@ export class PreviewComposeRuntime {
 
     const url = this.urlBase(port);
 
+    // Write the disk-backed override file (if a writer was injected).
+    // The file path is persisted on the group row so the matching
+    // `stopPreview` spawns can reproduce the up call's `-f` chain
+    // verbatim. A `null` return from the writer (default tests, opt-out
+    // installs) skips both the persist + the `-f` flag.
+    let overrideFilePath: string | null = null;
+    try {
+      overrideFilePath = this.writeOverrideFile({
+        groupId,
+        entryService: cfg.entryService,
+        hostPort: port,
+        entryPort: cfg.entryPort,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[preview-compose ${groupId}] writeOverrideFile failed: ${reason} (continuing without override)`,
+      );
+      overrideFilePath = null;
+    }
+    if (overrideFilePath) {
+      this.db
+        .prepare(`UPDATE worktree_preview_groups SET override_file_path = ? WHERE id = ?`)
+        .run(overrideFilePath, groupId);
+    }
+
     // Spawn `docker compose up -d --build`. The CLI returns immediately
     // once the containers are dispatched; the health check below is
     // what actually decides "ready". The spawn is best-effort — if
@@ -424,6 +534,7 @@ export class PreviewComposeRuntime {
     const upArgs = buildComposeUpArgs({
       composeProjectName: projectName,
       composeFile: cfg.file,
+      overrideFile: overrideFilePath,
       envFile: cfg.envFile,
     });
 
@@ -513,7 +624,7 @@ export class PreviewComposeRuntime {
     const row = this.db
       .prepare(
         `SELECT g.id, g.session_id, g.project_id, g.compose_project_name,
-                g.worktree_path, g.compose_file, g.entry_port,
+                g.worktree_path, g.compose_file, g.entry_port, g.override_file_path,
                 p.port, p.url
            FROM worktree_preview_groups g
            LEFT JOIN worktree_preview_processes p
@@ -529,6 +640,7 @@ export class PreviewComposeRuntime {
           worktree_path: string | null;
           compose_file: string | null;
           entry_port: number | null;
+          override_file_path: string | null;
           port: number | null;
           url: string | null;
         }
@@ -550,6 +662,7 @@ export class PreviewComposeRuntime {
     const downArgs = buildComposeDownArgs({
       composeProjectName: row.compose_project_name,
       composeFile,
+      overrideFile: row.override_file_path,
     });
     const downEnv: NodeJS.ProcessEnv = {
       ...process.env,
@@ -577,6 +690,20 @@ export class PreviewComposeRuntime {
     // FK ON DELETE CASCADE removes the entry process row + frees its port.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
     this.db.prepare(`DELETE FROM worktree_previews WHERE id = ?`).run(groupId);
+
+    // Best-effort cleanup of the per-group override file. Compose
+    // doesn't need it after `down` exits, and leaving it behind would
+    // grow the dataDir without bound across long-lived deployments.
+    if (row.override_file_path) {
+      try {
+        this.deleteOverrideFile(row.override_file_path);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[preview-compose ${groupId}] deleteOverrideFile failed: ${reason} (ignoring)`,
+        );
+      }
+    }
   }
 
   /**
@@ -595,6 +722,20 @@ export class PreviewComposeRuntime {
       await this.stopPreview(r.id);
     }
     return rows.length;
+  }
+
+  /**
+   * Compose previews don't (yet) buffer stdout/stderr in memory the way
+   * `PreviewRuntime` does — containers log via `docker logs` and the
+   * runtime never reads them. Returns `[]` so callers that branch on
+   * runtime shape (e.g. `preview-block.ts`) don't have to special-case
+   * compose vs spawn. A future enhancement could pipe `docker compose
+   * logs --follow` into an in-memory ring buffer, mirroring the legacy
+   * runtime's tail behaviour.
+   */
+
+  getLogTail(_groupId: string): string[] {
+    return [];
   }
 
   /** Bump `last_active_at` so the reaper's idle-TTL clock resets. */
@@ -718,11 +859,19 @@ export class PreviewComposeRuntime {
    * remaining additions.
    */
   private addComposeProjectNameColumnIfMissing(): void {
+    // `compose_project_name` was promoted to the base schema (see
+    // `preview-schema.ts`) so PreviewRuntime can read it for the
+    // cross-runtime ownership guard without needing the compose runtime
+    // to be constructed first. The ALTER below stays as a no-op on fresh
+    // DBs (the duplicate-column error is swallowed) and the column-
+    // backfill remains the source of truth for legacy DBs that predate
+    // the base-schema promotion.
     const additions = [
       `ALTER TABLE worktree_preview_groups ADD COLUMN compose_project_name TEXT`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN worktree_path TEXT`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN compose_file TEXT`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN entry_port INTEGER`,
+      `ALTER TABLE worktree_preview_groups ADD COLUMN override_file_path TEXT`,
     ];
     for (const stmt of additions) {
       try {

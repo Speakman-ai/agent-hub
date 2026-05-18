@@ -153,6 +153,10 @@ import createChatHandler, {
   type WebSocketLike,
 } from './chat.js';
 
+import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
+import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
+import cron from 'node-cron';
+
 import {
   initAutonomous,
   autonomousCrons,
@@ -635,6 +639,77 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
 
 const activeProcesses = new Map<string, ChildProcess>();
 
+// ─── Preview runtimes ───────────────────────────────────────────────────
+//
+// Both runtimes share the same SQLite DB so the legacy spawn pool and the
+// compose pool see each other's allocated ports through
+// `worktree_preview_processes.port UNIQUE`. The compose runtime's
+// disk-backed override-file writer lives under `<dataDir>/preview-compose`
+// (created on construction with mkdirSync -p semantics).
+//
+// The reaper is scheduled below the runtime construction so it picks up
+// the same instance the chat handler + session archive hooks use; a
+// per-tick orphan check tears down rows whose project has been deleted
+// out from under them.
+const { previewRuntime, previewComposeRuntime } = createPreviewRuntimes({
+  db: getDb(),
+  dataDir: _activeDataDir,
+  notifyLog: ({ sessionId, groupId, processName, line, stream }) => {
+    try {
+      broadcast({
+        type: 'agenthub_preview',
+        kind: 'preview_log',
+        sessionId,
+        previewId: groupId,
+        processName,
+        line,
+        stream,
+      } as Record<string, unknown>);
+    } catch {
+      /* best-effort — never let a broadcast failure stall the spawn */
+    }
+  },
+});
+
+if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
+  // Scheduled per the reaper's documented contract — every 60 s, scan
+  // `worktree_preview_groups` and tear down idle / orphaned rows. We run
+  // both runtimes through the same tick so a compose-mode preview that
+  // never received a `touch` (e.g. the WS session dropped) doesn't
+  // accumulate.
+  //
+  // Cross-runtime ownership is enforced at the runtime layer: each
+  // runtime's `stopPreview` short-circuits when the row's
+  // `compose_project_name` doesn't match its mode (compose runtime
+  // skips NULL; legacy runtime skips non-NULL). So both passes scan
+  // the same table but only act on the rows they own — a compose-only
+  // row passed to the legacy reaper is a guarded no-op rather than a
+  // silent `DELETE FROM worktree_preview_groups` that would leak the
+  // docker stack.
+  cron.schedule(
+    PREVIEW_REAPER_CRON,
+    () => {
+      void runPreviewReaper({
+        db: getDb(),
+        runtime: previewRuntime,
+        getProject: (id) => findProject(id) ?? null,
+      }).catch((err) => {
+        console.warn('[preview-reaper] tick failed:', (err as Error).message);
+      });
+      void runPreviewReaper({
+        db: getDb(),
+        runtime: previewComposeRuntime as unknown as Parameters<
+          typeof runPreviewReaper
+        >[0]['runtime'],
+        getProject: (id) => findProject(id) ?? null,
+      }).catch((err) => {
+        console.warn('[preview-reaper:compose] tick failed:', (err as Error).message);
+      });
+    },
+    { name: 'preview-reaper' },
+  );
+}
+
 /** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
 export const routeDeps: RouteDeps = {
   stmts: stmts!,
@@ -695,6 +770,8 @@ export const routeDeps: RouteDeps = {
   },
   restoreAutonomousCrons,
   scheduleAll,
+  getPreviewRuntime: () => previewRuntime,
+  getPreviewComposeRuntime: () => previewComposeRuntime,
 };
 
 // Visibility gate for every project-scoped route. Mounted ahead of all
@@ -819,6 +896,8 @@ const chatHandler = createChatHandler({
   handleDelegationCancel,
   synthesizeResults: synthesizeResults as ChatHandlerDeps['synthesizeResults'],
   parseDelegateBlock,
+  getPreviewRuntime: () => previewRuntime,
+  getPreviewComposeRuntime: () => previewComposeRuntime,
   autoCommitAndPR,
   tryAutonomousDispatch,
 } as ChatHandlerDeps);

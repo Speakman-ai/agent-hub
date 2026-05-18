@@ -1378,6 +1378,172 @@ describe('defaultReadEnvFile — path traversal containment', () => {
   });
 });
 
+// ─── Cross-runtime ownership ───────────────────────────────────────
+//
+// Both PreviewRuntime and PreviewComposeRuntime share the same
+// `worktree_preview_groups` table. The reaper + session-archive hooks
+// fan a tick across both runtimes. Without per-row ownership guards
+// the legacy runtime would happily DELETE compose-managed rows out
+// from under the compose runtime mid-`docker compose down` — leaking
+// the container stack + the allocated host port.
+//
+// These tests pin the runtime-layer guards added in PR 2 review:
+//   - `stopPreview(<compose row id>)` → early-return, no DELETE.
+//   - `stopBySessionId(<sessionId>)` → only picks up rows whose
+//     `compose_project_name IS NULL`.
+//   - The full reaper pass against a shared DB containing one compose +
+//     one spawn row leaves the compose row intact and no `docker`
+//     binary is spawned.
+
+describe('PreviewRuntime — cross-runtime ownership guard', () => {
+  /**
+   * Seed a compose-managed row + a spawn-managed row in the shared
+   * preview tables. Returns the two group ids so the test can target
+   * them by id without re-querying.
+   */
+  function seedMixedRows(db: Database.Database): { composeId: string; spawnId: string } {
+    // Mirror the columns the compose runtime would write. We do NOT
+    // construct an actual PreviewComposeRuntime here — the point is to
+    // pin the LEGACY runtime's behaviour when handed a row it doesn't
+    // own. The compose runtime's own teardown is exercised in
+    // preview-compose-runtime.test.ts.
+    const composeId = 'g-compose-mixed';
+    const spawnId = 'g-spawn-mixed';
+    db.prepare(
+      `INSERT INTO worktree_preview_groups
+         (id, session_id, project_id, status, compose_project_name)
+       VALUES (?, ?, ?, 'ready', ?)`,
+    ).run(composeId, 'sess-mixed', 'proj-mixed', `agenthub-session-sess-mixed`);
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status)
+       VALUES (?, ?, ?, NULL, ?, ?, NULL, 'ready')`,
+    ).run(`${composeId}:entry`, composeId, 'entry', 4900, 'http://localhost:4900');
+
+    db.prepare(
+      `INSERT INTO worktree_preview_groups
+         (id, session_id, project_id, status, compose_project_name)
+       VALUES (?, ?, ?, 'ready', NULL)`,
+    ).run(spawnId, 'sess-mixed', 'proj-mixed');
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status)
+       VALUES (?, ?, ?, 1234, ?, ?, NULL, 'ready')`,
+    ).run(`${spawnId}:app`, spawnId, 'app', 4901, 'http://localhost:4901');
+
+    return { composeId, spawnId };
+  }
+
+  it('stopPreview refuses a compose-managed row and leaves it in the DB', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      logSink: makeLogSink(),
+    });
+    const { composeId } = seedMixedRows(db);
+
+    await runtime.stopPreview(composeId);
+
+    // Row survives — compose runtime owns its teardown.
+    const row = db.prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`).get(composeId);
+    expect(row).toBeTruthy();
+    // No SIGTERM was sent — the legacy runtime has no in-memory handle
+    // for a row it doesn't own, but we still want to assert the
+    // compose-project-name guard fires *before* any kill attempt.
+    expect(harness.killCalls).toHaveLength(0);
+  });
+
+  it('stopBySessionId picks up only spawn rows when a compose row shares the session', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      logSink: makeLogSink(),
+    });
+    const { composeId, spawnId } = seedMixedRows(db);
+
+    const stopped = await runtime.stopBySessionId('sess-mixed');
+
+    expect(stopped).toBe(1); // only the spawn row counts
+    const composeRow = db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`)
+      .get(composeId);
+    expect(composeRow).toBeTruthy();
+    const spawnRow = db.prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`).get(spawnId);
+    expect(spawnRow).toBeFalsy();
+  });
+
+  it('reaper tick scans mixed rows but leaves the compose row + spawns no docker', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      logSink: makeLogSink(),
+    });
+    const { composeId, spawnId } = seedMixedRows(db);
+
+    // Backdate both rows so the reaper considers them idle.
+    db.prepare(
+      `UPDATE worktree_preview_groups
+          SET last_active_at = datetime('now', '-1 hour')
+        WHERE id IN (?, ?)`,
+    ).run(composeId, spawnId);
+
+    const result = await runPreviewReaper({
+      db,
+      runtime,
+      getProject: () =>
+        ({
+          id: 'proj-mixed',
+          name: 'Mixed',
+          cwd: '/r',
+          ahw: '/a',
+          agents: [],
+          prEnv: {
+            enabled: true,
+            startScript: 'npm run dev',
+            internalPort: 3000,
+            preview: { enabled: true, idleTTL: 60 },
+          },
+        }) as unknown as Project,
+      config: { defaultIdleTtlSeconds: 60 },
+    });
+
+    // Reaper attempted both (scanned=2) — actual `reaped` count is
+    // implementation-detail: the legacy runtime returns silently from
+    // the compose-row stopPreview, so the row stays in the DB and the
+    // count reported can include the silent skip. The important
+    // invariants are below.
+    expect(result.scanned).toBe(2);
+
+    const composeRow = db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`)
+      .get(composeId);
+    expect(composeRow).toBeTruthy();
+    const spawnRow = db.prepare(`SELECT id FROM worktree_preview_groups WHERE id = ?`).get(spawnId);
+    expect(spawnRow).toBeFalsy();
+    // Critically: the legacy runtime must NOT have spawned a `docker`
+    // process trying to tear down a compose stack. The spawn harness
+    // records every spawn call across the test; here it should be
+    // empty (no `docker compose down`, no `kill` either).
+    expect(harness.calls).toHaveLength(0);
+    expect(harness.killCalls).toHaveLength(0);
+  });
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────
 
 /**

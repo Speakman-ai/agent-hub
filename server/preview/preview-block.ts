@@ -29,6 +29,35 @@
 import type { BroadcastFn, Project } from '../types.js';
 import { extractJsonFromTagBody } from '../action-block-parsing.js';
 import type { PreviewRuntime } from './preview-runtime.js';
+import type { PreviewComposeRuntime } from './preview-compose-runtime.js';
+
+/**
+ * Minimal runtime contract the `<agenthub:preview>` handler depends on.
+ * Both {@link PreviewRuntime} (legacy spawn) and {@link PreviewComposeRuntime}
+ * implement this shape, so the dispatch site can hand either one to
+ * {@link handlePreviewBlock} without per-runtime branching here.
+ *
+ * The handler only reads `status` from `getById` and treats `getLogTail`
+ * as best-effort (compose returns `[]` until a future enhancement pipes
+ * `docker compose logs` through an in-memory ring buffer).
+ */
+export interface PreviewRuntimeLike {
+  startPreview: (
+    sessionId: string,
+    project: Project,
+    worktreePath: string,
+  ) => Promise<{ previewId: string; url: string; port: number }>;
+  getById: (previewId: string) => { status: 'starting' | 'ready' | 'failed' } | null;
+  getLogTail: (previewId: string) => string[];
+}
+// Compile-time assertion: both production runtimes satisfy
+// PreviewRuntimeLike. If a future refactor drops a method, this line
+// breaks the build instead of the test suite.
+type _AssertCompatible = PreviewRuntime | PreviewComposeRuntime extends PreviewRuntimeLike
+  ? true
+  : never;
+
+const _previewRuntimeLikeAssertion: _AssertCompatible = true;
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -159,8 +188,12 @@ export interface PreviewHandlerDeps {
    * Runtime constructed at server startup. May be `null` when the runtime
    * isn't wired (e.g. in tests of the chat layer that don't exercise the
    * preview surface) — the handler treats that as `preview_unavailable`.
+   *
+   * Accepts either the legacy {@link PreviewRuntime} (spawn-based) or the
+   * compose-mode {@link PreviewComposeRuntime}. The chat dispatch site
+   * decides which to pass based on `project.prEnv.preview.compose.entryService`.
    */
-  runtime: PreviewRuntime | null;
+  runtime: PreviewRuntimeLike | null;
   broadcast: BroadcastFn;
   project: Project;
   /** Worktree path for the session. Required by `runtime.startPreview`. */
