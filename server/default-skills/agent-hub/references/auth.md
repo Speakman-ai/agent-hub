@@ -545,16 +545,28 @@ tempted to paste secrets into chat or kanban cards.
 `type`, `docs_url`). Registry import and `POST /api/skills/registry`
 reject malformed blocks.
 
-**Schema resolution (`PUT` validation).** The request body must include **`agent_id`**
-(the agent whose Skills panel issued the save). The server resolves the skill's
-`credentials:` block using **only that agent's project workspace**
-`{project.ahw}/skills/{skill_id}` (directory + `SKILL.md`, or legacy flat `.md`),
-**then** bundled `server/default-skills/{skill_id}/SKILL.md`, **then** the
-matching `skill_registry` row — the same order as
-`GET /api/agents/:agentId/skills/:skillId`. Hydrated `project.ahw` comes from
-the in-memory projects list (typically `<dataDir>/persist/projects/<id>`). This
-avoids ambiguous “first matching workspace across all projects” behavior on
-multi-project hosts.
+**Schema resolution (`PUT` validation).** Two flows, gated on whether the
+request body carries `agent_id`:
+
+- **(A) `agent_id` provided** — the SkillsPage editor on a specific agent.
+  The server resolves the skill's `credentials:` block using **that agent's
+  project workspace** `{project.ahw}/skills/{skill_id}` (directory +
+  `SKILL.md`, or legacy flat `.md`), **then** bundled
+  `server/default-skills/{skill_id}/SKILL.md`, **then** the matching
+  `skill_registry` row — the same order as
+  `GET /api/agents/:agentId/skills/:skillId`. Hydrated `project.ahw` comes
+  from the in-memory projects list (typically
+  `<dataDir>/persist/projects/<id>`). This avoids ambiguous "first matching
+  workspace across all projects" behavior on multi-project hosts. JWT
+  callers must also be a member of the agent's active org (apiKey /
+  local-bundled bypass are unaffected).
+- **(B) `agent_id` omitted** — the Account page **My Skill Credentials**
+  panel. Resolution skips every per-project workspace and walks **only**
+  bundled `server/default-skills/{skill_id}/SKILL.md` → `skill_registry`.
+  The agent-scoped RBAC gate does not run — any authenticated user may
+  store their own personal credential for a bundled skill (e.g. Linear).
+  `skill_id` + `key_name` are still required; unknown skills 400 with
+  `invalid credential schema for skill: …`.
 
 **Optional keys.** When a credential is `required: false`, an **empty or
 whitespace-only** `value` yields **no DB row** if none exists yet — the
@@ -571,7 +583,7 @@ be present; global `x-api-key` break-glass alone returns **401**):
 | Endpoint | Method | Purpose |
 | -------- | ------ | ------- |
 | `/me/skill-credentials` | GET | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=` |
-| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id }` — `key_name` must appear in the schema for that skill as resolved for **that** agent (see above) |
+| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id? }` — `agent_id` is **optional**; when set, schema resolution starts from that agent's project workspace (with org-membership RBAC). When omitted, the schema resolves from bundled `server/default-skills/` + `skill_registry` only, no per-agent context. `key_name` must appear in the resolved schema either way. |
 | `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
 
 **Spawn merge.** `mergeSkillCredentialSpawnEnv` in
