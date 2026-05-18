@@ -998,6 +998,75 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   });
 
   /**
+   * Reorder the persisted project list. Body shape:
+   *   { projectIds: string[] }
+   *
+   * `projectIds` must be a permutation of the **caller-visible** project ids
+   * (the same set GET /api/projects returns for this user). The server
+   * splices that subset out, reapplies it in the requested order, and
+   * leaves any non-visible projects (private projects belonging to other
+   * users, etc.) anchored at their existing positions so we don't
+   * accidentally shuffle rows the caller can't see.
+   *
+   * The route is registered BEFORE every `/api/projects/:projectId`
+   * handler so Express doesn't match `projectId="order"`.
+   */
+  router.put('/api/projects/order', (req: Request, res: Response) => {
+    const body = req.body as { projectIds?: unknown };
+    if (!Array.isArray(body.projectIds)) {
+      return res.status(400).json({ error: 'projectIds must be an array of project ids' });
+    }
+    const requested = body.projectIds;
+    if (!requested.every((id): id is string => typeof id === 'string' && id.length > 0)) {
+      return res.status(400).json({ error: 'projectIds must contain non-empty strings' });
+    }
+    if (new Set(requested).size !== requested.length) {
+      return res.status(400).json({ error: 'projectIds must not contain duplicates' });
+    }
+
+    const caller = resolveVisibilityCaller(req);
+    const all = getProjects();
+    const visibleIds = filterVisibleProjects(all, caller).map((p) => p.id);
+    const visibleIdSet = new Set(visibleIds);
+
+    // Every requested id must be one this caller can already see.
+    const unknown = requested.find((id) => !visibleIdSet.has(id));
+    if (unknown) {
+      return res.status(400).json({ error: `Unknown or inaccessible project id: ${unknown}` });
+    }
+    // Every visible id must be present — partial reorders aren't supported.
+    const missing = visibleIds.find((id) => !requested.includes(id));
+    if (missing) {
+      return res.status(400).json({ error: `Missing project id in reorder: ${missing}` });
+    }
+
+    // Walk the current array and rebuild it: when we hit a slot that holds
+    // a caller-visible project, take the next id from `requested` and emit
+    // that project instead. Non-visible projects keep their absolute slot.
+    const byId = new Map(all.map((p) => [p.id, p]));
+    let cursor = 0;
+    const reordered = all.map((p) => {
+      if (!visibleIdSet.has(p.id)) return p;
+      const nextId = requested[cursor++];
+      return byId.get(nextId)!;
+    });
+
+    // Mutate in place so other modules holding the same array reference
+    // (project-model exports the array, not a copy) keep observing the
+    // new order — same pattern delete handlers use with `splice`.
+    all.splice(0, all.length, ...reordered);
+    saveProjects();
+
+    try {
+      broadcast({ type: 'projects_updated', reason: 'projects-reordered' });
+    } catch {
+      /* best-effort — broadcast failure must not fail the request */
+    }
+
+    res.json({ projectIds: filterVisibleProjects(getProjects(), caller).map((p) => p.id) });
+  });
+
+  /**
    * Owner-only admin list of every project in the org, including private
    * ones the Owner does not own. Powers the Settings → Projects table
    * whose only action on non-owned private projects is delete (kill

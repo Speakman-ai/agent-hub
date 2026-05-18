@@ -43,6 +43,14 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Persist the sidebar project order. `projectIds` must be a permutation
+  // of the caller-visible project ids (see PUT /api/projects/order). The
+  // server broadcasts `projects_updated` so other open clients refresh.
+  reorderProjects: (projectIds) =>
+    fetchJSON('/projects/order', {
+      method: 'PUT',
+      body: JSON.stringify({ projectIds }),
+    }),
   // Re-detect preview defaults by sniffing the project's checkout. Pure
   // read — server does not mutate `projects.json`. Returns
   // `{ detected: { stack, startScript, port, captureRoutes, idleTTL } | null }`.

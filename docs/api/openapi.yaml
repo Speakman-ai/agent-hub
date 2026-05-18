@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.25.3
+  version: 1.25.4
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -2523,6 +2523,25 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    ProjectOrderResponse:
+      type: object
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+          description: Caller-visible project ids in their persisted order after the reorder commit.
+      required:
+        - projectIds
+      description: Confirmation of the new project order. Mirrors the visibility-filtered slice the caller would see from GET /api/projects.
+    ProjectOrderErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope returned when the reorder payload is malformed or references projects the caller cannot see.
     WebhookHmacFailureEntry:
       type: object
       properties:
@@ -10105,6 +10124,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/order:
+    put:
+      tags:
+        - Projects
+      summary: Reorder the caller-visible project list
+      description: Reorders `projects.json` so the caller-visible slice matches the supplied id list. Projects the caller cannot see (e.g. private projects owned by other users) keep their absolute slot — only the visible subset is permuted. Broadcasts `projects_updated` over the WebSocket on success so other open clients refresh their sidebars.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  description: Permutation of the caller-visible project ids. Must cover the same set GET /api/projects returns for this user — no missing ids, no extras, no duplicates.
+              required:
+                - projectIds
+              description: Body for PUT /api/projects/order — the new project order.
+      responses:
+        "200":
+          description: Reorder accepted; returns the new caller-visible order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrderResponse"
+        "400":
+          description: Validation failed — body shape was wrong, an id was unknown or inaccessible, an id was missing, or duplicates were supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectOrderErrorResponse"
   /api/webhooks/hmac-failures:
     get:
       tags:
