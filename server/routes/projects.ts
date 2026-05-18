@@ -1028,6 +1028,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const all = getProjects();
     const visibleIds = filterVisibleProjects(all, caller).map((p) => p.id);
     const visibleIdSet = new Set(visibleIds);
+    const requestedSet = new Set(requested);
 
     // Every requested id must be one this caller can already see.
     const unknown = requested.find((id) => !visibleIdSet.has(id));
@@ -1035,7 +1036,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: `Unknown or inaccessible project id: ${unknown}` });
     }
     // Every visible id must be present — partial reorders aren't supported.
-    const missing = visibleIds.find((id) => !requested.includes(id));
+    // O(n) via Set lookup; the previous `requested.includes(id)` was O(n²).
+    const missing = visibleIds.find((id) => !requestedSet.has(id));
     if (missing) {
       return res.status(400).json({ error: `Missing project id in reorder: ${missing}` });
     }
