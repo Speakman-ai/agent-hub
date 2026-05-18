@@ -3387,9 +3387,13 @@ describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
 
   it('does NOT inject GH_TOKEN when no session owner is resolvable', async () => {
     // Regression guard: when the owner lookup yields nothing (legacy install,
-    // tests, or a misconfigured row), we fall back to the Hub process's
-    // ambient git/gh auth — env stays unmodified so we don't accidentally
-    // surface a stale token from process.env.
+    // tests, or a misconfigured row), `autoGitChildEnv` must NOT surface a
+    // stale token from `process.env` and must NOT let the host operator's
+    // gh auth identity (typically the GitHub-App installation
+    // `app/agent-hub-reviewer`) bleed into `git push` / `gh pr create`.
+    // The auto-git identity isolation guarantees env.GH_TOKEN / GITHUB_TOKEN
+    // are undefined here so the push fails loudly instead of silently
+    // shipping a bot-PR.
     const { getSessionOwner, getOrgOwnerUserId } = await import('./session-ownership.js');
     (getSessionOwner as unknown as Mock).mockReturnValue(null);
     (getOrgOwnerUserId as unknown as Mock).mockReturnValue(null);

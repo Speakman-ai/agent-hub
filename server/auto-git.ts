@@ -19,6 +19,7 @@ import { effectivePrBaseBranch } from './kanban-pr-base.js';
 import {
   applyGithubSpawnCredentials,
   resolveOAuthAppCredentials,
+  resolveReviewerGhConfigDir,
 } from './spawn-github-credentials.js';
 import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -55,50 +56,122 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /**
+ * Look up `config.dataDir` defensively for `autoGitChildEnv`'s `GH_CONFIG_DIR`
+ * isolation. Returns `null` when deps are uninitialised (unit tests load this
+ * module without calling `initAutoGit`) or when `getConfig` throws — in those
+ * cases `autoGitChildEnv` simply omits `GH_CONFIG_DIR` and relies on the
+ * env-scrub + empty-credential-helper alone to neutralise host gh auth.
+ */
+function safeResolveDataDir(): string | null {
+  try {
+    const dataDir = deps?.getConfig?.().dataDir;
+    return typeof dataDir === 'string' && dataDir.length > 0 ? dataDir : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append a single `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` entry to the
+ * env. Defensive numeric parse on `GIT_CONFIG_COUNT` so a malformed inherited
+ * value doesn't clobber prior entries. Mirrors the private helper in
+ * `spawn-github-credentials.ts`; duplicated here so the env-scrub path
+ * doesn't have to cross a module boundary just for the bookkeeping.
+ */
+function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string): void {
+  const prevCountRaw = env.GIT_CONFIG_COUNT;
+  const prevCount = (() => {
+    if (typeof prevCountRaw !== 'string') return 0;
+    const n = Number.parseInt(prevCountRaw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  })();
+  const idx = prevCount;
+  env.GIT_CONFIG_COUNT = String(prevCount + 1);
+  env[`GIT_CONFIG_KEY_${idx}`] = key;
+  env[`GIT_CONFIG_VALUE_${idx}`] = value;
+}
+
+/**
  * Child env for `git` / shell steps in this module. Uses the same PATH merge as
  * `buildSpawnEnv` (login shell + fallbacks) without importing `config.ts` — that
  * module has import-time side effects that break unit tests which mock `fs`.
  *
- * When a `githubToken` is supplied, the env is wired so `git push` and `gh` use
- * that exact identity instead of inheriting whatever the Hub process happens to
- * have configured in `~/.gitconfig` or `gh auth login`. This closes the
- * `Authentication failed for 'https://github.com/<user>/...'` failure mode for
- * autonomous-dispatch sessions whose spawn env was deliberately stripped of
- * GitHub credentials (see `selectGithubSpawnToken` in
- * `spawn-github-credentials.ts`): the spawn agent has no creds, but the
- * server-side auto-commit/push runs in the Hub process and must still
- * authenticate as the session owner to reach their private repos.
+ * **Identity isolation is unconditional.** The host operator's `gh auth login`
+ * on the Hub box is typically the GitHub-App installation identity
+ * (`app/agent-hub-reviewer`). If `autoGitChildEnv` simply inherited
+ * `process.env` whenever no per-session-owner OAuth token was reachable,
+ * `git push` / `gh pr create` in `commitPushAndCreatePR` would silently
+ * piggy-back on that identity — and PRs that should be authored by the human
+ * session owner would instead be opened by the reviewer bot. Same root cause
+ * as the spawn-side leak fixed by `applyReviewerSpawnIsolation` (PR #612);
+ * the server-side auto-git path had never been given the equivalent
+ * treatment.
  *
- * Wiring pattern mirrors `applyReviewerSpawnIsolation` +
- * `applyGithubSpawnCredentials` so the *injected* helper wins over any
- * inherited git credential helper:
- *   - empty `credential.https://github.com.helper` first (clears inherited)
- *   - working helper second (emits username=x-access-token, password=$GH_TOKEN)
- *   - `GH_TOKEN` + `GITHUB_TOKEN` set so `gh` picks the same identity
+ * Effects (applied on EVERY call, with or without a supplied `githubToken`):
+ *   - Scrub `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+ *     `GITHUB_ENTERPRISE_TOKEN`. `gh` reads `GH_TOKEN` at higher priority
+ *     than `GH_CONFIG_DIR`, so leaving these in the env would let the host
+ *     operator's identity satisfy `gh pr create` regardless of any other
+ *     isolation we apply.
+ *   - Append a process-scoped empty `credential.https://github.com.helper`
+ *     entry via `GIT_CONFIG_*`. Per git's credential-helper merge rules an
+ *     empty value clears the accumulated helper list from earlier config
+ *     sources (system, global `~/.gitconfig`, local) so `git push` cannot
+ *     satisfy its credential prompt via the host's `gh auth setup-git`
+ *     chain.
+ *   - Point `GH_CONFIG_DIR` at the Hub-managed reviewer-isolation directory
+ *     (`config.dataDir/reviewer-gh-config`) so `gh` cannot fall back to the
+ *     host operator's `~/.config/gh/hosts.yml`. Skipped only when
+ *     `config.dataDir` is unavailable (uninitialised deps in tests).
+ *
+ * When a `githubToken` is supplied (normal path — session owner has a
+ * connected GitHub account), the working credential helper is appended
+ * after the empty entry and `GH_TOKEN` / `GITHUB_TOKEN` are re-set so
+ * `gh` / `git push` authenticate as the human owner.
+ *
+ * When no `githubToken` is supplied the env carries no usable GitHub
+ * credential at all — `git push` and `gh pr create` will fail loudly with
+ * "could not read Username for 'https://github.com'".
+ * `commitPushAndCreatePR` already routes those failures through
+ * `persistAndBroadcastPrFailure`, so the human sees a clear UI message
+ * rather than silently shipping a bot-PR.
  */
 export function autoGitChildEnv(githubToken?: string | null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: resolveSpawnPath(process.env.PATH) };
+
+  // Always scrub inherited GitHub token vars + GH_CONFIG_DIR. The Hub
+  // process can itself be running inside a spawned agent's env (e.g. when a
+  // session spawns a sub-process that calls back into the same module
+  // under test), so just leaving an inherited GH_CONFIG_DIR in place would
+  // re-introduce whatever auth the parent had.
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_ENTERPRISE_TOKEN;
+  delete env.GH_CONFIG_DIR;
+
+  // Always install the empty credential helper BEFORE any working helper.
+  appendGitConfigEntry(env, 'credential.https://github.com.helper', '');
+
+  // Always reroute `GH_CONFIG_DIR` when possible. Best-effort: when deps
+  // aren't initialised the env-scrub + empty-helper above are still
+  // sufficient to neutralise host gh auth via `git push` (and `gh` will
+  // fall back to its own default config dir, which on the prod box is
+  // typically the host operator's `~/.config/gh` — we accept that
+  // fallback because the alternative is breaking unit tests that load the
+  // module without deps).
+  const dataDir = safeResolveDataDir();
+  if (dataDir) {
+    env.GH_CONFIG_DIR = resolveReviewerGhConfigDir({ dataDir });
+  }
+
   if (githubToken) {
-    // Defensively scrub any inherited GitHub token vars from `process.env` so
-    // the helper we install below is the only path that can satisfy `gh` or
-    // the credential prompt — symmetric to `applyReviewerSpawnIsolation`.
-    delete env.GH_TOKEN;
-    delete env.GITHUB_TOKEN;
-    delete env.GH_ENTERPRISE_TOKEN;
-    delete env.GITHUB_ENTERPRISE_TOKEN;
-    // Clear inherited credential helpers for github.com so the host
-    // operator's `~/.gitconfig` cannot override the injected helper.
-    const prevCountRaw = env.GIT_CONFIG_COUNT;
-    const prevCount = (() => {
-      if (typeof prevCountRaw !== 'string') return 0;
-      const n = Number.parseInt(prevCountRaw, 10);
-      return Number.isFinite(n) && n >= 0 ? n : 0;
-    })();
-    env.GIT_CONFIG_COUNT = String(prevCount + 1);
-    env[`GIT_CONFIG_KEY_${prevCount}`] = 'credential.https://github.com.helper';
-    env[`GIT_CONFIG_VALUE_${prevCount}`] = '';
+    // Append the working helper after the empty entry and set GH_TOKEN /
+    // GITHUB_TOKEN. After this `gh pr create` authenticates as the supplied
+    // identity and only as that identity.
     applyGithubSpawnCredentials(env, githubToken);
   }
+
   return env;
 }
 

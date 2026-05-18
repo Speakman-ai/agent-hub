@@ -468,11 +468,14 @@ describe('ensureOperatorBaseBranch — per-user GitHub credential injection', ()
     }
   });
 
-  it('runs unauthenticated (no NEW credential helper appended) when no token resolves, but still attempts the probe', async () => {
-    // The test process env may already carry GH_TOKEN / GIT_CONFIG_KEY_* (the
-    // outer agent's spawn injects them). We can't assert their absence — only
-    // that ensureOperatorBaseBranch did not APPEND new credential-helper
-    // entries on top of whatever was inherited.
+  it('appends the empty-helper sentinel and scrubs inherited GH_TOKEN when no token resolves (auto-git identity isolation)', async () => {
+    // Identity isolation in `autoGitChildEnv` is unconditional: even when no
+    // session-owner token resolves, the empty-helper sentinel is appended and
+    // any inherited `GH_TOKEN` / `GITHUB_TOKEN` is scrubbed so the host
+    // operator's `gh auth login` (typically the GitHub-App installation)
+    // cannot piggy-back into our `git push` / `gh pr create` calls. Without
+    // this, PRs that should be authored by the session owner end up opened
+    // by the bot.
     const preCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
 
     const envs = captureExecEnv({
@@ -485,13 +488,18 @@ describe('ensureOperatorBaseBranch — per-user GitHub credential injection', ()
     expect(outcome).toBe('exists');
     expect(envs.length).toBeGreaterThanOrEqual(2);
     for (const env of envs) {
-      // No token → autoGitChildEnv adds zero entries.
+      // Empty-helper sentinel appended.
       const postCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
-      expect(postCount).toBe(preCount);
+      expect(postCount).toBe(preCount + 1);
+      expect(env[`GIT_CONFIG_KEY_${preCount}`]).toBe('credential.https://github.com.helper');
+      expect(env[`GIT_CONFIG_VALUE_${preCount}`]).toBe('');
+      // Host-inherited token vars scrubbed.
+      expect(env.GH_TOKEN).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
     }
   });
 
-  it('runs without appending credential entries when called without opts (pre-fix shape preserved)', async () => {
+  it('always scrubs inherited GH_TOKEN and appends the empty-helper sentinel when called without opts', async () => {
     const preCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
 
     const envs: NodeJS.ProcessEnv[] = [];
@@ -513,12 +521,16 @@ describe('ensureOperatorBaseBranch — per-user GitHub credential injection', ()
 
     const outcome = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
     expect(outcome).toBe('exists');
-    // Without opts the function passes `env: autoGitChildEnv(null)` which is
-    // a clone of process.env (PATH-normalised) with NO new credential helper
-    // entries. Pre-fix and post-fix shapes are observationally equivalent here.
+    // Without opts the function passes `env: autoGitChildEnv(null)`. The
+    // post-fix shape always carries the empty-helper sentinel + scrubbed
+    // token vars; there is no longer a "no isolation when no token" mode.
     for (const env of envs) {
       const postCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10) || 0;
-      expect(postCount).toBe(preCount);
+      expect(postCount).toBe(preCount + 1);
+      expect(env[`GIT_CONFIG_KEY_${preCount}`]).toBe('credential.https://github.com.helper');
+      expect(env[`GIT_CONFIG_VALUE_${preCount}`]).toBe('');
+      expect(env.GH_TOKEN).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
     }
   });
 

@@ -174,9 +174,12 @@ export interface EnsureOperatorBaseBranchOptions {
    * auto-commit/push path in `auto-git.ts` so the ls-remote / fetch /
    * push probe authenticates the same way.
    *
-   * When omitted, git inherits the Hub process env unchanged (pre-fix
-   * behaviour; preserved for existing unit tests that don't need to
-   * exercise the credential path).
+   * Note: regardless of whether this is supplied, `autoGitChildEnv` always
+   * scrubs inherited `GH_TOKEN` / `GITHUB_TOKEN` and installs the empty
+   * `credential.https://github.com.helper` sentinel so the host operator's
+   * `gh auth login` (typically a GitHub-App installation token) cannot
+   * piggy-back on this probe. The only effect of omitting this option is
+   * that no per-user token gets injected — git then runs unauthenticated.
    */
   config?: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
   /**
@@ -198,11 +201,12 @@ export interface EnsureOperatorBaseBranchOptions {
  * **Credentials**: when `opts.config` (or `opts.resolveToken`) is supplied,
  * the spawned `git` processes inherit a `GH_TOKEN` + process-scoped
  * credential helper for `https://github.com` — wired by `autoGitChildEnv`.
- * Without that wiring the probe runs under the Hub process's ambient env,
- * which on most multi-tenant installs has no GitHub credentials reachable
- * for an operator-owned private repo. That mismatch is the failure mode
- * tracked in `troubleshooting-auto-commit-push-authentication-failed-...`,
- * extended to this code path.
+ * Even without a supplied token, `autoGitChildEnv` always scrubs inherited
+ * `GH_TOKEN` / `GITHUB_TOKEN` and installs the empty-helper sentinel so the
+ * host operator's `gh auth login` cannot piggy-back on this probe and turn
+ * the run into a bot-attributed operation. See the "Auto-PRs opened by
+ * reviewer bot instead of session owner" fix and the
+ * `troubleshooting-auto-commit-push-authentication-failed-...` runbook.
  */
 export async function ensureOperatorBaseBranch(
   project: Project,
