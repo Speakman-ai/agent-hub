@@ -16,6 +16,12 @@
  *   - Cursor:  spawn env `HOME=<path>` (cursor-agent reads $HOME/.cursor)
  *   - Codex:   spawn env `CODEX_HOME=<path>` (codex CLI reads $CODEX_HOME
  *              if set, otherwise $HOME/.codex)
+ *   - Gemini:  in the allowlist for forward-compatibility with the P3/P4
+ *              wiring epic. Today the gemini CLI does not read a dedicated
+ *              env var — when we wire it, the path returned here will be
+ *              used as `HOME` (same shape as Cursor) so the CLI's
+ *              `$HOME/.gemini` cache lands in our isolated tree. Allowing
+ *              it here now keeps the wiring PR small.
  *
  * The card explicitly scopes wiring (P3/P4) out — this module just
  * provides the safe path + create primitive that those endpoints will
@@ -29,12 +35,15 @@
  *   - `userId` is checked against a strict charset before becoming a path
  *     segment — defence-in-depth against traversal.
  *   - Directories are created mode 0700 (owner-only). After mkdir we
- *     re-stat and confirm the directory is owned by the running process
+ *     re-stat the leaf and confirm it is owned by the running process
  *     UID; a mismatch throws so we never hand a misowned cache to a CLI
  *     spawn (this would normally only happen if an operator manually
- *     pre-created the tree under another account).
+ *     pre-created the tree under another account). The guard is
+ *     scoped to the leaf only — it is not defence-in-depth for the
+ *     parent `<engine>/` dir, which the operator's deploy account
+ *     owns end-to-end in the production threat model.
  */
-import { mkdirSync, statSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, statSync, rmSync } from 'fs';
 import path from 'path';
 
 const ROOT_SUBDIR = 'per-user-cli-home';
@@ -90,15 +99,16 @@ export function perUserCliHomePath(engine: string, userId: string, dataDir: stri
 export function ensurePerUserCliHome(engine: string, userId: string, dataDir: string): string {
   const target = perUserCliHomePath(engine, userId, dataDir);
 
-  // mkdirSync with recursive: true is a no-op on existing dirs and only
-  // applies `mode` to leaves it had to create. The parent
-  // (`<engine>/`) gets re-locked below to keep semantics consistent.
+  // mkdirSync with recursive: true is a no-op on existing leaves. Note
+  // that `mode` is only applied to directories it actually creates —
+  // pre-existing parent dirs keep their existing mode. We rely on the
+  // first call for a given (engine, user) pair to create the parent
+  // `<engine>/` dir alongside the leaf; subsequent calls find both
+  // already present. We deliberately do NOT chmod the parent on every
+  // call: if an operator legitimately tightened or loosened it, we
+  // don't want to fight them. The ownership guard below only protects
+  // the leaf (see header).
   mkdirSync(target, { recursive: true, mode: 0o700 });
-  try {
-    mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-  } catch {
-    /* parent already existed with whatever perms */
-  }
 
   // Ownership guard. `geteuid` is undefined on Windows; skip cleanly.
   const geteuid = (process as NodeJS.Process & { geteuid?: () => number }).geteuid?.bind(process);
@@ -130,6 +140,7 @@ export function ensurePerUserCliHome(engine: string, userId: string, dataDir: st
  */
 export function clearPerUserCliHome(engine: string, userId: string, dataDir: string): void {
   const target = perUserCliHomePath(engine, userId, dataDir);
-  if (!existsSync(target)) return;
+  // `force: true` makes rmSync a no-op when the path doesn't exist, so
+  // we don't need an existsSync probe first.
   rmSync(target, { recursive: true, force: true });
 }

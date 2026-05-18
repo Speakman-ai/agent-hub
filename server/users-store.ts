@@ -16,6 +16,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getOrgsDb } from './orgs.js';
 import { getAuthRecord } from './auth-store.js';
+import { encryptSecret, decryptSecret } from './secret-crypto.js';
 
 export interface UserRow {
   id: string;
@@ -83,13 +84,144 @@ export function updateUserPassword(id: string, passwordHash: string): void {
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
 }
 
+// ── Per-user engine credential encryption-at-rest ──────────────────
+//
+// Every per-user engine credential column (anthropic_api_key,
+// claude_code_oauth_token, cursor_api_key, gemini_api_key,
+// codex_api_key) is stored encrypted via the shared AES-256-GCM helper
+// in `secret-crypto.ts` (same key file as Slack tokens and skill
+// credentials). The encrypted blob shape is `iv:tag:ciphertext` —
+// three colon-separated base64 segments where the IV decodes to 12
+// bytes and the auth tag decodes to 16 bytes.
+//
+// We migrate legacy plaintext rows lazily. Installations predating this
+// change have rows whose value is a raw API key / token string — we
+// detect those by checking that the stored blob doesn't match the
+// encrypted shape, decrypt-equivalent (i.e. treat as plaintext), and
+// rewrite the column with an encrypted blob on the next read. Writes
+// always produce encrypted blobs.
+//
+// Audit: every credential write emits a row to `user_engine_auth_audit`
+// (one row per field, so a single PUT /api/auth/me/claude-auth that
+// changes both `anthropicApiKey` and `claudeCodeOAuthToken` produces
+// two rows). The action is `delete` when the new value is empty/null
+// AND the previous value was set; `upsert` otherwise.
+
+type EngineAuditTag = 'claude' | 'cursor' | 'gemini' | 'codex';
+
+const ENCRYPTED_BLOB_RE = /^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/;
+
+/**
+ * Heuristic test for "this column value is a v1 encrypted blob from
+ * `encryptSecret()`" vs "this column value is legacy plaintext that
+ * predates encryption-at-rest".
+ *
+ * The blob shape is precise enough that a real API key / OAuth token
+ * (typically `sk-ant-…`, `sk-…`, `oat01-…`, no embedded colons, often
+ * containing characters base64 doesn't admit such as `_` or `-` at
+ * positions that break the segment regex) won't false-positive into
+ * the "encrypted" branch — the segment lengths and the strict charset
+ * mean a base64-decode-and-length-check on IV (12 bytes) and tag (16
+ * bytes) is the authoritative tie-breaker on the rare ambiguous case.
+ */
+function looksLikeEncryptedBlob(value: string): boolean {
+  if (!value || !ENCRYPTED_BLOB_RE.test(value)) return false;
+  const parts = value.split(':');
+  if (parts.length !== 3) return false;
+  try {
+    const iv = Buffer.from(parts[0], 'base64');
+    const tag = Buffer.from(parts[1], 'base64');
+    if (iv.length !== 12 || tag.length !== 16) return false;
+    // ciphertext can be any length (including 0 for an empty plaintext that
+    // we never actually emit — encryptSecret short-circuits on '').
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decrypt a column value. Returns the plaintext when the value is an
+ * encrypted blob; returns the value unchanged when it doesn't match the
+ * blob shape (legacy plaintext row — caller is expected to backfill by
+ * rewriting the column with an encrypted blob). Returns null for
+ * null/empty inputs and for blobs whose AES-GCM auth tag check fails
+ * (corrupt ciphertext — we'd rather surface "no credential" than throw
+ * up the chain into the spawn path).
+ */
+function decryptCredentialColumn(value: string | null): string | null {
+  if (value == null || value === '') return null;
+  if (!looksLikeEncryptedBlob(value)) {
+    // Legacy plaintext row predating encryption-at-rest.
+    return value;
+  }
+  try {
+    const plaintext = decryptSecret(value);
+    return plaintext === '' ? null : plaintext;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encrypt a plaintext credential for storage. Empty / whitespace-only
+ * input collapses to null so a "clear field" PUT lands as a SQL NULL
+ * rather than as ciphertext-of-empty-string.
+ */
+function encryptCredentialForStorage(plaintext: string | null): string | null {
+  if (plaintext == null) return null;
+  const trimmed = plaintext.trim();
+  if (trimmed.length === 0) return null;
+  return encryptSecret(trimmed);
+}
+
+interface AuditOpts {
+  userId: string;
+  engine: EngineAuditTag;
+  field: string;
+  action: 'upsert' | 'delete';
+  actorUserId: string;
+}
+
+function appendAuthAudit(opts: AuditOpts): void {
+  const db = getOrgsDb();
+  try {
+    db.prepare(
+      `INSERT INTO user_engine_auth_audit (id, user_id, engine, field, action, actor_user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(uuidv4(), opts.userId, opts.engine, opts.field, opts.action, opts.actorUserId);
+  } catch {
+    // Best-effort — never let an audit write failure break the credential
+    // update itself. The credential write is the user-visible action; a
+    // missing audit row is observable later but losing the credential is
+    // not recoverable. Matches the `try/best-effort` posture in
+    // `skill-credentials-store.ts::backfillPreview`.
+  }
+}
+
+/**
+ * Rewrite a single user column with an encrypted blob. Used during
+ * lazy backfill (legacy plaintext detected on read → encrypt it in
+ * place) so the on-disk shape converges to encrypted-only over time.
+ */
+function backfillEncryptedColumn(userId: string, column: string, plaintext: string): void {
+  try {
+    const enc = encryptSecret(plaintext);
+    getOrgsDb().prepare(`UPDATE users SET ${column} = ? WHERE id = ?`).run(enc, userId);
+  } catch {
+    // Best-effort — surface the plaintext value on this read regardless;
+    // we'll try again on the next read.
+  }
+}
+
 // ── Per-user Claude credentials ─────────────────────────────────────
 //
 // Each user may attach an Anthropic API key and/or a `claude setup-token`
 // OAuth bearer. `buildSpawnEnv` prefers the session owner's values when
 // present, falling back to the host-wide `config.json`. Storing on the
-// users row mirrors the existing GitHub OAuth columns; encryption at rest
-// is tracked as a follow-up.
+// users row mirrors the existing GitHub OAuth columns. The two secret
+// columns are encrypted-at-rest via the helpers above; OAuth-expiry and
+// `claude_auth_updated_at` are non-secret metadata and stay plaintext.
 
 export interface UserClaudeAuth {
   anthropicApiKey: string | null;
@@ -115,9 +247,28 @@ export function getUserClaudeAuth(userId: string): UserClaudeAuth | null {
     )
     .get(userId) as UserClaudeAuthRow | undefined;
   if (!row) return null;
+  // Decrypt + lazy backfill: legacy plaintext rows get rewritten as
+  // encrypted blobs on first read so the on-disk shape converges over
+  // time without requiring a one-shot migration.
+  const anthropicApiKey = decryptCredentialColumn(row.anthropic_api_key);
+  if (
+    anthropicApiKey !== null &&
+    row.anthropic_api_key &&
+    !looksLikeEncryptedBlob(row.anthropic_api_key)
+  ) {
+    backfillEncryptedColumn(userId, 'anthropic_api_key', anthropicApiKey);
+  }
+  const claudeCodeOAuthToken = decryptCredentialColumn(row.claude_code_oauth_token);
+  if (
+    claudeCodeOAuthToken !== null &&
+    row.claude_code_oauth_token &&
+    !looksLikeEncryptedBlob(row.claude_code_oauth_token)
+  ) {
+    backfillEncryptedColumn(userId, 'claude_code_oauth_token', claudeCodeOAuthToken);
+  }
   return {
-    anthropicApiKey: row.anthropic_api_key ?? null,
-    claudeCodeOAuthToken: row.claude_code_oauth_token ?? null,
+    anthropicApiKey,
+    claudeCodeOAuthToken,
     claudeCodeOAuthExpiresAt: row.claude_code_oauth_expires_at ?? null,
     updatedAt: row.claude_auth_updated_at ?? null,
   };
@@ -128,6 +279,19 @@ export function getUserClaudeAuth(userId: string): UserClaudeAuth | null {
  * in `patch` are written. Pass an empty string to clear a field; pass
  * `undefined` to leave it untouched.
  *
+ * Secrets are encrypted at rest via `encryptSecret()` before they touch
+ * the DB. Every secret-field write emits one row to
+ * `user_engine_auth_audit` — `upsert` when the new value is non-empty,
+ * `delete` when the new value clears a previously-set field. Pure
+ * metadata writes (changing only `claudeCodeOAuthExpiresAt`) do not
+ * emit audit rows; the OAuth expiry is non-sensitive bookkeeping that
+ * the OAuth callback can churn without operator interest.
+ *
+ * `actorUserId` defaults to the row owner because today's only caller
+ * is the per-user PUT route (you can only modify your own creds), but
+ * keeping it as an opt-out parameter leaves room for a future
+ * admin-impersonation endpoint.
+ *
  * Returns the post-update row, or null if the user does not exist.
  */
 export function setUserClaudeAuth(
@@ -137,44 +301,70 @@ export function setUserClaudeAuth(
     claudeCodeOAuthToken?: string | null;
     claudeCodeOAuthExpiresAt?: string | null;
   },
+  opts?: { actorUserId?: string },
 ): UserClaudeAuth | null {
   const db = getOrgsDb();
   const existing = getUserClaudeAuth(userId);
   if (!existing) return null;
+  const actorUserId = opts?.actorUserId ?? userId;
 
-  const next = {
-    anthropic_api_key:
-      patch.anthropicApiKey === undefined
-        ? existing.anthropicApiKey
-        : normalizeStoredCredential(patch.anthropicApiKey),
-    claude_code_oauth_token:
-      patch.claudeCodeOAuthToken === undefined
-        ? existing.claudeCodeOAuthToken
-        : normalizeStoredCredential(patch.claudeCodeOAuthToken),
-    claude_code_oauth_expires_at:
-      patch.claudeCodeOAuthExpiresAt === undefined
-        ? existing.claudeCodeOAuthExpiresAt
-        : patch.claudeCodeOAuthExpiresAt || null,
-    claude_auth_updated_at: new Date().toISOString(),
-  };
+  const nextAnthropic =
+    patch.anthropicApiKey === undefined
+      ? existing.anthropicApiKey
+      : normalizeStoredCredential(patch.anthropicApiKey);
+  const nextOauth =
+    patch.claudeCodeOAuthToken === undefined
+      ? existing.claudeCodeOAuthToken
+      : normalizeStoredCredential(patch.claudeCodeOAuthToken);
+  const nextExpiresAt =
+    patch.claudeCodeOAuthExpiresAt === undefined
+      ? existing.claudeCodeOAuthExpiresAt
+      : patch.claudeCodeOAuthExpiresAt || null;
+  const nextUpdatedAt = new Date().toISOString();
 
   db.prepare(
     `UPDATE users
      SET anthropic_api_key = ?, claude_code_oauth_token = ?, claude_code_oauth_expires_at = ?, claude_auth_updated_at = ?
      WHERE id = ?`,
   ).run(
-    next.anthropic_api_key,
-    next.claude_code_oauth_token,
-    next.claude_code_oauth_expires_at,
-    next.claude_auth_updated_at,
+    encryptCredentialForStorage(nextAnthropic),
+    encryptCredentialForStorage(nextOauth),
+    nextExpiresAt,
+    nextUpdatedAt,
     userId,
   );
 
+  // Audit. Only emit when the caller actually touched a secret field —
+  // a metadata-only PUT (expiresAt) is bookkeeping and is intentionally
+  // not audited.
+  if (patch.anthropicApiKey !== undefined) {
+    const action: 'upsert' | 'delete' =
+      nextAnthropic == null && existing.anthropicApiKey != null ? 'delete' : 'upsert';
+    appendAuthAudit({
+      userId,
+      engine: 'claude',
+      field: 'anthropic_api_key',
+      action,
+      actorUserId,
+    });
+  }
+  if (patch.claudeCodeOAuthToken !== undefined) {
+    const action: 'upsert' | 'delete' =
+      nextOauth == null && existing.claudeCodeOAuthToken != null ? 'delete' : 'upsert';
+    appendAuthAudit({
+      userId,
+      engine: 'claude',
+      field: 'claude_code_oauth_token',
+      action,
+      actorUserId,
+    });
+  }
+
   return {
-    anthropicApiKey: next.anthropic_api_key,
-    claudeCodeOAuthToken: next.claude_code_oauth_token,
-    claudeCodeOAuthExpiresAt: next.claude_code_oauth_expires_at,
-    updatedAt: next.claude_auth_updated_at,
+    anthropicApiKey: nextAnthropic,
+    claudeCodeOAuthToken: nextOauth,
+    claudeCodeOAuthExpiresAt: nextExpiresAt,
+    updatedAt: nextUpdatedAt,
   };
 }
 
@@ -217,17 +407,26 @@ function getSingleKeyAuth(
     )
     .get(userId) as SingleKeyRow | undefined;
   if (!row) return null;
+  const decrypted = decryptCredentialColumn(row.api_key);
+  // Lazy backfill: a legacy plaintext row gets rewritten as an encrypted
+  // blob on first read so the column converges to encrypted-only without
+  // a one-shot migration.
+  if (decrypted !== null && row.api_key && !looksLikeEncryptedBlob(row.api_key)) {
+    backfillEncryptedColumn(userId, keyCol, decrypted);
+  }
   return {
-    apiKey: row.api_key ?? null,
+    apiKey: decrypted,
     updatedAt: row.auth_updated_at ?? null,
   };
 }
 
 function setSingleKeyAuth(
   userId: string,
+  engine: EngineAuditTag,
   keyCol: string,
   updatedCol: string,
   patch: { apiKey?: string | null },
+  actorUserId?: string | null,
 ): UserSingleKeyAuth | null {
   const db = getOrgsDb();
   const existing = getSingleKeyAuth(userId, keyCol, updatedCol);
@@ -238,10 +437,27 @@ function setSingleKeyAuth(
   const nextUpdated = new Date().toISOString();
 
   db.prepare(`UPDATE users SET ${keyCol} = ?, ${updatedCol} = ? WHERE id = ?`).run(
-    nextKey,
+    encryptCredentialForStorage(nextKey),
     nextUpdated,
     userId,
   );
+
+  // Audit. Only emit when the caller passed `apiKey` explicitly — a
+  // patch that omits the field is a no-op write of the same value
+  // (intentional, see `patch.apiKey === undefined` above) and we don't
+  // want a NO-CHANGE update from another caller to pollute the audit
+  // log with phantom rotations.
+  if (patch.apiKey !== undefined) {
+    const action: 'upsert' | 'delete' =
+      nextKey == null && existing.apiKey != null ? 'delete' : 'upsert';
+    appendAuthAudit({
+      userId,
+      engine,
+      field: keyCol,
+      action,
+      actorUserId: actorUserId ?? userId,
+    });
+  }
 
   return { apiKey: nextKey, updatedAt: nextUpdated };
 }
@@ -253,8 +469,16 @@ export function getUserCursorAuth(userId: string): UserSingleKeyAuth | null {
 export function setUserCursorAuth(
   userId: string,
   patch: { apiKey?: string | null },
+  opts?: { actorUserId?: string },
 ): UserSingleKeyAuth | null {
-  return setSingleKeyAuth(userId, 'cursor_api_key', 'cursor_auth_updated_at', patch);
+  return setSingleKeyAuth(
+    userId,
+    'cursor',
+    'cursor_api_key',
+    'cursor_auth_updated_at',
+    patch,
+    opts?.actorUserId,
+  );
 }
 
 export function getUserGeminiAuth(userId: string): UserSingleKeyAuth | null {
@@ -264,8 +488,16 @@ export function getUserGeminiAuth(userId: string): UserSingleKeyAuth | null {
 export function setUserGeminiAuth(
   userId: string,
   patch: { apiKey?: string | null },
+  opts?: { actorUserId?: string },
 ): UserSingleKeyAuth | null {
-  return setSingleKeyAuth(userId, 'gemini_api_key', 'gemini_auth_updated_at', patch);
+  return setSingleKeyAuth(
+    userId,
+    'gemini',
+    'gemini_api_key',
+    'gemini_auth_updated_at',
+    patch,
+    opts?.actorUserId,
+  );
 }
 
 export function getUserCodexAuth(userId: string): UserSingleKeyAuth | null {
@@ -275,8 +507,60 @@ export function getUserCodexAuth(userId: string): UserSingleKeyAuth | null {
 export function setUserCodexAuth(
   userId: string,
   patch: { apiKey?: string | null },
+  opts?: { actorUserId?: string },
 ): UserSingleKeyAuth | null {
-  return setSingleKeyAuth(userId, 'codex_api_key', 'codex_auth_updated_at', patch);
+  return setSingleKeyAuth(
+    userId,
+    'codex',
+    'codex_api_key',
+    'codex_auth_updated_at',
+    patch,
+    opts?.actorUserId,
+  );
+}
+
+// ── Audit-row reader (admin tooling + tests) ────────────────────────
+
+export interface EngineAuthAuditRow {
+  id: string;
+  user_id: string;
+  engine: EngineAuditTag;
+  field: string;
+  action: 'upsert' | 'delete';
+  actor_user_id: string;
+  created_at: string;
+}
+
+/**
+ * Returns the audit trail for a given user's engine credentials, newest
+ * first. Filterable by engine when the caller only cares about one
+ * vendor. Returns [] when the user has never written a credential.
+ *
+ * Intended for admin tooling (the operator dashboard's "who rotated
+ * what when" view) and for tests asserting that PUT routes emitted the
+ * expected audit rows.
+ */
+export function listUserEngineAuthAudit(
+  userId: string,
+  filter?: { engine?: EngineAuditTag },
+): EngineAuthAuditRow[] {
+  const db = getOrgsDb();
+  if (filter?.engine) {
+    return db
+      .prepare(
+        `SELECT * FROM user_engine_auth_audit
+         WHERE user_id = ? AND engine = ?
+         ORDER BY created_at DESC, id DESC`,
+      )
+      .all(userId, filter.engine) as EngineAuthAuditRow[];
+  }
+  return db
+    .prepare(
+      `SELECT * FROM user_engine_auth_audit
+       WHERE user_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(userId) as EngineAuthAuditRow[];
 }
 
 /**
