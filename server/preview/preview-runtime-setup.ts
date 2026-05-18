@@ -36,7 +36,6 @@ import {
   PreviewComposeRuntime,
   buildComposeOverrideYaml,
   type PreviewComposeRuntimeConfig,
-  type WriteOverrideFileFn,
   type DeleteOverrideFileFn,
   type HealthFetchFn as ComposeHealthFetchFn,
 } from './preview-compose-runtime.js';
@@ -66,6 +65,20 @@ export interface CreatePreviewRuntimesResult {
 }
 
 /**
+ * Tighter return type than the runtime's `WriteOverrideFileFn` contract
+ * (which permits `string | null` for opt-out writers). The disk-backed
+ * impl always produces a path, so callers + tests don't have to
+ * non-null assert. Assignable to the looser runtime type since `string`
+ * is a subtype of `string | null`.
+ */
+type DiskOverrideFileWriter = (opts: {
+  groupId: string;
+  entryService: string;
+  hostPort: number;
+  entryPort: number;
+}) => string;
+
+/**
  * Build the disk-backed `writeOverrideFile` impl scoped to
  * `composeOverrideDir`. Exported so tests can pin the exact write
  * behaviour (path, perms, body) without standing up the full runtime.
@@ -79,7 +92,8 @@ export interface CreatePreviewRuntimesResult {
  * Perms are `0o600` (owner read/write only) — compose is spawned by
  * the same account so the docker CLI can still resolve the file.
  */
-export function buildDiskOverrideFileWriter(composeOverrideDir: string): WriteOverrideFileFn {
+
+export function buildDiskOverrideFileWriter(composeOverrideDir: string): DiskOverrideFileWriter {
   return ({ groupId, entryService, hostPort, entryPort }) => {
     const safeId = groupId.replace(/[^A-Za-z0-9_-]/g, '');
     if (!safeId) {
