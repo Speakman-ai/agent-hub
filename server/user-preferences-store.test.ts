@@ -41,12 +41,12 @@ describe('user-preferences-store', () => {
     replaceUserPreferencesJson(id, {
       engineDefaultModels: {
         'claude-code': 'claude-opus-4-7',
-        'cursor-agent': 'composer-2',
+        'cursor-agent': 'composer-2.5',
       },
     });
     const loaded = getUserPreferencesRow(id);
     expect(loaded.engineDefaultModels?.['claude-code']).toBe('claude-opus-4-7');
-    expect(loaded.engineDefaultModels?.['cursor-agent']).toBe('composer-2');
+    expect(loaded.engineDefaultModels?.['cursor-agent']).toBe('composer-2.5');
 
     replaceUserPreferencesJson(id, { engineDefaultModels: {} });
     expect(getUserPreferencesRow(id)).toEqual({});

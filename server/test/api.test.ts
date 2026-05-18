@@ -821,7 +821,7 @@ describe('Agents', () => {
         projectId: proj.id as string,
         name: 'Bulk A2',
         engine: 'cursor-agent',
-        model: 'composer-2',
+        model: 'composer-2.5',
       });
       const res = await request
         .post('/api/agents/bulk-engine')

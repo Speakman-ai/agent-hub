@@ -125,7 +125,7 @@ function setupHarness(opts: {
         codexDangerBypass: true,
         engineDefaultModels: {
           'claude-code': 'claude-opus-4-7',
-          'cursor-agent': 'composer-2',
+          'cursor-agent': 'composer-2.5',
           'gemini-cli': 'gemini-2.5-pro',
           'codex-cli': 'gpt-5.3-codex',
         },

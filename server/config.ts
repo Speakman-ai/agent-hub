@@ -60,7 +60,7 @@ try {
   }
 }
 
-/** Strip legacy Cursor-IDE / Codex IDs from cursor-agent — Hub only spawns composer-2. */
+/** Strip legacy Cursor-IDE / Codex IDs from cursor-agent — Hub only spawns composer-2.5. */
 function normalizeCursorAgentEngineModels(map: Record<string, string[]>): Record<string, string[]> {
   const next = { ...map };
   const hub = new Set<string>(CURSOR_AGENT_HUB_MODEL_ALLOWLIST);
@@ -171,7 +171,7 @@ const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineVal
 
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-7',
-  'cursor-agent': 'composer-2',
+  'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
   // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
   // accepted under BOTH auth modes (ChatGPT OAuth and API-key). Older IDs
@@ -261,7 +261,7 @@ export function pickBin(
 }
 const cursorAllowed = mergedEngineValidModels['cursor-agent'] || [];
 if (!cursorAllowed.includes(mergedEngineDefaultModels['cursor-agent'])) {
-  mergedEngineDefaultModels['cursor-agent'] = cursorAllowed[0] || 'composer-2';
+  mergedEngineDefaultModels['cursor-agent'] = cursorAllowed[0] || 'composer-2.5';
 }
 
 const config: AppConfig = {

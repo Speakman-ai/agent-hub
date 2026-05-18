@@ -18,7 +18,7 @@ export const ENGINE_MODELS = {
     { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
-  'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
+  'cursor-agent': [{ id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' }],
   // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
   // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) are rejected
   // with HTTP 400 by the ChatGPT backend. Keep in sync with server/config.ts
@@ -33,7 +33,7 @@ export const ENGINE_MODELS = {
 
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-7',
-  'cursor-agent': 'composer-2',
+  'cursor-agent': 'composer-2.5',
   'codex-cli': 'gpt-5.3-codex',
 };
 

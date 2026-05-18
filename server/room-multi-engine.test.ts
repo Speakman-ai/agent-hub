@@ -71,7 +71,7 @@ describe('buildRoomSpawnArgs', () => {
       buildRoomSpawnArgs({
         ...baseInput,
         engine: 'cursor-agent',
-        model: 'composer-2',
+        model: 'composer-2.5',
       }),
     ).toThrow('cursor-agent requires cursorChatId');
   });
@@ -80,7 +80,7 @@ describe('buildRoomSpawnArgs', () => {
     const plan = buildRoomSpawnArgs({
       ...baseInput,
       engine: 'cursor-agent',
-      model: 'composer-2',
+      model: 'composer-2.5',
       cursorChatId: 'cur-fresh-123',
     });
     expect(plan.bin).toBe(bins.cursor);
@@ -91,7 +91,7 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args[pIdx + 1]).toContain('transcript + you are Dev');
     expect(plan.args).toContain('--force');
     expect(plan.args).toContain('--model');
-    expect(plan.args[plan.args.indexOf('--model') + 1]).toBe('composer-2');
+    expect(plan.args[plan.args.indexOf('--model') + 1]).toBe('composer-2.5');
     expect(plan.args).toContain('--resume');
     expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe('cur-fresh-123');
     expect(plan.args).toContain('--output-format');

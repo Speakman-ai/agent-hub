@@ -180,7 +180,7 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     'codex-cli': 'gpt-5.3-codex',
   };
 
-  it('strips legacy Codex/GPT/auto/composer-2-fast IDs to the Hub allowlist', async () => {
+  it('strips legacy Codex/GPT/auto/composer-2/composer-2-fast IDs to the Hub allowlist', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     const dataDir = path.join(
@@ -197,6 +197,7 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
           'auto',
           'composer-2-fast',
           'composer-2',
+          'composer-2.5',
         ],
       },
       engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'composer-2' },
@@ -204,7 +205,7 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
 
     const mod = await import('./config.js');
     expect(mod.default.engineValidModels['claude-code']).toEqual(['claude-opus-4-7']);
-    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
   });
 
   it('coerces a stale engineDefaultModels["cursor-agent"] to a value in the filtered list', async () => {
@@ -218,14 +219,14 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     writeConfigAndImport(dataDir, {
       engineValidModels: {
         ...nonCursorValid,
-        'cursor-agent': ['gpt-5.3-codex-high', 'composer-2', 'auto'],
+        'cursor-agent': ['gpt-5.3-codex-high', 'composer-2.5', 'auto'],
       },
       engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'gpt-5.3-codex-high' },
     });
 
     const mod = await import('./config.js');
-    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
-    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2.5');
   });
 
   it('replaces an all-invalid cursor-agent list with the allowlist and fixes the default', async () => {
@@ -245,8 +246,8 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     });
 
     const mod = await import('./config.js');
-    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
-    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2.5');
   });
 });
 
