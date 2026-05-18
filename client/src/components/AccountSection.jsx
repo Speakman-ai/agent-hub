@@ -6,6 +6,7 @@ import {
   LogOut,
   Plus,
   Sparkles,
+  SquareKanban,
   Terminal,
   Trash2,
   Users,
@@ -16,6 +17,7 @@ import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
 import MyEngineDefaultModelsSection from './MyEngineDefaultModelsSection.jsx';
 import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
 import MyBrowserAuthSection from './MyBrowserAuthSection.jsx';
+import MySkillCredentialSection from './MySkillCredentialSection.jsx';
 import { api } from '../utils/api.js';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
@@ -260,6 +262,24 @@ export default function AccountSection() {
           startLogin={() => api.startMyCodexBrowserDeviceLogin()}
           cancelLogin={() => api.cancelMyCodexBrowserDeviceLogin()}
           logout={() => api.logoutMyCodexBrowser()}
+        />
+      )}
+
+      {me && (
+        <MySkillCredentialSection
+          skillId="linear"
+          keyName="LINEAR_API_KEY"
+          label="Linear API key"
+          placeholder="lin_api_..."
+          Icon={SquareKanban}
+          docsUrl="https://linear.app/settings/api"
+          description={
+            <>
+              Personal API key from Linear (Settings → API → Personal API keys). When set, sessions
+              you own will have <code>LINEAR_API_KEY</code> injected so the Linear skill can query
+              your workspace.
+            </>
+          }
         />
       )}
 

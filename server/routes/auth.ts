@@ -1900,15 +1900,16 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
     const parsedSkill = UpsertSkillCredentialBody.safeParse(req.body ?? {});
     if (!parsedSkill.success) {
-      // Preserve the legacy "are required" wording when any of the three
-      // required fields is missing or the wrong type.
+      // Preserve the legacy "are required" wording when skill_id or key_name
+      // is missing or the wrong type. (agent_id is optional — the Account
+      // page personal-credentials section omits it.)
       const requiredMissing = parsedSkill.error.issues.some(
         (i) =>
-          (i.path[0] === 'skill_id' || i.path[0] === 'key_name' || i.path[0] === 'agent_id') &&
+          (i.path[0] === 'skill_id' || i.path[0] === 'key_name') &&
           (i.code === 'invalid_type' || i.code === 'too_small'),
       );
       if (requiredMissing) {
-        res.status(400).json({ error: 'skill_id, key_name, and agent_id are required' });
+        res.status(400).json({ error: 'skill_id and key_name are required' });
         return;
       }
       res.status(400).json(formatZodError(parsedSkill.error));
@@ -1916,43 +1917,58 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
     const skill_id = parsedSkill.data.skill_id.trim();
     const key_name = parsedSkill.data.key_name.trim();
-    const agent_id = parsedSkill.data.agent_id.trim();
+    const agent_id =
+      typeof parsedSkill.data.agent_id === 'string' ? parsedSkill.data.agent_id.trim() : '';
     const value = typeof parsedSkill.data.value === 'string' ? parsedSkill.data.value : '';
-    if (!skill_id || !key_name || !agent_id) {
-      res.status(400).json({ error: 'skill_id, key_name, and agent_id are required' });
+    if (!skill_id || !key_name) {
+      res.status(400).json({ error: 'skill_id and key_name are required' });
       return;
     }
 
-    const foundAgent = findAgent(agent_id);
-    if (!foundAgent) {
-      res.status(404).json({ error: 'Agent not found' });
-      return;
-    }
-    // RBAC gate: a JWT-authenticated caller must be a member of the active
-    // org before they can use one of that org's agents as the schema-source
-    // for a credential PUT. Without this, agent ids (which are
-    // discoverable globally via the in-memory project list) could be used
-    // to validate against any project's `SKILL.md` and seed credentials in
-    // the caller's own user row keyed only on `(user_id, skill_id, key_name)`.
-    // apiKey + local-bundled bypass continue working — they're already
-    // treated as full Owner privilege everywhere else.
-    if (!authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
-      const orgId = getActiveOrgId();
-      const role = orgId ? getMembershipRole(authedReq.authUserId, orgId) : null;
-      if (!role) {
-        res.status(403).json({ error: 'You are not a member of this org.' });
+    // Two flows:
+    //   (A) agent_id provided → SkillsPage editor. The schema is read from
+    //       the agent's project workspace first (per-agent skill overrides
+    //       are allowed). Requires JWT callers to be a member of the agent's
+    //       active org.
+    //   (B) agent_id omitted → Account page personal-credentials section.
+    //       The schema MUST resolve from bundled `server/default-skills/`
+    //       (or the global `skill_registry`); the per-project workspace is
+    //       never consulted. No agent-scoped RBAC applies — any
+    //       authenticated user may store their own personal credential.
+    let projectWorkspaces: string[] = [];
+    if (agent_id) {
+      const foundAgent = findAgent(agent_id);
+      if (!foundAgent) {
+        res.status(404).json({ error: 'Agent not found' });
         return;
       }
-    }
-    const workspace =
-      typeof foundAgent.project.ahw === 'string' ? foundAgent.project.ahw.trim() : '';
-    if (!workspace) {
-      res.status(404).json({ error: 'No workspace configured for this agent' });
-      return;
+      // RBAC gate: a JWT-authenticated caller must be a member of the active
+      // org before they can use one of that org's agents as the schema-source
+      // for a credential PUT. Without this, agent ids (which are
+      // discoverable globally via the in-memory project list) could be used
+      // to validate against any project's `SKILL.md` and seed credentials in
+      // the caller's own user row keyed only on `(user_id, skill_id, key_name)`.
+      // apiKey + local-bundled bypass continue working — they're already
+      // treated as full Owner privilege everywhere else.
+      if (!authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
+        const orgId = getActiveOrgId();
+        const role = orgId ? getMembershipRole(authedReq.authUserId, orgId) : null;
+        if (!role) {
+          res.status(403).json({ error: 'You are not a member of this org.' });
+          return;
+        }
+      }
+      const workspace =
+        typeof foundAgent.project.ahw === 'string' ? foundAgent.project.ahw.trim() : '';
+      if (!workspace) {
+        res.status(404).json({ error: 'No workspace configured for this agent' });
+        return;
+      }
+      projectWorkspaces = [workspace];
     }
 
     const parsed = readCredentialsSchemaForSkill(skill_id, {
-      projectWorkspaces: [workspace],
+      projectWorkspaces,
     });
     if (parsed.error) {
       res.status(400).json({ error: `invalid credential schema for skill: ${parsed.error}` });

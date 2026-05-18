@@ -173,12 +173,25 @@ export const UpdateSingleKeyAuthBody = registerComponent(
 
 export const UpsertSkillCredentialBody = registerComponent(
   'UpsertSkillCredentialBody',
-  z.object({
-    skill_id: z.string(),
-    key_name: z.string(),
-    agent_id: z.string(),
-    value: z.string().optional(),
-  }),
+  z
+    .object({
+      skill_id: z.string(),
+      key_name: z.string(),
+      // Optional. When provided, the skill schema is read from that agent's
+      // project workspace (`{ahw}/skills/{skill_id}/SKILL.md`) before
+      // falling back to bundled defaults — this is the flow used by the
+      // SkillsPage credential editor (per-agent context). When omitted,
+      // the schema must resolve from bundled `server/default-skills/`
+      // (or the global `skill_registry` import), which is the flow used by
+      // the Account page personal-credentials section (no agent context).
+      agent_id: z.string().optional(),
+      value: z.string().optional(),
+    })
+    .openapi({
+      description:
+        'Upsert a per-user skill credential. `agent_id` is optional: omit it when ' +
+        'setting a personal credential for a bundled default skill from the Account page.',
+    }),
 );
 
 export const PutEngineDefaultModelsBody = registerComponent(
