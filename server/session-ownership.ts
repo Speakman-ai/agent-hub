@@ -26,6 +26,7 @@ import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
 import { findAgent } from './project-model.js';
 import type { AuthenticatedRequest } from './auth.js';
+import type { Role } from './roles.js';
 
 /**
  * True when `id` looks like a real user row in orgs.db. Used by the
@@ -106,13 +107,41 @@ export function resetOrgOwnerCache(): void {
 export type OwnerResolvable = Pick<AuthenticatedRequest, 'authUserId'>;
 
 /**
- * Shape of a WebSocket client carrying an optional `_authUserId` stamp
- * set by `websocket.ts` after a successful JWT handshake. Centralised
- * so callers don't repeat the structural cast `(ws as {_authUserId?:
- * string})._authUserId` and we can rename the field in one place.
+ * Snapshot of a WebSocket caller's visibility context. Mirrors the
+ * `VisibilityCaller` shape used by REST routes (see
+ * `project-visibility-middleware.ts#resolveVisibilityCaller`) so the
+ * broadcast filter in `websocket.ts` can reuse `canViewProject` without
+ * re-deriving caller state on every fan-out.
+ *
+ * Kept as a structural type (not a direct import of `VisibilityCaller`)
+ * so this module stays free of dependency on the visibility layer; the
+ * websocket layer is the only call site that binds the two together.
+ */
+export interface WsVisibilityStamp {
+  userId: string | null;
+  role?: Role;
+  /**
+   * True for callers with no privacy boundary — single-tenant local
+   * bundled server, the global `x-api-key` break-glass, or the "no auth
+   * configured" mode. These callers see every broadcast.
+   */
+  localBypass?: boolean;
+}
+
+/**
+ * Shape of a WebSocket client carrying optional auth stamps set by
+ * `websocket.ts` after a successful handshake.
+ *
+ * `_authUserId` is the per-session user attribution used by
+ * `userOwnsSession` and `createSession`. `_authVisibility` is a richer
+ * snapshot used by `broadcast()` to filter events on private projects.
+ *
+ * Centralised so callers don't repeat structural casts and we can rename
+ * fields in one place.
  */
 export interface AuthStampedWs {
   _authUserId?: string;
+  _authVisibility?: WsVisibilityStamp;
 }
 
 /** Set the resolved user id on a WebSocket client. No-op when `userId` is empty. */
@@ -123,6 +152,23 @@ export function setWsAuthUserId(ws: AuthStampedWs, userId: string | undefined): 
 /** Read the auth-stamped user id from a WebSocket client, if any. */
 export function getWsAuthUserId(ws: AuthStampedWs | null | undefined): string | undefined {
   return ws?._authUserId;
+}
+
+/**
+ * Stamp the visibility snapshot used by `broadcast()` to skip events on
+ * private projects the caller cannot view. Idempotent — safe to call
+ * once at handshake time even when `stamp.userId` is null (e.g. a no-auth
+ * test harness), because the stamp still carries `localBypass`.
+ */
+export function setWsAuthVisibility(ws: AuthStampedWs, stamp: WsVisibilityStamp): void {
+  ws._authVisibility = stamp;
+}
+
+/** Read the auth-stamped visibility snapshot, if any. */
+export function getWsAuthVisibility(
+  ws: AuthStampedWs | null | undefined,
+): WsVisibilityStamp | undefined {
+  return ws?._authVisibility;
 }
 
 /**

@@ -7,9 +7,14 @@ import {
   userOwnsSession,
   setWsAuthUserId,
   getWsAuthUserId,
+  setWsAuthVisibility,
+  getWsAuthVisibility,
   type AuthStampedWs,
+  type WsVisibilityStamp,
 } from './session-ownership.js';
 import { handleBroadcastForPush } from './push.js';
+import { resolveProjectIdFromEvent } from './event-project-resolver.js';
+import { shouldDeliverBroadcast } from './broadcast-filter.js';
 import type {
   WebSocketDeps,
   BroadcastFn,
@@ -91,15 +96,38 @@ export default function createWebSocket(
     handleDesignCancel,
   } = deps;
 
+  // Per-broadcast: resolve the event's projectId (if any) and look it up
+  // in the in-memory project list. Both lookups are cheap (resolver hits
+  // a single SQLite prepared statement; findProject is an array find);
+  // doing them once per broadcast and reusing across all recipients
+  // amortises the cost across the fan-out.
+  const findProjectLocal = (projectId: string) =>
+    getProjects().find((p) => p.id === projectId) ?? null;
+
   function broadcast(data: Record<string, unknown>): void {
     const msg = JSON.stringify(data);
     wss.clients.forEach((client: WsClient) => {
-      if (client.readyState === WsClient.OPEN) {
-        client.send(msg);
+      if (client.readyState !== WsClient.OPEN) return;
+      const stamp = getWsAuthVisibility(client as AuthStampedWs);
+      if (
+        !shouldDeliverBroadcast(data, stamp, {
+          resolveProjectId: resolveProjectIdFromEvent,
+          findProject: findProjectLocal,
+        })
+      ) {
+        return;
       }
+      client.send(msg);
     });
     // Fan out relevant broadcasts to mobile clients via Expo push. Fire-and-
     // forget: push dispatch must never block the WebSocket hot path.
+    //
+    // NOTE: mobile push is NOT yet filtered by per-user project visibility —
+    // `device_tokens` lacks a `user_id` column today, so we cannot attribute
+    // tokens to a specific user. Tracked as Phase 2 of the WS broadcast
+    // visibility card; the device-token migration + auth on POST /api/devices
+    // are the prerequisites. Until then mobile push retains the legacy
+    // global fan-out behavior.
     void handleBroadcastForPush(data).catch((err: unknown) => {
       console.error('[push] broadcast handler failed:', (err as Error).message);
     });
@@ -116,6 +144,22 @@ export default function createWebSocket(
     // sessions to the caller. Local-bundled mode and apiKey paths don't
     // populate `userId`; those are resolved to the org owner downstream.
     setWsAuthUserId(ws as AuthStampedWs, wsAuth.userId);
+
+    // Also stamp the visibility snapshot used by `broadcast()` to skip
+    // events on private projects the caller cannot view. localBypass
+    // captures every path where there's no per-user privacy boundary
+    // to enforce:
+    //   - apiKey / `viaApiKey`: legacy break-glass, treated as Owner.
+    //   - no `userId`: bundled-local (`subject: 'local'`) and the
+    //     no-auth-configured branch — both return `ok: true` with no
+    //     uid; without one we can't filter, so we deliver everything
+    //     (consistent with how those callers see every project in REST).
+    const stamp: WsVisibilityStamp = {
+      userId: wsAuth.userId ?? null,
+      role: wsAuth.role,
+      localBypass: Boolean(wsAuth.viaApiKey) || !wsAuth.userId,
+    };
+    setWsAuthVisibility(ws as AuthStampedWs, stamp);
 
     // Provisioning subscription — a dedicated URL hands this connection
     // off to the orchestrator's event stream rather than the normal
