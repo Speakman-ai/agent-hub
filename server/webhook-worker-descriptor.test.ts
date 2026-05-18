@@ -53,17 +53,62 @@ describe('describeWebhookRow', () => {
   });
 
   it('renders repo=? when payload is malformed JSON', () => {
-    const out = describeWebhookRow(rowFixture({ payload: '{not json' }));
+    // Also confirms pr_key=null forces the JSON-parse fallback so the
+    // malformed-payload branch is actually exercised here.
+    const out = describeWebhookRow(rowFixture({ pr_key: null, payload: '{not json' }));
     expect(out).toContain('repo=?');
   });
 
   it('renders repo=? when payload has no repository field', () => {
-    const out = describeWebhookRow(rowFixture({ payload: JSON.stringify({}) }));
+    const out = describeWebhookRow(rowFixture({ pr_key: null, payload: JSON.stringify({}) }));
     expect(out).toContain('repo=?');
   });
 
   it('renders delivery=none when delivery_id is null', () => {
     const out = describeWebhookRow(rowFixture({ delivery_id: null }));
     expect(out).toContain('delivery=none');
+  });
+
+  it('prefers indexed pr_key over JSON-parsing the payload', () => {
+    // pr_key is `<repo_full_name>:<pr_number>`, populated for PR-scoped
+    // events. Reading it avoids a JSON.parse on every job and survives a
+    // malformed payload — the descriptor must NEVER fall through to the
+    // payload parse when pr_key is set.
+    const out = describeWebhookRow(
+      rowFixture({
+        pr_key: 'Speakman-ai/agent-hub:1043',
+        // Deliberately broken JSON: if pr_key is preferred, this is never read.
+        payload: 'not even json',
+      }),
+    );
+    expect(out).toContain('repo=Speakman-ai/agent-hub');
+  });
+
+  it('falls back to JSON parse when pr_key is null (non-PR events)', () => {
+    // `push`, `ping`, `create`, … have no PR scope so pr_key is NULL.
+    // The payload-parse branch must still resolve the repo for these.
+    const out = describeWebhookRow(
+      rowFixture({
+        pr_key: null,
+        event_type: 'push',
+        action: null,
+        payload: JSON.stringify({ repository: { full_name: 'org/non-pr-repo' } }),
+      }),
+    );
+    expect(out).toContain('repo=org/non-pr-repo');
+    expect(out).toContain('key=push');
+  });
+
+  it('ignores pr_key when it has no colon (defensive — never expected)', () => {
+    // Belt-and-suspenders: if the enqueue path ever wrote a malformed
+    // pr_key, we should fall through to the payload parse rather than
+    // logging an obviously wrong repo string.
+    const out = describeWebhookRow(
+      rowFixture({
+        pr_key: 'no-colon-here',
+        payload: JSON.stringify({ repository: { full_name: 'org/from-payload' } }),
+      }),
+    );
+    expect(out).toContain('repo=org/from-payload');
   });
 });
