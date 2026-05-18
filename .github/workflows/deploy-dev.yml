@@ -33,11 +33,12 @@ permissions:
   contents: read
 
 jobs:
-  # Tests are not re-run here. ci.yml gates every PR with the full test suite
-  # before merge to main, and deploys are manually triggered against main — so
-  # re-running tests on the deploy commit is duplicate work that just lengthens
-  # the rollout. If a hotfix is pushed straight to main without a PR, run tests
-  # locally or via `gh workflow run ci.yml` before triggering this workflow.
+  # Tests are not re-run here. ci.yml gates every PR with the baseline suite
+  # (build + typecheck + server/client tests) before merge to main, and deploys
+  # are manually triggered against main — so re-running tests on the deploy
+  # commit is duplicate work that just lengthens the rollout. If a hotfix is
+  # pushed straight to main without a PR, run tests locally or via
+  # `gh workflow run ci.yml` before triggering this workflow.
   deploy:
     name: Deploy to agent-hub-server
     runs-on: ubuntu-latest
