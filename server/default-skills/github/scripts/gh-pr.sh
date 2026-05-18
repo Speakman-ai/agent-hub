@@ -129,8 +129,14 @@ LOCKED
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
-  _pr_create_locked
+  # Order matters: when BOTH locks are set (real reviewer spawns), fire
+  # the stricter reviewer-role denial first — it carries the more
+  # specific "forbidden in reviewer-role spawns" message and matches the
+  # role-lock test contract. The universal-lock guard below is the
+  # fallback for non-reviewer dev/lead spawns where the role lock is
+  # absent but the App installation token is still in GH_TOKEN.
   _reviewer_role_locked "gh-pr.sh create"
+  _pr_create_locked
   local title="" base="" body="" draft=false reviewer="" label=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
