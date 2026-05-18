@@ -316,6 +316,36 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('Research Questions');
   });
 
+  it('includes no-shell directive on first message', () => {
+    // The user talks to agents through a web/chat UI and has no shell. Agents
+    // must run commands themselves rather than instructing the user to.
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    // Section heading present
+    expect(prompt).toContain('No Shell');
+    // Must explicitly state the user lacks shell access
+    expect(prompt).toMatch(/no shell access/i);
+    // Must tell the agent to run the command itself rather than instruct the user
+    expect(prompt).toMatch(/run it yourself/i);
+  });
+
+  it('excludes no-shell directive on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('No Shell');
+  });
+
+  it('no-shell directive ships for all projects (no project context required)', () => {
+    // Project-agnostic: bare project with no workspace files still gets it.
+    const bareProject = makeProject({ id: 'some-other-project' });
+    const prompt = buildEnrichedPrompt(bareProject, makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('No Shell');
+  });
+
   it('excludes memory instructions on subsequent messages', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
