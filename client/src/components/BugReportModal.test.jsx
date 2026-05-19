@@ -72,7 +72,6 @@ describe('BugReportModal', () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(BUG_REPORT_ENDPOINT);
-    expect(url).toBe('http://3.22.232.193/api/bug-reports');
     expect(init.method).toBe('POST');
     expect(init.mode).toBe('cors');
     expect(init.body).toBeInstanceOf(FormData);

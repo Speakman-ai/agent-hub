@@ -1,9 +1,11 @@
 // Bug report capture + submission helpers.
 //
-// The endpoint is intentionally hard-coded to the remote EC2 hub — bug reports
+// The endpoint is intentionally hard-coded to the dev Agent Hub — bug reports
 // must always flow to the central intake regardless of where the client runs.
 
-export const BUG_REPORT_ENDPOINT = 'http://3.22.232.193/api/bug-reports';
+export const BUG_REPORT_ENDPOINT =
+  'https://agenthub.dev.surveytracker.io/api/bug-reports';
+export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 /**
  * Convert a data URL (e.g. "data:image/png;base64,...") into a Blob.
@@ -103,7 +105,7 @@ export async function submitBugReport({
   form.append('appVersion', import.meta.env?.VITE_APP_VERSION ?? '');
   form.append('clientType', detectClientType());
 
-  if (projectId) form.append('currentProjectId', String(projectId));
+  form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
   if (agentId) form.append('currentAgentId', String(agentId));
 
   const res = await fetch(BUG_REPORT_ENDPOINT, {

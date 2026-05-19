@@ -2,7 +2,9 @@
 // Endpoint is intentionally hard-coded per spec — do not derive from config.
 import { captureScreen } from 'react-native-view-shot';
 
-export const BUG_REPORT_ENDPOINT = 'http://3.22.232.193/api/bug-reports';
+export const BUG_REPORT_ENDPOINT =
+  'https://agenthub.dev.surveytracker.io/api/bug-reports';
+export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 /**
  * Captures a PNG screenshot of the current screen and returns a local file URI.
@@ -66,7 +68,7 @@ export async function submitBugReport({
   form.append('userAgent', userAgent || '');
   form.append('appVersion', appVersion || '');
   form.append('clientType', 'mobile');
-  form.append('currentProjectId', currentProjectId || '');
+  form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
   form.append('currentAgentId', currentAgentId || '');
 
   const res = await fetch(BUG_REPORT_ENDPOINT, {
