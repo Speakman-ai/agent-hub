@@ -292,19 +292,54 @@ export function replacePreviewSecrets(
     normalized.push({ key: raw.key, value: raw.value, kind, mode: 'encrypt' });
   }
 
+  // Diff-based write so `updated_at` reflects actual mutation time:
+  //   - Keys present before AND in the new batch get UPDATEd in place
+  //     (preserves id + created_at; bumps updated_at) — except for
+  //     'preserve' mode rows whose ciphertext is unchanged, where the
+  //     row is left fully alone so updated_at stays stable.
+  //   - Keys only in the new batch get INSERTed fresh.
+  //   - Keys only in the existing set get DELETEd.
+  // A previous implementation used DELETE-all + INSERT-all which made
+  // updated_at indistinguishable from created_at; the new diff captures
+  // last-touched correctly.
+  const inputKeys = new Set(normalized.map((r) => r.key));
   const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
+    // Delete rows that aren't in the new batch.
+    const deleteStmt = db.prepare(
+      `DELETE FROM worktree_preview_secrets WHERE project_id = ? AND key = ?`,
+    );
+    for (const existingKey of existingByKey.keys()) {
+      if (!inputKeys.has(existingKey)) {
+        deleteStmt.run(projectId, existingKey);
+      }
+    }
     const insert = db.prepare(
       `INSERT INTO worktree_preview_secrets
          (id, project_id, key, value_ciphertext, value_iv, value_tag, kind)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
+    const update = db.prepare(
+      `UPDATE worktree_preview_secrets
+          SET value_ciphertext = ?,
+              value_iv         = ?,
+              value_tag        = ?,
+              kind             = ?,
+              updated_at       = datetime('now')
+        WHERE project_id = ? AND key = ?`,
+    );
     for (const row of normalized) {
+      const existing = existingByKey.get(row.key);
       if (row.mode === 'preserve') {
-        insert.run(uuidv4(), projectId, row.key, row.ciphertext, row.iv, row.tag, row.kind);
+        // Ciphertext is byte-for-byte identical to what's already on
+        // disk (the caller PUT MASK to signal "keep this one"). Leave
+        // the row alone so updated_at is not bumped for a no-op.
+        continue;
+      }
+      const ciphertext = encryptSecret(row.value);
+      const { iv, tag } = splitIvTag(ciphertext);
+      if (existing) {
+        update.run(ciphertext, iv, tag, row.kind, projectId, row.key);
       } else {
-        const ciphertext = encryptSecret(row.value);
-        const { iv, tag } = splitIvTag(ciphertext);
         insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
       }
     }
@@ -388,20 +423,60 @@ export function replacePreviewSecretsMixed(
     validateKeyOrThrow(r.key);
   }
 
+  // Snapshot the existing rows so we can pick UPDATE vs INSERT per key
+  // (same diff-based pattern as replacePreviewSecrets). Passthrough rows
+  // arrived from a fresh listRawPreviewSecretRows call upstream, so any
+  // key present there is already on disk and stays untouched here —
+  // overwriting it with its own ciphertext would needlessly bump
+  // updated_at. We still DELETE any keys that aren't in either set.
   const db = getDb();
+  const existingByKey = new Map<string, RawRow>();
+  for (const row of db
+    .prepare(`SELECT * FROM worktree_preview_secrets WHERE project_id = ?`)
+    .all(projectId) as RawRow[]) {
+    existingByKey.set(row.key, row);
+  }
+  const finalKeys = new Set<string>();
+  for (const n of normalized) finalKeys.add(n.key);
+  for (const p of passthroughFinal) finalKeys.add(p.key);
+
   const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
+    const deleteStmt = db.prepare(
+      `DELETE FROM worktree_preview_secrets WHERE project_id = ? AND key = ?`,
+    );
+    for (const existingKey of existingByKey.keys()) {
+      if (!finalKeys.has(existingKey)) {
+        deleteStmt.run(projectId, existingKey);
+      }
+    }
     const insert = db.prepare(
       `INSERT INTO worktree_preview_secrets
          (id, project_id, key, value_ciphertext, value_iv, value_tag, kind)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
+    const update = db.prepare(
+      `UPDATE worktree_preview_secrets
+          SET value_ciphertext = ?,
+              value_iv         = ?,
+              value_tag        = ?,
+              kind             = ?,
+              updated_at       = datetime('now')
+        WHERE project_id = ? AND key = ?`,
+    );
     for (const row of normalized) {
       const ciphertext = encryptSecret(row.value);
       const { iv, tag } = splitIvTag(ciphertext);
-      insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+      if (existingByKey.has(row.key)) {
+        update.run(ciphertext, iv, tag, row.kind, projectId, row.key);
+      } else {
+        insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+      }
     }
+    // Passthrough rows: if the key already exists on disk we treat it
+    // as a no-op (the caller listed it back unchanged). If it doesn't
+    // (e.g. caller assembled a synthetic raw set), insert it fresh.
     for (const row of passthroughFinal) {
+      if (existingByKey.has(row.key)) continue;
       insert.run(
         uuidv4(),
         projectId,
@@ -471,6 +546,18 @@ export function deletePreviewSecret(
  *   - `export KEY=value`       (leading `export` stripped)
  *
  * Values are NOT shell-expanded — `$OTHER` stays literal.
+ *
+ * **Reserved keys are dropped at parse time** (`AGENT_HUB_*`, `NODE_*`,
+ * `PATH`, `HOME`). The store layer's `validateKeyOrThrow` would reject
+ * them anyway; filtering here means a caller who builds inputs from the
+ * parser output and skips store-layer validation (tests, ad-hoc tools)
+ * can't accidentally smuggle a reserved key into a downstream import.
+ *
+ * **Multi-line values are NOT supported.** The parser splits on
+ * `\r?\n` *before* quote-handling, so a real-`\n` between an opening
+ * `"` and its closing `"` produces two malformed lines, both skipped.
+ * Tools that need multi-line values (PEM blobs, JSON) should encode the
+ * newlines (`\n` escape, base64) before importing and decode on read.
  */
 export function parseDotEnv(blob: string): PreviewSecretInput[] {
   if (typeof blob !== 'string' || blob.length === 0) return [];
@@ -493,6 +580,7 @@ export function parseDotEnv(blob: string): PreviewSecretInput[] {
       }
     }
     if (!VALID_KEY_RE.test(key)) continue; // skip syntactic garbage
+    if (RESERVED_KEY_RE.test(key)) continue; // defense in depth — store layer also rejects these
     // kind left undefined here — caller decides via defaultKind.
     out.set(key, { key, value });
   }

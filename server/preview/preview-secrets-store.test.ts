@@ -107,6 +107,72 @@ describe('replacePreviewSecrets + listPreviewSecrets', () => {
   });
 });
 
+describe('replacePreviewSecrets — updated_at semantics', () => {
+  it('bumps updated_at when a row is rewritten with a new value (id + created_at preserved)', async () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: 'v1', kind: 'plain' }]);
+    const db = getDb();
+    const before = db
+      .prepare(`SELECT id, created_at, updated_at FROM worktree_preview_secrets WHERE key = ?`)
+      .get('TOKEN') as { id: string; created_at: string; updated_at: string };
+
+    // datetime('now') is second-resolution in SQLite — bump time deterministically
+    // by writing a synthetic older timestamp first, then doing the real update.
+    db.prepare(
+      `UPDATE worktree_preview_secrets
+          SET created_at = '2024-01-01 00:00:00',
+              updated_at = '2024-01-01 00:00:00'
+        WHERE id = ?`,
+    ).run(before.id);
+
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: 'v2', kind: 'plain' }]);
+    const after = db
+      .prepare(`SELECT id, created_at, updated_at FROM worktree_preview_secrets WHERE key = ?`)
+      .get('TOKEN') as { id: string; created_at: string; updated_at: string };
+
+    // Same row (id + created_at preserved) — the rewrite was an UPDATE, not DELETE+INSERT.
+    expect(after.id).toBe(before.id);
+    expect(after.created_at).toBe('2024-01-01 00:00:00');
+    // updated_at moved past the synthetic 2024 timestamp.
+    expect(after.updated_at > '2024-01-01 00:00:00').toBe(true);
+
+    // And the new value actually reaches the spawn path.
+    expect(loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' }).TOKEN).toBe('v2');
+  });
+
+  it('does not bump updated_at when a secret-kind row is re-PUT with the MASK sentinel (no-op)', async () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: 'real', kind: 'secret' }]);
+    const db = getDb();
+    db.prepare(
+      `UPDATE worktree_preview_secrets
+          SET created_at = '2024-01-01 00:00:00',
+              updated_at = '2024-01-01 00:00:00'
+        WHERE key = ?`,
+    ).run('TOKEN');
+
+    // Re-PUT with the MASK sentinel — the store interprets this as
+    // "keep this row" and must leave it fully alone (no UPDATE, no
+    // DELETE+INSERT), so updated_at stays stable.
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: MASK, kind: 'secret' }]);
+    const after = db
+      .prepare(`SELECT created_at, updated_at FROM worktree_preview_secrets WHERE key = ?`)
+      .get('TOKEN') as { created_at: string; updated_at: string };
+    expect(after.created_at).toBe('2024-01-01 00:00:00');
+    expect(after.updated_at).toBe('2024-01-01 00:00:00');
+
+    // And the plaintext still decrypts (ciphertext untouched).
+    expect(loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' }).TOKEN).toBe('real');
+  });
+
+  it('a new key written for the first time has created_at === updated_at', async () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'FRESH', value: '1', kind: 'plain' }]);
+    const db = getDb();
+    const row = db
+      .prepare(`SELECT created_at, updated_at FROM worktree_preview_secrets WHERE key = ?`)
+      .get('FRESH') as { created_at: string; updated_at: string };
+    expect(row.created_at).toBe(row.updated_at);
+  });
+});
+
 describe('replacePreviewSecrets — validation', () => {
   it('throws PreviewSecretValidationError for AGENT_HUB_* keys', () => {
     expect(() => replacePreviewSecrets(PROJECT_A, [{ key: 'AGENT_HUB_URL', value: 'x' }])).toThrow(
@@ -339,6 +405,28 @@ describe('parseDotEnv', () => {
   it('handles an empty / whitespace-only blob', () => {
     expect(parseDotEnv('')).toEqual([]);
     expect(parseDotEnv('   \n\n  \t')).toEqual([]);
+  });
+
+  it('silently drops reserved-namespace keys (AGENT_HUB_*, NODE_*, PATH, HOME) at parse time', () => {
+    // Defensive filter — the store layer would also reject these, but
+    // filtering here means callers using the parser independently of
+    // the store cannot accidentally emit reserved keys.
+    const blob = [
+      'GOOD=ok',
+      'AGENT_HUB_URL=evil',
+      'AGENT_HUB_API_KEY=stolen',
+      'NODE_ENV=prod',
+      'NODE_OPTIONS=--inspect',
+      'PATH=/bin',
+      'HOME=/root',
+      'ALSO_GOOD=fine',
+      // PATH-prefixed names that are NOT reserved (regex is /PATH$|HOME$/)
+      'PATHFINDER=on',
+      'HOMETOWN=Springfield',
+    ].join('\n');
+    const out = parseDotEnv(blob);
+    const keys = out.map((e) => e.key).sort();
+    expect(keys).toEqual(['ALSO_GOOD', 'GOOD', 'HOMETOWN', 'PATHFINDER']);
   });
 });
 

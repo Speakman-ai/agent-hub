@@ -1,14 +1,22 @@
 /**
  * Per-project secrets REST surface.
  *
- *   GET    /api/projects/:projectId/secrets         (Admin+)
- *   PUT    /api/projects/:projectId/secrets         (Owner)
- *   POST   /api/projects/:projectId/secrets/import  (Owner)
+ *   GET    /api/projects/:projectId/secrets             (Admin+)
+ *   PUT    /api/projects/:projectId/secrets             (Owner)
+ *   DELETE /api/projects/:projectId/secrets/:key        (Owner)
+ *   POST   /api/projects/:projectId/secrets/import      (Owner)
  *
  * Legacy aliases under `/preview/secrets` remain for scripts and older
  * clients. Values are merged into spawned sessions via
  * `mergeProjectSecretsSpawnEnv` — list/GET never returns decrypted
  * `secret`-kind values (MASK sentinel on PUT preserves unchanged rows).
+ *
+ * Project membership: `requireRole('Admin'/'Owner')` runs after the
+ * upstream `createProjectVisibilityGate` middleware mounted in
+ * `server/index.ts`, which already 404s requests from callers who don't
+ * belong to the project's org. The role check below only narrows that
+ * by role — never broadens it. New routes added here must NOT bypass
+ * the visibility gate (it is what scopes :projectId to the caller's org).
  */
 import { Router, Request, Response } from 'express';
 import { requireRole } from '../roles.js';
@@ -19,6 +27,7 @@ import {
   listRawPreviewSecretRows,
   replacePreviewSecrets,
   replacePreviewSecretsMixed,
+  deletePreviewSecret,
   parseDotEnv,
   PreviewSecretValidationError,
   type PreviewSecretInput,
@@ -60,6 +69,11 @@ const SECRETS_PATHS = [
   '/api/projects/:projectId/preview/secrets',
 ] as const;
 
+const SECRET_KEY_PATHS = [
+  '/api/projects/:projectId/secrets/:key',
+  '/api/projects/:projectId/preview/secrets/:key',
+] as const;
+
 const IMPORT_PATHS = [
   '/api/projects/:projectId/secrets/import',
   '/api/projects/:projectId/preview/secrets/import',
@@ -91,6 +105,36 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
         const result = replacePreviewSecrets(project.id, inputs, actorUserId);
         res.json({ secrets: result });
+      } catch (err) {
+        if (err instanceof PreviewSecretValidationError) {
+          res.status(err.statusCode).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    });
+  }
+
+  for (const keyPath of SECRET_KEY_PATHS) {
+    router.delete(keyPath, requireRole('Owner'), (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const key = req.params.key as string;
+      try {
+        const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+        const removed = deletePreviewSecret(project.id, key, actorUserId);
+        if (!removed) {
+          res.status(404).json({ error: `secret "${key}" not found` });
+          return;
+        }
+        // 204 No Content — successful deletes don't return the new list
+        // so a caller doing many single-key deletes doesn't pay the
+        // listPreviewSecrets cost on each one. Fetch GET /secrets if you
+        // need the updated state.
+        res.status(204).end();
       } catch (err) {
         if (err instanceof PreviewSecretValidationError) {
           res.status(err.statusCode).json({ error: err.message });

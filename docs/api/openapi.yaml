@@ -2526,6 +2526,124 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    PreviewSecretRow:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        key:
+          type: string
+        kind:
+          type: string
+          enum:
+            - plain
+            - secret
+          description: "`plain` values are returned in clear on GET. `secret` values are masked on GET (return the `••••••••` sentinel) and only decrypted at spawn time inside `loadProjectEnvForSpawn`."
+        value:
+          type: string
+          description: Decrypted value for `plain` kind; the `••••••••` MASK sentinel for `secret` kind. Never the plaintext of a secret-kind row.
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - key
+        - kind
+        - value
+        - created_at
+        - updated_at
+      description: One per-project secret row as returned by GET / PUT. `secret`-kind rows mask the value field; the only path that decrypts a secret is the spawn-time `loadProjectEnvForSpawn` (no caller-facing read).
+    PreviewSecretsListResponse:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSecretRow"
+      required:
+        - secrets
+      description: Current secrets for the project, sorted by key. `secret`-kind values are masked.
+    PreviewSecretsPutRequest:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                description: Env var name. Same validation rules as the URL `:key` param.
+              value:
+                type: string
+                description: New plaintext value, OR the MASK sentinel (`••••••••`) for an existing `secret`-kind row to preserve its ciphertext without re-sending the plaintext.
+              kind:
+                type: string
+                enum:
+                  - plain
+                  - secret
+                description: Defaults to `secret` when omitted.
+            required:
+              - key
+              - value
+            description: One entry in a bulk-replace PUT body.
+          description: Full replacement set. Keys not present in the array are removed. Send the MASK sentinel for an existing secret-kind row to preserve its current ciphertext.
+      required:
+        - secrets
+      description: Body for PUT /secrets.
+    PreviewSecretsImportRequest:
+      type: object
+      properties:
+        env:
+          type: string
+          description: "`.env`-style blob. Supports `KEY=value`, quoted values, `export KEY=value`, comments and blank lines. Multi-line values and shell-expansion are NOT supported."
+        mode:
+          type: string
+          enum:
+            - replace
+            - merge
+          description: "`replace` (default) — wipe existing keys and install the parsed set. `merge` — keep existing keys, parsed entries win on conflict."
+        defaultKind:
+          type: string
+          enum:
+            - plain
+            - secret
+          description: Kind to assign to each parsed entry; defaults to `secret`.
+      required:
+        - env
+      description: Body for POST /secrets/import.
+    PreviewSecretsImportResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+          description: Count of parsed entries that made it into the write.
+        mode:
+          type: string
+          enum:
+            - replace
+            - merge
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSecretRow"
+      required:
+        - imported
+        - mode
+        - secrets
+      description: Outcome of the import. `secrets` reflects the post-import state.
+    PreviewSecretsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for preview-secrets routes.
     ProjectAwsSsoProfile:
       type: object
       properties:
@@ -10518,6 +10636,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/{projectId}/secrets:
+    get:
+      tags:
+        - Projects
+      summary: List per-project secrets
+      description: Returns the project's full secret list, sorted by key. `secret`-kind values are masked with the `••••••••` sentinel — this endpoint never returns secret plaintexts. Admin+ role is required (PUT/DELETE/import require Owner).
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Current secret list (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsListResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Bulk-replace per-project secrets
+      description: Wholesale replace the project's secret set. Keys absent from the request body are removed; secret-kind entries can carry the MASK sentinel to preserve the existing ciphertext without re-sending the plaintext. `updated_at` is bumped only on rows whose value actually changes.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSecretsPutRequest"
+      responses:
+        "200":
+          description: Replacement applied. Returns the post-write secret list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsListResponse"
+        "400":
+          description: Validation failed — bad key, reserved-namespace collision, oversize value, duplicate keys in the batch, or MASK sentinel sent for a key that does not yet exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/secrets/{key}:
+    delete:
+      tags:
+        - Projects
+      summary: Delete a single per-project secret
+      description: Removes one (project, key) entry without disturbing the rest of the set. Returns 204 on success and appends a `delete` row to the project secret audit log. 404 if the key does not exist — the caller may treat this as idempotent.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Env var name. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/` and cannot be in the reserved namespace (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`).
+            example: STRIPE_KEY
+          required: true
+          description: Env var name. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/` and cannot be in the reserved namespace (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`).
+          name: key
+          in: path
+      responses:
+        "204":
+          description: Deleted. No response body.
+        "400":
+          description: Key failed validation (bad identifier or reserved namespace).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, the caller cannot see it, or the key has no row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/secrets/import:
+    post:
+      tags:
+        - Projects
+      summary: Import secrets from a `.env`-style blob
+      description: Parses the supplied env blob and writes the result either as a wholesale replace (default) or a merge. Reserved keys (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`) are dropped at parse time. Multi-line values are not supported — encode newlines (`\n` escape, base64) before importing.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSecretsImportRequest"
+      responses:
+        "200":
+          description: Import succeeded. Returns the parsed count and the post-import state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsImportResponse"
+        "400":
+          description: Body missing/invalid, or a parsed key failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
   /api/projects/{projectId}/aws-profiles:
     get:
       tags:
