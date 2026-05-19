@@ -182,7 +182,7 @@ describe('App — first-run SetupWizard gating', () => {
   it('shows the wizard at the AI-credentials step when Owner exists but engines are wiped', async () => {
     // Sandbox-reset path: Owner record + default org survive but
     // claude/cursor/codex CLIs are no longer authed. We want to land at
-    // the credentials step (step 3), not step 1.
+    // the credentials step (step 2), not step 1.
     globalThis.fetch = mockFetchWithSetupStatus({
       firstRun: false,
       authConfigured: true,
@@ -195,7 +195,7 @@ describe('App — first-run SetupWizard gating', () => {
     await waitFor(() => {
       expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('3');
+    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('2');
   });
 
   it('still routes to the wizard when the server omits authConfigured (legacy server, no orgs)', async () => {

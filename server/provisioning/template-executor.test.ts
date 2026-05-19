@@ -225,7 +225,7 @@ describe('template executor — wire-tests / wire-lint phases', () => {
     expect(logs).toContain('line two');
   });
 
-  it('delegates non-template phases to the fallback executor', async () => {
+  it('delegates phases outside template/git-init to the fallback executor', async () => {
     const seen: string[] = [];
     const executor = createTemplateExecutor({
       resolveWorkspace: () => workspace,
@@ -238,15 +238,46 @@ describe('template executor — wire-tests / wire-lint phases', () => {
       },
     });
 
-    const result = await executor.runPhase('git-init', {
+    const result = await executor.runPhase('validate', {
       jobId: 'j8',
       projectId: 'p8',
       payload: { appType: 'web-app', stack: 'idk' },
       log: () => {},
     });
 
-    expect(seen).toEqual(['git-init']);
+    expect(seen).toEqual(['validate']);
     expect(result.message).toBe('from-fallback');
+  });
+});
+
+describe('template executor — git-init phase', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(path.join(os.tmpdir(), 'tmpl-git-'));
+  });
+  afterEach(() => {
+    try {
+      rmSync(workspace, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('runs git init in the workspace so gh repo create --source=. can succeed', async () => {
+    const executor = createTemplateExecutor({
+      resolveWorkspace: () => workspace,
+    });
+
+    const result = await executor.runPhase('git-init', {
+      jobId: 'j-git',
+      projectId: 'p-git',
+      payload: {},
+      log: () => {},
+    });
+
+    expect(result.status).toBe('ok');
+    expect(existsSync(path.join(workspace, '.git'))).toBe(true);
   });
 });
 

@@ -2,10 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Bot,
   Rocket,
-  Monitor,
-  Cloud,
   Loader2,
-  Plug,
   Key,
   Terminal,
   CheckCircle2,
@@ -15,21 +12,16 @@ import {
   ExternalLink,
   Copy,
 } from 'lucide-react';
-import { getApiBase, getAuthHeaders, saveConnectionConfig } from '../utils/connection.js';
+import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
-import { testConnection } from '../utils/connection.js';
 import { api } from '../utils/api.js';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 
-const STEP_LABELS = [
-  'Welcome',
-  'Organization',
-  'AI credentials',
-  'Connect GitHub',
-  'First Project',
-];
+const STEP_LABELS = ['Welcome', 'AI credentials', 'Connect GitHub', 'First Project'];
+
+const DEFAULT_ORG_NAME = 'Personal';
 
 function StepIndicator({ currentStep, minStep = 1 }) {
   return (
@@ -117,36 +109,16 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  // Step 4 — LAN mode toggle. Mirrors `config.lanMode` on the server
-  // (see SettingsPage GitHub section for the same control post-setup).
+  // Step 3 (Connect GitHub) — LAN mode toggle. Mirrors `config.lanMode` on the
+  // server (see SettingsPage GitHub section for the same control post-setup).
   // First-run users on a private network can flip this on before any
   // webhook setup is attempted, sparing the "configure public URL"
-  // round-trip. Loaded from the server on Step 4 mount so subsequent
+  // round-trip. Loaded from the server on that step's mount so subsequent
   // re-entries see the current value; the toggle handler PATCHes
   // /api/config so the change is persisted before the user advances.
   const [lanMode, setLanMode] = useState(false);
   const [lanModeLoaded, setLanModeLoaded] = useState(false);
   const [lanModeSaving, setLanModeSaving] = useState(false);
-
-  // The Local/Remote toggle is only meaningful when the client is decoupled
-  // from the server it talks to. The web build is *served by* its server, so
-  // the page's origin is the server URL — there's no other server it could
-  // sensibly point at, and a "remote" mode here would just dump the user
-  // into a connection-test UI that, on success, would navigate the page
-  // away to a server which serves its own copy of this same wizard. The
-  // shell desktop app (Electron) is the only place this choice means
-  // anything — it ships a renderer that can either spawn a bundled local
-  // server or HTTP/WS to a remote one. React Native uses its own flow.
-  const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron === true;
-
-  // Org step state
-  const [orgName, setOrgName] = useState('Personal');
-  // Web defaults to (and is locked to) `local`. Electron lets the user pick.
-  const [orgMode, setOrgMode] = useState('local');
-  const [orgRemoteUrl, setOrgRemoteUrl] = useState('');
-  const [orgApiKey, setOrgApiKey] = useState('');
-  const [orgTesting, setOrgTesting] = useState(false);
-  const [orgTestResult, setOrgTestResult] = useState(null);
 
   const claudeEngine = setupStatus?.engines?.['claude-code'] || {};
   const cursorEngine = setupStatus?.engines?.['cursor-agent'] || {};
@@ -193,7 +165,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   // config.json, or an earlier wizard run that already flipped it). Idle
   // on other steps so we don't fetch eagerly on every wizard mount.
   useEffect(() => {
-    if (step !== 4 || lanModeLoaded) return;
+    if (step !== 3 || lanModeLoaded) return;
     let cancelled = false;
     api
       .getConfig()
@@ -242,13 +214,12 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     if (typeof x?.available === 'boolean') setCodexEnabled(x.available);
   }, [setupStatus]);
 
-  // Step 3 — Claude credential gate. The CLI binary path alone isn't enough
+  // Step 2 — Claude credential gate. The CLI binary path alone isn't enough
   // for first-run users: every spawned `claude` invocation needs an API key
   // or a setup-token (or an existing CLI OAuth login) or it 401s on the
-  // very first agent message. We fetch /api/config/claude-auth on Step 3
+  // very first agent message. We fetch /api/config/claude-auth on Step 2
   // mount and block "Save & Continue" until at least one credential source
-  // is configured. Remote-mode wizards never reach Step 3 (they navigate
-  // away during Step 2), but we still skip the gate defensively.
+  // is configured.
   const [authState, setAuthState] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState(null);
@@ -310,23 +281,23 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   };
 
   useEffect(() => {
-    if (step === 3 && orgMode !== 'remote') {
+    if (step === 2) {
       fetchClaudeAuth();
       fetchCodexAuth();
     }
-  }, [step, orgMode]);
+  }, [step]);
 
   // Cursor status must follow the path typed in the wizard (not only the
   // server's persisted config) so correcting a bad auto-detect unblocks the
   // gate before Save & Continue runs /setup/configure.
   useEffect(() => {
-    if (step !== 3 || orgMode === 'remote') return;
+    if (step !== 2) return;
     void fetchCursorAuth();
     const id = window.setTimeout(() => {
       void fetchCursorAuth();
     }, 400);
     return () => window.clearTimeout(id);
-  }, [step, orgMode, cursorEnabled, cursorPath, fetchCursorAuth]);
+  }, [step, cursorEnabled, cursorPath, fetchCursorAuth]);
 
   const credsConfigured = !!(
     authState?.apiKey?.configured ||
@@ -521,82 +492,39 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     }
   };
 
-  const handleOrgContinue = async () => {
-    if (!orgName.trim()) return;
-
-    // Remote mode: don't create/update a local org. The user's account and
-    // data live on the remote server — our only job here is to persist the
-    // connection config and reload the window against the remote URL. That
-    // server then serves its own React bundle, AuthGate, and LoginScreen.
-    //
-    // Without this branch we'd write org rows to the local SQLite (which
-    // the remote server will never see), then drop the user into step 3's
-    // local CLI configuration — neither of which belong on a machine that's
-    // only meant to be a thin client for a remote hub.
-    if (orgMode === 'remote') {
-      if (!orgRemoteUrl.trim()) {
-        setError('Enter a server URL and test the connection.');
-        return;
-      }
-      // Force a fresh connection test before committing. This prevents a
-      // typo'd URL from stranding the Electron window on an unreachable
-      // origin with no graceful back-out.
-      setOrgTesting(true);
-      const result = await testConnection(orgRemoteUrl, orgApiKey);
-      setOrgTestResult(result);
-      setOrgTesting(false);
-      if (!result.ok) {
-        setError('Connection test failed — fix the URL or API key before continuing.');
-        return;
-      }
-      setError(null);
-      saveConnectionConfig({
-        mode: 'remote',
-        remoteUrl: orgRemoteUrl.trim().replace(/\/+$/, ''),
-        apiKey: orgApiKey.trim(),
-      });
-      if (window.electronAPI?.navigateToOrg) {
-        window.electronAPI.navigateToOrg();
-      } else {
-        window.location.reload();
-      }
-      return;
-    }
-
-    // Local mode: if an org already exists (e.g. the legacy-migrated
-    // "Default"), update it in place so first-run setup doesn't leave a
-    // stale duplicate behind.
+  /** Ensure a default local org exists (no naming step in first-run wizard). */
+  const ensureDefaultOrg = async () => {
     const existing = getActiveOrg();
     if (existing) {
       await updateOrg(existing.id, {
-        name: orgName.trim(),
-        mode: orgMode,
-        remoteUrl: orgRemoteUrl,
-        apiKey: orgApiKey,
+        name: existing.name?.trim() || DEFAULT_ORG_NAME,
+        mode: 'local',
+        remoteUrl: '',
+        apiKey: '',
       });
-    } else {
-      const org = await createOrg({
-        name: orgName.trim(),
-        mode: orgMode,
-        remoteUrl: orgRemoteUrl,
-        apiKey: orgApiKey,
-        color: '#6366f1',
-      });
-      await switchOrg(org.id);
-    }
-    setStep(3);
-  };
-
-  const handleOrgTest = async () => {
-    if (!orgRemoteUrl) {
-      setOrgTestResult({ ok: false, message: 'Enter a server URL first.' });
       return;
     }
-    setOrgTesting(true);
-    setOrgTestResult(null);
-    const result = await testConnection(orgRemoteUrl, orgApiKey);
-    setOrgTestResult(result);
-    setOrgTesting(false);
+    const org = await createOrg({
+      name: DEFAULT_ORG_NAME,
+      mode: 'local',
+      remoteUrl: '',
+      apiKey: '',
+      color: '#6366f1',
+    });
+    await switchOrg(org.id);
+  };
+
+  const handleWelcomeContinue = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await ensureDefaultOrg();
+      setStep(2);
+    } catch (err) {
+      setError((err && err.message) || 'Failed to initialize workspace');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSaveAndContinue = async () => {
@@ -638,7 +566,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
         }
       }
 
-      setStep(4);
+      setStep(3);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -654,14 +582,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     (!cursorEnabled || cursorPath.trim()) &&
     (!codexEnabled || codexPath.trim());
 
-  const step3CanContinue =
-    orgMode !== 'remote' &&
-    anyEngineEnabled &&
-    pathsOk &&
-    claudeGateOk &&
-    cursorGateOk &&
-    codexGateOk &&
-    !saving;
+  const credentialsCanContinue =
+    anyEngineEnabled && pathsOk && claudeGateOk && cursorGateOk && codexGateOk && !saving;
 
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 overflow-y-auto">
@@ -677,173 +599,31 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
             <div>
               <h1 className="text-2xl font-bold text-white mb-3">Welcome to Agent Hub</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-md mx-auto">
-                We&apos;ll create your organization, then set up AI credentials (Claude, Cursor, or
-                Codex). If your first project is a code repo, we&apos;ll connect GitHub next so
-                clones and PRs work.
+                We&apos;ll set up AI credentials (Claude, Cursor, or Codex). If your first project
+                is a code repo, we&apos;ll connect GitHub next so clones and PRs work.
               </p>
             </div>
-            <button
-              onClick={() => setStep(2)}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-lg transition-colors"
-            >
-              Continue
-            </button>
-          </div>
-        )}
-
-        {/* Step 2: Organization */}
-        {step === 2 && (
-          <div className="space-y-5">
-            <div className="text-center mb-2">
-              <h1 className="text-xl font-bold text-white mb-1">Create Your Organization</h1>
-              <p className="text-gray-400 text-sm">
-                An organization is a connection profile. You can add more later.
-              </p>
-            </div>
-
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">
-                  Organization Name
-                </label>
-                <input
-                  type="text"
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                  placeholder="Personal"
-                  className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
-                />
-              </div>
-
-              {isElectron && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-2">
-                    Connection Mode
-                  </label>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => {
-                        setOrgMode('local');
-                        setOrgTestResult(null);
-                      }}
-                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-                        orgMode === 'local'
-                          ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                          : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-                      }`}
-                    >
-                      <div className="text-base mb-1 flex items-center gap-1.5">
-                        <Monitor size={18} /> Local
-                      </div>
-                      <div className="text-xs text-gray-500">Server on this machine</div>
-                    </button>
-                    <button
-                      onClick={() => {
-                        setOrgMode('remote');
-                        setOrgTestResult(null);
-                      }}
-                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-                        orgMode === 'remote'
-                          ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                          : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-                      }`}
-                    >
-                      <div className="text-base mb-1 flex items-center gap-1.5">
-                        <Cloud size={18} /> Remote
-                      </div>
-                      <div className="text-xs text-gray-500">Connect to a remote server</div>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {isElectron && orgMode === 'remote' && (
-                <div className="space-y-3 pt-1">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">
-                      Server URL
-                    </label>
-                    <input
-                      type="text"
-                      value={orgRemoteUrl}
-                      onChange={(e) => setOrgRemoteUrl(e.target.value)}
-                      placeholder="https://my-server.example.com:3051"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">
-                      API Key (optional)
-                    </label>
-                    <input
-                      type="password"
-                      value={orgApiKey}
-                      onChange={(e) => setOrgApiKey(e.target.value)}
-                      placeholder="Enter API key if required"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
-                    />
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleOrgTest}
-                      disabled={orgTesting}
-                      className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-                    >
-                      <span className="flex items-center gap-1.5">
-                        {orgTesting ? (
-                          <>
-                            <Loader2 size={14} className="animate-spin" /> Testing...
-                          </>
-                        ) : (
-                          <>
-                            <Plug size={14} /> Test Connection
-                          </>
-                        )}
-                      </span>
-                    </button>
-                    {orgTestResult && (
-                      <span
-                        className={`text-sm ${orgTestResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
-                      >
-                        {orgTestResult.ok ? '✓' : '✕'} {orgTestResult.message}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Remote-mode validation errors surface inline so the user can
-                correct the URL / key without jumping to another step. */}
             {error && (
               <div
                 role="alert"
-                className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300"
+                className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300 max-w-md mx-auto"
               >
                 {error}
               </div>
             )}
-
-            <div className="flex gap-3 pt-1">
-              <button
-                onClick={() => setStep(1)}
-                className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleOrgContinue}
-                disabled={!orgName.trim()}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed"
-              >
-                Continue
-              </button>
-            </div>
+            <button
+              onClick={handleWelcomeContinue}
+              disabled={saving}
+              className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium px-6 py-2.5 rounded-lg transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2 mx-auto"
+            >
+              {saving && <Loader2 size={16} className="animate-spin" />}
+              {saving ? 'Setting up…' : 'Continue'}
+            </button>
           </div>
         )}
 
-        {/* Step 3: CLI Setup */}
-        {step === 3 && (
+        {/* Step 2: AI credentials */}
+        {step === 2 && (
           <div className="space-y-5">
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Configure Your Tools</h1>
@@ -1317,9 +1097,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
             {/* Actions */}
             <div className="flex gap-3 pt-1">
-              {initialStep < 3 && (
+              {initialStep < 2 && (
                 <button
-                  onClick={() => setStep(2)}
+                  onClick={() => setStep(1)}
                   className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
                 >
                   Back
@@ -1327,7 +1107,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               )}
               <button
                 onClick={handleSaveAndContinue}
-                disabled={!step3CanContinue}
+                disabled={!credentialsCanContinue}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && (
@@ -1358,8 +1138,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           </div>
         )}
 
-        {/* Step 4: Connect GitHub (optional) */}
-        {step === 4 && (
+        {/* Step 3: Connect GitHub (optional) */}
+        {step === 3 && (
           <div className="space-y-5">
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Connect GitHub</h1>
@@ -1417,13 +1197,13 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(2)}
                 className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
               >
                 Back
               </button>
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep(4)}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors"
               >
                 Continue
@@ -1432,8 +1212,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           </div>
         )}
 
-        {/* Step 5: Create First Project */}
-        {step === 5 && (
+        {/* Step 4: Create First Project */}
+        {step === 4 && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
               <Rocket size={48} />

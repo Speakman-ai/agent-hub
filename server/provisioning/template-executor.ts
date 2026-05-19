@@ -14,9 +14,11 @@
  *   rewrite-pkg    — noop (kept for compat; future work: inject project name).
  *   wire-tests     — run manifest.setup[*] in order, then manifest.test.
  *   wire-lint      — run manifest.lint.
+ *   git-init       — `git init --initial-branch=main` in the workspace so
+ *                    `gh repo create --source=.` can run in gh-create.
  *
  * Any phase that isn't one of the above delegates to the supplied fallback
- * executor (defaulting to the stub) so git-init / gh-* stay usable.
+ * executor (defaulting to the stub) for gh-* and validate/mint-token.
  */
 
 import { cpSync, mkdirSync } from 'fs';
@@ -251,6 +253,11 @@ export function createTemplateExecutor(opts: TemplateExecutorOptions): Provision
         const template = selectTemplate(ctx);
         const workspace = resolveWorkspace(ctx.projectId);
         return runCommand('lint', template.manifest.lint, workspace, ctx.log);
+      }
+
+      if (phase === 'git-init') {
+        const workspace = resolveWorkspace(ctx.projectId);
+        return runCommand('git-init', 'git init --initial-branch=main', workspace, ctx.log);
       }
 
       return fallback.runPhase(phase, ctx);
