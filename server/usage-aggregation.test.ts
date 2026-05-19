@@ -225,6 +225,22 @@ describe('usage-aggregation: grouped queries dedupe too', () => {
     seedSession(db, 'sess-a', 'agent-lead');
     seedMessage(db, 'msg-crossday', 'sess-a');
 
+    // Compute "yesterday late" + "today early" relative to *now* so this
+    // test stays inside the implementation's 30-day window
+    // (`datetime('now', '-30 days')` in computeUsageByDay) regardless of
+    // when CI runs. Previously these were hardcoded to 2026-04-18 /
+    // 2026-04-19, which started failing the day the timestamps fell
+    // outside the rolling window.
+    const now = new Date();
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const fmtDateTime = (d: Date): string => d.toISOString().slice(0, 19).replace('T', ' ');
+    const fmtDate = (d: Date): string => d.toISOString().slice(0, 10);
+    const yesterdayLateTs = fmtDateTime(new Date(today.getTime() - 60 * 1000)); // yesterday 23:59:00 UTC
+    const todayEarlyTs = fmtDateTime(new Date(today.getTime() + 30 * 1000)); // today 00:00:30 UTC
+    const yesterdayStr = fmtDate(yesterday);
+    const todayStr = fmtDate(today);
+
     // Same parent spans two days. Ghost cumulative emission sits on day 2;
     // MAX-cost row is on day 2, so cost attributes to day 2.
     seedResultEvent(db, {
@@ -233,7 +249,7 @@ describe('usage-aggregation: grouped queries dedupe too', () => {
       costUsd: 10,
       durationMs: 1000,
       numTurns: 50,
-      timestamp: '2026-04-18 23:59:00',
+      timestamp: yesterdayLateTs,
     });
     seedResultEvent(db, {
       parentId: 'msg-crossday',
@@ -241,21 +257,21 @@ describe('usage-aggregation: grouped queries dedupe too', () => {
       costUsd: 11,
       durationMs: 500,
       numTurns: 1,
-      timestamp: '2026-04-19 00:00:30',
+      timestamp: todayEarlyTs,
     });
 
     const byDay = computeUsageByDay(db);
-    const apr19 = byDay.find((r) => r.day === '2026-04-19')!;
-    const apr18 = byDay.find((r) => r.day === '2026-04-18');
+    const todayRow = byDay.find((r) => r.day === todayStr)!;
+    const yesterdayRow = byDay.find((r) => r.day === yesterdayStr);
 
-    // Cost goes to the MAX row's day (apr 19) — NOT split.
-    expect(apr19.cost).toBeCloseTo(11, 5);
-    // Apr 18 row still exists (for duration/turns/count) but contributes $0
-    // of cost — its row is rn>1.
-    expect(apr18?.cost ?? 0).toBeCloseTo(0, 5);
-    // Duration is per-emission; apr 18 keeps its own.
-    expect(apr18?.duration_ms).toBe(1000);
-    expect(apr19.duration_ms).toBe(500);
+    // Cost goes to the MAX row's day (today) — NOT split.
+    expect(todayRow.cost).toBeCloseTo(11, 5);
+    // Yesterday row still exists (for duration/turns/count) but contributes
+    // $0 of cost — its row is rn>1.
+    expect(yesterdayRow?.cost ?? 0).toBeCloseTo(0, 5);
+    // Duration is per-emission; yesterday keeps its own.
+    expect(yesterdayRow?.duration_ms).toBe(1000);
+    expect(todayRow.duration_ms).toBe(500);
   });
 
   it('recentSessions returns deduped cost per session', () => {

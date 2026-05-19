@@ -122,6 +122,53 @@ function truncateAtWordBoundary(input: string, maxLen: number): string {
 }
 
 /**
+ * Pick the initial synchronous title for a brand-new session.
+ *
+ * Precedence (first non-empty wins):
+ *   1. `explicitTitle` — e.g. a `UserPromptSubmit` hook's `sessionTitle`.
+ *   2. `linkedCardTitle` — the kanban card the session was spawned from.
+ *   3. Heuristic derived from `content` via `deriveHeuristicTitle`.
+ *
+ * The caller persists the returned `title` and, when `usedHeuristic` is true,
+ * is expected to schedule an LLM upgrade via `scheduleTitleUpgrade` for a
+ * sharper version once any fast model is configured.
+ */
+export interface InitialSessionTitlePickInput {
+  /** Raw first user message. */
+  content: string;
+  /** Optional explicit hint (e.g. hookSpecificOutput.sessionTitle). */
+  explicitTitle?: string | null;
+  /** Optional linked kanban card title. */
+  linkedCardTitle?: string | null;
+}
+
+export interface InitialSessionTitlePick {
+  title: string;
+  /** Source of the chosen title — for logging/telemetry. */
+  source: 'hint' | 'card' | 'heuristic';
+  /** True when only the heuristic was applied (LLM upgrade is worthwhile). */
+  usedHeuristic: boolean;
+}
+
+export function pickInitialSessionTitle(
+  input: InitialSessionTitlePickInput,
+): InitialSessionTitlePick {
+  const explicit = (input.explicitTitle ?? '').trim();
+  if (explicit) {
+    return { title: explicit, source: 'hint', usedHeuristic: false };
+  }
+  const card = (input.linkedCardTitle ?? '').trim();
+  if (card) {
+    return { title: card, source: 'card', usedHeuristic: false };
+  }
+  return {
+    title: deriveHeuristicTitle(input.content),
+    source: 'heuristic',
+    usedHeuristic: true,
+  };
+}
+
+/**
  * Derive a concise session title from a raw user message.
  *
  * Guarantees:
