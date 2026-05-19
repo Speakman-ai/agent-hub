@@ -13,7 +13,7 @@
   "pr-list": { "allowed_unregistered": 2, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "pr-nudge-reviewer": { "allowed_unregistered": 1, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "pr-resolve": { "allowed_unregistered": 1, "note": "pre-existing migration debt (card 3ed3bfc9)" },
-  "preview-secrets": { "allowed_unregistered": 3, "note": "pre-existing migration debt (card 3ed3bfc9)" },
+  "preview-secrets": { "allowed_unregistered": 0, "note": "fully registered in preview-secrets.openapi.ts (PR #1055)" },
   "preview-wizard": { "allowed_unregistered": 2, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "projects": { "allowed_unregistered": 13, "note": "pre-existing migration debt (card 3ed3bfc9); GET /api/projects/:projectId registered in projects.openapi.ts" },
   "provisioning": { "allowed_unregistered": 2, "note": "pre-existing migration debt (card 3ed3bfc9)" },

@@ -1,19 +1,22 @@
 /**
- * Worktree preview secrets REST surface.
+ * Per-project secrets REST surface.
  *
- *   GET    /api/projects/:projectId/preview/secrets         (Admin+)
- *   PUT    /api/projects/:projectId/preview/secrets         (Owner)
- *   POST   /api/projects/:projectId/preview/secrets/import  (Owner)
+ *   GET    /api/projects/:projectId/secrets             (Admin+)
+ *   PUT    /api/projects/:projectId/secrets             (Owner)
+ *   DELETE /api/projects/:projectId/secrets/:key        (Owner)
+ *   POST   /api/projects/:projectId/secrets/import      (Owner)
  *
- * The list endpoint returns the MASK constant for any `secret`-kind row
- * — no caller-side path ever reveals decrypted secret-kind values
- * (the only decrypt happens inside `loadProjectEnvForSpawn`, called by
- * the preview runtime at spawn time).
+ * Legacy aliases under `/preview/secrets` remain for scripts and older
+ * clients. Values are merged into spawned sessions via
+ * `mergeProjectSecretsSpawnEnv` — list/GET never returns decrypted
+ * `secret`-kind values (MASK sentinel on PUT preserves unchanged rows).
  *
- * Authz model mirrors Slack bots / instance backups: Admin can read
- * (the team's preview config is shared context), Owner can write
- * (changing the env that preview boots with is a production-shaped
- * action).
+ * Project membership: `requireRole('Admin'/'Owner')` runs after the
+ * upstream `createProjectVisibilityGate` middleware mounted in
+ * `server/index.ts`, which already 404s requests from callers who don't
+ * belong to the project's org. The role check below only narrows that
+ * by role — never broadens it. New routes added here must NOT bypass
+ * the visibility gate (it is what scopes :projectId to the caller's org).
  */
 import { Router, Request, Response } from 'express';
 import { requireRole } from '../roles.js';
@@ -24,6 +27,7 @@ import {
   listRawPreviewSecretRows,
   replacePreviewSecrets,
   replacePreviewSecretsMixed,
+  deletePreviewSecret,
   parseDotEnv,
   PreviewSecretValidationError,
   type PreviewSecretInput,
@@ -60,15 +64,27 @@ function normalizeInputs(raw: unknown): PreviewSecretInput[] {
   });
 }
 
+const SECRETS_PATHS = [
+  '/api/projects/:projectId/secrets',
+  '/api/projects/:projectId/preview/secrets',
+] as const;
+
+const SECRET_KEY_PATHS = [
+  '/api/projects/:projectId/secrets/:key',
+  '/api/projects/:projectId/preview/secrets/:key',
+] as const;
+
+const IMPORT_PATHS = [
+  '/api/projects/:projectId/secrets/import',
+  '/api/projects/:projectId/preview/secrets/import',
+] as const;
+
 export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
   const { findProject } = deps;
   const router = Router();
 
-  // ─── GET — Admin+ ────────────────────────────────────────────────
-  router.get(
-    '/api/projects/:projectId/preview/secrets',
-    requireRole('Admin'),
-    (req: Request, res: Response) => {
+  for (const listPath of SECRETS_PATHS) {
+    router.get(listPath, requireRole('Admin'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -76,14 +92,9 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
       }
       const secrets = listPreviewSecrets(project.id);
       res.json({ secrets });
-    },
-  );
+    });
 
-  // ─── PUT — Owner — bulk replace ──────────────────────────────────
-  router.put(
-    '/api/projects/:projectId/preview/secrets',
-    requireRole('Owner'),
-    (req: Request, res: Response) => {
+    router.put(listPath, requireRole('Owner'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -101,30 +112,41 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         }
         throw err;
       }
-    },
-  );
+    });
+  }
 
-  // ─── POST /import — Owner — parse .env blob, dedupe by key ───────
-  //
-  // Two contracts:
-  //   - `mode: 'replace'` (default) → behaves like PUT after parsing.
-  //   - `mode: 'merge'`             → reads the current raw rows,
-  //                                    keeps every existing row whose
-  //                                    key is NOT in the parsed blob
-  //                                    (carrying secret-kind ciphertext
-  //                                    through without decrypting), and
-  //                                    upserts the parsed entries on
-  //                                    top. "Later wins" only when the
-  //                                    same key appears in the blob.
-  //
-  // The merge path uses `replacePreviewSecretsMixed` so secret-kind
-  // rows survive a merge even though their value is masked on GET —
-  // the store round-trips their ciphertext rather than re-encrypting
-  // MASK as plaintext.
-  router.post(
-    '/api/projects/:projectId/preview/secrets/import',
-    requireRole('Owner'),
-    (req: Request, res: Response) => {
+  for (const keyPath of SECRET_KEY_PATHS) {
+    router.delete(keyPath, requireRole('Owner'), (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const key = req.params.key as string;
+      try {
+        const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+        const removed = deletePreviewSecret(project.id, key, actorUserId);
+        if (!removed) {
+          res.status(404).json({ error: `secret "${key}" not found` });
+          return;
+        }
+        // 204 No Content — successful deletes don't return the new list
+        // so a caller doing many single-key deletes doesn't pay the
+        // listPreviewSecrets cost on each one. Fetch GET /secrets if you
+        // need the updated state.
+        res.status(204).end();
+      } catch (err) {
+        if (err instanceof PreviewSecretValidationError) {
+          res.status(err.statusCode).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    });
+  }
+
+  for (const importPath of IMPORT_PATHS) {
+    router.post(importPath, requireRole('Owner'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -137,10 +159,6 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
           throw new PreviewSecretValidationError('env must be a string');
         }
         const mode = body.mode === 'merge' ? 'merge' : 'replace';
-        // Optional default kind for newly-imported keys; rarely set,
-        // but lets callers import a curated config block as `plain`.
-        // `parseDotEnv` returns entries with `kind` undefined so this
-        // override is the only thing that classifies them.
         const defaultKind: SecretKind = body.defaultKind === 'plain' ? 'plain' : 'secret';
         if (
           body.defaultKind !== undefined &&
@@ -160,10 +178,6 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
         let result;
         if (mode === 'merge') {
-          // Pull raw rows so secret-kind ciphertext can round-trip
-          // through the merge without ever decrypting it. Rows whose
-          // key is also in the parsed blob will be overwritten by the
-          // freshly-encrypted input inside `replacePreviewSecretsMixed`.
           const existingRaw = listRawPreviewSecretRows(project.id);
           result = replacePreviewSecretsMixed(project.id, inputs, existingRaw, actorUserId);
         } else {
@@ -181,8 +195,8 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         }
         throw err;
       }
-    },
-  );
+    });
+  }
 
   return router;
 }

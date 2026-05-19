@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, fileConfig } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
+import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
@@ -224,6 +226,14 @@ export function runClaude(
     });
     if (options.skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
+      // sessionId: null — heartbeats are scheduled, not driven by an
+      // interactive chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+      mergeProjectSecretsSpawnEnv(heartbeatEnv, {
+        projectId: options.skillCredentialMerge.project.id,
+        sessionId: null,
+      });
+      mergeProjectAwsSpawnEnv(heartbeatEnv, options.skillCredentialMerge.project);
     }
 
     const proc = spawn(CLAUDE_BIN, args, {
@@ -380,6 +390,11 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
         agentId: agent.id,
         project: hbProject,
       });
+      // sessionId: null — heartbeats are scheduled, not driven by an
+      // interactive chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+      mergeProjectSecretsSpawnEnv(heartbeatEnv, { projectId: hbProject.id, sessionId: null });
+      mergeProjectAwsSpawnEnv(heartbeatEnv, hbProject);
     }
     if (resolved.fallbackUsed) {
       console.warn(
@@ -571,6 +586,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         agentId: cronSkillAgentId,
         project: cronProject,
       });
+      // sessionId: null — crons are scheduled, not driven by an interactive
+      // chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+      mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+      mergeProjectAwsSpawnEnv(cronEnv, cronProject);
     }
     if (resolved.fallbackUsed) {
       console.warn(

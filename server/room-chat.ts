@@ -5,6 +5,8 @@ import { buildSpawnEnv } from './config.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
+import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import { buildRoomSpawnArgs, normalizeRoomEngine } from './room-multi-engine.js';
@@ -387,6 +389,12 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
               agentId: agent.id,
               project: proj,
             });
+            // sessionId: null — a room spawn has multiple participating
+            // sessions and no single owning one; decrypt-failure audit
+            // entries attribute to the room as system-initiated. See
+            // mergeProjectSecretsSpawnEnv.
+            mergeProjectSecretsSpawnEnv(roomEnv, { projectId: proj.id, sessionId: null });
+            mergeProjectAwsSpawnEnv(roomEnv, proj);
           }
         }
 

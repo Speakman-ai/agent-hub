@@ -174,4 +174,20 @@ describe('createPreviewRuntimes', () => {
     expect(colNames).toContain('compose_project_name');
     expect(colNames).toContain('override_file_path');
   });
+
+  it('wires loadProjectEnv on PreviewRuntime so per-project secrets reach the spawn', () => {
+    // Regression for PR #1055 review (the "CRITICAL — secrets never
+    // injected at spawn time" claim). The factory MUST hand the
+    // PreviewRuntime a loadProjectEnv callback or the entire
+    // per-project secrets feature is silently disabled in production.
+    // We peek at the runtime's private field via a typed cast — the
+    // alternative (end-to-end spawn) needs a CLI and a worktree fixture
+    // and would balloon this test by two orders of magnitude.
+    const dataDir = freshTmpDir();
+    const db = new Database(':memory:');
+    const { previewRuntime } = createPreviewRuntimes({ db, dataDir });
+    const wired = (previewRuntime as unknown as { loadProjectEnv: unknown }).loadProjectEnv;
+    // Must be a function (not the `null` fallback used when the dep is omitted).
+    expect(typeof wired).toBe('function');
+  });
 });

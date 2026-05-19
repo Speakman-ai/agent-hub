@@ -23,6 +23,8 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import PreviewSection from './PreviewSection.jsx';
+import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
+import ProjectAwsProfilesEditor from './ProjectAwsProfilesEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import { isElectron } from '../utils/isElectron.js';
@@ -2758,6 +2760,10 @@ export function ProjectsSection({
                           </span>
                         )}
                     </div>
+
+                    <ProjectSecretsEditor projectId={p.id} />
+
+                    <ProjectAwsProfilesEditor projectId={p.id} />
 
                     <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
                       <label className={labelClass}>Visibility</label>

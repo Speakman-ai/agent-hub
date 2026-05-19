@@ -20,6 +20,7 @@
 
 import type { Project } from './types.js';
 import type { Stmts } from './types.js';
+import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-store.js';
 
 export interface CascadeDeps {
   stmts: Stmts;
@@ -42,6 +43,14 @@ export interface CascadeResult {
  * delete paths will pick it up automatically.
  */
 export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
+  try {
+    deleteAllPreviewSecretsForProject(project.id);
+  } catch (err) {
+    console.error(
+      `[deleteProjectScopedRows] Failed to delete project secrets for "${project.id}":`,
+      (err as Error).message,
+    );
+  }
   stmts.deleteEscalationsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);
   stmts.deleteWikiPagesByProject.run(project.id);

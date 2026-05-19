@@ -2521,6 +2521,280 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    PreviewSecretRow:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        key:
+          type: string
+        kind:
+          type: string
+          enum:
+            - plain
+            - secret
+          description: "`plain` values are returned in clear on GET. `secret` values are masked on GET (return the `••••••••` sentinel) and only decrypted at spawn time inside `loadProjectEnvForSpawn`."
+        value:
+          type: string
+          description: Decrypted value for `plain` kind; the `••••••••` MASK sentinel for `secret` kind. Never the plaintext of a secret-kind row.
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - key
+        - kind
+        - value
+        - created_at
+        - updated_at
+      description: One per-project secret row as returned by GET / PUT. `secret`-kind rows mask the value field; the only path that decrypts a secret is the spawn-time `loadProjectEnvForSpawn` (no caller-facing read).
+    PreviewSecretsListResponse:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSecretRow"
+      required:
+        - secrets
+      description: Current secrets for the project, sorted by key. `secret`-kind values are masked.
+    PreviewSecretsPutRequest:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                description: Env var name. Same validation rules as the URL `:key` param.
+              value:
+                type: string
+                description: New plaintext value, OR the MASK sentinel (`••••••••`) for an existing `secret`-kind row to preserve its ciphertext without re-sending the plaintext.
+              kind:
+                type: string
+                enum:
+                  - plain
+                  - secret
+                description: Defaults to `secret` when omitted.
+            required:
+              - key
+              - value
+            description: One entry in a bulk-replace PUT body.
+          description: Full replacement set. Keys not present in the array are removed. Send the MASK sentinel for an existing secret-kind row to preserve its current ciphertext.
+      required:
+        - secrets
+      description: Body for PUT /secrets.
+    PreviewSecretsImportRequest:
+      type: object
+      properties:
+        env:
+          type: string
+          description: "`.env`-style blob. Supports `KEY=value`, quoted values, `export KEY=value`, comments and blank lines. Multi-line values and shell-expansion are NOT supported."
+        mode:
+          type: string
+          enum:
+            - replace
+            - merge
+          description: "`replace` (default) — wipe existing keys and install the parsed set. `merge` — keep existing keys, parsed entries win on conflict."
+        defaultKind:
+          type: string
+          enum:
+            - plain
+            - secret
+          description: Kind to assign to each parsed entry; defaults to `secret`.
+      required:
+        - env
+      description: Body for POST /secrets/import.
+    PreviewSecretsImportResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+          description: Count of parsed entries that made it into the write.
+        mode:
+          type: string
+          enum:
+            - replace
+            - merge
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSecretRow"
+      required:
+        - imported
+        - mode
+        - secrets
+      description: Outcome of the import. `secrets` reflects the post-import state.
+    PreviewSecretsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for preview-secrets routes.
+    ProjectAwsSsoProfile:
+      type: object
+      properties:
+        sso_account_id:
+          type: string
+          description: 12-digit AWS account id.
+          example: "123456789012"
+        sso_start_url:
+          type: string
+          description: IAM Identity Center start URL (`https://…`).
+          example: https://d-1234567890.awsapps.com/start/
+        sso_region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        sso_role_name:
+          type: string
+          description: IAM Identity Center role to assume.
+        region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        output:
+          type: string
+          description: AWS CLI default output format; defaults to `json` on render.
+      required:
+        - sso_account_id
+        - sso_start_url
+        - sso_region
+        - sso_role_name
+        - region
+      description: One AWS IAM Identity Center (SSO) profile stanza. Rendered into the per-spawn `AWS_CONFIG_FILE` as a `[profile <name>]` section. Not credentials — SSO tokens still live under the spawning user's `~/.aws/sso/cache`.
+    ProjectAwsSsoProfilesMap:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/ProjectAwsSsoProfile"
+      description: Map of profile name → profile stanza.
+    ProjectAwsProfilesResponse:
+      type: object
+      properties:
+        profiles:
+          $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+      required:
+        - profiles
+      description: Current AWS SSO profiles configured on the project.
+    ProjectAwsProfilesRequest:
+      type: object
+      properties:
+        profiles:
+          anyOf:
+            - $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+            - type: array
+              items:
+                nullable: true
+          description: "Replacement set of profiles. Accepts either a `{ name: stanza }` map or an array of `{ name, ...stanza }` objects. Pass `{}` to clear all profiles."
+      required:
+        - profiles
+      description: Body for PUT /aws-profiles.
+    ProjectAwsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for project-aws routes.
+    ProjectAwsSsoStatusResponse:
+      anyOf:
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - true
+            account:
+              type: string
+            arn:
+              type: string
+            userId:
+              type: string
+          required:
+            - profile
+            - loggedIn
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - false
+            error:
+              type: string
+            needsLogin:
+              type: boolean
+          required:
+            - profile
+            - loggedIn
+      description: "`aws sts get-caller-identity` result for the named profile. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login."
+    ProjectAwsSsoLoginRequest:
+      type: object
+      properties:
+        profile:
+          type: string
+          description: Configured profile name to log in.
+      required:
+        - profile
+      description: Body for POST /aws-sso/login.
+    ProjectAwsSsoLoginResponse:
+      anyOf:
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - true
+            loginId:
+              type: string
+              description: Server-local id for this login attempt — useful for log correlation.
+            profile:
+              type: string
+            loginUrl:
+              type: string
+              description: IAM Identity Center device-authorization URL the user must open in a browser. Present on the standard happy path where the URL surfaces within ~30 seconds.
+            completed:
+              type: boolean
+              description: True when `aws sso login --no-browser` finished entirely server-side (rare — usually the user completes the device flow in a browser before the CLI exits).
+            output:
+              type: string
+              description: Tail of the CLI stdout/stderr (capped) for diagnostic purposes.
+          required:
+            - ok
+            - loginId
+            - profile
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - false
+            loginId:
+              type: string
+            profile:
+              type: string
+            error:
+              type: string
+            output:
+              type: string
+          required:
+            - ok
+            - loginId
+            - profile
+            - error
+      description: Outcome of the browser-less `aws sso login` spawn. Only one login proc runs per server at a time; if a second request arrives while a previous one is still running the previous proc is killed and a new one is spawned.
     ProjectOrderResponse:
       type: object
       properties:
@@ -10322,6 +10596,296 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/{projectId}/secrets:
+    get:
+      tags:
+        - Projects
+      summary: List per-project secrets
+      description: Returns the project's full secret list, sorted by key. `secret`-kind values are masked with the `••••••••` sentinel — this endpoint never returns secret plaintexts. Admin+ role is required (PUT/DELETE/import require Owner).
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Current secret list (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsListResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Bulk-replace per-project secrets
+      description: Wholesale replace the project's secret set. Keys absent from the request body are removed; secret-kind entries can carry the MASK sentinel to preserve the existing ciphertext without re-sending the plaintext. `updated_at` is bumped only on rows whose value actually changes.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSecretsPutRequest"
+      responses:
+        "200":
+          description: Replacement applied. Returns the post-write secret list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsListResponse"
+        "400":
+          description: Validation failed — bad key, reserved-namespace collision, oversize value, duplicate keys in the batch, or MASK sentinel sent for a key that does not yet exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/secrets/{key}:
+    delete:
+      tags:
+        - Projects
+      summary: Delete a single per-project secret
+      description: Removes one (project, key) entry without disturbing the rest of the set. Returns 204 on success and appends a `delete` row to the project secret audit log. 404 if the key does not exist — the caller may treat this as idempotent.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Env var name. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/` and cannot be in the reserved namespace (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`).
+            example: STRIPE_KEY
+          required: true
+          description: Env var name. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/` and cannot be in the reserved namespace (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`).
+          name: key
+          in: path
+      responses:
+        "204":
+          description: Deleted. No response body.
+        "400":
+          description: Key failed validation (bad identifier or reserved namespace).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, the caller cannot see it, or the key has no row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/secrets/import:
+    post:
+      tags:
+        - Projects
+      summary: Import secrets from a `.env`-style blob
+      description: Parses the supplied env blob and writes the result either as a wholesale replace (default) or a merge. Reserved keys (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`) are dropped at parse time. Multi-line values are not supported — encode newlines (`\n` escape, base64) before importing.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSecretsImportRequest"
+      responses:
+        "200":
+          description: Import succeeded. Returns the parsed count and the post-import state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsImportResponse"
+        "400":
+          description: Body missing/invalid, or a parsed key failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/aws-profiles:
+    get:
+      tags:
+        - Projects
+      summary: List AWS SSO profiles configured on a project
+      description: Returns the project's AWS IAM Identity Center profile map. Not credentials — only the static stanza fields (`sso_account_id`, `sso_start_url`, `sso_region`, `sso_role_name`, `region`). SSO tokens themselves live under the spawning user's `~/.aws/sso/cache` and are never returned.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Profile map (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsProfilesResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Replace the AWS SSO profiles configured on a project
+      description: Wholesale replace the project's AWS SSO profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` template that future spawns reference.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectAwsProfilesRequest"
+      responses:
+        "200":
+          description: Profiles saved. Returns the normalized map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsProfilesResponse"
+        "400":
+          description: Validation failed — bad profile name, invalid account id / region / URL, or duplicate keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+  /api/projects/{projectId}/aws-sso/status:
+    get:
+      tags:
+        - Projects
+      summary: Check whether the cached SSO token for a profile is still valid
+      description: Runs `aws sts get-caller-identity --profile <name>` against the project's rendered `AWS_CONFIG_FILE` and reports whether the cached SSO token can authenticate. Use this from the UI to decide whether to surface a "Log in" CTA, and from agents to decide whether to call `POST /aws-sso/login` before making AWS calls.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Configured profile name.
+          required: true
+          description: Configured profile name.
+          name: profile
+          in: query
+      responses:
+        "200":
+          description: Identity check ran. Inspect `loggedIn` to know whether the token is valid — a 200 is also returned for the "not logged in" case so callers can branch on the body without try/catch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoStatusResponse"
+        "400":
+          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+  /api/projects/{projectId}/aws-sso/login:
+    post:
+      tags:
+        - Projects
+      summary: Start a browser-less AWS SSO device-authorization flow
+      description: |-
+        Spawns `aws sso login --profile <name> --no-browser` server-side, watches its output for the IAM Identity Center device URL, and returns the URL to the caller. The user then opens that URL in their own browser to complete the device flow; once they do, the cached SSO token at `~/.aws/sso/cache` becomes valid and subsequent `GET /aws-sso/status` calls report `loggedIn: true`.
+
+        Only one login proc runs per server at a time: a second request kills the previous proc before spawning a new one. The 30-second URL-extraction timeout also kills the proc so no orphaned `aws` processes accumulate.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectAwsSsoLoginRequest"
+      responses:
+        "200":
+          description: "Login proc spawned. On the happy path the response carries `loginUrl`; on rare immediate completion it carries `completed: true`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
+        "400":
+          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "500":
+          description: Login proc failed — exited non-zero, errored on spawn, or timed out without surfacing a device URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
   /api/projects/order:
     put:
       tags:

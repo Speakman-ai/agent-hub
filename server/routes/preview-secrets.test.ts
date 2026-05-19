@@ -320,15 +320,89 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
     expect(byKey.NEW_FLAG).toMatchObject({ kind: 'secret', value: MASK });
   });
 
-  it('rejects an .env that contains a reserved key', async () => {
+  it('silently drops reserved-namespace keys from an imported blob (defensive parser filter)', async () => {
+    // parseDotEnv filters reserved keys at parse time so a caller using
+    // the parser independently (i.e. not through the store) cannot
+    // inject them. The import endpoint preserves the rest of the blob
+    // exactly as the .env-shell convention would (skip the bad lines,
+    // keep the good ones).
     const projectId = await freshProject();
     const res = await request
       .post(`/api/projects/${projectId}/preview/secrets/import`)
-      .send({ env: 'GOOD=ok\nAGENT_HUB_URL=evil\n' })
+      .send({
+        env: 'GOOD=ok\nAGENT_HUB_URL=evil\nNODE_ENV=prod\nPATH=/x\nHOME=/y\nALSO_GOOD=fine\n',
+      })
+      .expect(200);
+    // Only the non-reserved keys land; `imported` reflects what made it.
+    expect(res.body.imported).toBe(2);
+    const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
+    const keys = (list.body.secrets as Array<{ key: string }>).map((r) => r.key).sort();
+    expect(keys).toEqual(['ALSO_GOOD', 'GOOD']);
+  });
+});
+
+describe('DELETE /api/projects/:id/secrets/:key', () => {
+  it('returns 404 for an unknown project', async () => {
+    const res = await request.delete('/api/projects/does-not-exist/secrets/FOO').expect(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it('returns 404 when the project exists but the key has no row', async () => {
+    const projectId = await freshProject();
+    const res = await request.delete(`/api/projects/${projectId}/secrets/NEVER`).expect(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it('returns 204 and removes the row when the key exists', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/secrets`)
+      .send({
+        secrets: [
+          { key: 'GONE', value: 'bye', kind: 'plain' },
+          { key: 'KEEP', value: 'stay', kind: 'plain' },
+        ],
+      })
+      .expect(200);
+
+    await request.delete(`/api/projects/${projectId}/secrets/GONE`).expect(204);
+
+    const list = await request.get(`/api/projects/${projectId}/secrets`).expect(200);
+    const keys = (list.body.secrets as Array<{ key: string }>).map((r) => r.key);
+    expect(keys).toEqual(['KEEP']);
+  });
+
+  it('400s on a reserved-namespace key (defensive — should never have been stored anyway)', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .delete(`/api/projects/${projectId}/secrets/AGENT_HUB_URL`)
       .expect(400);
     expect(res.body.error).toMatch(/reserved/i);
-    // And nothing landed — validation runs before write.
-    const list = await request.get(`/api/projects/${projectId}/preview/secrets`).expect(200);
+  });
+
+  it('the legacy /preview/secrets/:key alias deletes the same row', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/secrets`)
+      .send({ secrets: [{ key: 'LEGACY_GONE', value: 'x', kind: 'plain' }] })
+      .expect(200);
+
+    await request.delete(`/api/projects/${projectId}/preview/secrets/LEGACY_GONE`).expect(204);
+
+    const list = await request.get(`/api/projects/${projectId}/secrets`).expect(200);
     expect(list.body.secrets).toHaveLength(0);
+  });
+});
+
+describe('GET /api/projects/:id/secrets (canonical alias)', () => {
+  it('lists secrets on the non-preview path', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/secrets`)
+      .send({ secrets: [{ key: 'ALIAS_KEY', value: 'x', kind: 'plain' }] })
+      .expect(200);
+    const res = await request.get(`/api/projects/${projectId}/secrets`).expect(200);
+    expect(res.body.secrets).toHaveLength(1);
+    expect(res.body.secrets[0].key).toBe('ALIAS_KEY');
   });
 });

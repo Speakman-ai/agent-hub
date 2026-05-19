@@ -37,8 +37,15 @@ if [[ ${IDENTITY_EXIT} -ne 0 ]]; then
   if echo "${IDENTITY_JSON}" | grep -qi "ExpiredToken\|ExpiredTokenException"; then
     echo "error: AWS session token has expired." >&2
     echo "" >&2
-    echo "For SSO profiles, run:" >&2
-    echo "  aws sso login --profile ${RESOLVED_PROFILE}" >&2
+    if [[ -n "${AGENT_HUB_AWS_PROFILE_NAMES:-}" && -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" ]]; then
+      echo "For project SSO profiles, use the Hub login API:" >&2
+      echo "  POST ${AGENT_HUB_URL}/api/projects/${PROJECT_ID}/aws-sso/login" >&2
+      echo "  body: {\"profile\":\"${RESOLVED_PROFILE}\"}" >&2
+      echo "  (Authorization: Bearer \$AGENT_HUB_API_KEY) — return loginUrl to the user." >&2
+    else
+      echo "For SSO profiles, run:" >&2
+      echo "  aws sso login --profile ${RESOLVED_PROFILE}" >&2
+    fi
     echo "" >&2
     echo "For assumed-role / short-lived credentials, re-run the assume-role step." >&2
     exit 1
@@ -47,9 +54,15 @@ if [[ ${IDENTITY_EXIT} -ne 0 ]]; then
   if echo "${IDENTITY_JSON}" | grep -qi "NoCredentialProviders\|Unable to locate credentials"; then
     echo "error: No AWS credentials found for profile '${RESOLVED_PROFILE}'." >&2
     echo "" >&2
-    echo "Configure credentials via one of:" >&2
-    echo "  aws configure --profile ${RESOLVED_PROFILE}" >&2
-    echo "  aws sso login --profile ${RESOLVED_PROFILE}   (for SSO profiles)" >&2
+    if [[ -n "${AGENT_HUB_AWS_PROFILE_NAMES:-}" && -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" ]]; then
+      echo "Project profiles: ${AGENT_HUB_AWS_PROFILE_NAMES}" >&2
+      echo "  GET  ${AGENT_HUB_URL}/api/projects/${PROJECT_ID}/aws-sso/status?profile=${RESOLVED_PROFILE}" >&2
+      echo "  POST ${AGENT_HUB_URL}/api/projects/${PROJECT_ID}/aws-sso/login  {\"profile\":\"${RESOLVED_PROFILE}\"}" >&2
+    else
+      echo "Configure credentials via one of:" >&2
+      echo "  aws configure --profile ${RESOLVED_PROFILE}" >&2
+      echo "  aws sso login --profile ${RESOLVED_PROFILE}   (for SSO profiles)" >&2
+    fi
     echo "  export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=..." >&2
     exit 1
   fi

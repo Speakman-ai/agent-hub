@@ -161,6 +161,8 @@ import {
   buildBrowserActivityStartedEvent,
 } from './browser-activity-emits.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
+import { mergeProjectAwsSpawnEnv, getProjectAwsSsoProfiles } from './project-aws-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -582,6 +584,25 @@ export function buildEnrichedPrompt(
   if (browserToolsOn && isFirstMessage) {
     prompt += `\n\n## Browser Automation Available
 You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. The full operation list (\`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`) and the URL-egress caveats are in the **ReAct Loop** section further down — read them before driving sensitive pages.`;
+  }
+
+  if (projectId) {
+    const awsProject = findProject(projectId);
+    const awsProfiles = awsProject ? getProjectAwsSsoProfiles(awsProject) : {};
+    const awsNames = Object.keys(awsProfiles).sort((a, b) => a.localeCompare(b));
+    if (awsNames.length > 0) {
+      prompt += `\n\n## Project AWS (IAM Identity Center)
+Configured SSO profiles for this project: ${awsNames.join(', ')}.
+This session sets \`AWS_CONFIG_FILE\` to the project-specific config. SSO tokens cache under your per-user HOME.
+
+**Before any AWS CLI work:**
+1. Ask which profile to use if the user did not say (e.g. dev, staging, prod).
+2. Check login: \`GET $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/status?profile=<name>\` with \`Authorization: Bearer $AGENT_HUB_API_KEY\`.
+3. If \`loggedIn\` is false, \`POST $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/login\` with body \`{"profile":"<name>"}\`, give the user the \`loginUrl\` to open in a browser, wait for them to finish, then re-check status.
+4. Use \`scripts/aws-whoami.sh --profile <name>\` and \`scripts/aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
+
+Do not print access keys or session tokens. Prefer the Hub SSO login API over running \`aws sso login\` directly so the device URL is surfaced in chat.`;
+    }
   }
 
   if (!project.ahw) return prompt;
@@ -2732,6 +2753,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           /* non-fatal — env var simply omitted, prompt block already covers the agent */
         }
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
+        mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
+        mergeProjectAwsSpawnEnv(base, project);
         return base;
       })();
 

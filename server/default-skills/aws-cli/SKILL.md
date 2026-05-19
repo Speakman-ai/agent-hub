@@ -128,6 +128,28 @@ Full details: `references/profiles-and-regions.md`
 
 ## SSO & Assume-Role
 
+### Project-configured profiles (Agent Hub)
+
+When `AGENT_HUB_AWS_PROFILE_NAMES` is set, this project has SSO profiles in Hub
+Settings → Projects → **AWS SSO profiles**. `AWS_CONFIG_FILE` points at the
+generated config — use `--profile <name>` on every script.
+
+**Login workflow (interactive sessions):**
+
+1. `scripts/aws-whoami.sh --profile <name>` — if credentials work, proceed.
+2. If not, check status:
+   `GET $AGENT_HUB_URL/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>`
+   (Bearer `$AGENT_HUB_API_KEY`).
+3. If `loggedIn` is false, start browser-less SSO:
+   `POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/aws-sso/login`
+   body `{"profile":"<name>"}` → give the user `loginUrl` to open; wait, then
+   re-check status.
+4. Run AWS reads via `scripts/aws-q.sh` with `--profile <name>`.
+
+Ask the user which profile (dev, staging, prod, …) when ambiguous.
+
+### Manual SSO (no Hub project config)
+
 ```bash
 # Check if SSO session is active
 aws sts get-caller-identity --profile <sso-profile> 2>&1 | grep -q "ExpiredToken" \
