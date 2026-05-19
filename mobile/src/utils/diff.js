@@ -99,17 +99,20 @@ function parseApplyPatchContent(patch) {
   return { removals, additions };
 }
 
+function splitDiffLines(text) {
+  if (text === '' || text == null) return [];
+  return String(text).split('\n');
+}
+
 function parseCursorEditStrategies(input) {
   if (!input || typeof input !== 'object') return null;
 
   const sr = input.strReplace;
   if (sr && typeof sr === 'object') {
-    const hasStr =
-      typeof sr.oldText === 'string' || typeof sr.newText === 'string';
-    if (hasStr) {
-      const oldT = typeof sr.oldText === 'string' ? sr.oldText : '';
-      const newT = typeof sr.newText === 'string' ? sr.newText : '';
-      return { removals: oldT.split('\n'), additions: newT.split('\n') };
+    const oldT = typeof sr.oldText === 'string' ? sr.oldText : '';
+    const newT = typeof sr.newText === 'string' ? sr.newText : '';
+    if (oldT.length > 0 || newT.length > 0) {
+      return { removals: splitDiffLines(oldT), additions: splitDiffLines(newT) };
     }
   }
 
@@ -117,17 +120,20 @@ function parseCursorEditStrategies(input) {
   if (mr?.edits && Array.isArray(mr.edits) && mr.edits.length > 0) {
     const removals = [];
     const additions = [];
-    mr.edits.forEach((ed, i) => {
-      if (i > 0) {
+    let wrote = false;
+    mr.edits.forEach((ed) => {
+      const o = typeof ed?.oldText === 'string' ? ed.oldText : '';
+      const n = typeof ed?.newText === 'string' ? ed.newText : '';
+      if (!o && !n) return;
+      if (wrote) {
         removals.push('');
         additions.push('· · ·');
       }
-      const o = typeof ed?.oldText === 'string' ? ed.oldText : '';
-      const n = typeof ed?.newText === 'string' ? ed.newText : '';
-      removals.push(...o.split('\n'));
-      additions.push(...n.split('\n'));
+      removals.push(...splitDiffLines(o));
+      additions.push(...splitDiffLines(n));
+      wrote = true;
     });
-    return { removals, additions };
+    if (wrote) return { removals, additions };
   }
 
   const ap = input.applyPatch;
@@ -168,12 +174,12 @@ export function parseDiffLines(tool, input) {
     } else {
       const old = input?.old_string ?? input?.oldString ?? '';
       const replacement = input?.new_string ?? input?.newString ?? '';
-      removals = String(old).split('\n');
-      additions = String(replacement).split('\n');
+      removals = splitDiffLines(old);
+      additions = splitDiffLines(replacement);
     }
   } else if (tool === 'Write') {
     const content = input?.content ?? input?.fileText ?? input?.contents ?? '';
-    const lines = String(content).split('\n');
+    const lines = splitDiffLines(content);
     additions = lines.slice(0, 20);
     if (lines.length > 20) {
       additions.push(`… +${lines.length - 20} more lines`);
@@ -181,4 +187,25 @@ export function parseDiffLines(tool, input) {
   }
 
   return { filePath, action, removals, additions };
+}
+
+export function diffHasDisplayableLines(tool, input) {
+  const { removals, additions } = parseDiffLines(tool, input);
+  return removals.some((l) => l.trim()) || additions.some((l) => l.trim());
+}
+
+/**
+ * Kept in sync with `client/src/utils/diff.js`. Returns true only when this
+ * is a `Write` tool call whose body field is exactly the empty string —
+ * "create/clear an empty file" vs. "args haven't arrived yet". Drives the
+ * placeholder copy in DiffView so Write of `""` is not misreported as
+ * "pending or unavailable".
+ */
+export function isExplicitEmptyWrite(tool, input) {
+  if (tool !== 'Write' || !input || typeof input !== 'object') return false;
+  const fields = ['content', 'fileText', 'contents'];
+  for (const k of fields) {
+    if (k in input && input[k] === '') return true;
+  }
+  return false;
 }

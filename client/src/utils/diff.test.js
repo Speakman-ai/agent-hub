@@ -4,6 +4,8 @@ import {
   shortenPath,
   parseDiffLines,
   mergeEditInputWithToolResult,
+  diffHasDisplayableLines,
+  isExplicitEmptyWrite,
 } from './diff.js';
 
 describe('isFileModifyingTool', () => {
@@ -77,18 +79,39 @@ describe('parseDiffLines', () => {
     expect(result.additions[20]).toBe('… +5 more lines');
   });
 
-  it('handles missing input fields gracefully', () => {
+  it('handles missing input fields gracefully (no blank gutter rows)', () => {
     const result = parseDiffLines('Edit', {});
     expect(result.filePath).toBe('');
-    expect(result.removals).toEqual(['']);
-    expect(result.additions).toEqual(['']);
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+    expect(diffHasDisplayableLines('Edit', {})).toBe(false);
   });
 
   it('handles null input', () => {
     const result = parseDiffLines('Edit', null);
     expect(result.filePath).toBe('');
-    expect(result.removals).toEqual(['']);
-    expect(result.additions).toEqual(['']);
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+  });
+
+  it('ignores empty strReplace shell (falls through to old_string)', () => {
+    const result = parseDiffLines('Edit', {
+      path: 'x.ts',
+      strReplace: {},
+      old_string: 'a',
+      new_string: 'b',
+    });
+    expect(result.removals).toEqual(['a']);
+    expect(result.additions).toEqual(['b']);
+  });
+
+  it('does not treat empty strReplace oldText/newText as displayable', () => {
+    expect(
+      diffHasDisplayableLines('Edit', {
+        path: 'cad/foo.ts',
+        strReplace: { oldText: '', newText: '' },
+      }),
+    ).toBe(false);
   });
 
   it('parses Codex file_change changes[] (path + kind only)', () => {
@@ -257,5 +280,47 @@ describe('parseDiffLines', () => {
     });
     expect(result.removals).toEqual(['a']);
     expect(result.additions).toEqual(['b']);
+  });
+
+  // Pins the contract that Composer 2.5's content-less Edit (path + empty
+  // strReplace + no Claude-style fallback fields, no diffString) yields
+  // EMPTY arrays — not [''] — so DiffView renders its placeholder instead
+  // of two blank +/- gutter rows. See review item #7 on PR #1058.
+  it('returns empty additions/removals for Edit with strReplace:{} and no fallback content', () => {
+    const result = parseDiffLines('Edit', { path: 'f.ts', strReplace: {} });
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+    expect(diffHasDisplayableLines('Edit', { path: 'f.ts', strReplace: {} })).toBe(false);
+  });
+});
+
+describe('isExplicitEmptyWrite', () => {
+  it('returns true when Write content is the empty string', () => {
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', content: '' })).toBe(true);
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', fileText: '' })).toBe(true);
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', contents: '' })).toBe(true);
+  });
+
+  it('returns false when Write body field is missing (args not yet arrived)', () => {
+    // Distinguishing "content explicitly ''" from "field absent" is the
+    // whole point of the helper — the absent case should fall back to
+    // the standard "pending or unavailable" placeholder.
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt' })).toBe(false);
+    expect(isExplicitEmptyWrite('Write', {})).toBe(false);
+    expect(isExplicitEmptyWrite('Write', null)).toBe(false);
+  });
+
+  it('returns false when Write body has content', () => {
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', content: 'hello' })).toBe(false);
+  });
+
+  it('returns false for Edit even with empty strReplace (Edit gets the pending placeholder)', () => {
+    expect(isExplicitEmptyWrite('Edit', { path: 'f.ts', strReplace: {} })).toBe(false);
+    expect(isExplicitEmptyWrite('Edit', { path: 'f.ts' })).toBe(false);
+  });
+
+  it('returns false for non-file-modifying tools', () => {
+    expect(isExplicitEmptyWrite('Bash', { content: '' })).toBe(false);
+    expect(isExplicitEmptyWrite('Read', { content: '' })).toBe(false);
   });
 });

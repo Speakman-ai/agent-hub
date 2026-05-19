@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { eventsToBlocks } from './SessionTail.jsx';
+import { render, screen } from '@testing-library/react';
+import SessionTail, { eventsToBlocks } from './SessionTail.jsx';
 
 /**
  * `eventsToBlocks` turns a raw event stream into renderable blocks. The tail
@@ -10,6 +11,105 @@ import { eventsToBlocks } from './SessionTail.jsx';
  * the tail — otherwise the chat fills up with noisy "unhandled event" rows
  * (observed in Electron client v1.2.1 bug report).
  */
+describe('SessionTail — browser_tool_activity UI', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('renders BrowserActivityPanel without unhandled event rows', () => {
+    const events = wrap([
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+    ]);
+    render(
+      <SessionTail
+        message={{
+          id: 'm1',
+          role: 'assistant',
+          engine: 'claude-code',
+          model: 'opus',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={events}
+        agentColor="#6366f1"
+        streaming
+      />,
+    );
+    expect(screen.getByTestId('browser-activity-panel')).toBeTruthy();
+    expect(screen.getByTestId('browser-activity-live-hint')).toHaveTextContent(
+      'Navigating to example.com…',
+    );
+    expect(screen.queryByText(/unhandled event/i)).toBeNull();
+  });
+});
+
+describe('eventsToBlocks — browser_tool_activity handling', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('does not produce unknown blocks for browser_tool_activity events', () => {
+    const events = wrap([
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'ended',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+        ok: true,
+        summary: 'Opened example.com',
+        durationMs: 12,
+      },
+    ]);
+
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks).toEqual([]);
+  });
+
+  it('still renders assistant_text around browser_tool_activity events', () => {
+    const events = wrap([
+      { type: 'assistant_text', text: 'Opening the app.', partial: false },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'ended',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+        ok: true,
+        summary: 'Opened example.com',
+        durationMs: 12,
+      },
+      { type: 'assistant_text', text: 'Logged in.', partial: false },
+    ]);
+
+    const blocks = eventsToBlocks(events);
+    expect(blocks.map((b) => b.kind)).toEqual(['text']);
+    expect(blocks[0].text).toContain('Opening the app.');
+    expect(blocks[0].text).toContain('Logged in.');
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 
@@ -238,6 +338,69 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
  * between them. Mirrors Cursor's chat where the model gathering context
  * doesn't dominate the timeline.
  */
+describe('eventsToBlocks — cursor Edit tool_use upgrade', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('uses the latest tool_use input when the same call_id is emitted twice', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'e1',
+          tool: 'Edit',
+          input: { path: 'f.ts', strReplace: { oldText: '', newText: '' } },
+        },
+        {
+          type: 'tool_use',
+          id: 'e1',
+          tool: 'Edit',
+          input: { path: 'f.ts', strReplace: { oldText: 'a', newText: 'b' } },
+        },
+        { type: 'tool_result', toolUseId: 'e1', output: 'ok', isError: false },
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('tool');
+    expect(blocks[0].use.input.strReplace.newText).toBe('b');
+  });
+
+  // Reviewer concern (PR #1058 review item #2): dedup pre-index must NOT
+  // break result pairing. Both tool_use revisions share the same call_id
+  // string, and resultByToolId is keyed by that string — so the surviving
+  // (latest) tool_use is still paired with its tool_result. This test
+  // would fail if a future refactor changed result lookup from "use.id" to
+  // "first tool_use index", or if the dedup ran as a post-filter that
+  // dropped a tool_use the result was already pointed at.
+  it('pairs tool_result correctly when the latest tool_use revision is kept', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'edit-dup',
+          tool: 'Edit',
+          input: { path: 'a.ts', strReplace: {} },
+        },
+        // Tool result arrives BETWEEN the two tool_use revisions — this is the
+        // ordering that would expose a wrong-revision pairing bug.
+        { type: 'tool_result', toolUseId: 'edit-dup', output: 'edit ok', isError: false },
+        {
+          type: 'tool_use',
+          id: 'edit-dup',
+          tool: 'Edit',
+          input: { path: 'a.ts', strReplace: { oldText: 'a', newText: 'b' } },
+        },
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('tool');
+    // Latest revision wins for input…
+    expect(blocks[0].use.input.strReplace.newText).toBe('b');
+    // …and the paired result is still the same tool_result by id.
+    expect(blocks[0].result?.output).toBe('edit ok');
+    expect(blocks[0].result?.isError).toBe(false);
+  });
+});
+
 describe('eventsToBlocks — explored coalescer', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
   const read = (id, file) => ({ type: 'tool_use', id, tool: 'Read', input: { file_path: file } });

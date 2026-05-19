@@ -17,9 +17,24 @@ const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 
  */
 export function eventsToBlocks(events) {
   const blocks = [];
+  const list = events || [];
+
+  // Dedup of repeated tool_use ids runs BEFORE the result index so the walk
+  // can skip earlier revisions of the same call_id (Cursor emits a follow-up
+  // when completed args upgrade an empty/path-only started payload). Result
+  // pairing is keyed by id string and is therefore order-independent.
+  const latestToolUseById = new Map();
+  const lastToolUseIndex = new Map();
+  list.forEach(({ event }, i) => {
+    if (event?.type === 'tool_use' && event.id != null && String(event.id)) {
+      const id = String(event.id);
+      latestToolUseById.set(id, event);
+      lastToolUseIndex.set(id, i);
+    }
+  });
 
   const resultByToolId = {};
-  for (const { event } of events || []) {
+  for (const { event } of list) {
     if (event?.type === 'tool_result' && event.toolUseId) {
       resultByToolId[event.toolUseId] = event;
     }
@@ -52,7 +67,8 @@ export function eventsToBlocks(events) {
     flushText();
   };
 
-  for (const { event } of events || []) {
+  for (let i = 0; i < list.length; i++) {
+    const { event } = list[i];
     if (!event) continue;
     const t = event.type;
 
@@ -67,19 +83,23 @@ export function eventsToBlocks(events) {
     if (t === 'tool_result') continue;
 
     if (t === 'progress_step') continue;
+    if (t === 'browser_tool_activity') continue;
     if (t === 'checkpoint') continue;
     if (t === 'rate_limit') continue;
 
     if (t === 'tool_use') {
-      const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
-      const isExitPlanMode = event.tool === 'ExitPlanMode';
-      const isTodoWrite = event.tool === 'TodoWrite';
-      const result = resultByToolId[event.id];
-      const isExplore = EXPLORE_TOOLS.has(event.tool) && !result?.isError;
+      const toolId = event.id != null ? String(event.id) : '';
+      if (toolId && lastToolUseIndex.get(toolId) !== i) continue;
+      const use = toolId ? (latestToolUseById.get(toolId) ?? event) : event;
+      const isSubagent = use.tool === 'Task' || use.tool === 'Agent';
+      const isExitPlanMode = use.tool === 'ExitPlanMode';
+      const isTodoWrite = use.tool === 'TodoWrite';
+      const result = resultByToolId[use.id];
+      const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
       if (isExplore) {
         flushText();
         if (!exploredBuf) exploredBuf = { items: [] };
-        exploredBuf.items.push({ use: event, result });
+        exploredBuf.items.push({ use, result });
         continue;
       }
       flushAll();
@@ -87,7 +107,7 @@ export function eventsToBlocks(events) {
       if (isSubagent) kind = 'subagent';
       else if (isExitPlanMode) kind = 'plan_proposal';
       else if (isTodoWrite) kind = 'todos';
-      blocks.push({ kind, use: event, result });
+      blocks.push({ kind, use, result });
       continue;
     }
 

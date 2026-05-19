@@ -9,23 +9,80 @@ import type {
 
 type NormalizeFn = (raw: Record<string, unknown>) => StreamEvent[];
 
+/** True when Edit args carry line-level diff bodies (not just `path` or empty strategy shells). */
+function cursorEditArgsHaveSubstantiveDiff(input: Record<string, unknown>): boolean {
+  const sr = input.strReplace as Record<string, unknown> | undefined;
+  if (sr && typeof sr === 'object') {
+    if (typeof sr.oldText === 'string' && sr.oldText.length > 0) return true;
+    if (typeof sr.newText === 'string' && sr.newText.length > 0) return true;
+  }
+  const mr = input.multiStrReplace as { edits?: unknown[] } | undefined;
+  if (mr?.edits && Array.isArray(mr.edits)) {
+    for (const ed of mr.edits) {
+      const e = ed as Record<string, unknown>;
+      if (typeof e?.oldText === 'string' && e.oldText.length > 0) return true;
+      if (typeof e?.newText === 'string' && e.newText.length > 0) return true;
+    }
+  }
+  const ap = input.applyPatch as { patchContent?: string } | undefined;
+  if (ap && typeof ap.patchContent === 'string' && ap.patchContent.trim()) return true;
+  if (typeof input.unified_diff === 'string' && input.unified_diff.trim()) return true;
+  if (input.changes && Array.isArray(input.changes) && input.changes.length > 0) return true;
+  if (typeof input.old_string === 'string' && input.old_string.length > 0) return true;
+  if (typeof input.oldString === 'string' && input.oldString.length > 0) return true;
+  if (typeof input.new_string === 'string' && input.new_string.length > 0) return true;
+  if (typeof input.newString === 'string' && input.newString.length > 0) return true;
+  return false;
+}
+
+/** Line-level diff bodies for DiffView — excludes Codex `changes[]` path/kind-only rows. */
+function cursorEditHasInlineDiffBody(input: Record<string, unknown>): boolean {
+  const sr = input.strReplace as Record<string, unknown> | undefined;
+  if (sr && typeof sr === 'object') {
+    if (typeof sr.oldText === 'string' && sr.oldText.length > 0) return true;
+    if (typeof sr.newText === 'string' && sr.newText.length > 0) return true;
+  }
+  const mr = input.multiStrReplace as { edits?: unknown[] } | undefined;
+  if (mr?.edits && Array.isArray(mr.edits)) {
+    for (const ed of mr.edits) {
+      const e = ed as Record<string, unknown>;
+      if (typeof e?.oldText === 'string' && e.oldText.length > 0) return true;
+      if (typeof e?.newText === 'string' && e.newText.length > 0) return true;
+    }
+  }
+  const ap = input.applyPatch as { patchContent?: string } | undefined;
+  if (ap && typeof ap.patchContent === 'string' && ap.patchContent.trim()) return true;
+  if (typeof input.unified_diff === 'string' && input.unified_diff.trim()) return true;
+  if (typeof input.old_string === 'string' && input.old_string.length > 0) return true;
+  if (typeof input.oldString === 'string' && input.oldString.length > 0) return true;
+  if (typeof input.new_string === 'string' && input.new_string.length > 0) return true;
+  if (typeof input.newString === 'string' && input.newString.length > 0) return true;
+  return false;
+}
+
+function cursorFileToolHasDisplayableDiff(
+  toolName: string,
+  input: Record<string, unknown>,
+): boolean {
+  if (toolName === 'Write') return cursorWriteArgsHaveSubstantiveContent(input);
+  if (toolName === 'Edit') return cursorEditHasInlineDiffBody(input);
+  return false;
+}
+
+/** Write args include file body text (not path-only). */
+function cursorWriteArgsHaveSubstantiveContent(input: Record<string, unknown>): boolean {
+  if (typeof input.fileText === 'string' && input.fileText.length > 0) return true;
+  if (typeof input.content === 'string' && input.content.length > 0) return true;
+  if (typeof input.contents === 'string' && input.contents.length > 0) return true;
+  return false;
+}
+
 /** Edit / Write `tool_call.started` sometimes carries `{}` or a placeholder; full `args` arrive on `completed` (see Cursor stream-json docs). */
 function shouldDeferCursorFileToolCall(toolName: string, input: Record<string, unknown>): boolean {
   if (toolName !== 'Edit' && toolName !== 'Write') return false;
   if (Object.keys(input).length === 0) return true;
-  if (toolName === 'Write') {
-    if (typeof input.fileText === 'string' && input.fileText.length > 0) return false;
-    if (typeof input.content === 'string' && input.content.length > 0) return false;
-    if (typeof input.contents === 'string' && input.contents.length > 0) return false;
-    return true;
-  }
-  // Edit
-  if (input.strReplace || input.multiStrReplace || input.applyPatch) return false;
-  if (typeof input.unified_diff === 'string' && input.unified_diff.trim()) return false;
-  if (input.changes && Array.isArray(input.changes)) return false;
-  if (typeof input.old_string === 'string' || typeof input.oldString === 'string') return false;
-  if (typeof input.new_string === 'string' || typeof input.newString === 'string') return false;
-  return true;
+  if (toolName === 'Write') return !cursorWriteArgsHaveSubstantiveContent(input);
+  return !cursorEditArgsHaveSubstantiveDiff(input);
 }
 
 function mergeCursorFileToolInput(
@@ -33,6 +90,26 @@ function mergeCursorFileToolInput(
   b: Record<string, unknown>,
 ): Record<string, unknown> {
   return { ...a, ...b };
+}
+
+/**
+ * Composer / Cursor may omit strReplace bodies from `tool_call.completed` args and
+ * only attach `result.success.diffString` (see Cursor editToolCall result types).
+ */
+function enrichCursorEditInputFromToolResult(
+  input: Record<string, unknown>,
+  toolName: string,
+  detail: Record<string, unknown>,
+): Record<string, unknown> {
+  if (toolName !== 'Edit' || cursorEditHasInlineDiffBody(input)) return input;
+  const result = (detail.result ?? {}) as Record<string, unknown>;
+  const success = result.success as Record<string, unknown> | undefined;
+  if (!success || typeof success !== 'object') return input;
+  const diffString = success.diffString;
+  if (typeof diffString === 'string' && diffString.trim()) {
+    return { ...input, unified_diff: diffString };
+  }
+  return input;
 }
 
 // ─── agenthub:ask fenced-block protocol ────────────────────────────────
@@ -397,9 +474,17 @@ export function createStreamParser(engine: string): StreamParser {
     { tool: string; args: Record<string, unknown> }
   >();
   const cursorFileToolStartedEmitted = new Set<string>();
+  /** Args emitted on `started` when we did not defer — used to upgrade on `completed`. */
+  const cursorFileToolStartedInputs = new Map<string, Record<string, unknown>>();
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
-      ? (raw) => normalizeCursor(raw, cursorDeferredFileToolCalls, cursorFileToolStartedEmitted)
+      ? (raw) =>
+          normalizeCursor(
+            raw,
+            cursorDeferredFileToolCalls,
+            cursorFileToolStartedEmitted,
+            cursorFileToolStartedInputs,
+          )
       : engine === 'gemini-cli'
         ? normalizeGemini
         : engine === 'codex-cli'
@@ -609,6 +694,7 @@ function normalizeCursor(
   raw: Record<string, unknown>,
   deferredFileToolCalls: Map<string, { tool: string; args: Record<string, unknown> }>,
   fileToolStartedEmitted: Set<string>,
+  fileToolStartedInputs: Map<string, Record<string, unknown>>,
 ): StreamEvent[] {
   switch (raw.type) {
     case 'system':
@@ -684,6 +770,7 @@ function normalizeCursor(
           return [];
         }
         fileToolStartedEmitted.add(callId);
+        fileToolStartedInputs.set(callId, input);
         return [
           {
             type: 'tool_use',
@@ -696,10 +783,12 @@ function normalizeCursor(
       if (raw.subtype === 'completed') {
         const out: StreamEvent[] = [];
         const completedArgs = (detail.args as Record<string, unknown>) ?? {};
+        const enrichEdit = (input: Record<string, unknown>) =>
+          enrichCursorEditInputFromToolResult(input, toolName, detail);
         const pending = deferredFileToolCalls.get(callId);
         if (pending) {
           deferredFileToolCalls.delete(callId);
-          const merged = mergeCursorFileToolInput(pending.args, completedArgs);
+          const merged = enrichEdit(mergeCursorFileToolInput(pending.args, completedArgs));
           out.push({ type: 'tool_use', id: callId, tool: pending.tool, input: merged });
         } else if (
           (toolName === 'Edit' || toolName === 'Write') &&
@@ -707,9 +796,34 @@ function normalizeCursor(
           Object.keys(completedArgs).length > 0
         ) {
           // `tool_call.started` missing but `completed` has args (CLI edge case)
-          out.push({ type: 'tool_use', id: callId, tool: toolName, input: completedArgs });
+          out.push({
+            type: 'tool_use',
+            id: callId,
+            tool: toolName,
+            input: enrichEdit(completedArgs),
+          });
+        } else {
+          const earlyInput = fileToolStartedInputs.get(callId);
+          const mergedCompleted = enrichEdit(
+            mergeCursorFileToolInput(earlyInput ?? {}, completedArgs),
+          );
+          if (
+            earlyInput &&
+            fileToolStartedEmitted.has(callId) &&
+            !cursorFileToolHasDisplayableDiff(toolName, earlyInput) &&
+            cursorFileToolHasDisplayableDiff(toolName, mergedCompleted)
+          ) {
+            // Started with path-only / empty strReplace / changes[] metadata; completed has line bodies.
+            out.push({
+              type: 'tool_use',
+              id: callId,
+              tool: toolName,
+              input: mergedCompleted,
+            });
+          }
         }
         fileToolStartedEmitted.delete(callId);
+        fileToolStartedInputs.delete(callId);
 
         const result = (detail.result ?? {}) as Record<string, unknown>;
         const success = (result.success as Record<string, unknown> | null) ?? null;
