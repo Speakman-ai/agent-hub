@@ -7,7 +7,7 @@
  *   POST /api/projects/:projectId/aws-sso/login  { profile }
  */
 import { Router, Request, Response } from 'express';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { requireRole } from '../roles.js';
 import type { RouteDeps, Project } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -21,6 +21,12 @@ import {
 import { writeProjectAwsConfigFile } from '../project-aws-config-file.js';
 import { getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import { extractAwsSsoLoginUrl } from '../aws-sso-login-parse.js';
+import {
+  getActiveAwsSsoLogin,
+  setActiveAwsSsoLogin,
+  clearActiveAwsSsoLogin,
+  clearActiveAwsSsoLoginIfOwner,
+} from '../aws-sso-active-login.js';
 
 type ProjectWithAws = Project & { awsSsoProfiles?: ProjectAwsSsoProfilesMap };
 
@@ -44,17 +50,9 @@ function awsSpawnEnv(userId: string | null, configPath: string): NodeJS.ProcessE
   return env;
 }
 
-/** Module-level login proc — one browser-less SSO flow at a time per process. */
-let activeAwsSsoLogin: {
-  loginId: string;
-  proc: ChildProcess;
-  projectId: string;
-  profile: string;
-} | null = null;
-
-function resetActiveAwsSsoLogin(): void {
-  activeAwsSsoLogin = null;
-}
+// Active-login slot state lives in `../aws-sso-active-login.js` so the
+// identity-guard semantics can be unit-tested without standing up the
+// route stack.
 
 export default function createProjectAwsRoutes(deps: RouteDeps): Router {
   const { findProject, saveProjects } = deps;
@@ -177,13 +175,18 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         throw err;
       }
 
-      if (activeAwsSsoLogin) {
+      const existing = getActiveAwsSsoLogin();
+      if (existing) {
         try {
-          killProcessGroup(activeAwsSsoLogin.proc, 'SIGTERM');
+          killProcessGroup(existing.proc, 'SIGTERM');
         } catch {
           /* already dead */
         }
-        resetActiveAwsSsoLogin();
+        // Clear the slot eagerly so the upcoming spawn registers cleanly.
+        // The deferred `close` handler for `existing.proc` will see a
+        // different proc in the slot and skip the redundant reset via
+        // the identity guard.
+        clearActiveAwsSsoLogin();
       }
 
       const userId = (req as AuthenticatedRequest).authUserId ?? null;
@@ -199,7 +202,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       });
       trackChild(proc);
 
-      activeAwsSsoLogin = { loginId, proc, projectId: project.id, profile };
+      setActiveAwsSsoLogin({ loginId, proc, projectId: project.id, profile });
 
       let allOutput = '';
       let urlSent = false;
@@ -229,7 +232,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       proc.stderr?.on('data', onData);
 
       proc.on('close', (code) => {
-        resetActiveAwsSsoLogin();
+        clearActiveAwsSsoLoginIfOwner(proc);
         if (responded) return;
         if (code === 0) {
           finish({ ok: true, loginId, profile, completed: true, output: allOutput.slice(-2000) });
@@ -247,24 +250,34 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       });
 
       proc.on('error', (err) => {
-        resetActiveAwsSsoLogin();
+        clearActiveAwsSsoLoginIfOwner(proc);
         finish({ ok: false, loginId, profile, error: err.message }, 500);
       });
 
       setTimeout(() => {
-        if (!responded) {
-          const url = extractAwsSsoLoginUrl(allOutput);
-          if (url) sendUrl(url);
-          else {
-            finish({
-              ok: false,
-              loginId,
-              profile,
-              error: 'Timed out waiting for AWS SSO device URL',
-              output: allOutput.slice(-1000),
-            });
-          }
+        if (responded) return;
+        const url = extractAwsSsoLoginUrl(allOutput);
+        if (url) {
+          sendUrl(url);
+          return;
         }
+        // No URL surfaced after 30 s — the `aws` child is still running
+        // and will keep waiting on device auth indefinitely. Kill it (and
+        // clear the slot if we still own it) so we don't leak processes
+        // or block the next login attempt behind a dead URL extractor.
+        try {
+          killProcessGroup(proc, 'SIGTERM');
+        } catch {
+          /* already dead */
+        }
+        clearActiveAwsSsoLoginIfOwner(proc);
+        finish({
+          ok: false,
+          loginId,
+          profile,
+          error: 'Timed out waiting for AWS SSO device URL',
+          output: allOutput.slice(-1000),
+        });
       }, 30_000);
     },
   );

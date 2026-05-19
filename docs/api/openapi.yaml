@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.27.0
+  version: 1.28.0
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -2526,6 +2526,162 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    ProjectAwsSsoProfile:
+      type: object
+      properties:
+        sso_account_id:
+          type: string
+          description: 12-digit AWS account id.
+          example: "123456789012"
+        sso_start_url:
+          type: string
+          description: IAM Identity Center start URL (`https://…`).
+          example: https://d-1234567890.awsapps.com/start/
+        sso_region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        sso_role_name:
+          type: string
+          description: IAM Identity Center role to assume.
+        region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        output:
+          type: string
+          description: AWS CLI default output format; defaults to `json` on render.
+      required:
+        - sso_account_id
+        - sso_start_url
+        - sso_region
+        - sso_role_name
+        - region
+      description: One AWS IAM Identity Center (SSO) profile stanza. Rendered into the per-spawn `AWS_CONFIG_FILE` as a `[profile <name>]` section. Not credentials — SSO tokens still live under the spawning user's `~/.aws/sso/cache`.
+    ProjectAwsSsoProfilesMap:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/ProjectAwsSsoProfile"
+      description: Map of profile name → profile stanza.
+    ProjectAwsProfilesResponse:
+      type: object
+      properties:
+        profiles:
+          $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+      required:
+        - profiles
+      description: Current AWS SSO profiles configured on the project.
+    ProjectAwsProfilesRequest:
+      type: object
+      properties:
+        profiles:
+          anyOf:
+            - $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+            - type: array
+              items:
+                nullable: true
+          description: "Replacement set of profiles. Accepts either a `{ name: stanza }` map or an array of `{ name, ...stanza }` objects. Pass `{}` to clear all profiles."
+      required:
+        - profiles
+      description: Body for PUT /aws-profiles.
+    ProjectAwsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for project-aws routes.
+    ProjectAwsSsoStatusResponse:
+      anyOf:
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - true
+            account:
+              type: string
+            arn:
+              type: string
+            userId:
+              type: string
+          required:
+            - profile
+            - loggedIn
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - false
+            error:
+              type: string
+            needsLogin:
+              type: boolean
+          required:
+            - profile
+            - loggedIn
+      description: "`aws sts get-caller-identity` result for the named profile. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login."
+    ProjectAwsSsoLoginRequest:
+      type: object
+      properties:
+        profile:
+          type: string
+          description: Configured profile name to log in.
+      required:
+        - profile
+      description: Body for POST /aws-sso/login.
+    ProjectAwsSsoLoginResponse:
+      anyOf:
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - true
+            loginId:
+              type: string
+              description: Server-local id for this login attempt — useful for log correlation.
+            profile:
+              type: string
+            loginUrl:
+              type: string
+              description: IAM Identity Center device-authorization URL the user must open in a browser. Present on the standard happy path where the URL surfaces within ~30 seconds.
+            completed:
+              type: boolean
+              description: True when `aws sso login --no-browser` finished entirely server-side (rare — usually the user completes the device flow in a browser before the CLI exits).
+            output:
+              type: string
+              description: Tail of the CLI stdout/stderr (capped) for diagnostic purposes.
+          required:
+            - ok
+            - loginId
+            - profile
+        - type: object
+          properties:
+            ok:
+              type: boolean
+              enum:
+                - false
+            loginId:
+              type: string
+            profile:
+              type: string
+            error:
+              type: string
+            output:
+              type: string
+          required:
+            - ok
+            - loginId
+            - profile
+            - error
+      description: Outcome of the browser-less `aws sso login` spawn. Only one login proc runs per server at a time; if a second request arrives while a previous one is still running the previous proc is killed and a new one is spawned.
     ProjectOrderResponse:
       type: object
       properties:
@@ -10362,6 +10518,157 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/{projectId}/aws-profiles:
+    get:
+      tags:
+        - Projects
+      summary: List AWS SSO profiles configured on a project
+      description: Returns the project's AWS IAM Identity Center profile map. Not credentials — only the static stanza fields (`sso_account_id`, `sso_start_url`, `sso_region`, `sso_role_name`, `region`). SSO tokens themselves live under the spawning user's `~/.aws/sso/cache` and are never returned.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Profile map (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsProfilesResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Replace the AWS SSO profiles configured on a project
+      description: Wholesale replace the project's AWS SSO profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` template that future spawns reference.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectAwsProfilesRequest"
+      responses:
+        "200":
+          description: Profiles saved. Returns the normalized map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsProfilesResponse"
+        "400":
+          description: Validation failed — bad profile name, invalid account id / region / URL, or duplicate keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+  /api/projects/{projectId}/aws-sso/status:
+    get:
+      tags:
+        - Projects
+      summary: Check whether the cached SSO token for a profile is still valid
+      description: Runs `aws sts get-caller-identity --profile <name>` against the project's rendered `AWS_CONFIG_FILE` and reports whether the cached SSO token can authenticate. Use this from the UI to decide whether to surface a "Log in" CTA, and from agents to decide whether to call `POST /aws-sso/login` before making AWS calls.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Configured profile name.
+          required: true
+          description: Configured profile name.
+          name: profile
+          in: query
+      responses:
+        "200":
+          description: Identity check ran. Inspect `loggedIn` to know whether the token is valid — a 200 is also returned for the "not logged in" case so callers can branch on the body without try/catch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoStatusResponse"
+        "400":
+          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+  /api/projects/{projectId}/aws-sso/login:
+    post:
+      tags:
+        - Projects
+      summary: Start a browser-less AWS SSO device-authorization flow
+      description: |-
+        Spawns `aws sso login --profile <name> --no-browser` server-side, watches its output for the IAM Identity Center device URL, and returns the URL to the caller. The user then opens that URL in their own browser to complete the device flow; once they do, the cached SSO token at `~/.aws/sso/cache` becomes valid and subsequent `GET /aws-sso/status` calls report `loggedIn: true`.
+
+        Only one login proc runs per server at a time: a second request kills the previous proc before spawning a new one. The 30-second URL-extraction timeout also kills the proc so no orphaned `aws` processes accumulate.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectAwsSsoLoginRequest"
+      responses:
+        "200":
+          description: "Login proc spawned. On the happy path the response carries `loginUrl`; on rare immediate completion it carries `completed: true`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
+        "400":
+          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsErrorResponse"
+        "500":
+          description: Login proc failed — exited non-zero, errored on spawn, or timed out without surfacing a device URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
   /api/projects/order:
     put:
       tags:
