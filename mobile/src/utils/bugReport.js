@@ -23,6 +23,10 @@ export async function captureScreenshot() {
 /**
  * POSTs a bug report as multipart/form-data to the fixed intake endpoint.
  *
+ * NOTE: `currentProjectId` on the wire is intentionally fixed to
+ * `BUG_REPORT_PROJECT_ID`. A `currentProjectId` arg is accepted-and-ignored
+ * for backward compatibility with existing call sites; do not rely on it.
+ *
  * @param {object} args
  * @param {string} args.screenshotUri file:// URI returned by captureScreenshot()
  * @param {string} args.title required, ≤200 chars
@@ -31,7 +35,7 @@ export async function captureScreenshot() {
  * @param {string} [args.sourceUrl='']
  * @param {string} [args.userAgent='']
  * @param {string} [args.appVersion='']
- * @param {string} [args.currentProjectId='']
+ * @param {string} [args.currentProjectId=''] accepted-and-ignored; wire field is fixed
  * @param {string} [args.currentAgentId='']
  * @returns {Promise<{ sessionId: string, status: string }>}
  */
@@ -43,6 +47,7 @@ export async function submitBugReport({
   sourceUrl = '',
   userAgent = '',
   appVersion = '',
+  // eslint-disable-next-line no-unused-vars -- accepted-and-ignored; see JSDoc above.
   currentProjectId = '',
   currentAgentId = '',
 }) {

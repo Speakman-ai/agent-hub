@@ -3,8 +3,7 @@
 // The endpoint is intentionally hard-coded to the dev Agent Hub — bug reports
 // must always flow to the central intake regardless of where the client runs.
 
-export const BUG_REPORT_ENDPOINT =
-  'https://agenthub.dev.surveytracker.io/api/bug-reports';
+export const BUG_REPORT_ENDPOINT = 'https://agenthub.dev.surveytracker.io/api/bug-reports';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 /**
@@ -75,12 +74,17 @@ function detectClientType() {
  * can be sent from any origin (dev, prod, Electron). Resolves with the parsed
  * JSON body on success (HTTP 2xx); rejects with an Error whose message is the
  * response body on non-2xx responses.
+ *
+ * NOTE: `currentProjectId` on the wire is intentionally fixed to
+ * `BUG_REPORT_PROJECT_ID`. A `projectId` arg is accepted-and-ignored for
+ * backward compatibility with existing call sites; do not rely on it.
  */
 export async function submitBugReport({
   title,
   description,
   severity,
   screenshotBlob,
+  // eslint-disable-next-line no-unused-vars -- accepted-and-ignored; see JSDoc above.
   projectId,
   agentId,
 }) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import BugReportModal from './BugReportModal.jsx';
-import { BUG_REPORT_ENDPOINT } from '../utils/bugReport.js';
+import { BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID } from '../utils/bugReport.js';
 
 // Polyfill a no-op Object URL API in jsdom for the preview image.
 beforeEach(() => {
@@ -80,7 +80,11 @@ describe('BugReportModal', () => {
     expect(fd.get('title')).toBe('Login button does nothing');
     expect(fd.get('description')).toBe('Click does not fire.');
     expect(fd.get('severity')).toBe('medium');
-    expect(fd.get('currentProjectId')).toBe('proj-1');
+    // The intake target project is fixed to BUG_REPORT_PROJECT_ID — the
+    // modal's `projectId` prop ("proj-1" above) MUST be overridden so reports
+    // always flow to the central agent-hub project.
+    expect(fd.get('currentProjectId')).toBe(BUG_REPORT_PROJECT_ID);
+    expect(fd.get('currentProjectId')).not.toBe('proj-1');
     expect(fd.get('currentAgentId')).toBe('agent-1');
     const screenshot = fd.get('screenshot');
     expect(screenshot).toBeInstanceOf(Blob);

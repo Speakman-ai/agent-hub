@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { submitBugReport, BUG_REPORT_ENDPOINT } from './bugReport.js';
+import { submitBugReport, BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID } from './bugReport.js';
 
 describe('submitBugReport', () => {
   beforeEach(() => {
@@ -25,12 +25,14 @@ describe('submitBugReport', () => {
   });
 
   it('POSTs FormData with trimmed title, description, severity, and optional ids', async () => {
+    // Pass an explicit non-`agent-hub` projectId so we exercise the override:
+    // the wire field MUST always be BUG_REPORT_PROJECT_ID regardless of caller input.
     await submitBugReport({
       title: '  My bug  ',
       description: 'Details here',
       severity: 'high',
       screenshotBlob: null,
-      projectId: 'agent-hub',
+      projectId: 'some-other-project',
       agentId: 'hub-frontend',
     });
 
@@ -43,7 +45,8 @@ describe('submitBugReport', () => {
     expect(fd.get('title')).toBe('My bug');
     expect(fd.get('description')).toBe('Details here');
     expect(fd.get('severity')).toBe('high');
-    expect(fd.get('currentProjectId')).toBe('agent-hub');
+    expect(fd.get('currentProjectId')).toBe(BUG_REPORT_PROJECT_ID);
+    expect(fd.get('currentProjectId')).not.toBe('some-other-project');
     expect(fd.get('currentAgentId')).toBe('hub-frontend');
   });
 
