@@ -72,6 +72,57 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+/**
+ * Marker substring used to discriminate wall-timeout errors from
+ * user-space exceptions in `runOneClaim`. `withTimeout` is the only
+ * site that constructs this exact string, so a substring match is a
+ * reliable, allocation-free classifier. Exported for the test that
+ * pins the log-line `kind=timeout` differentiator.
+ */
+export const WALL_TIMEOUT_MARKER = 'wall timeout after';
+
+/**
+ * Extract the repo full name (`owner/name`) for the log descriptor.
+ *
+ * Preference order:
+ *   1. `pr_key` (indexed column, format `<repo_full_name>:<pr_number>`) —
+ *      populated by the enqueue path for any PR-scoped event. Fast and
+ *      cannot throw.
+ *   2. JSON-parse `row.payload` and read `repository.full_name`. Needed
+ *      for non-PR events (`push`, `ping`, `create`, …) where `pr_key`
+ *      is NULL. Wrapped in try/catch so a malformed payload can never
+ *      bubble up and suppress the caller's DB write.
+ *   3. `?` fallback when both paths come up empty.
+ */
+function extractRepo(row: WebhookEventRow): string {
+  if (row.pr_key) {
+    const colon = row.pr_key.indexOf(':');
+    if (colon > 0) return row.pr_key.slice(0, colon);
+  }
+  try {
+    const payload = JSON.parse(row.payload) as { repository?: { full_name?: string } };
+    return payload.repository?.full_name || '?';
+  } catch {
+    return '?';
+  }
+}
+
+/**
+ * Build a one-line, grep-friendly descriptor for a queued webhook row. Used
+ * for both the wall-timeout error label (so the thrown message carries
+ * routing context) and the catch-block log line (so PM2 logs are
+ * self-diagnosing without cross-referencing the SQLite queue). Best-effort
+ * on `repo` — malformed payloads should not abort the run.
+ */
+export function describeWebhookRow(row: WebhookEventRow): string {
+  const eventKey = row.action ? `${row.event_type}.${row.action}` : row.event_type;
+  const repo = extractRepo(row);
+  return (
+    `event=${row.id} key=${eventKey} repo=${repo} cfg=${row.webhook_config_id}` +
+    ` delivery=${row.delivery_id ?? 'none'}`
+  );
+}
+
 async function runOneClaim(): Promise<boolean> {
   if (!_deps) return false;
   if (_inFlight >= WEBHOOK_WORKER_CONCURRENCY) return false;
@@ -81,17 +132,34 @@ async function runOneClaim(): Promise<boolean> {
 
   _inFlight++;
   const processFn = _deps.processEvent ?? processWebhookEvent;
+  const descriptor = describeWebhookRow(row);
+  // Capture `startedAt` immediately before the `withTimeout` call so
+  // `elapsedMs` measures actual processing time, not queue wait time.
+  // Placing it after the slot increment / descriptor build is intentional:
+  // those steps are O(µs) and including them would only add jitter to the
+  // diagnostic. Used in the catch branch below for both wall-timeout and
+  // user-space-error log lines.
+  const startedAt = Date.now();
   try {
     await withTimeout(
       processFn(_deps.routeDeps, row),
       WEBHOOK_WORKER_JOB_TIMEOUT_MS,
-      `webhook event ${row.id} (${row.event_type}${row.action ? '.' + row.action : ''})`,
+      `webhook ${descriptor}`,
     );
     _deps.stmts.markWebhookEventDone.run(row.id);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    const elapsedMs = Date.now() - startedAt;
+    // Differentiate wall-timeout failures (outer 15 min budget exhausted)
+    // from user-space throws so on-call can filter PM2 with a single grep:
+    //   grep '\[webhook-worker\] timeout' — only wall-timeout events
+    //   grep '\[webhook-worker\] error'   — only user-space throws
+    // Without this field both failure classes share the bare `failed` prefix
+    // and operators have to parse the trailing `wall timeout after Nms`
+    // substring to tell them apart.
+    const kind = msg.includes(WALL_TIMEOUT_MARKER) ? 'timeout' : 'error';
     _deps.stmts.markWebhookEventError.run(msg.substring(0, 10000), row.id);
-    console.error(`[webhook-worker] event ${row.id} failed:`, msg);
+    console.error(`[webhook-worker] ${kind} ${descriptor} elapsedMs=${elapsedMs}: ${msg}`);
   } finally {
     _inFlight--;
     // Try to keep the pipeline full: if another slot is available and the
