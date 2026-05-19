@@ -42,6 +42,7 @@ import {
 } from './heartbeat.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
+import { startPrRebasePoll, type TriggerResolveResult } from './pr-rebase-poll.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
@@ -1240,6 +1241,57 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           return { name: found.agent.name, projectId: found.project.id };
         },
       });
+
+      // Stale-PR conflict / CI / changes-requested sweep. Re-uses the
+      // existing `POST /api/projects/:id/pulls/:number/resolve` route over
+      // loopback so we don't duplicate any of pr-resolve.ts's spawn logic.
+      // The route is auth-gated; we authenticate with the deployment's
+      // global API key (Owner-equivalent). Operators that disable the
+      // global apiKey get no poller — fine; webhook-driven autofix
+      // continues to work, just without the safety net.
+      const systemApiKey = config.apiKey;
+      if (systemApiKey) {
+        const baseUrl = `http://127.0.0.1:${actualPort}`;
+        startPrRebasePoll({
+          stmts: stmts!,
+          broadcast,
+          triggerResolve: async ({
+            projectId,
+            prNumber,
+            agentId,
+          }): Promise<TriggerResolveResult> => {
+            const url = `${baseUrl}/api/projects/${encodeURIComponent(
+              projectId,
+            )}/pulls/${prNumber}/resolve`;
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-api-key': systemApiKey,
+              },
+              body: JSON.stringify({ agentId }),
+            });
+            const body = (await res.json().catch(() => ({}))) as {
+              sessionId?: string | null;
+              triggered?: string[];
+              reason?: string;
+              error?: string;
+            };
+            if (!res.ok && res.status !== 201) {
+              throw new Error(body?.error ?? `pr-resolve responded ${res.status}`);
+            }
+            return {
+              sessionId: body.sessionId ?? null,
+              triggered: Array.isArray(body.triggered) ? body.triggered : [],
+              reason: body.reason,
+            };
+          },
+        });
+      } else {
+        console.log(
+          '[pr-rebase-poll] Skipping startup — no global AGENT_HUB_API_KEY configured (webhook-driven autofix still active).',
+        );
+      }
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });

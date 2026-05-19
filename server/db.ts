@@ -2449,6 +2449,29 @@ function initDb(dataDir: string): void {
     ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
+    // Feeds `server/pr-rebase-poll.ts`. We hard-code the 15-minute window
+    // here (matches `PR_REBASE_STALE_AGE_MS` in pre-push-rebase). The
+    // sessions LEFT JOIN tolerates cards whose creator session row was
+    // garbage-collected — `session_agent_id` is null in that case and the
+    // poller skips the row.
+    getStalePrCardsForRebaseCheck: db.prepare(
+      `SELECT
+         c.id            AS card_id,
+         c.title         AS card_title,
+         b.project_id    AS project_id,
+         c.pr_url        AS pr_url,
+         c.updated_at    AS card_updated_at,
+         s.agent_id      AS session_agent_id
+       FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       JOIN kanban_boards b ON c.board_id = b.id
+       LEFT JOIN sessions s ON c.session_id = s.id
+       WHERE c.pr_url IS NOT NULL
+         AND col.name = 'Review'
+         AND datetime(c.updated_at) < datetime('now', '-15 minutes')
+       ORDER BY c.updated_at ASC
+       LIMIT 50`,
+    ),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
