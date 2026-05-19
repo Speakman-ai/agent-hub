@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { eventsToBlocks } from './SessionTail.jsx';
+import { render, screen } from '@testing-library/react';
+import SessionTail, { eventsToBlocks } from './SessionTail.jsx';
 
 /**
  * `eventsToBlocks` turns a raw event stream into renderable blocks. The tail
@@ -10,6 +11,105 @@ import { eventsToBlocks } from './SessionTail.jsx';
  * the tail — otherwise the chat fills up with noisy "unhandled event" rows
  * (observed in Electron client v1.2.1 bug report).
  */
+describe('SessionTail — browser_tool_activity UI', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('renders BrowserActivityPanel without unhandled event rows', () => {
+    const events = wrap([
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+    ]);
+    render(
+      <SessionTail
+        message={{
+          id: 'm1',
+          role: 'assistant',
+          engine: 'claude-code',
+          model: 'opus',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={events}
+        agentColor="#6366f1"
+        streaming
+      />,
+    );
+    expect(screen.getByTestId('browser-activity-panel')).toBeTruthy();
+    expect(screen.getByTestId('browser-activity-live-hint')).toHaveTextContent(
+      'Navigating to example.com…',
+    );
+    expect(screen.queryByText(/unhandled event/i)).toBeNull();
+  });
+});
+
+describe('eventsToBlocks — browser_tool_activity handling', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('does not produce unknown blocks for browser_tool_activity events', () => {
+    const events = wrap([
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'ended',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+        ok: true,
+        summary: 'Opened example.com',
+        durationMs: 12,
+      },
+    ]);
+
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks).toEqual([]);
+  });
+
+  it('still renders assistant_text around browser_tool_activity events', () => {
+    const events = wrap([
+      { type: 'assistant_text', text: 'Opening the app.', partial: false },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'started',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+      },
+      {
+        type: 'browser_tool_activity',
+        actionId: 'a1',
+        phase: 'ended',
+        op: 'navigate',
+        label: 'Navigating to example.com…',
+        startedAtMs: 1,
+        ok: true,
+        summary: 'Opened example.com',
+        durationMs: 12,
+      },
+      { type: 'assistant_text', text: 'Logged in.', partial: false },
+    ]);
+
+    const blocks = eventsToBlocks(events);
+    expect(blocks.map((b) => b.kind)).toEqual(['text']);
+    expect(blocks[0].text).toContain('Opening the app.');
+    expect(blocks[0].text).toContain('Logged in.');
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 

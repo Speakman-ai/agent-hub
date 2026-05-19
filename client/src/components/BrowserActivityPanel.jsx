@@ -69,10 +69,12 @@ export default function BrowserActivityPanel({ timelineEntries, streaming, scree
                     {char}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <span className="uppercase tracking-wide text-[10px] text-gray-500 mr-2">
-                      {row.op || 'browser'}
+                    <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                      <span className="uppercase tracking-wide text-[10px] text-gray-500 shrink-0">
+                        {row.op || 'browser'}
+                      </span>
+                      <span>{caption}</span>
                     </span>
-                    <span>{caption}</span>
                     {row.durationMs != null && row.phase === 'done' ? (
                       <span className="text-gray-600 font-mono text-[10px] ml-2">
                         {row.durationMs}ms

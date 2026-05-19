@@ -521,6 +521,8 @@ export function eventsToBlocks(events) {
     // Hidden / internal: don't surface, but also don't break the buffers —
     // these can interleave with reads without changing the "burst" semantics.
     if (t === 'progress_step') continue;
+    // Host browser ReAct steps — rendered by BrowserActivityPanel above the block list.
+    if (t === 'browser_tool_activity') continue;
     if (t === 'checkpoint') continue;
     if (t === 'rate_limit') continue;
 

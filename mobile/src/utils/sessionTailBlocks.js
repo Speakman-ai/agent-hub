@@ -79,6 +79,7 @@ export function eventsToBlocks(events) {
     if (t === 'tool_result') continue;
 
     if (t === 'progress_step') continue;
+    if (t === 'browser_tool_activity') continue;
     if (t === 'checkpoint') continue;
     if (t === 'rate_limit') continue;
 

@@ -3,6 +3,36 @@ import { eventsToBlocks, describeTool } from './sessionTailBlocks.js';
 
 const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 
+describe('eventsToBlocks — browser_tool_activity handling', () => {
+  it('does not produce unknown blocks for browser_tool_activity-only streams', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'browser_tool_activity',
+          actionId: 'a1',
+          phase: 'started',
+          op: 'navigate',
+          label: 'Navigating to example.com…',
+          startedAtMs: 1,
+        },
+        {
+          type: 'browser_tool_activity',
+          actionId: 'a1',
+          phase: 'ended',
+          op: 'navigate',
+          label: 'Navigating to example.com…',
+          startedAtMs: 1,
+          ok: true,
+          summary: 'Opened example.com',
+          durationMs: 12,
+        },
+      ]),
+    );
+    expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks).toEqual([]);
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   it('does not produce unknown blocks for progress_step-only streams', () => {
     const blocks = eventsToBlocks(
