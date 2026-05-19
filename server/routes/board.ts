@@ -383,8 +383,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const epicId = parsed.epicId;
     const hasAssignModel = parsed.assignModel !== undefined;
     const assignModel = parsed.assignModel;
-    const hasAssignEngine = (parsed as { assignEngine?: string | null }).assignEngine !== undefined;
-    const assignEngine = (parsed as { assignEngine?: string | null }).assignEngine;
+    const hasAssignEngine = parsed.assignEngine !== undefined;
+    const assignEngine = parsed.assignEngine;
 
     const hasPrBaseBranch = parsed.prBaseBranch !== undefined;
     let prBaseBranch: string | null | undefined;
