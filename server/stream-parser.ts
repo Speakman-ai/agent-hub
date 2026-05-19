@@ -92,6 +92,26 @@ function mergeCursorFileToolInput(
   return { ...a, ...b };
 }
 
+/**
+ * Composer / Cursor may omit strReplace bodies from `tool_call.completed` args and
+ * only attach `result.success.diffString` (see Cursor editToolCall result types).
+ */
+function enrichCursorEditInputFromToolResult(
+  input: Record<string, unknown>,
+  toolName: string,
+  detail: Record<string, unknown>,
+): Record<string, unknown> {
+  if (toolName !== 'Edit' || cursorEditHasInlineDiffBody(input)) return input;
+  const result = (detail.result ?? {}) as Record<string, unknown>;
+  const success = result.success as Record<string, unknown> | undefined;
+  if (!success || typeof success !== 'object') return input;
+  const diffString = success.diffString;
+  if (typeof diffString === 'string' && diffString.trim()) {
+    return { ...input, unified_diff: diffString };
+  }
+  return input;
+}
+
 // ─── agenthub:ask fenced-block protocol ────────────────────────────────
 //
 // We teach Claude (via the enriched system prompt) to emit a fenced code
@@ -763,10 +783,12 @@ function normalizeCursor(
       if (raw.subtype === 'completed') {
         const out: StreamEvent[] = [];
         const completedArgs = (detail.args as Record<string, unknown>) ?? {};
+        const enrichEdit = (input: Record<string, unknown>) =>
+          enrichCursorEditInputFromToolResult(input, toolName, detail);
         const pending = deferredFileToolCalls.get(callId);
         if (pending) {
           deferredFileToolCalls.delete(callId);
-          const merged = mergeCursorFileToolInput(pending.args, completedArgs);
+          const merged = enrichEdit(mergeCursorFileToolInput(pending.args, completedArgs));
           out.push({ type: 'tool_use', id: callId, tool: pending.tool, input: merged });
         } else if (
           (toolName === 'Edit' || toolName === 'Write') &&
@@ -774,10 +796,17 @@ function normalizeCursor(
           Object.keys(completedArgs).length > 0
         ) {
           // `tool_call.started` missing but `completed` has args (CLI edge case)
-          out.push({ type: 'tool_use', id: callId, tool: toolName, input: completedArgs });
+          out.push({
+            type: 'tool_use',
+            id: callId,
+            tool: toolName,
+            input: enrichEdit(completedArgs),
+          });
         } else {
           const earlyInput = fileToolStartedInputs.get(callId);
-          const mergedCompleted = mergeCursorFileToolInput(earlyInput ?? {}, completedArgs);
+          const mergedCompleted = enrichEdit(
+            mergeCursorFileToolInput(earlyInput ?? {}, completedArgs),
+          );
           if (
             earlyInput &&
             fileToolStartedEmitted.has(callId) &&

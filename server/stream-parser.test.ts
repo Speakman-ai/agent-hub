@@ -810,6 +810,73 @@ describe('createStreamParser — Cursor Agent', () => {
     expect((uses[1].input.strReplace as { newText: string }).newText).toBe('y');
   });
 
+  it('enriches Edit tool_use from result.success.diffString when completed args are path-only', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-diff-string',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'backend/core/scoped_store.py' },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'e-diff-string',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'backend/core/scoped_store.py' },
+            result: {
+              success: {
+                path: 'backend/core/scoped_store.py',
+                diffString: '-old line\n+new line',
+                linesAdded: 1,
+                linesRemoved: 1,
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    const uses = events.filter((e) => e.type === 'tool_use') as ToolUseEvent[];
+    expect(uses).toHaveLength(1);
+    expect(uses[0].input.unified_diff).toBe('-old line\n+new line');
+  });
+
+  it('upgrades Edit tool_use when diffString arrives only on completed result', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-diff-upgrade',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'f.ts', strReplace: {} },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'e-diff-upgrade',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'f.ts' },
+            result: {
+              success: { path: 'f.ts', diffString: '-before\n+after' },
+            },
+          },
+        },
+      }),
+    ]);
+    const uses = events.filter((e) => e.type === 'tool_use') as ToolUseEvent[];
+    expect(uses).toHaveLength(1);
+    expect(uses[0].input.unified_diff).toBe('-before\n+after');
+  });
+
   it('merges Write tool args on tool_call completed when started had no fileText (DiffView data)', () => {
     const events = parse([
       JSON.stringify({
