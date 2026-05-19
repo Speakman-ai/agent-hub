@@ -675,10 +675,25 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
 
   const activeProcesses = d.getActiveProcesses();
   const agentSessionCounts = new Map<string, number>();
+  // Only autonomous-dispatched sessions count toward the per-agent slot cap.
+  // An interactive human chat with the same agent is unrelated to the
+  // autonomous concurrency budget (and unrelated to integration-branch
+  // serialization, which exists to keep two *autonomous* PRs from racing onto
+  // the same umbrella branch). Previously every active process — interactive
+  // or autonomous — consumed a slot, so a single human chat could pin the
+  // only assignable agent at 0 slots forever and the dispatch loop would
+  // silently break with no log line. We detect autonomous origin by looking
+  // up the linked kanban card (sessions don't carry a dispatch-origin column
+  // of their own; `kanban_cards.dispatched_by_autonomous` is the source of
+  // truth, set inside the slot-claim transaction below).
   for (const [sid] of activeProcesses) {
     const session = d.stmts.getSession.get(sid) as { agent_id: string } | undefined;
-    if (session)
-      agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
+    if (!session) continue;
+    const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as
+      | { dispatched_by_autonomous?: number }
+      | undefined;
+    if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
+    agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
   }
 
   // Reviewer/docs/intake are out-of-band roles — never autonomously assigned.
