@@ -81,18 +81,16 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - name: Check out source (called from Release workflow)
-        if: github.event_name == 'workflow_call'
+      # Reusable workflows inherit the *caller's* github.event_name (e.g.
+      # workflow_dispatch when Release invokes us), not "workflow_call". Branching
+      # checkout on event_name therefore skipped inputs.git_ref and built the
+      # image from pre-bump main — one semver behind the tag Release just cut.
+      # Always honor inputs.git_ref when set; push-image.yml passes github.ref.
+      - name: Check out source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          ref: ${{ inputs.git_ref }}
-
-      - name: Check out source (manual run)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+          ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
