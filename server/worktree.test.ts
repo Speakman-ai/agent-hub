@@ -1246,6 +1246,15 @@ describe('dependency install command helpers', () => {
     }
   });
 
+  it('installChildEnv sets PIP_BREAK_SYSTEM_PACKAGES=1 so PEP 668 hosts can run pip-based install commands', () => {
+    const { installChildEnv } = __test;
+    // PEP 668 / Debian-managed Python rejects `pip install` outside a venv unless
+    // this env var is set. Workspace clones are ephemeral, so this is safe.
+    expect(installChildEnv.PIP_BREAK_SYSTEM_PACKAGES).toBe('1');
+    // The npm override must still be present alongside it.
+    expect(installChildEnv.NODE_ENV).toBe('development');
+  });
+
   it('sessionWorkspaceDependencyInstallOpts never blocks clone on install (deferred until publish)', () => {
     const prev = process.env.AGENT_HUB_TEST_MODE;
     try {
