@@ -9,7 +9,6 @@ name: Release
 #          the tag commit (`:branch`, `:sha`, `:vX.Y.Z`), then SSM restart of
 #          the docker dev sandbox (`agenthub.dev` pull :main + digest checks).
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
-#        - deploy-prod-2    — rolls the tag to agent-hub-prod-2 via SSM/git.
 #
 # Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
 # "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
@@ -159,7 +158,7 @@ jobs:
 
   build-mac:
     name: Build & upload macOS DMGs
-    # Parallel with ECR rollout and prod-2. DMG failure does NOT
+    # Parallel with ECR docker dev rollout. DMG failure does NOT
     # gate the server rollout — desktop app and server are independent
     # artifacts. If this job fails, the server deploys still proceed and
     # the DMG can be cut manually afterward with `npm run release:mac`.
@@ -217,7 +216,7 @@ jobs:
             echo "> First-pass builds are **unsigned**. Code-signing and notarization will be added in a follow-up PR."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ECR docker dev sandbox + prod-2 fan out in parallel as soon as `release`.
+  # ECR docker dev sandbox rolls out in parallel with build-mac after `release`.
   docker-ecr-dev:
     name: ECR push and docker dev sandbox
     needs: release
@@ -228,16 +227,9 @@ jobs:
       rollout: true
       reset_instance: ${{ inputs.docker_reset_instance }}
 
-  deploy-prod-2:
-    name: Deploy agent-hub-prod-2
-    needs: release
-    uses: ./.github/workflows/deploy-prod-2.yml
-    with:
-      tag: ${{ needs.release.outputs.tag }}
-
   summary:
     name: Release summary
-    needs: [release, docker-ecr-dev, deploy-prod-2, build-mac]
+    needs: [release, docker-ecr-dev, build-mac]
     # Always run so the operator gets a single status block at the bottom
     # of the workflow page, regardless of which fan-out leg succeeded.
     if: always()
@@ -246,7 +238,6 @@ jobs:
       TAG: ${{ needs.release.outputs.tag }}
       RELEASE_RESULT: ${{ needs.release.result }}
       DOCKER_ECR_RESULT: ${{ needs.docker-ecr-dev.result }}
-      PROD2_RESULT: ${{ needs.deploy-prod-2.result }}
       MAC_RESULT: ${{ needs.build-mac.result }}
     steps:
       - name: Emit summary
@@ -268,6 +259,5 @@ jobs:
             echo "| --- | --- |"
             echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
             echo "| ECR + docker dev   | $(icon "$DOCKER_ECR_RESULT") $DOCKER_ECR_RESULT |"
-            echo "| Deploy prod-2      | $(icon "$PROD2_RESULT") $PROD2_RESULT |"
             echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
           } >> "$GITHUB_STEP_SUMMARY"

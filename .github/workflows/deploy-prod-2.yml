@@ -1,23 +1,11 @@
 name: Deploy Prod-2
 
-# Triggered two ways:
-#   1. workflow_dispatch — operator manually rolls an existing release tag to
-#      agent-hub-prod-2 (typically after prod-1 has soaked, or to propagate a
-#      prod-1-only hotfix).
-#   2. workflow_call — invoked by `.github/workflows/release-all.yml` (shown in
-#      the Actions tab as workflow **Release**).
-#
-# Release tagging and prod-1 still live in `release-prod.yml`. The orchestrated
-# **Release** workflow (`release-all.yml`) invokes this callable after tagging.
-# This file only rolls an existing tag to prod-2.
+# Manual rollout only — operator rolls an existing release tag to
+# agent-hub-prod-2 (typically after prod-1 has soaked, or to propagate a
+# prod-1-only hotfix). Not chained from **Release** (`release-all.yml`); that
+# workflow targets the docker dev sandbox via ECR only.
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag to deploy (e.g. v1.2.3). Must already exist on origin.'
-        required: true
-        type: string
-  workflow_call:
     inputs:
       tag:
         description: 'Release tag to deploy (e.g. v1.2.3). Must already exist on origin.'
@@ -41,9 +29,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
       INSTANCE_NAME_TAG: agent-hub-prod-2
-      # `inputs.tag` works for both workflow_dispatch and workflow_call (the
-      # input is declared on both); github.event.inputs is dispatch-only.
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ github.event.inputs.tag }}
     steps:
       - name: Validate tag input
         run: |
