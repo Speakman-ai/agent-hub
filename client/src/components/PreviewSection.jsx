@@ -62,7 +62,73 @@ const PREVIEW_PORT_RANGE_MAX = 4999;
 const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
 const DEFAULT_COMPOSE_ENTRY_PORT = 3000;
 
+// Mirrors server-side `PREVIEW_COMPOSE_SERVICE_NAME_RE` in
+// `server/routes/projects.ts`. Surfacing rejections client-side lets the
+// user see the error inline (next to the field that produced it) before
+// they hit the 400 — but the server is still the authority, so a
+// successful client-side pass doesn't bypass server validation.
+const COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+// Path-traversal + absolute-path guard for `compose.file` and
+// `compose.envFile`. Mirrors `PREVIEW_COMPOSE_TRAVERSAL_RE` and the
+// leading-`/` check in `validatePreviewCompose`.
+const COMPOSE_PATH_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
+
 const PREVIEW_MODES = Object.freeze({ COMPOSE: 'compose', SCRIPT: 'script' });
+
+/**
+ * Validate the compose-mode fields client-side so the user sees a
+ * field-targeted error before the round-trip. Mirrors the server's
+ * `validatePreviewCompose`; the server is still the authority.
+ *
+ * Returns either `null` (valid) or `{ field, error }` where `field` is
+ * the form key (e.g. `composeEntryService`) and `error` is a one-line
+ * message suitable for inline rendering.
+ *
+ * Only called from Save — empty fields are not errors here because the
+ * form may be mid-edit; the buildPatchPayload + server-side validator
+ * are the ones that decide what's required.
+ */
+function validateComposeForm(form) {
+  const entryService = (form.composeEntryService || '').trim();
+  if (entryService && !COMPOSE_SERVICE_NAME_RE.test(entryService)) {
+    return {
+      field: 'composeEntryService',
+      error:
+        'Entry service must match [a-zA-Z0-9][a-zA-Z0-9_.-]* (Docker compose service-name rule).',
+    };
+  }
+  const composeFile = (form.composeFile || '').trim();
+  if (composeFile) {
+    if (composeFile.startsWith('/')) {
+      return {
+        field: 'composeFile',
+        error: 'Compose file must be relative to the project root (no leading `/`).',
+      };
+    }
+    if (COMPOSE_PATH_TRAVERSAL_RE.test(composeFile)) {
+      return {
+        field: 'composeFile',
+        error: 'Compose file must not contain `..` path segments.',
+      };
+    }
+  }
+  const envFile = (form.composeEnvFile || '').trim();
+  if (envFile) {
+    if (envFile.startsWith('/')) {
+      return {
+        field: 'composeEnvFile',
+        error: 'Env file must be relative to the project root (no leading `/`).',
+      };
+    }
+    if (COMPOSE_PATH_TRAVERSAL_RE.test(envFile)) {
+      return {
+        field: 'composeEnvFile',
+        error: 'Env file must not contain `..` path segments.',
+      };
+    }
+  }
+  return null;
+}
 
 const DEFAULT_FORM = Object.freeze({
   mode: PREVIEW_MODES.COMPOSE,
@@ -86,35 +152,26 @@ const DEFAULT_FORM = Object.freeze({
 /**
  * Hydrate the form from a project's persisted prEnv.preview block.
  *
- * Mode selection rules:
- *   1. If `preview.compose` exists, mode = Compose (compose has been
- *      explicitly configured — render compose fields).
- *   2. Else if `preview.startScript` exists, mode = Script (legacy
+ * Mode selection rules (two-branch — Compose is the default):
+ *   1. If `preview.compose` exists → Compose mode.
+ *   2. Else if `preview.startScript` exists → Script mode (legacy
  *      project with a script — render the startScript field so the
- *      saved value round-trips).
- *   3. Else if `preview` itself is absent OR empty, mode = Compose
- *      (new project — bias toward the compose default that PR 4 will
- *      make the only supported path).
- *   4. Else default to Script (the project has *some* preview config
- *      but neither a compose nor a startScript signal — preserve the
- *      pre-existing script-mode hydration so we never silently drop a
- *      manually configured `captureRoutes`/`idleTTL`).
+ *      saved value round-trips unchanged).
+ *   3. Otherwise → Compose mode (covers brand-new projects AND
+ *      preview blocks with neither key set — surveys-tracker era
+ *      configs that only have `captureRoutes`/`idleTTL` should land
+ *      on the compose path PR 4 makes canonical, not on the legacy
+ *      script branch).
  */
 function formFromProject(project) {
   if (!project) return { ...DEFAULT_FORM };
   const prEnv = project.prEnv || {};
   const preview = prEnv.preview || {};
   const compose = preview.compose || null;
-  // New project → compose. Existing script-mode project → script.
-  const hasComposeKey = !!compose;
-  const hasScriptKey = !!(preview.startScript || prEnv.startScript);
-  const previewIsEmpty =
-    !preview || (typeof preview === 'object' && !preview.compose && !preview.startScript);
   let mode;
-  if (hasComposeKey) mode = PREVIEW_MODES.COMPOSE;
-  else if (hasScriptKey) mode = PREVIEW_MODES.SCRIPT;
-  else if (previewIsEmpty) mode = PREVIEW_MODES.COMPOSE;
-  else mode = PREVIEW_MODES.SCRIPT;
+  if (compose) mode = PREVIEW_MODES.COMPOSE;
+  else if (preview.startScript || prEnv.startScript) mode = PREVIEW_MODES.SCRIPT;
+  else mode = PREVIEW_MODES.COMPOSE;
 
   return {
     mode,
@@ -157,6 +214,7 @@ function buildPatchPayload(form, project) {
   const preview = {
     enabled: !!form.enabled,
   };
+  const healthPath = (form.healthPath || '').trim();
   if (form.enabled) {
     if (form.mode === PREVIEW_MODES.COMPOSE) {
       const entryService = (form.composeEntryService || '').trim();
@@ -169,6 +227,15 @@ function buildPatchPayload(form, project) {
       if (Number.isInteger(entryPort) && entryPort > 0) composeBlock.entryPort = entryPort;
       if (composeFile) composeBlock.file = composeFile;
       if (envFile) composeBlock.envFile = envFile;
+      // Compose runtime reads healthPath from `prEnv.preview.compose.healthPath`,
+      // NOT the shared `prEnv.healthPath`. Wiring the form's "Health path" field
+      // through the compose sub-block keeps the form's read/write paths in
+      // sync — `formFromProject` reads `compose.healthPath` first for compose
+      // projects, so this round-trips. The shared `prEnv.healthPath` is left
+      // untouched on the parent prEnv so a separately-configured PR-env block
+      // (legacy install) doesn't lose its value when a user edits compose
+      // settings.
+      if (healthPath) composeBlock.healthPath = healthPath;
       preview.compose = composeBlock;
     } else {
       const startScript = (form.startScript || '').trim();
@@ -188,9 +255,13 @@ function buildPatchPayload(form, project) {
       preview,
     },
   };
-  const healthPath = (form.healthPath || '').trim();
-  if (healthPath) payload.prEnv.healthPath = healthPath;
-  else delete payload.prEnv.healthPath;
+  // Script mode keeps the legacy shared `prEnv.healthPath` write path so
+  // existing projects round-trip unchanged. Compose mode skips this — the
+  // value lives on `preview.compose.healthPath` only.
+  if (form.mode !== PREVIEW_MODES.COMPOSE) {
+    if (healthPath) payload.prEnv.healthPath = healthPath;
+    else delete payload.prEnv.healthPath;
+  }
   return payload;
 }
 
@@ -345,9 +416,20 @@ export default function PreviewSection({
 
   const handleSave = async () => {
     if (!project) return;
-    setSaving(true);
+    setSaving(false); // reset so error path repaints cleanly
     setSaveError(null);
     setSaveStatus(null);
+    // Client-side compose validation: surface field-targeted errors
+    // BEFORE the round-trip so the user sees what's wrong against the
+    // input that produced it, not a generic 400 banner.
+    if (form.enabled && form.mode === PREVIEW_MODES.COMPOSE) {
+      const composeErr = validateComposeForm(form);
+      if (composeErr) {
+        setSaveError(composeErr.error);
+        return;
+      }
+    }
+    setSaving(true);
     try {
       const payload = buildPatchPayload(form, project);
       const updated = await api.updateProject(project.id, payload);
@@ -1180,4 +1262,4 @@ export default function PreviewSection({
 }
 
 // Exported for tests.
-export { buildPatchPayload, formFromProject, shallowEqualForm, PREVIEW_MODES };
+export { buildPatchPayload, formFromProject, shallowEqualForm, validateComposeForm, PREVIEW_MODES };

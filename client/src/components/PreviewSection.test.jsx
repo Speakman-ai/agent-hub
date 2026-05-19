@@ -4,6 +4,7 @@ import PreviewSection, {
   buildPatchPayload,
   formFromProject,
   shallowEqualForm,
+  validateComposeForm,
   PREVIEW_MODES,
 } from './PreviewSection.jsx';
 import { api } from '../utils/api.js';
@@ -133,6 +134,10 @@ describe('PreviewSection — pure helpers', () => {
         entryPort: 3001,
         file: 'docker-compose.yml',
         envFile: '.env.preview',
+        // The form's "Health path" field maps onto compose.healthPath
+        // in compose mode (NOT the shared prEnv.healthPath) — that's
+        // the only place the compose runtime reads it from.
+        healthPath: '/health',
       },
       idleTTL: 300,
       captureRoutes: ['/'],
@@ -141,7 +146,61 @@ describe('PreviewSection — pure helpers', () => {
     // the server's validatePrEnvPreview rejects compose+startScript
     // as mutually exclusive.
     expect(payload.prEnv.preview.startScript).toBeUndefined();
-    expect(payload.prEnv.healthPath).toBe('/health');
+    // The shared `prEnv.healthPath` is intentionally NOT written in
+    // compose mode — the compose runtime reads only from
+    // `preview.compose.healthPath`. Writing both would be redundant
+    // and could mask a legacy PR-env value sitting at the parent.
+    expect(payload.prEnv.healthPath).toBeUndefined();
+  });
+
+  it('buildPatchPayload (compose mode) does NOT emit prEnv.preview.startScript', () => {
+    // Reviewer-requested explicit guard for the server-side
+    // "compose and startScript are mutually exclusive" 400.
+    const form = {
+      mode: PREVIEW_MODES.COMPOSE,
+      enabled: true,
+      // Even if the form's script field happens to hold a value (a
+      // user toggled away from script mode without resetting it),
+      // buildPatchPayload must keep it out of the compose payload.
+      startScript: 'pnpm dev — should be ignored',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'frontend',
+      composeEntryPort: 3000,
+      composeEnvFile: '',
+      composeServices: [],
+      healthPath: '/',
+      idleTTL: 600,
+      captureRoutes: ['/'],
+    };
+    const payload = buildPatchPayload(form, {});
+    expect(payload.prEnv.preview.startScript).toBeUndefined();
+    expect(payload.prEnv.preview.compose).toMatchObject({
+      entryService: 'frontend',
+      entryPort: 3000,
+    });
+  });
+
+  it('buildPatchPayload (script mode) does NOT emit prEnv.preview.compose', () => {
+    // Symmetric guard — the same mutual-exclusivity rule applies
+    // when switching back to script mode mid-session.
+    const form = {
+      mode: PREVIEW_MODES.SCRIPT,
+      enabled: true,
+      startScript: 'pnpm dev',
+      // Lingering compose state from a previous mode flip — must be
+      // dropped from the payload.
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'frontend',
+      composeEntryPort: 3000,
+      composeEnvFile: '.env',
+      composeServices: ['frontend', 'api'],
+      healthPath: '/',
+      idleTTL: 600,
+      captureRoutes: ['/'],
+    };
+    const payload = buildPatchPayload(form, {});
+    expect(payload.prEnv.preview.compose).toBeUndefined();
+    expect(payload.prEnv.preview.startScript).toBe('pnpm dev');
   });
 
   it('buildPatchPayload emits the script shape in Script mode and drops compose', () => {
@@ -267,6 +326,12 @@ describe('PreviewSection — pure helpers', () => {
       entryService: 'frontend',
       entryPort: 3001,
       envFile: '.env.preview',
+      // formFromProject loads healthPath from the legacy `prEnv.healthPath`
+      // fallback for this fixture (no `compose.healthPath` set), and
+      // buildPatchPayload writes it back through the compose sub-block —
+      // so the next read lands the value on `preview.compose.healthPath`,
+      // exactly where the compose runtime expects it.
+      healthPath: '/healthz',
     });
     // Re-hydrate from the patched server response (we simulate the
     // server preserving what we sent) and confirm the form matches.
@@ -281,6 +346,78 @@ describe('PreviewSection — pure helpers', () => {
     expect(rehydrated.mode).toBe(PREVIEW_MODES.COMPOSE);
     expect(rehydrated.composeEntryService).toBe('frontend');
     expect(rehydrated.composeEntryPort).toBe(3001);
+  });
+
+  it('formFromProject defaults a preview block without compose or startScript to Compose mode', () => {
+    // Reviewer-flagged: the third branch of the mode-detection rules.
+    // A project whose preview block has `enabled` + `captureRoutes` but
+    // neither `compose` nor `startScript` should land on Compose so PR 4's
+    // canonical path is what the user lands on by default.
+    const partialProject = {
+      id: 'p',
+      name: 'p',
+      cwd: '/x',
+      prEnv: {
+        enabled: false,
+        preview: {
+          enabled: true,
+          captureRoutes: ['/'],
+          idleTTL: 600,
+        },
+      },
+    };
+    expect(formFromProject(partialProject).mode).toBe(PREVIEW_MODES.COMPOSE);
+  });
+
+  it('validateComposeForm accepts the canonical compose shape', () => {
+    expect(
+      validateComposeForm({
+        composeEntryService: 'frontend',
+        composeFile: 'docker-compose.yml',
+        composeEnvFile: '.env.preview',
+      }),
+    ).toBeNull();
+  });
+
+  it('validateComposeForm rejects an entryService that breaks the compose service-name regex', () => {
+    const result = validateComposeForm({
+      composeEntryService: 'has spaces',
+      composeFile: 'docker-compose.yml',
+      composeEnvFile: '',
+    });
+    expect(result).not.toBeNull();
+    expect(result.field).toBe('composeEntryService');
+    expect(result.error).toMatch(/service-name/);
+  });
+
+  it('validateComposeForm rejects an absolute compose.file path', () => {
+    const result = validateComposeForm({
+      composeEntryService: 'frontend',
+      composeFile: '/etc/docker-compose.yml',
+      composeEnvFile: '',
+    });
+    expect(result.field).toBe('composeFile');
+    expect(result.error).toMatch(/relative/);
+  });
+
+  it('validateComposeForm rejects a compose.file with `..` traversal', () => {
+    const result = validateComposeForm({
+      composeEntryService: 'frontend',
+      composeFile: '../etc/docker-compose.yml',
+      composeEnvFile: '',
+    });
+    expect(result.field).toBe('composeFile');
+    expect(result.error).toMatch(/\.\./);
+  });
+
+  it('validateComposeForm rejects an absolute composeEnvFile path', () => {
+    const result = validateComposeForm({
+      composeEntryService: 'frontend',
+      composeFile: 'docker-compose.yml',
+      composeEnvFile: '/etc/secrets',
+    });
+    expect(result.field).toBe('composeEnvFile');
+    expect(result.error).toMatch(/relative/);
   });
 });
 
@@ -381,8 +518,15 @@ describe('PreviewSection — render & save', () => {
       entryService: 'backend',
       entryPort: 3001,
       envFile: '.env.preview',
+      // Compose mode routes the form's healthPath to compose.healthPath.
+      healthPath: '/healthz',
     });
     expect(payload.prEnv.preview.startScript).toBeUndefined();
+    // Compose mode does NOT WRITE the shared `prEnv.healthPath` from
+    // the form — any pre-existing parent-prEnv value is preserved
+    // verbatim (e.g. a legacy PR-env block that wasn't migrated). The
+    // form's healthPath edits land on `compose.healthPath`, not here.
+    expect(payload.prEnv.healthPath).toBe('/healthz');
   });
 
   it('surfaces a 400 error inline', async () => {
@@ -391,6 +535,33 @@ describe('PreviewSection — render & save', () => {
     fireEvent.change(getByTestId('preview-health-path'), { target: { value: 'no-slash' } });
     fireEvent.click(getByTestId('preview-save-button'));
     expect(await findByText(/healthPath must start/)).toBeTruthy();
+  });
+
+  it('compose Save with an invalid entryService is blocked client-side before the round-trip', async () => {
+    // Reviewer-requested: client surfaces compose-rule violations
+    // inline so the user sees what's wrong against the field that
+    // produced it, instead of a generic 400 banner.
+    const { getByTestId, findByText } = render(<PreviewSection projects={[projectWithCompose]} />);
+    fireEvent.change(getByTestId('preview-compose-entry-service'), {
+      target: { value: 'invalid service name' },
+    });
+    fireEvent.click(getByTestId('preview-save-button'));
+    expect(await findByText(/service-name/)).toBeTruthy();
+    // The HTTP round-trip must NOT fire when client validation
+    // rejects the input — the server would just return the same 400.
+    expect(api.updateProject).not.toHaveBeenCalled();
+  });
+
+  it('compose Save with an absolute composeFile path is blocked client-side', async () => {
+    const { getByTestId, findByText } = render(<PreviewSection projects={[projectWithCompose]} />);
+    fireEvent.change(getByTestId('preview-compose-file'), {
+      target: { value: '/etc/docker-compose.yml' },
+    });
+    fireEvent.click(getByTestId('preview-save-button'));
+    // Match the error text specifically (not the help-text copy that
+    // also contains the word "relative").
+    expect(await findByText(/Compose file must be relative/)).toBeTruthy();
+    expect(api.updateProject).not.toHaveBeenCalled();
   });
 
   it('Re-detect button shows accept/dismiss when the server returns a stack', async () => {
