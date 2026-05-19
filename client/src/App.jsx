@@ -1990,16 +1990,15 @@ export default function App() {
         setSetupStatus(status);
         if (status.authConfigured === false) {
           // Truly fresh install — Owner record does not exist. Always
-          // walk the user through the full wizard (welcome → org → creds
-          // → github → first project) regardless of host CLI auth or the
-          // auto-seeded default org.
+          // walk the user through the full wizard (welcome → creds → github
+          // → first project) regardless of host CLI auth or the auto-seeded
+          // default org.
           setSetupInitialStep(1);
           setShowSetup(true);
         } else if (status.hasAnyAiCredentials === false) {
-          // If an org already exists, skip Welcome + Organization and land
-          // directly on the AI-credentials step. With no orgs (true greenfield)
-          // we still want the full wizard.
-          setSetupInitialStep(getOrgs() ? 3 : 1);
+          // If an org already exists, skip Welcome and land on AI credentials.
+          // With no orgs (true greenfield) we still want the full wizard.
+          setSetupInitialStep(getOrgs() ? 2 : 1);
           setShowSetup(true);
         } else if (status.firstRun) {
           if (!getOrgs()) {

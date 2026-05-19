@@ -87,7 +87,6 @@ function StepIndicator({ currentStep }) {
 
 export default function SetupWizard({ onComplete }) {
   const [step, setStep] = useState(1);
-  const [orgName, setOrgName] = useState('Personal');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -122,14 +121,14 @@ export default function SetupWizard({ onComplete }) {
       const existing = getActiveOrg();
       if (existing) {
         await updateOrg(existing.id, {
-          name: orgName.trim() || existing.name || 'Personal',
+          name: existing.name?.trim() || 'Personal',
           remoteUrl: normalized,
           apiKey: apiKey.trim(),
         });
         await switchOrg(existing.id);
       } else {
         const created = await createOrg({
-          name: orgName.trim() || 'Personal',
+          name: 'Personal',
           remoteUrl: normalized,
           apiKey: apiKey.trim(),
           color: '#6366f1',
@@ -191,19 +190,7 @@ export default function SetupWizard({ onComplete }) {
                 web app under Settings → Server Connections.
               </Text>
 
-              <Text style={styles.inputLabel}>Name</Text>
-              <TextInput
-                style={styles.textInput}
-                value={orgName}
-                onChangeText={setOrgName}
-                placeholder="Personal"
-                placeholderTextColor={colors.gray500}
-                autoCorrect={false}
-              />
-
-              <Text style={[styles.inputLabel, { marginTop: 14 }]}>
-                Server URL
-              </Text>
+              <Text style={styles.inputLabel}>Server URL</Text>
               <TextInput
                 style={styles.textInput}
                 value={remoteUrl}

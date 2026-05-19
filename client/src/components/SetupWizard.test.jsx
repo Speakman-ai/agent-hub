@@ -54,117 +54,33 @@ afterEach(() => {
   delete window.electronAPI;
 });
 
-// The wizard renders the same Step 2 heading regardless of build, but the
-// Connection Mode section only appears on Electron now (web has no use for
-// a Local/Remote toggle — the page's origin *is* the server URL). Tests
-// that need the toggle must set `window.electronAPI.isElectron = true`
-// *before* calling this helper; web-only tests can advance without it.
-async function advanceToOrgStep() {
-  fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-  await waitFor(() => expect(screen.getByText(/Create Your Organization/i)).toBeInTheDocument());
+/** Welcome → auto-create org → AI credentials step. */
+async function advancePastWelcome() {
+  createOrg.mockResolvedValue({ id: 'org-test' });
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+  });
+  await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
 }
 
-describe('SetupWizard — remote mode (Electron only)', () => {
-  it('saves connection config and navigates without touching local orgs', async () => {
-    testConnection.mockResolvedValue({ ok: true, message: 'Connected' });
-    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
-
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    // Pick Remote
-    fireEvent.click(screen.getByRole('button', { name: /remote/i }));
-
-    // Fill URL
-    fireEvent.change(screen.getByPlaceholderText(/my-server\.example\.com/i), {
-      target: { value: 'https://hub.example.com/' },
-    });
-
-    // Click Continue — component will run its own testConnection internally
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-
-    await waitFor(() => {
-      expect(saveConnectionConfig).toHaveBeenCalledWith({
-        mode: 'remote',
-        remoteUrl: 'https://hub.example.com',
-        apiKey: '',
-      });
-    });
-    expect(window.electronAPI.navigateToOrg).toHaveBeenCalled();
-    // Critically: no local org was created or updated.
-    expect(createOrg).not.toHaveBeenCalled();
-    expect(updateOrg).not.toHaveBeenCalled();
-    expect(switchOrg).not.toHaveBeenCalled();
-  });
-
-  it('blocks progression when remote test fails', async () => {
-    testConnection.mockResolvedValue({ ok: false, message: 'refused' });
-    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
-
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    fireEvent.click(screen.getByRole('button', { name: /remote/i }));
-    fireEvent.change(screen.getByPlaceholderText(/my-server\.example\.com/i), {
-      target: { value: 'https://bad.example.com' },
-    });
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-
-    // Still on step 2 (org step), config not saved, navigation not triggered.
-    expect(saveConnectionConfig).not.toHaveBeenCalled();
-    expect(window.electronAPI.navigateToOrg).not.toHaveBeenCalled();
-    expect(await screen.findByText(/connection test failed/i)).toBeInTheDocument();
-  });
-
-  it('requires a URL before continuing in remote mode', async () => {
-    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    fireEvent.click(screen.getByRole('button', { name: /remote/i }));
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-
-    expect(testConnection).not.toHaveBeenCalled();
-    expect(saveConnectionConfig).not.toHaveBeenCalled();
-    expect(await screen.findByText(/enter a server url/i)).toBeInTheDocument();
-  });
-});
-
-describe('SetupWizard — local mode (regression)', () => {
-  it('creates a local org and advances to step 3', async () => {
+describe('SetupWizard — welcome auto-creates org', () => {
+  it('creates a default local org when continuing from welcome', async () => {
     createOrg.mockResolvedValue({ id: 'org-new' });
-    // Run as Electron so the toggle is rendered — this test is asserting
-    // the local-mode branch still works end-to-end, not the web hiding.
-    window.electronAPI = { isElectron: true };
-
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    // Default mode is local — just click Continue.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /continue/i }));
     });
-
     await waitFor(() => {
       expect(createOrg).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Personal', mode: 'local' }),
       );
     });
     expect(switchOrg).toHaveBeenCalledWith('org-new');
-    // Critically: no connection config was rewritten for the local path.
-    expect(saveConnectionConfig).not.toHaveBeenCalled();
+    expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument();
   });
 });
 
-describe('SetupWizard — Step 3 Claude credential gate', () => {
+describe('SetupWizard — Step 2 Claude credential gate', () => {
   // Helper: set up a fetch mock that routes by URL substring.
   // Routes return JSON Response objects so the component's
   // `await res.json()` works the same as in production.
@@ -175,17 +91,8 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
     });
   }
 
-  // Walk the wizard from Welcome (step 1) → Org (step 2) → Configure (step 3).
-  // Defaults to local-mode org so Step 3 actually mounts.
-  async function advanceToStep3() {
-    createOrg.mockResolvedValue({ id: 'org-test' });
-    // Welcome → Org
-    await advanceToOrgStep();
-    // Org → Configure
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-    await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
+  async function advanceToCredentialsStep() {
+    await advancePastWelcome();
   }
 
   it('disables Continue when no creds are configured (a)', async () => {
@@ -208,7 +115,7 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
         onComplete={() => {}}
       />,
     );
-    await advanceToStep3();
+    await advanceToCredentialsStep();
 
     // Wait until the GET resolves and the credentials card renders the
     // "Required" pill (not the loading spinner).
@@ -251,7 +158,7 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
         onComplete={() => {}}
       />,
     );
-    await advanceToStep3();
+    await advanceToCredentialsStep();
     await waitFor(() =>
       expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/Required/i),
     );
@@ -310,7 +217,7 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
         onComplete={() => {}}
       />,
     );
-    await advanceToStep3();
+    await advanceToCredentialsStep();
     await waitFor(() =>
       expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/Required/i),
     );
@@ -364,7 +271,7 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
         onComplete={() => {}}
       />,
     );
-    await advanceToStep3();
+    await advanceToCredentialsStep();
 
     await waitFor(() =>
       expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/API key configured/i),
@@ -375,7 +282,7 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
   });
 });
 
-describe('SetupWizard — Step 3 Cursor path auth probe', () => {
+describe('SetupWizard — Step 2 Cursor path auth probe', () => {
   function jsonResponse(body, status = 200) {
     return new Response(JSON.stringify(body), {
       status,
@@ -427,7 +334,7 @@ describe('SetupWizard — Step 3 Cursor path auth probe', () => {
     );
 
     createOrg.mockResolvedValue({ id: 'org-test' });
-    await advanceToOrgStep();
+    await advancePastWelcome();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /continue/i }));
     });
@@ -513,13 +420,7 @@ describe('SetupWizard — Codex ChatGPT device login subsection', () => {
       />,
     );
 
-    // Welcome → Org → Configure
-    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    await waitFor(() => expect(screen.getByText(/Create Your Organization/i)).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-    await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
+    await advancePastWelcome();
 
     // The Codex device-login panel is in the DOM…
     const deviceLoginPanel = await screen.findByTestId('codex-device-login');
@@ -541,57 +442,18 @@ describe('SetupWizard — Codex ChatGPT device login subsection', () => {
   });
 });
 
-describe('SetupWizard — web build hides the Connection Mode toggle', () => {
-  // The web client is *served by* the Agent Hub server it talks to, so a
-  // Local/Remote toggle is incoherent here: there is no other server it
-  // could sensibly point at. Hiding the toggle prevents users from
-  // flipping a meaningful-only-on-Electron knob, and (by extension)
-  // prevents them from accidentally creating an org with mode='remote'
-  // that doesn't match the page origin.
-
-  it('does not render the Connection Mode toggle when window.electronAPI is absent', async () => {
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    expect(screen.queryByText(/Connection Mode/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^remote$/i })).not.toBeInTheDocument();
-    // The Org Name field and Continue button must still be there — the
-    // wizard stays usable, we're just dropping a meaningless choice.
-    expect(screen.getByPlaceholderText('Personal')).toBeInTheDocument();
-  });
-
-  it('still creates a local org on Continue (default behavior)', async () => {
-    createOrg.mockResolvedValue({ id: 'org-web' });
-
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
-    await advanceToOrgStep();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-    });
-
-    await waitFor(() => {
-      expect(createOrg).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Personal', mode: 'local' }),
-      );
-    });
-    expect(switchOrg).toHaveBeenCalledWith('org-web');
-    expect(saveConnectionConfig).not.toHaveBeenCalled();
-  });
-});
-
-// Step 4 = "Connect GitHub". The LAN-mode toggle lives at the top of
+// Step 3 = "Connect GitHub". The LAN-mode toggle lives at the top of
 // this step (mirrored on Settings → GitHub for post-setup changes). The
 // toggle is purely a passthrough to PATCH /api/config { lanMode } — the
 // LAN-mode behavior itself is verified server-side in
 // server/autonomous-lan-mode-reviewer-poll.test.ts and
 // server/test/webhook-skip-autoregister-lan-mode.test.ts. These tests
 // guard the wiring: GET on entry, PATCH on toggle, rollback on error.
-describe('SetupWizard — Step 4 LAN mode toggle', () => {
-  it('loads the current lanMode value from /api/config on Step 4 entry', async () => {
+describe('SetupWizard — Step 3 LAN mode toggle', () => {
+  it('loads the current lanMode value from /api/config on Step 3 entry', async () => {
     api.getConfig.mockResolvedValue({ lanMode: true });
 
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={3} />);
 
     await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
     // "LAN mode is on" banner only renders when the load succeeds AND
@@ -602,7 +464,7 @@ describe('SetupWizard — Step 4 LAN mode toggle', () => {
   it('PATCHes /api/config { lanMode: true } when the user toggles on', async () => {
     api.getConfig.mockResolvedValue({ lanMode: false });
 
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={3} />);
 
     await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
     expect(screen.queryByText(/LAN mode is on/i)).not.toBeInTheDocument();
@@ -624,7 +486,7 @@ describe('SetupWizard — Step 4 LAN mode toggle', () => {
     api.getConfig.mockResolvedValue({ lanMode: false });
     api.updateConfig.mockRejectedValueOnce(new Error('boom'));
 
-    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={4} />);
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} initialStep={3} />);
 
     await waitFor(() => expect(api.getConfig).toHaveBeenCalled());
 
