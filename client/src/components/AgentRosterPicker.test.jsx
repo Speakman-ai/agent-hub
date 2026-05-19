@@ -27,7 +27,54 @@ function baseRoster() {
   ];
 }
 
-describe('AgentRosterPicker', () => {
+describe('AgentRosterPicker — createAgents mode', () => {
+  it('renders name inputs instead of an agent dropdown', () => {
+    render(
+      <AgentRosterPicker
+        roster={[
+          {
+            trackId: 'backend',
+            label: 'Backend',
+            rationale: 'API work',
+            agentName: 'Scrabble Backend',
+            custom: true,
+          },
+        ]}
+        createAgents
+        projectName="Scrabble"
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('roster-agent-name-backend')).toBeInTheDocument();
+    expect(screen.queryByTestId('roster-agent-backend')).not.toBeInTheDocument();
+    expect(screen.getByTestId('roster-agent-name-backend').value).toBe('Scrabble Backend');
+  });
+
+  it('fires onChange when an agent name is edited', () => {
+    const onChange = vi.fn();
+    render(
+      <AgentRosterPicker
+        roster={[
+          {
+            trackId: 'qa',
+            label: 'QA',
+            rationale: 'Tests',
+            agentName: 'Scrabble QA',
+            custom: true,
+          },
+        ]}
+        createAgents
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('roster-agent-name-qa'), {
+      target: { value: 'Scrabble Test Lead' },
+    });
+    expect(onChange.mock.calls[0][0][0].agentName).toBe('Scrabble Test Lead');
+  });
+});
+
+describe('AgentRosterPicker — assign existing agents', () => {
   it('renders one row per track with label + rationale', () => {
     render(<AgentRosterPicker roster={baseRoster()} agents={agents} onChange={() => {}} />);
     expect(screen.getByTestId('roster-row-architect')).toBeInTheDocument();

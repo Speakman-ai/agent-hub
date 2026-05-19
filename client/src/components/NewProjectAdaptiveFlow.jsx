@@ -392,6 +392,11 @@ export default function NewProjectAdaptiveFlow({
         <div className="flex-1 min-h-0">
           <PostScaffoldAudit
             projectId={createdProjectId}
+            projectName={
+              typeof questionnairePayload?.name === 'string' && questionnairePayload.name !== 'idk'
+                ? questionnairePayload.name.trim()
+                : createdProjectId
+            }
             onConfirmed={handleAuditConfirmed}
             onSkip={handleAuditSkip}
           />

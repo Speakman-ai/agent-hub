@@ -275,6 +275,7 @@ describe('POST + GET /api/projects/:id/roster', () => {
       projectId: string;
       engine: string;
       role?: string;
+      name?: string;
       cwd?: string;
     }>;
     const architect = list.find((a) => a.id === `${projectId}-architect`);
@@ -284,6 +285,32 @@ describe('POST + GET /api/projects/:id/roster', () => {
     expect(architect?.engine).toBe('claude-code');
     expect(architect?.role).toBe('Architect');
     expect(qa?.role).toBe('QA');
+  });
+
+  it('uses agentName for the created agent display name when provided', async () => {
+    const projectId = await freshProject();
+    await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [
+          {
+            id: 'frontend',
+            label: 'Frontend',
+            agentName: 'Scrabble UI Dev',
+            custom: true,
+          },
+        ],
+      })
+      .expect(200);
+
+    const list = (await request.get('/api/agents').expect(200)).body as Array<{
+      id: string;
+      name?: string;
+      role?: string;
+    }>;
+    const fe = list.find((a) => a.id === `${projectId}-frontend`);
+    expect(fe?.name).toBe('Scrabble UI Dev');
+    expect(fe?.role).toBe('Frontend');
   });
 
   it('is idempotent across re-runs for the same custom track', async () => {

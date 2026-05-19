@@ -4,10 +4,9 @@ import AuditReport from './AuditReport.jsx';
 import AgentRosterPicker from './AgentRosterPicker.jsx';
 import { normalizeReport } from '../utils/auditReport.js';
 import {
-  suggestRoster,
-  initialRoster,
+  initialRosterForCreate,
   rosterToPayload,
-  hasAnyAssignment,
+  hasAnyNamedAgent,
   DEFAULT_TRACKS,
 } from '../utils/rosterSuggest.js';
 import {
@@ -41,6 +40,7 @@ import {
  */
 export default function PostScaffoldAudit({
   projectId,
+  projectName = '',
   onConfirmed,
   onSkip,
   fetchAudit = defaultFetchAudit,
@@ -74,9 +74,8 @@ export default function PostScaffoldAudit({
     setLoadError(null);
     (async () => {
       try {
-        const [rawReport, agentList, suggestionsResult] = await Promise.all([
+        const [rawReport, suggestionsResult] = await Promise.all([
           fetchAudit(projectId).catch((err) => ({ __error: err })),
-          fetchAgents().catch(() => []),
           fetchSuggestions(projectId).catch(() => null),
         ]);
         if (cancelled || !mountedRef.current) return;
@@ -86,13 +85,17 @@ export default function PostScaffoldAudit({
         } else {
           setReport(normalizeReport(rawReport));
         }
-        const agentArray = Array.isArray(agentList) ? agentList : [];
-        setAgents(agentArray);
-        const tracks =
+        setAgents([]);
+        const trackList =
           suggestionsResult && Array.isArray(suggestionsResult.tracks)
-            ? suggestionsResult.tracks
-            : suggestRoster({ tracks: DEFAULT_TRACKS, agents: agentArray });
-        setRoster(initialRoster(tracks));
+            ? suggestionsResult.tracks.map(({ id, label, rationale, keywords }) => ({
+                id,
+                label,
+                rationale,
+                keywords,
+              }))
+            : DEFAULT_TRACKS;
+        setRoster(initialRosterForCreate(trackList, projectName || projectId));
       } catch (err) {
         if (!cancelled && mountedRef.current) {
           setLoadError(err?.message || String(err));
@@ -104,7 +107,7 @@ export default function PostScaffoldAudit({
     return () => {
       cancelled = true;
     };
-  }, [projectId, fetchAudit, fetchAgents, fetchSuggestions]);
+  }, [projectId, projectName, fetchAudit, fetchSuggestions]);
 
   const handleRefresh = useCallback(async () => {
     if (!projectId || refreshing) return;
@@ -132,7 +135,7 @@ export default function PostScaffoldAudit({
     setSaving(true);
     setSaveError(null);
     try {
-      const payload = rosterToPayload(roster);
+      const payload = rosterToPayload(roster, { createAgents: true });
       const saved = await saveRoster(projectId, payload);
       if (mountedRef.current) {
         // Surface the rendered audit report + agent list alongside the
@@ -147,7 +150,7 @@ export default function PostScaffoldAudit({
     }
   }, [roster, saving, saveRoster, projectId, onConfirmed, report, agents]);
 
-  const canConfirm = useMemo(() => hasAnyAssignment(roster) && !saving, [roster, saving]);
+  const canConfirm = useMemo(() => hasAnyNamedAgent(roster) && !saving, [roster, saving]);
 
   return (
     <div
@@ -178,7 +181,8 @@ export default function PostScaffoldAudit({
 
           <AgentRosterPicker
             roster={roster}
-            agents={agents}
+            createAgents
+            projectName={projectName || projectId}
             onChange={setRoster}
             disabled={saving}
           />

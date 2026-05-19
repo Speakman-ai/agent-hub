@@ -3,11 +3,13 @@ import {
   DEFAULT_TRACKS,
   suggestRoster,
   initialRoster,
+  initialRosterForCreate,
   setRosterAgent,
   addCustomTrack,
   removeRosterTrack,
   rosterToPayload,
   hasAnyAssignment,
+  hasAnyNamedAgent,
 } from './rosterSuggest.js';
 
 describe('rosterSuggest — DEFAULT_TRACKS', () => {
@@ -134,6 +136,7 @@ describe('rosterSuggest — roster state helpers', () => {
       label: 'Docs',
       rationale: 'Custom track',
       agentId: null,
+      agentName: 'Project Docs',
       custom: true,
     });
   });
@@ -150,6 +153,45 @@ describe('rosterSuggest — roster state helpers', () => {
     const next = removeRosterTrack(r, 'qa');
     expect(next).toHaveLength(2);
     expect(next.find((t) => t.trackId === 'qa')).toBeUndefined();
+  });
+});
+
+describe('rosterSuggest — create flow', () => {
+  it('initialRosterForCreate seeds agent names from the project name', () => {
+    const roster = initialRosterForCreate(
+      [{ id: 'architect', label: 'Architect', rationale: 'design' }],
+      'Scrabble',
+    );
+    expect(roster[0].agentName).toBe('Scrabble Lead');
+    expect(roster[0].custom).toBe(true);
+    expect(roster[0].agentId).toBeNull();
+  });
+
+  it('rosterToPayload with createAgents emits custom tracks with agentName', () => {
+    const payload = rosterToPayload(
+      [
+        {
+          trackId: 'backend',
+          label: 'Backend',
+          agentName: 'Scrabble Backend Dev',
+          custom: true,
+        },
+      ],
+      { createAgents: true },
+    );
+    expect(payload.tracks).toEqual([
+      {
+        id: 'backend',
+        label: 'Backend',
+        agentName: 'Scrabble Backend Dev',
+        custom: true,
+      },
+    ]);
+  });
+
+  it('hasAnyNamedAgent requires a non-empty agentName', () => {
+    expect(hasAnyNamedAgent([{ agentName: '  ' }])).toBe(false);
+    expect(hasAnyNamedAgent([{ agentName: 'Lead' }])).toBe(true);
   });
 });
 

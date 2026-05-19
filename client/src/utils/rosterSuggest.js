@@ -99,8 +99,32 @@ export function initialRoster(suggestions = []) {
     label: s.label,
     rationale: s.rationale,
     agentId: s.suggestedAgentId || null,
+    agentName: '',
     // `custom` lets the user mark a bespoke track the server didn't suggest.
     custom: false,
+  }));
+}
+
+/** Default display name for a newly created per-track agent. */
+export function defaultAgentName(projectName, trackLabel) {
+  const base = (projectName || 'Project').trim() || 'Project';
+  if (trackLabel === 'Architect') return `${base} Lead`;
+  if (trackLabel === 'QA') return `${base} QA`;
+  return `${base} ${trackLabel}`;
+}
+
+/**
+ * Post-scaffold roster rows — each track gets a new agent name; no binding
+ * to existing org agents.
+ */
+export function initialRosterForCreate(suggestions = [], projectName = '') {
+  return suggestions.map((s) => ({
+    trackId: s.id,
+    label: s.label,
+    rationale: s.rationale,
+    agentId: null,
+    agentName: defaultAgentName(projectName, s.label),
+    custom: true,
   }));
 }
 
@@ -112,11 +136,16 @@ export function setRosterAgent(roster, trackId, agentId) {
   return roster.map((row) => (row.trackId === trackId ? { ...row, agentId } : row));
 }
 
+/** Update the display name for a track's new agent (create flow). */
+export function setRosterAgentName(roster, trackId, agentName) {
+  return roster.map((row) => (row.trackId === trackId ? { ...row, agentName } : row));
+}
+
 /**
  * Append a custom track to the roster. Returns a new roster with the row
  * placed at the end. `id` should be unique — typically `custom-<timestamp>`.
  */
-export function addCustomTrack(roster, { id, label }) {
+export function addCustomTrack(roster, { id, label }, projectName = '') {
   if (!id || !label) return roster;
   if (roster.some((r) => r.trackId === id)) return roster;
   return [
@@ -126,6 +155,7 @@ export function addCustomTrack(roster, { id, label }) {
       label,
       rationale: 'Custom track',
       agentId: null,
+      agentName: defaultAgentName(projectName, label),
       custom: true,
     },
   ];
@@ -142,16 +172,30 @@ export function removeRosterTrack(roster, trackId) {
  * as "declared but unassigned" tracks so the backend can still persist the
  * shape of the team. Empty-label custom rows are filtered out.
  */
-export function rosterToPayload(roster = []) {
+export function rosterToPayload(roster = [], { createAgents = false } = {}) {
   return {
     tracks: roster
       .filter((r) => r.label && r.trackId)
-      .map((r) => ({
-        id: r.trackId,
-        label: r.label,
-        agentId: r.agentId || null,
-        custom: !!r.custom,
-      })),
+      .filter((r) => {
+        if (!createAgents) return true;
+        return (r.agentName || '').trim().length > 0;
+      })
+      .map((r) => {
+        if (createAgents || r.custom) {
+          return {
+            id: r.trackId,
+            label: r.label,
+            agentName: (r.agentName || r.label).trim(),
+            custom: true,
+          };
+        }
+        return {
+          id: r.trackId,
+          label: r.label,
+          agentId: r.agentId || null,
+          custom: !!r.custom,
+        };
+      }),
   };
 }
 
@@ -159,4 +203,9 @@ export function rosterToPayload(roster = []) {
  *  "Confirm roster" button — an all-null roster isn't useful. */
 export function hasAnyAssignment(roster = []) {
   return roster.some((r) => !!r.agentId);
+}
+
+/** True when at least one track has a non-empty new-agent name (create flow). */
+export function hasAnyNamedAgent(roster = []) {
+  return roster.some((r) => (r.agentName || '').trim().length > 0);
 }

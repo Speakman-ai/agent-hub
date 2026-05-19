@@ -37,6 +37,7 @@ interface ResolvedTrack {
   label: string;
   agentId: string;
   custom: boolean;
+  agentName?: string;
 }
 
 interface AuditServiceRunner {
@@ -60,6 +61,8 @@ interface RosterPayload {
     id?: string;
     label?: string;
     agentId?: string | null;
+    /** Display name for a newly created agent (custom tracks). */
+    agentName?: string;
     custom?: boolean;
   }>;
 }
@@ -288,6 +291,10 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
         });
       }
       const label = typeof t.label === 'string' && t.label.length > 0 ? t.label : t.id;
+      const agentName =
+        typeof t.agentName === 'string' && t.agentName.trim().length > 0
+          ? t.agentName.trim()
+          : label;
       if (hasAgentId) {
         // Non-custom track: verify the agent exists.
         const found = deps.findAgent(t.agentId as string);
@@ -310,6 +317,7 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
           label,
           agentId: '',
           custom: true,
+          agentName,
         });
       }
     }
@@ -326,21 +334,22 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
       const candidateId = `${project.id}-${track.id}`;
       track.agentId = candidateId;
       const existing = deps.findAgent(candidateId);
+      const displayName = track.agentName?.trim() || track.label;
       if (existing) {
-        // Refresh human-readable metadata — label may have been edited.
+        // Refresh human-readable metadata — names may have been edited.
         existing.agent.role = track.label;
-        if (!existing.agent.name) existing.agent.name = track.label;
+        existing.agent.name = displayName;
         continue;
       }
       const engine = defaultEngine;
       const agent: Agent = {
         id: candidateId,
-        name: track.label,
+        name: displayName,
         engine,
         model: defaultModelForEngine(engine),
         role: track.label,
         color: project.color || '#6b7280',
-        systemPrompt: `You are the ${track.label} agent for the ${project.name} project.`,
+        systemPrompt: `You are the ${displayName} agent (${track.label} track) for the ${project.name} project.`,
         heartbeat: { enabled: false, interval: '', prompt: '' },
       };
       // Mirror the POST /api/agents convention: each agent gets a

@@ -49,7 +49,6 @@ describe('PostScaffoldAudit', () => {
       expect(screen.queryByTestId('psa-loading')).not.toBeInTheDocument();
     });
     expect(deps.fetchAudit).toHaveBeenCalledWith('p1');
-    expect(deps.fetchAgents).toHaveBeenCalled();
     expect(deps.fetchSuggestions).toHaveBeenCalledWith('p1');
   });
 
@@ -81,40 +80,39 @@ describe('PostScaffoldAudit', () => {
     expect(screen.getByText(/boom/)).toBeInTheDocument();
   });
 
-  it('falls back to local suggestions when the endpoint fails', async () => {
+  it('falls back to default tracks with seeded agent names when suggest fails', async () => {
     const deps = buildDeps({
       auditResult: { categories: [] },
       suggestionsError: new Error('404'),
     });
     await act(async () => {
-      render(<PostScaffoldAudit projectId="p1" {...deps} />);
+      render(<PostScaffoldAudit projectId="p1" projectName="Scrabble" {...deps} />);
     });
-    // The fallback uses DEFAULT_TRACKS which includes 'frontend' — we should
-    // see a row for it pre-selected to the frontend agent.
     await waitFor(() => {
       expect(screen.getByTestId('roster-row-frontend')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('roster-agent-frontend').value).toBe('hub-frontend');
+    expect(screen.getByTestId('roster-agent-name-frontend').value).toBe('Scrabble Frontend');
   });
 
-  it('confirm button is disabled until a roster row has an agent assigned', async () => {
-    // Agent list that matches nothing so all suggestions start null.
+  it('confirm button is disabled until a track has an agent name', async () => {
     const deps = buildDeps({
       auditResult: { categories: [] },
-      agentsResult: [{ id: 'no-match', name: 'No Match' }],
       suggestionsResult: { tracks: [{ id: 'architect', label: 'Architect' }] },
     });
     await act(async () => {
-      render(<PostScaffoldAudit projectId="p1" {...deps} />);
+      render(<PostScaffoldAudit projectId="p1" projectName="App" {...deps} />);
     });
     await waitFor(() => {
       expect(screen.getByTestId('roster-row-architect')).toBeInTheDocument();
     });
     const btn = screen.getByTestId('psa-confirm');
+    expect(btn).not.toBeDisabled();
+    fireEvent.change(screen.getByTestId('roster-agent-name-architect'), {
+      target: { value: '   ' },
+    });
     expect(btn).toBeDisabled();
-    // Assign an agent; button enables.
-    fireEvent.change(screen.getByTestId('roster-agent-architect'), {
-      target: { value: 'no-match' },
+    fireEvent.change(screen.getByTestId('roster-agent-name-architect'), {
+      target: { value: 'App Lead' },
     });
     expect(btn).not.toBeDisabled();
   });
@@ -124,28 +122,36 @@ describe('PostScaffoldAudit', () => {
     const deps = buildDeps({
       auditResult: { categories: [] },
       suggestionsResult: { tracks: [{ id: 'architect', label: 'Architect' }] },
-      saveRosterResult: { tracks: [{ id: 'architect', agentId: 'hub-lead', custom: false }] },
+      saveRosterResult: {
+        tracks: [{ id: 'architect', label: 'Architect', agentId: 'p1-architect', custom: true }],
+      },
     });
     await act(async () => {
-      render(<PostScaffoldAudit projectId="p1" onConfirmed={onConfirmed} {...deps} />);
+      render(
+        <PostScaffoldAudit
+          projectId="p1"
+          projectName="My App"
+          onConfirmed={onConfirmed}
+          {...deps}
+        />,
+      );
     });
     await waitFor(() => {
-      expect(screen.getByTestId('roster-agent-architect')).toBeInTheDocument();
+      expect(screen.getByTestId('roster-agent-name-architect')).toBeInTheDocument();
     });
-    fireEvent.change(screen.getByTestId('roster-agent-architect'), {
-      target: { value: 'hub-lead' },
+    fireEvent.change(screen.getByTestId('roster-agent-name-architect'), {
+      target: { value: 'My App Lead' },
     });
     await act(async () => {
       fireEvent.click(screen.getByTestId('psa-confirm'));
     });
     expect(deps.saveRoster).toHaveBeenCalledWith('p1', {
-      tracks: [{ id: 'architect', label: 'Architect', agentId: 'hub-lead', custom: false }],
+      tracks: [{ id: 'architect', label: 'Architect', agentName: 'My App Lead', custom: true }],
     });
-    // onConfirmed now receives the saved roster as the first arg and an
-    // `{report, agents, roster}` context object as the second — the
-    // downstream landing view uses these to render without refetching.
     expect(onConfirmed).toHaveBeenCalledWith(
-      { tracks: [{ id: 'architect', agentId: 'hub-lead', custom: false }] },
+      {
+        tracks: [{ id: 'architect', label: 'Architect', agentId: 'p1-architect', custom: true }],
+      },
       expect.objectContaining({
         agents: expect.any(Array),
         roster: expect.any(Array),
@@ -166,7 +172,7 @@ describe('PostScaffoldAudit', () => {
       render(<PostScaffoldAudit projectId="p1" onConfirmed={onConfirmed} {...deps} />);
     });
     await waitFor(() => {
-      expect(screen.getByTestId('roster-agent-architect').value).toBe('hub-lead');
+      expect(screen.getByTestId('roster-agent-name-architect')).toBeInTheDocument();
     });
     await act(async () => {
       fireEvent.click(screen.getByTestId('psa-confirm'));

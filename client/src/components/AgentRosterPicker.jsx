@@ -1,26 +1,42 @@
 import { useState } from 'react';
 import { Users, Plus, X } from 'lucide-react';
-import { setRosterAgent, addCustomTrack, removeRosterTrack } from '../utils/rosterSuggest.js';
+import {
+  setRosterAgent,
+  setRosterAgentName,
+  addCustomTrack,
+  removeRosterTrack,
+} from '../utils/rosterSuggest.js';
 
 /**
  * AgentRosterPicker — renders the roster editor for Act IV.
  *
- * Controlled component: the parent owns `roster` + `agents` and receives
- * updates via `onChange`. Using a controlled model keeps the "Confirm
- * roster" button state in the parent (e.g. PostScaffoldAudit) without a
- * duplicated source of truth.
+ * Controlled component: the parent owns `roster` and receives updates via
+ * `onChange`.
  *
  * Props:
- *   - roster:   [{ trackId, label, rationale, agentId, custom }]
- *   - agents:   [{ id, name, role? }]  — full org agent list
+ *   - roster:   [{ trackId, label, rationale, agentId?, agentName?, custom }]
+ *   - agents:   [{ id, name, role? }] — only used when createAgents is false
+ *   - createAgents: when true, each row names a new agent (post-scaffold flow)
+ *   - projectName: used to seed default agent names for custom tracks
  *   - onChange: (nextRoster) => void
  *   - disabled: bool — read-only mode while a save is in flight
  */
-export default function AgentRosterPicker({ roster, agents = [], onChange, disabled = false }) {
+export default function AgentRosterPicker({
+  roster,
+  agents = [],
+  createAgents = false,
+  projectName = '',
+  onChange,
+  disabled = false,
+}) {
   const [newLabel, setNewLabel] = useState('');
 
-  const handleAssign = (trackId, agentId) => {
+  const handleAssignExisting = (trackId, agentId) => {
     onChange(setRosterAgent(roster, trackId, agentId || null));
+  };
+
+  const handleAgentName = (trackId, agentName) => {
+    onChange(setRosterAgentName(roster, trackId, agentName));
   };
 
   const handleRemove = (trackId) => {
@@ -31,7 +47,7 @@ export default function AgentRosterPicker({ roster, agents = [], onChange, disab
     const label = newLabel.trim();
     if (!label) return;
     const id = `custom-${Date.now()}`;
-    onChange(addCustomTrack(roster, { id, label }));
+    onChange(addCustomTrack(roster, { id, label }, projectName));
     setNewLabel('');
   };
 
@@ -49,6 +65,13 @@ export default function AgentRosterPicker({ roster, agents = [], onChange, disab
         </span>
       </header>
 
+      {createAgents && (
+        <p className="px-4 py-2 text-xs text-gray-500 border-b border-gray-800">
+          Name a dedicated agent for each track. New agents are created for this project when you
+          confirm — existing org agents are not listed here.
+        </p>
+      )}
+
       {roster.length === 0 ? (
         <div className="px-4 py-6 text-sm text-gray-500" data-testid="roster-empty">
           No tracks suggested. Add a custom track below.
@@ -60,8 +83,10 @@ export default function AgentRosterPicker({ roster, agents = [], onChange, disab
               key={row.trackId}
               row={row}
               agents={agents}
+              createAgents={createAgents}
               disabled={disabled}
-              onAssign={handleAssign}
+              onAssignExisting={handleAssignExisting}
+              onAgentName={handleAgentName}
               onRemove={row.custom ? handleRemove : null}
             />
           ))}
@@ -99,7 +124,15 @@ export default function AgentRosterPicker({ roster, agents = [], onChange, disab
   );
 }
 
-function RosterRow({ row, agents, disabled, onAssign, onRemove }) {
+function RosterRow({
+  row,
+  agents,
+  createAgents,
+  disabled,
+  onAssignExisting,
+  onAgentName,
+  onRemove,
+}) {
   return (
     <li
       className="flex items-center gap-3 px-4 py-2.5 text-sm"
@@ -117,21 +150,34 @@ function RosterRow({ row, agents, disabled, onAssign, onRemove }) {
         </div>
         {row.rationale && <div className="text-xs text-gray-500 truncate">{row.rationale}</div>}
       </div>
-      <select
-        value={row.agentId || ''}
-        onChange={(e) => onAssign(row.trackId, e.target.value)}
-        disabled={disabled}
-        className="bg-gray-950 border border-gray-800 rounded-md px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
-        data-testid={`roster-agent-${row.trackId}`}
-        aria-label={`Agent for ${row.label}`}
-      >
-        <option value="">— unassigned —</option>
-        {agents.map((agent) => (
-          <option key={agent.id} value={agent.id}>
-            {agent.name || agent.id}
-          </option>
-        ))}
-      </select>
+      {createAgents ? (
+        <input
+          type="text"
+          value={row.agentName || ''}
+          onChange={(e) => onAgentName(row.trackId, e.target.value)}
+          disabled={disabled}
+          placeholder={`${row.label} agent`}
+          className="w-44 min-w-0 bg-gray-950 border border-gray-800 rounded-md px-2 py-1 text-xs text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-gray-600"
+          data-testid={`roster-agent-name-${row.trackId}`}
+          aria-label={`Agent name for ${row.label}`}
+        />
+      ) : (
+        <select
+          value={row.agentId || ''}
+          onChange={(e) => onAssignExisting(row.trackId, e.target.value)}
+          disabled={disabled}
+          className="bg-gray-950 border border-gray-800 rounded-md px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+          data-testid={`roster-agent-${row.trackId}`}
+          aria-label={`Agent for ${row.label}`}
+        >
+          <option value="">— unassigned —</option>
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name || agent.id}
+            </option>
+          ))}
+        </select>
+      )}
       {onRemove && (
         <button
           type="button"
