@@ -263,9 +263,11 @@ export default function ProjectAwsProfilesEditor({ projectId }) {
                     href={lg.loginUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-400 hover:underline inline-flex items-center gap-0.5"
+                    title={lg.loginUrl}
+                    className="text-blue-400 hover:underline inline-flex items-center gap-0.5 break-all max-w-full"
                   >
-                    {lg.loginUrl.slice(0, 48)}… <ExternalLink size={10} />
+                    {lg.loginUrl.length > 72 ? `${lg.loginUrl.slice(0, 72)}…` : lg.loginUrl}
+                    <ExternalLink size={10} className="shrink-0" />
                   </a>
                 </p>
               )}

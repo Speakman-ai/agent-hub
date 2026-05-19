@@ -275,6 +275,36 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
     expect(opts.detached).toBe(true);
   });
 
+  it('returns loginUrl with user_code when CLI prints URL and code on separate lines', async () => {
+    const project = projectWith(PROFILE);
+    const app = buildApp(project);
+
+    spawnMock.mockImplementation(() => {
+      const proc = makeFakeProc();
+      queueMicrotask(() => {
+        proc.stderr.emit(
+          'data',
+          Buffer.from(
+            'Browser will not be automatically opened.\n' +
+              'Please visit the following URL:\n\n' +
+              'https://device.sso.us-east-2.amazonaws.com/\n\n' +
+              'Then enter the code: WXYZ-9876\n',
+          ),
+        );
+      });
+      return proc as unknown as ChildProcess;
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${project.id}/aws-sso/login`)
+      .send({ profile: 'dev' })
+      .expect(200);
+
+    expect(res.body.loginUrl).toBe(
+      'https://device.sso.us-east-2.amazonaws.com/?user_code=WXYZ-9876',
+    );
+  });
+
   it('times out after 30 s when no device URL is emitted, kills the proc, and returns an error', async () => {
     const project = projectWith(PROFILE);
     const app = buildApp(project);
