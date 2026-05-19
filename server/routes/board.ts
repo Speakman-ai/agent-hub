@@ -624,7 +624,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
-      setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
+      // Reuse the owner uid resolved above; no need to walk req.user twice
+      // in the same handler.
+      setSessionOwner(sessionId, assignOwnerUid);
 
       const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
       let inProgressColumnId = card.column_id;
