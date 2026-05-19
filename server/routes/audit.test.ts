@@ -269,9 +269,24 @@ describe('POST + GET /api/projects/:id/roster', () => {
       })
       .expect(200);
 
+    // Custom tracks always carry the chosen `agentName` (falls back to the
+    // label when the request body omits it), so the response — and the
+    // persisted roster — echo it for downstream consumers.
     expect(res.body.tracks).toEqual([
-      { id: 'architect', label: 'Architect', agentId: `${projectId}-architect`, custom: true },
-      { id: 'qa', label: 'QA', agentId: `${projectId}-qa`, custom: true },
+      {
+        id: 'architect',
+        label: 'Architect',
+        agentId: `${projectId}-architect`,
+        custom: true,
+        agentName: 'Architect',
+      },
+      {
+        id: 'qa',
+        label: 'QA',
+        agentId: `${projectId}-qa`,
+        custom: true,
+        agentName: 'QA',
+      },
     ]);
     // The response surfaces the minted agent rows for the landing page.
     const respAgentIds = (res.body.agents as Array<{ id: string }>).map((a) => a.id).sort();
@@ -365,6 +380,39 @@ describe('POST + GET /api/projects/:id/roster', () => {
     const fe = list.find((a) => a.id === `${projectId}-frontend`);
     expect(fe?.name).toBe('Scrabble UI Dev');
     expect(fe?.role).toBe('Frontend');
+  });
+
+  it('persists agentName on custom tracks so GET /roster echoes the chosen display name', async () => {
+    const projectId = await freshProject();
+    await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [
+          {
+            id: 'frontend',
+            label: 'Frontend',
+            agentName: 'Scrabble UI Dev',
+            custom: true,
+          },
+        ],
+      })
+      .expect(200);
+
+    // A subsequent GET (e.g. after a page reload — no inline `agents`
+    // summary available) must surface the chosen display name so
+    // downstream pages can render it without a separate /api/agents
+    // fetch. This is the canonical "ResolvedTrack carries agentName"
+    // contract.
+    const get = await request.get(`/api/projects/${projectId}/roster`).expect(200);
+    expect(get.body.tracks).toEqual([
+      {
+        id: 'frontend',
+        label: 'Frontend',
+        agentId: `${projectId}-frontend`,
+        custom: true,
+        agentName: 'Scrabble UI Dev',
+      },
+    ]);
   });
 
   it('is idempotent across re-runs for the same custom track', async () => {

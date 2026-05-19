@@ -416,12 +416,22 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
     }
 
     // ─── Persist the roster JSON blob ───────────────────────────────
-    const sanitized = resolved.map((r) => ({
-      id: r.id,
-      label: r.label,
-      agentId: r.agentId,
-      custom: r.custom,
-    }));
+    // Preserve `agentName` on the persisted track so downstream consumers
+    // (especially a fresh GET /api/projects/:id/roster after a page reload)
+    // can render the display name the user picked without a follow-up
+    // /api/agents fetch. For custom tracks `track.displayName` is always
+    // set; for existing-agent tracks we only carry through the value when
+    // the caller explicitly supplied one in the request body.
+    const sanitized = resolved.map((r) => {
+      const agentName = r.custom ? r.displayName || r.agentName : r.agentName;
+      return {
+        id: r.id,
+        label: r.label,
+        agentId: r.agentId,
+        custom: r.custom,
+        ...(agentName ? { agentName } : {}),
+      };
+    });
     stmts.upsertProjectRoster.run(projectId, JSON.stringify(sanitized));
     const row = stmts.getProjectRoster.get(projectId) as RosterRow | undefined;
 

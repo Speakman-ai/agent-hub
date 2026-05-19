@@ -51,6 +51,14 @@ const ResolvedTrack = z.object({
   label: z.string(),
   agentId: z.string(),
   custom: z.boolean(),
+  /**
+   * Display name the user picked for this track's agent. Surfaced so
+   * pages rendering the roster (e.g. "Chat" action chips on the Act V
+   * landing) can show the chosen name without a follow-up `GET /api/agents`.
+   * Persisted alongside the track, so a later `GET /api/projects/:id/roster`
+   * still has it after the original POST round-trip.
+   */
+  agentName: z.string().optional(),
 });
 
 const AffectedAgent = z.object({
