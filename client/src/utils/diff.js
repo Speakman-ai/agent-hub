@@ -293,3 +293,22 @@ export function diffHasDisplayableLines(tool, input) {
   const { removals, additions } = parseDiffLines(tool, input);
   return removals.some((l) => l.trim()) || additions.some((l) => l.trim());
 }
+
+/**
+ * True when this is a `Write` call whose content/fileText/contents is the
+ * explicit empty string `""` (model intentionally created or cleared a file
+ * with no body). Lets DiffView distinguish "legit empty file" from "Edit
+ * with no diff content yet" so the placeholder text reflects reality.
+ *
+ * Returns false when the field is `undefined`/missing — that's the "args
+ * not yet arrived" case the standard `Diff content pending or unavailable`
+ * placeholder still applies to.
+ */
+export function isExplicitEmptyWrite(tool, input) {
+  if (tool !== 'Write' || !input || typeof input !== 'object') return false;
+  const fields = ['content', 'fileText', 'contents'];
+  for (const k of fields) {
+    if (k in input && input[k] === '') return true;
+  }
+  return false;
+}

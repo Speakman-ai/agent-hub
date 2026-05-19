@@ -846,6 +846,73 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(uses[0].input.unified_diff).toBe('-old line\n+new line');
   });
 
+  // Reviewer concern (PR #1058 review item #1): a stream that terminates
+  // (cancel, crash, network drop) BEFORE `tool_call.completed` arrives must
+  // still drain the deferred Edit so the client sees one tool_use. The
+  // drained args carry no inline diff body (empty strReplace), which the
+  // client's parseDiffLines collapses to empty arrays — DiffView then
+  // shows its "Diff content pending or unavailable" placeholder instead of
+  // blank +/- gutter rows.
+  it('flush() emits deferred Edit tool_use with no diff content when stream is cancelled', () => {
+    const parser = createStreamParser('cursor-agent');
+    const startedEvents = parser.feed(
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-cancel',
+        tool_call: {
+          editToolCall: { args: { path: 'foo.ts', strReplace: {} } },
+        },
+      }) + '\n',
+    );
+    // started with empty strReplace is deferred — nothing emitted yet.
+    expect(startedEvents).toHaveLength(0);
+
+    // Cancellation: no completed event ever arrives, the parser is flushed.
+    const flushed = parser.flush();
+    const uses = flushed.filter((e) => e.type === 'tool_use') as ToolUseEvent[];
+    expect(uses).toHaveLength(1);
+    expect(uses[0].id).toBe('e-cancel');
+    expect(uses[0].tool).toBe('Edit');
+    expect(uses[0].input).toEqual({ path: 'foo.ts', strReplace: {} });
+    // Round-trip through the client diff parser would return empty
+    // additions/removals here; that contract is pinned in
+    // client/src/utils/diff.test.js → "returns empty additions/removals
+    // for Edit with strReplace:{} and no fallback content".
+  });
+
+  it('flush() is a no-op when every deferred Edit was already completed', () => {
+    const parser = createStreamParser('cursor-agent');
+    parser.feed(
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-complete',
+        tool_call: {
+          editToolCall: { args: { path: 'foo.ts', strReplace: {} } },
+        },
+      }) + '\n',
+    );
+    parser.feed(
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'e-complete',
+        tool_call: {
+          editToolCall: {
+            args: {
+              path: 'foo.ts',
+              strReplace: { oldText: 'a', newText: 'b' },
+            },
+            result: { success: {} },
+          },
+        },
+      }) + '\n',
+    );
+    // Completed already drained the deferred entry; flush should emit nothing.
+    expect(parser.flush()).toEqual([]);
+  });
+
   it('upgrades Edit tool_use when diffString arrives only on completed result', () => {
     const events = parse([
       JSON.stringify({

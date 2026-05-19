@@ -11,6 +11,7 @@ import {
   parseDiffLines,
   mergeEditInputWithToolResult,
   diffHasDisplayableLines,
+  isExplicitEmptyWrite,
 } from '../utils/diff.js';
 import {
   extractCoordinationBlocks,
@@ -444,7 +445,15 @@ export function eventsToBlocks(events) {
   const list = events ?? [];
 
   // Cursor may emit a second tool_use for the same call_id when completed args
-  // upgrade a path-only started payload — keep the latest input per id.
+  // upgrade a path-only started payload — keep the latest input per id. This
+  // dedup index is built BEFORE the result index below so:
+  //   1. the walk in pass 2 can skip earlier revisions and only render the
+  //      latest tool_use, and
+  //   2. result pairing is still correct — both tool_use revisions share the
+  //      same id string, and `resultByToolId` is keyed by that string, so the
+  //      paired result is the same regardless of which revision survives.
+  // If you swap the order or move dedup to a post-filter, re-verify pairing
+  // against the test in SessionTail.test.jsx covering same-id tool_use revisions.
   const latestToolUseById = new Map();
   const lastToolUseIndex = new Map();
   list.forEach(({ event }, i) => {
@@ -865,9 +874,22 @@ export function DiffView({ tool, input, toolResult }) {
       </div>
       {!hasLines ? (
         <p className="px-2 py-2 text-[11px] text-gray-500 border-t border-gray-800/50">
-          {filePath
-            ? 'Diff content pending or unavailable for this edit.'
-            : 'No diff lines to display.'}
+          {/*
+           * Three placeholder paths:
+           *  - Write with explicit content:'' → "(empty file)". The model
+           *    intentionally created/cleared a zero-byte file; calling this
+           *    "pending or unavailable" would misreport a successful write.
+           *  - Edit with a file path but no diff content → "pending or
+           *    unavailable". Either a cancelled stream (flush() drained the
+           *    deferred tool_use with empty strReplace) or Composer 2.5
+           *    omitted the line bodies entirely.
+           *  - Anything else → generic "no diff lines" copy.
+           */}
+          {isExplicitEmptyWrite(tool, mergedInput)
+            ? '(empty file)'
+            : filePath
+              ? 'Diff content pending or unavailable for this edit.'
+              : 'No diff lines to display.'}
         </p>
       ) : showFull ? (
         <div className="overflow-x-auto max-h-64 overflow-y-auto">

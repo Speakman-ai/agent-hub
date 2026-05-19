@@ -19,6 +19,10 @@ export function eventsToBlocks(events) {
   const blocks = [];
   const list = events || [];
 
+  // Dedup of repeated tool_use ids runs BEFORE the result index so the walk
+  // can skip earlier revisions of the same call_id (Cursor emits a follow-up
+  // when completed args upgrade an empty/path-only started payload). Result
+  // pairing is keyed by id string and is therefore order-independent.
   const latestToolUseById = new Map();
   const lastToolUseIndex = new Map();
   list.forEach(({ event }, i) => {

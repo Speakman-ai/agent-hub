@@ -363,6 +363,42 @@ describe('eventsToBlocks — cursor Edit tool_use upgrade', () => {
     expect(blocks[0].kind).toBe('tool');
     expect(blocks[0].use.input.strReplace.newText).toBe('b');
   });
+
+  // Reviewer concern (PR #1058 review item #2): dedup pre-index must NOT
+  // break result pairing. Both tool_use revisions share the same call_id
+  // string, and resultByToolId is keyed by that string — so the surviving
+  // (latest) tool_use is still paired with its tool_result. This test
+  // would fail if a future refactor changed result lookup from "use.id" to
+  // "first tool_use index", or if the dedup ran as a post-filter that
+  // dropped a tool_use the result was already pointed at.
+  it('pairs tool_result correctly when the latest tool_use revision is kept', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'edit-dup',
+          tool: 'Edit',
+          input: { path: 'a.ts', strReplace: {} },
+        },
+        // Tool result arrives BETWEEN the two tool_use revisions — this is the
+        // ordering that would expose a wrong-revision pairing bug.
+        { type: 'tool_result', toolUseId: 'edit-dup', output: 'edit ok', isError: false },
+        {
+          type: 'tool_use',
+          id: 'edit-dup',
+          tool: 'Edit',
+          input: { path: 'a.ts', strReplace: { oldText: 'a', newText: 'b' } },
+        },
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('tool');
+    // Latest revision wins for input…
+    expect(blocks[0].use.input.strReplace.newText).toBe('b');
+    // …and the paired result is still the same tool_result by id.
+    expect(blocks[0].result?.output).toBe('edit ok');
+    expect(blocks[0].result?.isError).toBe(false);
+  });
 });
 
 describe('eventsToBlocks — explored coalescer', () => {

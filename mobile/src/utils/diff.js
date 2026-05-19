@@ -193,3 +193,19 @@ export function diffHasDisplayableLines(tool, input) {
   const { removals, additions } = parseDiffLines(tool, input);
   return removals.some((l) => l.trim()) || additions.some((l) => l.trim());
 }
+
+/**
+ * Kept in sync with `client/src/utils/diff.js`. Returns true only when this
+ * is a `Write` tool call whose body field is exactly the empty string —
+ * "create/clear an empty file" vs. "args haven't arrived yet". Drives the
+ * placeholder copy in DiffView so Write of `""` is not misreported as
+ * "pending or unavailable".
+ */
+export function isExplicitEmptyWrite(tool, input) {
+  if (tool !== 'Write' || !input || typeof input !== 'object') return false;
+  const fields = ['content', 'fileText', 'contents'];
+  for (const k of fields) {
+    if (k in input && input[k] === '') return true;
+  }
+  return false;
+}

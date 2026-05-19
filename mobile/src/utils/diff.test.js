@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isFileModifyingTool, shortenPath, parseDiffLines } from './diff.js';
+import {
+  isFileModifyingTool,
+  shortenPath,
+  parseDiffLines,
+  isExplicitEmptyWrite,
+  diffHasDisplayableLines,
+} from './diff.js';
 
 describe('isFileModifyingTool', () => {
   it('returns true for Edit and Write', () => {
@@ -163,5 +169,31 @@ describe('parseDiffLines', () => {
     });
     expect(removals).toEqual(['a']);
     expect(additions).toEqual(['b']);
+  });
+
+  // Mobile twin of the same contract in the web diff.test.js — Composer 2.5
+  // path-only Edit must yield empty arrays so DiffView shows a placeholder.
+  it('returns empty additions/removals for Edit with strReplace:{} and no fallback content', () => {
+    const result = parseDiffLines('Edit', { path: 'f.ts', strReplace: {} });
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+    expect(diffHasDisplayableLines('Edit', { path: 'f.ts', strReplace: {} })).toBe(false);
+  });
+});
+
+describe('isExplicitEmptyWrite', () => {
+  it('returns true when Write content is the empty string', () => {
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', content: '' })).toBe(true);
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', fileText: '' })).toBe(true);
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt', contents: '' })).toBe(true);
+  });
+
+  it('returns false when Write body field is absent (pending args)', () => {
+    expect(isExplicitEmptyWrite('Write', { path: '/x.txt' })).toBe(false);
+    expect(isExplicitEmptyWrite('Write', {})).toBe(false);
+  });
+
+  it('returns false for Edit (Edit-no-content stays on the pending placeholder)', () => {
+    expect(isExplicitEmptyWrite('Edit', { path: 'f.ts', strReplace: {} })).toBe(false);
   });
 });

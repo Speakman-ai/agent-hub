@@ -1,7 +1,12 @@
 import React, { memo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { colors } from '../theme/colors';
-import { parseDiffLines, shortenPath, diffHasDisplayableLines } from '../utils/diff';
+import {
+  parseDiffLines,
+  shortenPath,
+  diffHasDisplayableLines,
+  isExplicitEmptyWrite,
+} from '../utils/diff';
 
 const DIFF_PREVIEW_LINES = 5;
 
@@ -23,10 +28,17 @@ function DiffView({ tool, input }) {
   const previewKind = additions.length > 0 ? 'add' : 'remove';
   const hiddenCount = totalLines - Math.min(previewLines.length, DIFF_PREVIEW_LINES);
 
+  // Placeholder copy matches the web DiffView so a `Write { content: '' }`
+  // reports "(empty file)" instead of "pending or unavailable" (which is
+  // reserved for Edit with no inline diff body).
+  const placeholderText = isExplicitEmptyWrite(tool, input)
+    ? '(empty file)'
+    : filePath
+      ? 'Diff content pending or unavailable for this edit.'
+      : 'No diff lines to display.';
+
   const diffBody = !hasLines ? (
-    <Text style={styles.emptyHint}>
-      {filePath ? 'Diff content pending or unavailable for this edit.' : 'No diff lines to display.'}
-    </Text>
+    <Text style={styles.emptyHint}>{placeholderText}</Text>
   ) : showFull ? (
     <ScrollView style={styles.fullScroll} nestedScrollEnabled>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
