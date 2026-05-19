@@ -299,7 +299,9 @@ describe('PR Actions route', () => {
           body: `${SUBSTANTIVE_REVIEW_BODY} Non-blocking notes only — should still be APPROVE.`,
         });
       expect(commentRejected.status).toBe(400);
-      expect(commentRejected.body.error).toMatch(/COMMENT reviews do not count toward required approval/);
+      expect(commentRejected.body.error).toMatch(
+        /COMMENT reviews do not count toward required approval/,
+      );
       expect(commentRejected.body.error).toMatch(/APPROVE/);
       expect(commentRejected.body.error).toMatch(/REQUEST_CHANGES/);
     });

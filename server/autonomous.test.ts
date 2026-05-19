@@ -84,6 +84,12 @@ interface MockStmts {
   // empty so existing tests don't have to know about this edge).
   getBlockersForBoard: { all: Mock };
   getBlockersForCard: { all: Mock };
+  // Per-agent slot accounting: dispatcher only counts autonomous-dispatched
+  // sessions toward the slot cap, identified by the linked kanban card's
+  // `dispatched_by_autonomous` flag. Default returns undefined (no linked
+  // card → not counted), matching the common test case where active sessions
+  // are interactive chat.
+  getKanbanCardBySession: { get: Mock };
 }
 
 function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
@@ -102,6 +108,7 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     createKanbanCardComment: { run: vi.fn() },
     getBlockersForBoard: { all: vi.fn(() => []) },
     getBlockersForCard: { all: vi.fn(() => []) },
+    getKanbanCardBySession: { get: vi.fn(() => undefined) },
     ...overrides,
   };
 }
@@ -1145,6 +1152,93 @@ describe('runAutonomousLoop — integration branch serialization', () => {
 
     expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
   });
+
+  it('does NOT count an interactive (non-autonomous) session against the per-agent slot cap', async () => {
+    // Regression: previously `agentSessionCounts` counted every active
+    // process — including human chat — so a single interactive session on
+    // the lead would pin its only autonomous slot (in integration-branch
+    // mode, effectiveMaxConcurrent=1) and `pickAgentForCard()` silently
+    // returned null. After the fix, an active session whose linked kanban
+    // card is NOT marked `dispatched_by_autonomous` is ignored by the cap.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 1,
+      pr_base_branch: 'feature/auto/cad-engine-2', // forces serial mode
+    } as unknown as KanbanEpicRow;
+    const card = makeCard({ id: 'mcs-2161', title: 'CAD: drafting template library' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    // Active interactive chat with the only assignable agent.
+    stmts.getSession.get.mockImplementation((sid: string) => {
+      if (sid === 'human-chat') return { agent_id: 'hub-lead' } as SessionRow;
+      return undefined;
+    });
+    // Interactive sessions have no linked autonomous-dispatched card; default
+    // mock returns undefined for unknown ids, but be explicit so the test
+    // documents intent.
+    stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
+      if (sid === 'human-chat') return { dispatched_by_autonomous: 0 };
+      return undefined;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [{ id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' }],
+      }),
+    );
+    deps.getActiveProcesses.mockReturnValue(new Map<string, unknown>([['human-chat', {}]]));
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-lead');
+  });
+
+  it('DOES count an autonomous-dispatched session against the per-agent slot cap', async () => {
+    // Mirror of the regression test: when the active session IS the result
+    // of a prior autonomous dispatch on the same agent, the cap correctly
+    // sees the slot as consumed and the loop refuses to over-allocate.
+    const epic = {
+      ...ACTIVE_EPIC,
+      autonomous_max_concurrent: 1,
+      pr_base_branch: 'feature/auto/cad-engine-2', // serial mode → cap = 1
+    } as unknown as KanbanEpicRow;
+    const card = makeCard({ id: 'mcs-2194', title: 'CAD: COGO command framework' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    stmts.getSession.get.mockImplementation((sid: string) => {
+      if (sid === 'auto-session-prev') return { agent_id: 'hub-lead' } as SessionRow;
+      return undefined;
+    });
+    stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
+      if (sid === 'auto-session-prev') return { dispatched_by_autonomous: 1 };
+      return undefined;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [{ id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' }],
+      }),
+    );
+    deps.getActiveProcesses.mockReturnValue(new Map<string, unknown>([['auto-session-prev', {}]]));
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // The only assignable agent has zero remaining slots → no dispatch.
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1630,6 +1724,17 @@ describe('runAutonomousLoop — label routing', () => {
     stmts.getSession.get.mockImplementation((sid: string) => {
       if (sid === 'busy-1' || sid === 'busy-2' || sid === 'busy-3') {
         return { agent_id: 'hub-frontend' } as SessionRow;
+      }
+      return undefined;
+    });
+    // Each busy session is linked to an autonomous-dispatched card so the
+    // slot-cap accounting actually counts them. (Pre-fix this happened
+    // implicitly because every active session counted; post-fix the
+    // dispatcher requires `kanban_cards.dispatched_by_autonomous = 1` on the
+    // linked card.)
+    stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
+      if (sid === 'busy-1' || sid === 'busy-2' || sid === 'busy-3') {
+        return { dispatched_by_autonomous: 1 };
       }
       return undefined;
     });
