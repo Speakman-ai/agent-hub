@@ -59,12 +59,12 @@ describe('parseDiffLines', () => {
     expect(additions[20]).toMatch(/\+5 more lines/);
   });
 
-  it('handles missing fields gracefully', () => {
+  it('handles missing fields gracefully (no blank gutter rows)', () => {
     const result = parseDiffLines('Edit', {});
     expect(result.filePath).toBe('');
     expect(result.action).toBe('Update');
-    expect(result.removals).toEqual(['']);
-    expect(result.additions).toEqual(['']);
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
   });
 
   it('accepts path alias alongside file_path', () => {

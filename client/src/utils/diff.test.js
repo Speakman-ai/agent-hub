@@ -4,6 +4,7 @@ import {
   shortenPath,
   parseDiffLines,
   mergeEditInputWithToolResult,
+  diffHasDisplayableLines,
 } from './diff.js';
 
 describe('isFileModifyingTool', () => {
@@ -77,18 +78,39 @@ describe('parseDiffLines', () => {
     expect(result.additions[20]).toBe('… +5 more lines');
   });
 
-  it('handles missing input fields gracefully', () => {
+  it('handles missing input fields gracefully (no blank gutter rows)', () => {
     const result = parseDiffLines('Edit', {});
     expect(result.filePath).toBe('');
-    expect(result.removals).toEqual(['']);
-    expect(result.additions).toEqual(['']);
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+    expect(diffHasDisplayableLines('Edit', {})).toBe(false);
   });
 
   it('handles null input', () => {
     const result = parseDiffLines('Edit', null);
     expect(result.filePath).toBe('');
-    expect(result.removals).toEqual(['']);
-    expect(result.additions).toEqual(['']);
+    expect(result.removals).toEqual([]);
+    expect(result.additions).toEqual([]);
+  });
+
+  it('ignores empty strReplace shell (falls through to old_string)', () => {
+    const result = parseDiffLines('Edit', {
+      path: 'x.ts',
+      strReplace: {},
+      old_string: 'a',
+      new_string: 'b',
+    });
+    expect(result.removals).toEqual(['a']);
+    expect(result.additions).toEqual(['b']);
+  });
+
+  it('does not treat empty strReplace oldText/newText as displayable', () => {
+    expect(
+      diffHasDisplayableLines('Edit', {
+        path: 'cad/foo.ts',
+        strReplace: { oldText: '', newText: '' },
+      }),
+    ).toBe(false);
   });
 
   it('parses Codex file_change changes[] (path + kind only)', () => {
