@@ -391,30 +391,34 @@ Read via `listUserEngineAuthAudit(userId, { engine? })`, newest-first.
 
 Soft per-user preferences ride on a JSON column (`users.preferences_json`)
 rather than dedicated columns so we can add new keys without a schema
-migration. Two sub-maps today, both managed by
+migration. One sub-map today, managed by
 `server/user-preferences-store.ts`:
 
-| Sub-map                | What it pins                                                        | Resolver                                                  |
-| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
-| `engineDefaultModels`  | Per-user default CLI model id by engine (e.g. `claude-code → claude-opus-4-7`). | `resolveEffectiveModel` (`server/effective-model.ts`).    |
-| `agentEngineOverrides` | Per-user, per-agent engine + optional model override.               | `resolveEffectiveEngineAndModel` (`server/effective-model.ts`). |
+| Sub-map                | What it pins                                          | Resolver                                                        |
+| ---------------------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| `agentEngineOverrides` | Per-user, per-agent engine + optional model override. | `resolveEffectiveEngineAndModel` (`server/effective-model.ts`). |
 
-Two REST pairs back the two sub-maps:
+One REST pair backs the sub-map:
 
 | Verb + path                                  | Body shape                                                                 |
 | -------------------------------------------- | -------------------------------------------------------------------------- |
-| `GET /api/auth/me/engine-default-models`     | `{ engineDefaultModels: { [engine]: modelId } }`                           |
-| `PUT /api/auth/me/engine-default-models`     | same                                                                       |
 | `GET /api/auth/me/agent-engine-overrides`    | `{ agentEngineOverrides: { [agentId]: { engine, model? } } }`              |
 | `PUT /api/auth/me/agent-engine-overrides`    | same                                                                       |
 
-Both PUTs replace the named sub-map only — the store's
-`mergeUserPreferencesJson` helper preserves the untouched sub-map, so two
-unrelated PUTs cannot stomp each other. PUT bodies are validated against
-`cfg.engineValidModels`; unknown engines and models outside the engine's
-allowlist 400. The GETs also strip stale entries (engines / models that
-rotated out of the catalogue) before responding, so the client never sees
-state the server would refuse to honour.
+The PUT replaces the sub-map; `mergeUserPreferencesJson` still goes
+through a JSON merge so any future sub-map next to `agentEngineOverrides`
+isn't clobbered. PUT bodies are validated against `cfg.engineValidModels`;
+unknown engines and models outside the engine's allowlist 400. The GET
+also strips stale entries (engines / models that rotated out of the
+catalogue) before responding, so the client never sees state the server
+would refuse to honour.
+
+> **Removed:** a previous `engineDefaultModels` sub-map (and its
+> `/api/auth/me/engine-default-models` route pair) exposed a per-user
+> "default model per engine" picker. It was retired once
+> `agentEngineOverrides` covered the same use case at the right
+> granularity. Persisted `engineDefaultModels` keys are now silently
+> dropped on read.
 
 **Override precedence** (`resolveEffectiveEngineAndModel`):
 

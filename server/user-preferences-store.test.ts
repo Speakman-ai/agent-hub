@@ -31,27 +31,6 @@ describe('user-preferences-store', () => {
     }
   });
 
-  it('round-trips engine default models JSON', () => {
-    const id = uuidv4();
-    createUser({
-      id,
-      username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
-      passwordHash: 'x',
-    });
-    replaceUserPreferencesJson(id, {
-      engineDefaultModels: {
-        'claude-code': 'claude-opus-4-7',
-        'cursor-agent': 'composer-2.5',
-      },
-    });
-    const loaded = getUserPreferencesRow(id);
-    expect(loaded.engineDefaultModels?.['claude-code']).toBe('claude-opus-4-7');
-    expect(loaded.engineDefaultModels?.['cursor-agent']).toBe('composer-2.5');
-
-    replaceUserPreferencesJson(id, { engineDefaultModels: {} });
-    expect(getUserPreferencesRow(id)).toEqual({});
-  });
-
   it('round-trips per-agent engine overrides JSON', () => {
     const id = uuidv4();
     createUser({
@@ -76,21 +55,33 @@ describe('user-preferences-store', () => {
     expect(getUserPreferencesRow(id).agentEngineOverrides).toBeUndefined();
   });
 
-  it('stores engineDefaultModels and agentEngineOverrides side-by-side', () => {
+  it('ignores legacy engineDefaultModels persisted by an older build', () => {
     const id = uuidv4();
     createUser({
       id,
       username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
       passwordHash: 'x',
     });
-    replaceUserPreferencesJson(id, {
-      engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
-      agentEngineOverrides: { reviewer: { engine: 'codex-cli', model: 'gpt-5-codex' } },
-    });
+    // Simulate a row written by the removed per-user "default models" feature.
+    getOrgsDb()
+      .prepare('UPDATE users SET preferences_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({
+          engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
+          agentEngineOverrides: {
+            reviewer: { engine: 'codex-cli', model: 'gpt-5-codex' },
+          },
+        }),
+        id,
+      );
     const loaded = getUserPreferencesRow(id);
-    expect(loaded.engineDefaultModels?.['claude-code']).toBe('claude-opus-4-7');
-    expect(loaded.agentEngineOverrides?.reviewer.engine).toBe('codex-cli');
-    expect(loaded.agentEngineOverrides?.reviewer.model).toBe('gpt-5-codex');
+    // Legacy sub-map is silently dropped on read.
+    expect((loaded as Record<string, unknown>).engineDefaultModels).toBeUndefined();
+    // The other sub-map is still intact.
+    expect(loaded.agentEngineOverrides?.reviewer).toEqual({
+      engine: 'codex-cli',
+      model: 'gpt-5-codex',
+    });
   });
 
   it('drops malformed override entries on read', () => {

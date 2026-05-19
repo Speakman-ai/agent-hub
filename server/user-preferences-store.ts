@@ -1,11 +1,7 @@
 /**
  * JSON preferences on `orgs.db.users.preferences_json`.
  *
- * Two shapes today:
- *   - `engineDefaultModels`  — per-account default CLI model ids by engine.
- *                              Honored after explicit session choices and
- *                              before shared agent.config `model`. See
- *                              `server/effective-model.ts`.
+ * One shape today:
  *   - `agentEngineOverrides` — per-account per-agent engine (+ optional model)
  *                              override. Lets two users open the same agent
  *                              under different engines (User A → codex-cli,
@@ -13,10 +9,15 @@
  *                              shared `agents` row. Consulted by session-spawn
  *                              sites before falling back to `agent.engine`.
  *
- * Both maps are stored in the same `preferences_json` column so we don't have
- * to migrate the table every time a new preference is added. The column is
+ * The map is stored on the `preferences_json` column so we don't have to
+ * migrate the table every time a new preference is added. The column is
  * normalized on read (unknown keys / non-string values are dropped) so the
  * write path can stay forgiving without leaking malformed state downstream.
+ *
+ * Legacy note: an `engineDefaultModels` sub-map used to live here too. The
+ * per-user "default models" UI was removed once `agentEngineOverrides`
+ * covered the same use case; any persisted `engineDefaultModels` key is
+ * ignored on read and dropped on the next write.
  */
 import { getOrgsDb } from './orgs.js';
 
@@ -26,20 +27,7 @@ export interface AgentEngineOverride {
 }
 
 export interface UserPreferencesStored {
-  engineDefaultModels?: Record<string, string>;
   agentEngineOverrides?: Record<string, AgentEngineOverride>;
-}
-
-function normalizeEngineModels(raw: unknown): Record<string, string> | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    const key = typeof k === 'string' ? k.trim() : '';
-    if (!key) continue;
-    if (typeof v !== 'string' || !v.trim()) continue;
-    out[key] = v.trim();
-  }
-  return Object.keys(out).length ? out : undefined;
 }
 
 function normalizeAgentEngineOverrides(
@@ -66,10 +54,8 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     const o = JSON.parse(raw) as unknown;
     if (!o || typeof o !== 'object' || Array.isArray(o)) return {};
     const obj = o as Record<string, unknown>;
-    const em = normalizeEngineModels(obj.engineDefaultModels);
     const ao = normalizeAgentEngineOverrides(obj.agentEngineOverrides);
     const result: UserPreferencesStored = {};
-    if (em) result.engineDefaultModels = em;
     if (ao) result.agentEngineOverrides = ao;
     return result;
   } catch {
@@ -92,15 +78,11 @@ export function getUserPreferencesRow(userId: string): UserPreferencesStored {
  * don't grow dead keys over time.
  *
  * **This is a full replacement.** Callers that only want to update a
- * single sub-map (`engineDefaultModels` xor `agentEngineOverrides`)
- * should use `mergeUserPreferencesJson` instead so they don't wipe the
- * untouched maps.
+ * single sub-map should use `mergeUserPreferencesJson` instead so they
+ * don't wipe the untouched maps.
  */
 export function replaceUserPreferencesJson(userId: string, prefs: UserPreferencesStored): void {
   const stored: Record<string, unknown> = {};
-  if (prefs.engineDefaultModels && Object.keys(prefs.engineDefaultModels).length > 0) {
-    stored.engineDefaultModels = prefs.engineDefaultModels;
-  }
   if (prefs.agentEngineOverrides && Object.keys(prefs.agentEngineOverrides).length > 0) {
     stored.agentEngineOverrides = prefs.agentEngineOverrides;
   }
@@ -121,11 +103,6 @@ export function mergeUserPreferencesJson(
 ): UserPreferencesStored {
   const current = getUserPreferencesRow(userId);
   const next: UserPreferencesStored = { ...current };
-  if (partial.engineDefaultModels !== undefined) {
-    next.engineDefaultModels = Object.keys(partial.engineDefaultModels).length
-      ? partial.engineDefaultModels
-      : undefined;
-  }
   if (partial.agentEngineOverrides !== undefined) {
     next.agentEngineOverrides = Object.keys(partial.agentEngineOverrides).length
       ? partial.agentEngineOverrides

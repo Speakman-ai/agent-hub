@@ -13,9 +13,9 @@ import { api } from '../utils/api.js';
  *
  * Storage: `/api/auth/me/agent-engine-overrides`
  *   - GET returns `{ agentEngineOverrides: { [agentId]: { engine, model? } } }`
- *   - PUT replaces the whole map (the server merges around the other
- *     preference sub-maps, so we don't have to read-modify-write
- *     `engineDefaultModels` here).
+ *   - PUT replaces the whole map (the server merges around any other
+ *     preference sub-maps, so a future per-user preference won't be
+ *     clobbered here).
  *
  * Saves are explicit (a "Save" button next to the inputs) so a user
  * can pick engine + model in one go without two round-trips.

@@ -194,13 +194,6 @@ export const UpsertSkillCredentialBody = registerComponent(
     }),
 );
 
-export const PutEngineDefaultModelsBody = registerComponent(
-  'PutEngineDefaultModelsBody',
-  z.object({
-    engineDefaultModels: z.record(z.string(), z.string()),
-  }),
-);
-
 export const AgentEngineOverrideEntry = registerComponent(
   'AgentEngineOverrideEntry',
   z
