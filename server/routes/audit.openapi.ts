@@ -37,6 +37,13 @@ const TrackInput = z.object({
   label: z.string().optional(),
   agentId: z.string().nullable().optional(),
   custom: z.boolean().optional(),
+  /**
+   * Display name for the agent created for this track (custom tracks
+   * only). Bounded to 80 chars server-side. When provided on a non-custom
+   * track, it has no effect on the existing agent's display name unless
+   * the caller is explicitly renaming.
+   */
+  agentName: z.string().max(80).optional(),
 });
 
 const ResolvedTrack = z.object({
@@ -44,6 +51,20 @@ const ResolvedTrack = z.object({
   label: z.string(),
   agentId: z.string(),
   custom: z.boolean(),
+  /**
+   * Display name the user picked for this track's agent. Surfaced so
+   * pages rendering the roster (e.g. "Chat" action chips on the Act V
+   * landing) can show the chosen name without a follow-up `GET /api/agents`.
+   * Persisted alongside the track, so a later `GET /api/projects/:id/roster`
+   * still has it after the original POST round-trip.
+   */
+  agentName: z.string().optional(),
+});
+
+const AffectedAgent = z.object({
+  id: z.string(),
+  name: z.string(),
+  role: z.string().nullable().optional(),
 });
 
 export const TrackSuggestionComponent = registerComponent(
@@ -154,15 +175,19 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Persisted roster (echoes resolved tracks).',
+      description:
+        'Persisted roster. `tracks` echoes the resolved roster; `agents` lists the created/refreshed/bound agents so the client can hydrate display names without a follow-up `GET /api/agents`.',
       content: jsonContent(
         z.object({
           tracks: z.array(ResolvedTrack),
+          agents: z.array(AffectedAgent),
           updatedAt: z.string(),
         }),
       ),
     },
-    400: errorResponse('Invalid payload (XOR violation, unknown agentId, etc.).'),
+    400: errorResponse(
+      'Invalid payload (XOR violation, unknown agentId, agentName too long, etc.).',
+    ),
     404: errorResponse('Project not found.'),
   },
 });

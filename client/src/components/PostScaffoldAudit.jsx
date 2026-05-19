@@ -4,10 +4,9 @@ import AuditReport from './AuditReport.jsx';
 import AgentRosterPicker from './AgentRosterPicker.jsx';
 import { normalizeReport } from '../utils/auditReport.js';
 import {
-  suggestRoster,
-  initialRoster,
+  initialRosterForCreate,
   rosterToPayload,
-  hasAnyAssignment,
+  hasAnyNamedAgent,
   DEFAULT_TRACKS,
 } from '../utils/rosterSuggest.js';
 import {
@@ -15,44 +14,45 @@ import {
   refreshAuditReport as defaultRefresh,
   fetchRosterSuggestions as defaultFetchSuggestions,
   saveRoster as defaultSaveRoster,
-  fetchAgents as defaultFetchAgents,
 } from '../utils/auditClient.js';
 
 /**
  * PostScaffoldAudit — Act IV of the New Project storyboard.
  *
  * Orchestration:
- *   1. On mount, kick off three parallel loads: audit report, roster
- *      suggestions, and the org agent list.
+ *   1. On mount, kick off two parallel loads: audit report + roster
+ *      suggestions.
  *   2. If suggestions are unavailable, fall back to a local keyword match
  *      (see utils/rosterSuggest.js) so the user can still pick a team.
- *   3. User edits the roster; "Confirm & continue" POSTs the payload and
- *      fires onConfirmed with the persisted response.
+ *   3. User edits the per-track agent names; "Confirm & continue" POSTs the
+ *      payload to /api/projects/:id/roster, which mints one agent per track,
+ *      and fires onConfirmed with the persisted response. The server's
+ *      response carries the minted `agentId`s so the downstream landing
+ *      view can render summary chips and per-row "Chat" actions without an
+ *      extra fetch — no org agent list needed.
  *
  * All transport deps are injectable so tests can drive the flow without a
  * live server.
  *
  * Props:
  *   - projectId:  string (required)
- *   - onConfirmed: (savedRoster) => void
+ *   - onConfirmed: (savedRoster, { report, roster }) => void
  *   - onSkip:     optional — fired when user wants to finish without a roster
- *   - fetchAudit, refresh, fetchSuggestions, saveRoster, fetchAgents:
- *       transport overrides.
+ *   - fetchAudit, refresh, fetchSuggestions, saveRoster: transport overrides.
  */
 export default function PostScaffoldAudit({
   projectId,
+  projectName = '',
   onConfirmed,
   onSkip,
   fetchAudit = defaultFetchAudit,
   refresh = defaultRefresh,
   fetchSuggestions = defaultFetchSuggestions,
   saveRoster = defaultSaveRoster,
-  fetchAgents = defaultFetchAgents,
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [report, setReport] = useState(null);
-  const [agents, setAgents] = useState([]);
   const [roster, setRoster] = useState([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -74,9 +74,8 @@ export default function PostScaffoldAudit({
     setLoadError(null);
     (async () => {
       try {
-        const [rawReport, agentList, suggestionsResult] = await Promise.all([
+        const [rawReport, suggestionsResult] = await Promise.all([
           fetchAudit(projectId).catch((err) => ({ __error: err })),
-          fetchAgents().catch(() => []),
           fetchSuggestions(projectId).catch(() => null),
         ]);
         if (cancelled || !mountedRef.current) return;
@@ -86,13 +85,16 @@ export default function PostScaffoldAudit({
         } else {
           setReport(normalizeReport(rawReport));
         }
-        const agentArray = Array.isArray(agentList) ? agentList : [];
-        setAgents(agentArray);
-        const tracks =
+        const trackList =
           suggestionsResult && Array.isArray(suggestionsResult.tracks)
-            ? suggestionsResult.tracks
-            : suggestRoster({ tracks: DEFAULT_TRACKS, agents: agentArray });
-        setRoster(initialRoster(tracks));
+            ? suggestionsResult.tracks.map(({ id, label, rationale, keywords }) => ({
+                id,
+                label,
+                rationale,
+                keywords,
+              }))
+            : DEFAULT_TRACKS;
+        setRoster(initialRosterForCreate(trackList, projectName || projectId));
       } catch (err) {
         if (!cancelled && mountedRef.current) {
           setLoadError(err?.message || String(err));
@@ -104,7 +106,7 @@ export default function PostScaffoldAudit({
     return () => {
       cancelled = true;
     };
-  }, [projectId, fetchAudit, fetchAgents, fetchSuggestions]);
+  }, [projectId, projectName, fetchAudit, fetchSuggestions]);
 
   const handleRefresh = useCallback(async () => {
     if (!projectId || refreshing) return;
@@ -132,22 +134,23 @@ export default function PostScaffoldAudit({
     setSaving(true);
     setSaveError(null);
     try {
-      const payload = rosterToPayload(roster);
+      const payload = rosterToPayload(roster, { createAgents: true });
       const saved = await saveRoster(projectId, payload);
       if (mountedRef.current) {
-        // Surface the rendered audit report + agent list alongside the
-        // persisted roster so the downstream landing view can render
-        // summary chips and per-row "Chat" actions without an extra fetch.
-        onConfirmed?.(saved, { report, agents, roster });
+        // Surface the rendered audit report alongside the local roster
+        // (with the typed agent names) so the downstream landing view can
+        // merge them with the server-returned `agentId`s without an extra
+        // fetch.
+        onConfirmed?.(saved, { report, roster });
       }
     } catch (err) {
       if (mountedRef.current) setSaveError(err?.message || String(err));
     } finally {
       if (mountedRef.current) setSaving(false);
     }
-  }, [roster, saving, saveRoster, projectId, onConfirmed, report, agents]);
+  }, [roster, saving, saveRoster, projectId, onConfirmed, report]);
 
-  const canConfirm = useMemo(() => hasAnyAssignment(roster) && !saving, [roster, saving]);
+  const canConfirm = useMemo(() => hasAnyNamedAgent(roster) && !saving, [roster, saving]);
 
   return (
     <div
@@ -178,7 +181,8 @@ export default function PostScaffoldAudit({
 
           <AgentRosterPicker
             roster={roster}
-            agents={agents}
+            createAgents
+            projectName={projectName || projectId}
             onChange={setRoster}
             disabled={saving}
           />

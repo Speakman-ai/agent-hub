@@ -242,28 +242,50 @@ export default function NewProjectAdaptiveFlow({
   }, []);
 
   // Act IV → Act V handoff. The audit component passes its rendered report
-  // + agent list + roster as a second arg so the landing can render the
-  // summary without refetching. The skip path still bypasses the landing
-  // (user explicitly opted out of finishing the flow in-wizard).
+  // + roster as a second arg so the landing can render the summary without
+  // refetching. The skip path still bypasses the landing (user explicitly
+  // opted out of finishing the flow in-wizard).
+  //
+  // The server response (`saved.tracks`) is authoritative for `agentId` —
+  // for the post-scaffold create flow every row's agent is minted by
+  // POST /roster as `<projectId>-<trackId>`, and the local UI roster
+  // carried `agentId: null` until that round-trip. We merge by trackId so
+  // the landing inherits the minted ids while keeping the typed-by-user
+  // `agentName` available for display when no agent record is in scope.
   const handleAuditConfirmed = useCallback((saved, extras) => {
-    const tracks = Array.isArray(saved?.tracks) ? saved.tracks : [];
-    // Prefer the UI-normalized roster rows (include `label` + `trackId`)
-    // over the compact server payload so the landing renders properly
-    // with just the information Act IV already had in memory.
+    const savedTracks = Array.isArray(saved?.tracks) ? saved.tracks : [];
+    const localRoster = Array.isArray(extras?.roster) ? extras.roster : [];
+    const localByTrackId = new Map(localRoster.map((r) => [r.trackId, r]));
+
     const rosterRows =
-      Array.isArray(extras?.roster) && extras.roster.length > 0
-        ? extras.roster
-        : tracks.map((t) => ({
-            trackId: t.id,
-            label: t.label || t.id,
-            agentId: t.agentId || null,
-            custom: !!t.custom,
-          }));
+      savedTracks.length > 0
+        ? savedTracks.map((t) => {
+            const local = localByTrackId.get(t.id);
+            return {
+              trackId: t.id,
+              label: t.label || local?.label || t.id,
+              agentId: t.agentId || local?.agentId || null,
+              agentName: local?.agentName || null,
+              custom: typeof t.custom === 'boolean' ? t.custom : !!local?.custom,
+            };
+          })
+        : localRoster;
+
+    // Prefer the server-returned `agents` array (includes minted ids +
+    // display names from the just-created agent rows) and fall back to
+    // whatever Act IV had in memory.
+    const agents =
+      Array.isArray(saved?.agents) && saved.agents.length > 0
+        ? saved.agents
+        : Array.isArray(extras?.agents)
+          ? extras.agents
+          : [];
+
     setLandingContext({
       roster: rosterRows,
       report: extras?.report || null,
-      agents: Array.isArray(extras?.agents) ? extras.agents : [],
-      savedTracks: tracks,
+      agents,
+      savedTracks,
     });
     setView('landing');
   }, []);
@@ -392,6 +414,11 @@ export default function NewProjectAdaptiveFlow({
         <div className="flex-1 min-h-0">
           <PostScaffoldAudit
             projectId={createdProjectId}
+            projectName={
+              typeof questionnairePayload?.name === 'string' && questionnairePayload.name !== 'idk'
+                ? questionnairePayload.name.trim()
+                : createdProjectId
+            }
             onConfirmed={handleAuditConfirmed}
             onSkip={handleAuditSkip}
           />

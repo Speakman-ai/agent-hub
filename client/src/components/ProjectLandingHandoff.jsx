@@ -331,8 +331,14 @@ function RosterPanel({ roster, agentById, onStartChat }) {
       ) : (
         <ul className="divide-y divide-gray-800">
           {roster.map((row) => {
+            // Prefer the resolved agent record (lookup via agentById) for
+            // the display name, fall back to the typed `agentName` the user
+            // entered in Act IV, then to the agentId. A row counts as
+            // "assigned" if it has either an agentId or an agentName —
+            // post-scaffold rows have both by the time the landing renders.
             const agent = row.agentId ? agentById.get(row.agentId) : null;
-            const hasAgent = !!agent;
+            const displayName = agent?.name || agent?.id || row.agentName || row.agentId || null;
+            const hasAssignment = !!(row.agentId || row.agentName);
             return (
               <li
                 key={row.trackId || row.id}
@@ -342,14 +348,15 @@ function RosterPanel({ roster, agentById, onStartChat }) {
                 <div className="min-w-0 flex-1">
                   <div className="text-gray-100 font-medium truncate">{row.label}</div>
                   <div className="text-xs text-gray-500 truncate">
-                    {hasAgent ? agent.name || agent.id : 'Unassigned'}
+                    {hasAssignment ? displayName : 'Unassigned'}
                   </div>
                 </div>
-                {hasAgent ? (
+                {hasAssignment ? (
                   <button
                     type="button"
                     onClick={() => onStartChat(row)}
-                    className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-100 hover:bg-gray-800"
+                    disabled={!row.agentId}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-100 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid={`pl-chat-${row.trackId || row.id}`}
                   >
                     <MessageSquare size={12} aria-hidden="true" /> Chat
@@ -384,6 +391,13 @@ function NextStepsPanel({
 }) {
   const leadRow = pickLead(assignedRoster);
   const leadAgent = leadRow ? agentById.get(leadRow.agentId) : null;
+  // Render the "Brief lead" CTA as long as we have an agentId to route to.
+  // The agent record may not be loaded (server-minted, not in the org list
+  // yet), but we can still chat with it; the typed `agentName` from Act IV
+  // is the next-best display name.
+  const leadDisplayName =
+    leadAgent?.name || leadAgent?.id || leadRow?.agentName || leadRow?.agentId || null;
+  const showLeadCta = !!(leadRow && leadDisplayName && leadRow.agentId);
 
   return (
     <section
@@ -396,12 +410,12 @@ function NextStepsPanel({
         <h2 className="text-sm font-semibold text-white">Next steps</h2>
       </header>
       <div className="flex flex-col gap-2 p-4">
-        {leadRow && leadAgent && (
+        {showLeadCta && (
           <NextStepButton
             primary
             testId="pl-next-chat-lead"
             icon={<MessageSquare size={14} aria-hidden="true" />}
-            title={`Brief ${leadAgent.name || leadAgent.id}`}
+            title={`Brief ${leadDisplayName}`}
             description={`Start a chat with your ${leadRow.label.toLowerCase()} and describe the first task.`}
             onClick={() => onStartChat(leadRow)}
           />

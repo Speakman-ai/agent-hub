@@ -3321,6 +3321,8 @@ paths:
                           type: string
                         custom:
                           type: boolean
+                        agentName:
+                          type: string
                       required:
                         - id
                         - label
@@ -3377,6 +3379,9 @@ paths:
                         nullable: true
                       custom:
                         type: boolean
+                      agentName:
+                        type: string
+                        maxLength: 80
                     required:
                       - id
                   minItems: 1
@@ -3385,7 +3390,7 @@ paths:
                 - tracks
       responses:
         "200":
-          description: Persisted roster (echoes resolved tracks).
+          description: Persisted roster. `tracks` echoes the resolved roster; `agents` lists the created/refreshed/bound agents so the client can hydrate display names without a follow-up `GET /api/agents`.
           content:
             application/json:
               schema:
@@ -3404,18 +3409,36 @@ paths:
                           type: string
                         custom:
                           type: boolean
+                        agentName:
+                          type: string
                       required:
                         - id
                         - label
                         - agentId
                         - custom
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        role:
+                          type: string
+                          nullable: true
+                      required:
+                        - id
+                        - name
                   updatedAt:
                     type: string
                 required:
                   - tracks
+                  - agents
                   - updatedAt
         "400":
-          description: Invalid payload (XOR violation, unknown agentId, etc.).
+          description: Invalid payload (XOR violation, unknown agentId, agentName too long, etc.).
           content:
             application/json:
               schema:
