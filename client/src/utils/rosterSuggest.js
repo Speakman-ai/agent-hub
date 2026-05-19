@@ -108,9 +108,8 @@ export function initialRoster(suggestions = []) {
 /** Default display name for a newly created per-track agent. */
 export function defaultAgentName(projectName, trackLabel) {
   const base = (projectName || 'Project').trim() || 'Project';
-  if (trackLabel === 'Architect') return `${base} Lead`;
-  if (trackLabel === 'QA') return `${base} QA`;
-  return `${base} ${trackLabel}`;
+  const label = (trackLabel || '').trim();
+  return label ? `${base} ${label}` : base;
 }
 
 /**

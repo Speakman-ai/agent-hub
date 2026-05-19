@@ -32,12 +32,19 @@ import {
 const ROSTER_MARKER_START = '<!-- agent-hub-roster:start -->';
 const ROSTER_MARKER_END = '<!-- agent-hub-roster:end -->';
 
+// Upper bound on the display name for a track agent. Names land in JSON
+// blobs, system prompts, and AGENTS.md, so we cap them defensively even
+// though the endpoint is behind auth.
+const MAX_AGENT_NAME_LENGTH = 80;
+
 interface ResolvedTrack {
   id: string;
   label: string;
   agentId: string;
   custom: boolean;
   agentName?: string;
+  /** Display name used in AGENTS.md and on the created agent row. */
+  displayName?: string;
 }
 
 interface AuditServiceRunner {
@@ -112,6 +119,11 @@ function lookupIntegrations(deps: RouteDeps, projectId: string): string[] | 'idk
  * Format the roster as a markdown block fenced by
  * {@link ROSTER_MARKER_START}/{@link ROSTER_MARKER_END}. Called from the
  * POST /roster handler and exported for tests.
+ *
+ * The bold heading is the user-picked display name (falling back to the
+ * track label for existing-agent assignments) so the file matches what the
+ * user actually saw in the roster picker. The track label still appears in
+ * the `role:` suffix.
  */
 export function formatRosterSection(tracks: ResolvedTrack[]): string {
   const lines = [
@@ -126,7 +138,8 @@ export function formatRosterSection(tracks: ResolvedTrack[]): string {
   } else {
     for (const t of tracks) {
       const custom = t.custom ? ' _(new)_' : '';
-      lines.push(`- **${t.label}** (\`${t.agentId}\`) — role: ${t.label}${custom}`);
+      const heading = t.displayName || t.label;
+      lines.push(`- **${heading}** (\`${t.agentId}\`) — role: ${t.label}${custom}`);
     }
   }
   lines.push('', ROSTER_MARKER_END);
@@ -291,10 +304,16 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
         });
       }
       const label = typeof t.label === 'string' && t.label.length > 0 ? t.label : t.id;
-      const agentName =
-        typeof t.agentName === 'string' && t.agentName.trim().length > 0
-          ? t.agentName.trim()
-          : label;
+      // `agentName` is optional in the request. We distinguish "client
+      // explicitly provided a name" from "fell back to label" so we don't
+      // clobber a previously-edited name on a re-save.
+      const explicitAgentNameRaw = typeof t.agentName === 'string' ? t.agentName.trim() : '';
+      if (explicitAgentNameRaw.length > MAX_AGENT_NAME_LENGTH) {
+        return res.status(400).json({
+          error: `invalid track "${t.id}": agentName must be ${MAX_AGENT_NAME_LENGTH} characters or fewer`,
+        });
+      }
+      const explicitAgentName = explicitAgentNameRaw.length > 0 ? explicitAgentNameRaw : undefined;
       if (hasAgentId) {
         // Non-custom track: verify the agent exists.
         const found = deps.findAgent(t.agentId as string);
@@ -308,6 +327,7 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
           label,
           agentId: t.agentId as string,
           custom: false,
+          ...(explicitAgentName ? { agentName: explicitAgentName } : {}),
         });
       } else {
         // Custom track — defer id generation until after all validation
@@ -317,28 +337,39 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
           label,
           agentId: '',
           custom: true,
-          agentName,
+          // Custom tracks always have a display name; fall back to the
+          // label when the client omitted `agentName`.
+          agentName: explicitAgentName || label,
         });
       }
     }
 
-    // ─── Create agents for custom tracks ────────────────────────────
+    // ─── Create / refresh agents for custom tracks ──────────────────
     // Idempotent: re-running with the same custom track reuses the
     // existing agent row rather than colliding. We only push a new
     // Agent onto the project when one with the resolved id does not
     // already exist.
     const defaultEngine = 'claude-code';
     let agentsChanged = false;
+    const affectedAgents: Agent[] = [];
     for (const track of resolved) {
       if (!track.custom) continue;
       const candidateId = `${project.id}-${track.id}`;
       track.agentId = candidateId;
       const existing = deps.findAgent(candidateId);
       const displayName = track.agentName?.trim() || track.label;
+      track.displayName = displayName;
       if (existing) {
-        // Refresh human-readable metadata — names may have been edited.
+        // Refresh metadata. Only overwrite the display name when the
+        // caller explicitly provided `agentName` in this request —
+        // otherwise we'd clobber a name the user edited via Agent
+        // Settings whenever any future roster save runs.
         existing.agent.role = track.label;
-        existing.agent.name = displayName;
+        if (track.agentName && track.agentName !== track.label) {
+          existing.agent.name = displayName;
+        }
+        affectedAgents.push(existing.agent);
+        agentsChanged = true;
         continue;
       }
       const engine = defaultEngine;
@@ -364,6 +395,7 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
         /* ignore */
       }
       project.agents.push(agent);
+      affectedAgents.push(agent);
       agentsChanged = true;
     }
     if (agentsChanged) {
@@ -373,6 +405,14 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
       } catch {
         /* non-fatal */
       }
+    }
+
+    // For non-custom tracks, also include the bound agent in the response
+    // so the client can hydrate display names without a separate fetch.
+    for (const track of resolved) {
+      if (track.custom) continue;
+      const found = deps.findAgent(track.agentId);
+      if (found) affectedAgents.push(found.agent);
     }
 
     // ─── Persist the roster JSON blob ───────────────────────────────
@@ -387,15 +427,33 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
 
     // ─── Write AGENTS.md — idempotent between markers ───────────────
     try {
-      writeRosterToAgentsMd(project, sanitized);
+      writeRosterToAgentsMd(project, resolved);
     } catch (err: unknown) {
       // Non-fatal — the roster row is persisted; surface the error
       // via a header so the client can show a warning without 500-ing.
       res.setHeader('x-roster-agents-md-warning', (err as Error).message);
     }
 
+    // ─── Build the response `agents` summary ───────────────────────
+    // Deduplicate by id (a single agent could be bound to multiple
+    // non-custom tracks in theory) and surface only the fields the
+    // landing page needs (id, name, role) so we don't leak prompt
+    // content or color metadata.
+    const seenAgentIds = new Set<string>();
+    const agentsSummary: Array<{ id: string; name: string; role?: string | null }> = [];
+    for (const a of affectedAgents) {
+      if (seenAgentIds.has(a.id)) continue;
+      seenAgentIds.add(a.id);
+      agentsSummary.push({
+        id: a.id,
+        name: a.name,
+        role: (a as { role?: string | null }).role ?? null,
+      });
+    }
+
     return res.status(200).json({
       tracks: sanitized,
+      agents: agentsSummary,
       updatedAt: row?.updated_at ?? new Date().toISOString(),
     });
   });

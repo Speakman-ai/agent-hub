@@ -162,7 +162,10 @@ describe('rosterSuggest — create flow', () => {
       [{ id: 'architect', label: 'Architect', rationale: 'design' }],
       'Scrabble',
     );
-    expect(roster[0].agentName).toBe('Scrabble Lead');
+    // Display name is `${projectName} ${trackLabel}` for every track — no
+    // per-track special casing — so the QA / Architect rows match the
+    // Frontend / Backend rows.
+    expect(roster[0].agentName).toBe('Scrabble Architect');
     expect(roster[0].custom).toBe(true);
     expect(roster[0].agentId).toBeNull();
   });

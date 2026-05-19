@@ -179,6 +179,12 @@ describe('POST + GET /api/projects/:id/roster', () => {
         custom: expect.any(Boolean),
       });
     }
+    // The response now also surfaces the bound agents so the Act V
+    // landing can hydrate display names without an extra fetch.
+    expect(Array.isArray(post.body.agents)).toBe(true);
+    expect(post.body.agents.map((a: { id: string }) => a.id).sort()).toEqual(
+      [agentA, agentB].sort(),
+    );
 
     const get = await request.get(`/api/projects/${projectId}/roster`).expect(200);
     expect(get.body.tracks).toEqual([
@@ -267,6 +273,9 @@ describe('POST + GET /api/projects/:id/roster', () => {
       { id: 'architect', label: 'Architect', agentId: `${projectId}-architect`, custom: true },
       { id: 'qa', label: 'QA', agentId: `${projectId}-qa`, custom: true },
     ]);
+    // The response surfaces the minted agent rows for the landing page.
+    const respAgentIds = (res.body.agents as Array<{ id: string }>).map((a) => a.id).sort();
+    expect(respAgentIds).toEqual([`${projectId}-architect`, `${projectId}-qa`].sort());
 
     // Both new agents must be queryable through /api/agents with the
     // correct project linkage and default engine.
@@ -285,6 +294,51 @@ describe('POST + GET /api/projects/:id/roster', () => {
     expect(architect?.engine).toBe('claude-code');
     expect(architect?.role).toBe('Architect');
     expect(qa?.role).toBe('QA');
+  });
+
+  it('preserves an existing agent display name when re-saving without agentName', async () => {
+    const projectId = await freshProject();
+    // First save mints the agent + display name.
+    await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [
+          {
+            id: 'frontend',
+            label: 'Frontend',
+            agentName: 'Scrabble UI Dev',
+            custom: true,
+          },
+        ],
+      })
+      .expect(200);
+    // Re-saving the roster from a context that doesn't carry `agentName`
+    // (e.g. a roster picker showing the existing agents) must not clobber
+    // the user-chosen name.
+    await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [{ id: 'frontend', label: 'Frontend', custom: true }],
+      })
+      .expect(200);
+    const list = (await request.get('/api/agents').expect(200)).body as Array<{
+      id: string;
+      name?: string;
+    }>;
+    const fe = list.find((a) => a.id === `${projectId}-frontend`);
+    expect(fe?.name).toBe('Scrabble UI Dev');
+  });
+
+  it('rejects an agentName longer than the max length cap', async () => {
+    const projectId = await freshProject();
+    const longName = 'x'.repeat(81);
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [{ id: 'frontend', label: 'Frontend', agentName: longName, custom: true }],
+      })
+      .expect(400);
+    expect(res.body.error).toMatch(/80 characters or fewer/i);
   });
 
   it('uses agentName for the created agent display name when provided', async () => {
@@ -393,6 +447,19 @@ describe('formatRosterSection', () => {
     expect(out).toContain('**Backend** (`agent-a`)');
     expect(out).toContain('**Architect** (`proj-arch`)');
     expect(out).toContain('_(new)_');
+  });
+
+  it('renders the user-picked display name as the heading when provided', () => {
+    const out = formatRosterSection([
+      {
+        id: 'frontend',
+        label: 'Frontend',
+        agentId: 'scrabble-frontend',
+        custom: true,
+        displayName: 'Scrabble UI Dev',
+      },
+    ]);
+    expect(out).toContain('**Scrabble UI Dev** (`scrabble-frontend`) — role: Frontend');
   });
 
   it('renders a friendly placeholder when the roster is empty', () => {

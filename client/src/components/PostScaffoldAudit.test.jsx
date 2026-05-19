@@ -153,7 +153,6 @@ describe('PostScaffoldAudit', () => {
         tracks: [{ id: 'architect', label: 'Architect', agentId: 'p1-architect', custom: true }],
       },
       expect.objectContaining({
-        agents: expect.any(Array),
         roster: expect.any(Array),
       }),
     );

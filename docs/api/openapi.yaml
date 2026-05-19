@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.27.0
+  version: 1.28.0
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -3382,6 +3382,9 @@ paths:
                         nullable: true
                       custom:
                         type: boolean
+                      agentName:
+                        type: string
+                        maxLength: 80
                     required:
                       - id
                   minItems: 1
@@ -3390,7 +3393,7 @@ paths:
                 - tracks
       responses:
         "200":
-          description: Persisted roster (echoes resolved tracks).
+          description: Persisted roster. `tracks` echoes the resolved roster; `agents` lists the created/refreshed/bound agents so the client can hydrate display names without a follow-up `GET /api/agents`.
           content:
             application/json:
               schema:
@@ -3414,13 +3417,29 @@ paths:
                         - label
                         - agentId
                         - custom
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        role:
+                          type: string
+                          nullable: true
+                      required:
+                        - id
+                        - name
                   updatedAt:
                     type: string
                 required:
                   - tracks
+                  - agents
                   - updatedAt
         "400":
-          description: Invalid payload (XOR violation, unknown agentId, etc.).
+          description: Invalid payload (XOR violation, unknown agentId, agentName too long, etc.).
           content:
             application/json:
               schema:
