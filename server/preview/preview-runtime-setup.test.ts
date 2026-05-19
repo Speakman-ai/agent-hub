@@ -43,7 +43,12 @@ describe('buildComposeOverrideYaml', () => {
     });
     expect(body).toContain('services:');
     expect(body).toContain('  web:');
-    expect(body).toContain('    ports:');
+    // `!override` is required so the runtime mapping REPLACES the base
+    // compose file's `ports:` list rather than appending — without it,
+    // a base file with `ports: ["8000:8000"]` would bind both the
+    // static and the allocated port, and a second concurrent session
+    // would EADDRINUSE on 8000. See `buildComposeOverrideYaml` docstring.
+    expect(body).toContain('    ports: !override');
     expect(body).toContain('      - "4101:8000"');
     expect(body.endsWith('\n')).toBe(true);
   });
