@@ -127,6 +127,27 @@ describe('setupDependencies awaited install failures', () => {
     expect(childProcessExecMock).not.toHaveBeenCalled();
   });
 
+  it('passes PIP_BREAK_SYSTEM_PACKAGES=1 in the install spawn env so PEP 668 hosts can pip-install', async () => {
+    // Locks in the wire-level contract: agents on Debian/Ubuntu hosts run
+    // install commands like `cd backend && pip install -r requirements.txt`
+    // and the spawned shell inherits this env. If a future refactor drops
+    // the env var off `installChildEnv` (or off the exec call), this test
+    // catches it — the install-time assertion in worktree.test.ts only
+    // pins the constant, not the wire it travels on.
+    delete process.env.TEST_WORKTREE_EXEC_FAIL;
+    const { __test } = await worktreePromise;
+    childProcessExecMock.mockClear();
+
+    await __test.setupDependencies(sourceDir, cloneDir, null, {
+      awaitInstall: true,
+      preferInstallAllScript: false,
+    });
+
+    expect(childProcessExecMock).toHaveBeenCalled();
+    const opts = childProcessExecMock.mock.calls[0][1] as { env?: Record<string, string> };
+    expect(opts?.env).toMatchObject({ PIP_BREAK_SYSTEM_PACKAGES: '1' });
+  });
+
   it('clears the failure marker after a successful awaited install so the next attempt runs npm again', async () => {
     const {
       SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER,
