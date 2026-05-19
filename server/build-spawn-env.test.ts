@@ -166,6 +166,12 @@ describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
 });
 
 describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
+  let tmpDataDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-spawn-keys-'));
+  });
+
   it('user CURSOR_API_KEY wins over host config', () => {
     const env = buildSpawnEnv(
       { ...config, cursorApiKey: 'curs-host' },
@@ -258,6 +264,41 @@ describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
     expect(env.GEMINI_API_KEY).toBe('gem-host-only');
     expect(env.CODEX_API_KEY).toBe('codex-host-only');
     expect(env.OPENAI_API_KEY).toBe('codex-host-only');
+  });
+
+  it('with userId set, host Cursor/Gemini/Codex keys are not injected', () => {
+    const env = buildSpawnEnv(
+      {
+        ...config,
+        dataDir: tmpDataDir,
+        cursorApiKey: 'curs-host',
+        geminiApiKey: 'gem-host',
+        codexApiKey: 'sk-codex-host',
+      },
+      { userId: 'spawn-user-no-keys' },
+    );
+    expect(env.CURSOR_API_KEY).toBeUndefined();
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+    expect(env.CODEX_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it('with userId set, per-user override still wins for Cursor/Codex', () => {
+    const env = buildSpawnEnv(
+      {
+        ...config,
+        dataDir: tmpDataDir,
+        cursorApiKey: 'curs-host',
+        codexApiKey: 'sk-codex-host',
+      },
+      {
+        userId: 'spawn-user-with-keys',
+        userOverride: { cursorApiKey: 'curs-user', codexApiKey: 'sk-codex-user' },
+      },
+    );
+    expect(env.CURSOR_API_KEY).toBe('curs-user');
+    expect(env.CODEX_API_KEY).toBe('sk-codex-user');
+    expect(env.OPENAI_API_KEY).toBe('sk-codex-user');
   });
 });
 

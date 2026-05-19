@@ -1737,7 +1737,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         const uiStatus = computeCodexUiStatus({
           binaryPresent,
           loginInProgress,
-          apiKeyConfigured: !!stored.apiKey || route.hostHasKey(),
+          apiKeyConfigured: !!stored.apiKey,
           chatgptOAuthFromFile: chatgptOAuth,
           cliApiKeyFromFile: cliApiKey,
         });

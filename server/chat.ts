@@ -8,6 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { clampPayload } from './session-events-store.js';
 import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
+import { userHasPerUserCliIdentity } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -2567,15 +2568,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
           );
         }
-        // HOME swap policy: sessions with a real persisted owner always
-        // swap to that user's per-user HOME (current behavior). Sessions
-        // with no owner only swap when we actually have a `userOverride`
-        // to flow — without one, the per-user HOME would be an empty dir
-        // and the spawn would lose the host `~/.claude/.credentials.json`
-        // fallback (regression). Net: reviewer with org-owner per-user
-        // creds → org-owner HOME so cached OAuth files line up with the
-        // env-var creds; reviewer with neither → host HOME preserved.
-        const homeUserId = ownerId ?? (userOverride ? credsOwnerId : null);
+        // HOME swap: use per-user HOME when the session has a persisted owner, or
+        // when the billing owner has their own CLI identity (API keys and/or
+        // browser OAuth caches). Reviewer sessions with no per-account
+        // material keep the host HOME so `~/.claude/.credentials.json` and
+        // other operator-wide fallbacks still work.
+        const homeUserId =
+          ownerId ??
+          (credsOwnerId && userHasPerUserCliIdentity(credsOwnerId, config.dataDir)
+            ? credsOwnerId
+            : null);
         const base = buildSpawnEnv(config, { userOverride, userId: homeUserId });
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
         // We always perform the lookup so non-reviewer spawns get the

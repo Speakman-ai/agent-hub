@@ -207,4 +207,38 @@ describe('getEngineAuthStatus', () => {
     expect(out.codex).toBe(true);
     expect(out.any).toBe(true);
   });
+
+  it('detects per-user Codex API key without host fallback', async () => {
+    const user = createUser({
+      username: 'codex-per-user',
+      passwordHash: 'x',
+    });
+    const { setUserCodexAuth } = await import('./users-store.js');
+    setUserCodexAuth(user.id, { apiKey: 'sk-codex-user' });
+
+    const out = await getEngineAuthStatus({
+      config: { codexApiKey: 'sk-codex-host' },
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbe: noCursor,
+    });
+    expect(out.codex).toBe(true);
+  });
+
+  it('JWT callers ignore host Codex login when per-user cache is empty', async () => {
+    const user = createUser({
+      username: 'codex-no-host-fallback',
+      passwordHash: 'x',
+    });
+    process.env.CODEX_API_KEY = 'codex-host-only';
+    const out = await getEngineAuthStatus({
+      config: { codexApiKey: 'sk-codex-host' },
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbe: noCursor,
+    });
+    expect(out.codex).toBe(false);
+  });
 });
