@@ -294,10 +294,11 @@ describe('ensureReviewerAgents', () => {
     expect(sp).not.toContain('"event":"APPROVE"');
     expect(sp).toContain('"event":"<EVENT>"');
 
-    // All three events must be presented, not just APPROVE.
+    // Only two events are allowed at POST /api/pr/review (COMMENT is rejected).
     expect(sp).toContain('APPROVE');
-    expect(sp).toContain('COMMENT');
     expect(sp).toContain('REQUEST_CHANGES');
+    expect(sp).toMatch(/rejects.*COMMENT|Never send.*COMMENT/i);
+    expect(sp).not.toMatch(/→ `COMMENT`/);
 
     // The prompt must present a decision TREE (walk in order) rather than a
     // flat rubric — the flat rubric is what caused the reviewer to pick
@@ -313,16 +314,10 @@ describe('ensureReviewerAgents', () => {
     // COMMENT-bias regression.
     expect(sp).toMatch(/mergeable as-is/i);
 
-    // Both anti-patterns must be explicitly named so neither bias recurs.
-    expect(sp).toMatch(/don't over-correct/i);
     expect(sp).toMatch(/don't rubber-stamp/i);
 
-    // COMMENT must NOT be described as "the default" — that phrasing is what
-    // caused the swing from APPROVE-bias to COMMENT-bias in PR #291/292.
-    // Use a tight proximity check so discouragement phrasings (e.g. "Defaulting
-    // … to COMMENT destroys the signal") don't false-positive.
-    expect(sp).not.toMatch(/\bdefault\b[^.]{0,40}\bCOMMENT\b/i);
-    expect(sp).not.toMatch(/\bCOMMENT\b[^.]{0,40}\bis the default\b/i);
+    // COMMENT must not appear as a third decision-tree branch (API rejects it).
+    expect(sp).not.toMatch(/3\.\s+\*\*Only if you genuinely cannot decide\*\*/);
 
     // The old "skip nits unless egregious" line was a subtle approval nudge
     // that should stay gone.

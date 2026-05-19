@@ -56,6 +56,8 @@ interface CardOverride {
 function makeDeps(overrides: {
   reviewCardIds?: string[];
   inProgressCardIds?: string[];
+  todoCardIds?: string[];
+  doneCardIds?: string[];
   moveKanbanCardRun?: Mock;
   setCardLastDispatchedReviewId?: Mock;
   setCardLastDispatchedCheckRunId?: Mock;
@@ -66,52 +68,48 @@ function makeDeps(overrides: {
 }): Parameters<typeof initAutonomous>[0] {
   const reviewId = 'col-review';
   const inProgressId = 'col-progress';
+  const todoId = 'col-todo';
+  const doneId = 'col-done';
   const setCardLastDispatchedReviewIdRun = overrides.setCardLastDispatchedReviewId || vi.fn();
   const setCardLastDispatchedCheckRunIdRun = overrides.setCardLastDispatchedCheckRunId || vi.fn();
   const setCardLastDispatchedReviewCommentIdRun =
     overrides.setCardLastDispatchedReviewCommentId || vi.fn();
+
+  const buildCard = (id: string, columnId: string): KanbanCardRow => {
+    const extra = overrides.cardOverrides?.[id] ?? {};
+    return {
+      id,
+      column_id: columnId,
+      title: `Card ${id}`,
+      pr_url: 'https://github.com/o/r/pull/99',
+      review_status: extra.review_status ?? null,
+      last_dispatched_review_id: extra.last_dispatched_review_id ?? null,
+      last_dispatched_check_run_id: extra.last_dispatched_check_run_id ?? null,
+      last_dispatched_review_comment_id: extra.last_dispatched_review_comment_id ?? null,
+    } as KanbanCardRow;
+  };
+
+  const allBoardCards: KanbanCardRow[] = [
+    ...(overrides.reviewCardIds || []).map((id) => buildCard(id, reviewId)),
+    ...(overrides.inProgressCardIds || []).map((id) => buildCard(id, inProgressId)),
+    ...(overrides.todoCardIds || []).map((id) => buildCard(id, todoId)),
+    ...(overrides.doneCardIds || []).map((id) => buildCard(id, doneId)),
+  ];
+
   const stmts = {
     getKanbanColumns: {
       all: vi.fn(() => [
         { id: reviewId, name: 'Review' },
         { id: inProgressId, name: 'In Progress' },
+        { id: todoId, name: 'To Do' },
+        { id: doneId, name: 'Done' },
       ]),
     },
+    getKanbanCards: {
+      all: vi.fn(() => allBoardCards),
+    },
     getKanbanCardsByColumn: {
-      all: vi.fn((colId: string) => {
-        const cards: KanbanCardRow[] = [];
-        for (const id of overrides.reviewCardIds || []) {
-          if (colId === reviewId) {
-            const extra = overrides.cardOverrides?.[id] ?? {};
-            cards.push({
-              id,
-              column_id: reviewId,
-              title: `Card ${id}`,
-              pr_url: 'https://github.com/o/r/pull/99',
-              review_status: extra.review_status ?? null,
-              last_dispatched_review_id: extra.last_dispatched_review_id ?? null,
-              last_dispatched_check_run_id: extra.last_dispatched_check_run_id ?? null,
-              last_dispatched_review_comment_id: extra.last_dispatched_review_comment_id ?? null,
-            } as KanbanCardRow);
-          }
-        }
-        for (const id of overrides.inProgressCardIds || []) {
-          if (colId === inProgressId) {
-            const extra = overrides.cardOverrides?.[id] ?? {};
-            cards.push({
-              id,
-              column_id: inProgressId,
-              title: `Card ${id}`,
-              pr_url: 'https://github.com/o/r/pull/99',
-              review_status: extra.review_status ?? null,
-              last_dispatched_review_id: extra.last_dispatched_review_id ?? null,
-              last_dispatched_check_run_id: extra.last_dispatched_check_run_id ?? null,
-              last_dispatched_review_comment_id: extra.last_dispatched_review_comment_id ?? null,
-            } as KanbanCardRow);
-          }
-        }
-        return cards;
-      }),
+      all: vi.fn((colId: string) => allBoardCards.filter((c) => c.column_id === colId)),
     },
     moveKanbanCard: { run: overrides.moveKanbanCardRun || vi.fn() },
     setCardLastDispatchedReviewId: { run: setCardLastDispatchedReviewIdRun },
@@ -161,6 +159,66 @@ function makeDeps(overrides: {
 }
 
 describe('pollForMissedReviews', () => {
+  it('does not scan Done-column cards even when they have a linked PR', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    const execMock = vi.fn();
+    vi.mocked(execFileImport).mockImplementation(((
+      _cmd: string,
+      _args: readonly string[] | null | undefined,
+      _opts: unknown,
+      cb: (err: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      execMock();
+      cb(null, '[]', '');
+      return undefined as never;
+    }) as unknown as typeof execFileImport);
+
+    initAutonomous(
+      makeDeps({
+        doneCardIds: ['c-done'],
+        reviewCardIds: [],
+        inProgressCardIds: [],
+        todoCardIds: [],
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(execMock).not.toHaveBeenCalled();
+    expect(mockDispatchReviewFeedback).not.toHaveBeenCalled();
+  });
+
+  it('scans To Do (and other columns) when the card has a linked PR', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    vi.mocked(execFileImport).mockImplementation(((
+      _cmd: string,
+      args: readonly string[] | null | undefined,
+      _opts: unknown,
+      cb: (err: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      const argv = args ?? [];
+      if (argv[0] === 'api' && String(argv[1]).includes('/pulls/99/reviews')) {
+        cb(null, JSON.stringify([{ id: 5100, submitted_at: '2026-05-19' }]), '');
+      } else {
+        cb(new Error('unexpected'), '', '');
+      }
+      return undefined as never;
+    }) as unknown as typeof execFileImport);
+
+    initAutonomous(
+      makeDeps({
+        todoCardIds: ['c-todo'],
+        reviewCardIds: [],
+        inProgressCardIds: [],
+      }) as never,
+    );
+
+    await pollForMissedReviews();
+
+    expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
+    expect(lastDispatchedReviewId.get('c-todo')).toBe(5100);
+  });
+
   it('scans In Progress as well as Review for pending CHANGES_REQUESTED', async () => {
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
     vi.mocked(execFileImport).mockImplementation(((

@@ -47,6 +47,11 @@ import { cancelAnalyzePhaseTimer } from '../reviewer-analyze-phase-timer.js';
 import { validateFormalReviewBody } from '../review-body-validation.js';
 import { cleanupReviewerSessionForPR } from '../reviewer-session-cleanup.js';
 import { removeWorkspace } from '../worktree.js';
+import { dispatchAutofixFeedback } from '../autofix-dispatch.js';
+import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup.js';
+import { getOrCreateBoard } from './board.js';
+import { dispatchReviewFeedback } from './webhooks.js';
+import type { Project } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,11 +67,14 @@ interface PrReviewBody {
   commitId?: string;
 }
 
-const ALLOWED_REVIEW_EVENTS = new Set<PrReviewBody['event']>([
+/** Events Agent Hub will post via the GitHub App. COMMENT is rejected — it does not satisfy required approval. */
+const ALLOWED_REVIEW_EVENTS = new Set<'APPROVE' | 'REQUEST_CHANGES'>([
   'APPROVE',
   'REQUEST_CHANGES',
-  'COMMENT',
 ]);
+
+const COMMENT_REVIEW_REJECTED_MESSAGE =
+  'COMMENT reviews do not count toward required approval. Use APPROVE (non-blocking notes in body) or REQUEST_CHANGES (blockers).';
 
 interface ParsedPR {
   owner: string;
@@ -127,8 +135,8 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
    * Mark the "Agent Hub Reviewer" Check Run as completed after a successful
    * GitHub review post. Conclusion mapping:
    *   APPROVE          → success
-   *   COMMENT          → neutral   (issues found but non-blocking)
    *   REQUEST_CHANGES  → action_required
+   *   (COMMENT is rejected at this endpoint — legacy check-run logs may still reference it)
    *
    * Best-effort: any failure is logged but does not fail the `/api/pr/review`
    * response — the formal GitHub review has already landed by the time we
@@ -136,7 +144,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
    */
   async function completeReviewerCheckRun(
     pr: ParsedPR,
-    event: PrReviewBody['event'],
+    event: 'APPROVE' | 'REQUEST_CHANGES',
     body: string | undefined,
   ): Promise<void> {
     const repoFullName = `${pr.owner}/${pr.repo}`;
@@ -155,9 +163,8 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       const phases = finalizePhases(DEFAULT_REVIEWER_PHASES, Date.now(), startedAtMs);
       const conclusion = reviewEventToConclusion(event);
 
-      const headlineByEvent: Record<PrReviewBody['event'], string> = {
+      const headlineByEvent: Record<'APPROVE' | 'REQUEST_CHANGES', string> = {
         APPROVE: '✅ Review complete — PR is mergeable as-is',
-        COMMENT: '💬 Review complete — non-blocking notes',
         REQUEST_CHANGES: '⚠️ Review complete — changes requested before merge',
       };
       const summary = renderProgressSummary(phases, {
@@ -187,12 +194,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
    * Map a GitHub review event to the `outcome` enum stored in review_logs.
    * APPROVE          → approved
    * REQUEST_CHANGES  → changes_requested
-   * COMMENT          → ambiguous   (non-blocking notes; not a clear verdict)
    */
-  function reviewEventToOutcome(event: PrReviewBody['event']): ReviewLogRow['outcome'] {
+  function reviewEventToOutcome(event: 'APPROVE' | 'REQUEST_CHANGES'): ReviewLogRow['outcome'] {
     if (event === 'APPROVE') return 'approved';
-    if (event === 'REQUEST_CHANGES') return 'changes_requested';
-    return 'ambiguous';
+    return 'changes_requested';
   }
 
   /**
@@ -206,9 +211,96 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
    * existed but no caller invoked it, so the panel froze in time. Restoring
    * the call here revives live review-activity display.
    */
+  /**
+   * When the reviewer App posts REQUEST_CHANGES via this endpoint, GitHub may
+   * not deliver `pull_request_review.submitted` to our kanban handler (that
+   * event is off by default). Wake the card's author session here so PRs do
+   * not sit in "Changes requested" with no agent working the feedback.
+   */
+  function dispatchAuthorAutofixForChangesRequested(args: {
+    prUrl: string;
+    prNumber: string;
+    reviewBody: string;
+    reviewerLogin: string | null | undefined;
+    reviewId?: number;
+  }): void {
+    if (!stmts?.getKanbanCardByPrUrl || !stmts?.getKanbanBoardById) return;
+    const card = stmts.getKanbanCardByPrUrl.get(args.prUrl) as KanbanCardRow | undefined;
+    if (!card) {
+      console.log(
+        `[PR Review] No kanban card linked to ${args.prUrl} — author autofix not dispatched (use Resolve PR)`,
+      );
+      return;
+    }
+    const board = stmts.getKanbanBoardById.get(card.board_id) as KanbanBoardRow | undefined;
+    if (!board) return;
+    const project = deps.getProjects().find((p) => p.id === board.project_id) as
+      | Project
+      | undefined;
+    if (!project) return;
+
+    const reviewer = args.reviewerLogin?.trim() || 'agent-hub-reviewer';
+    const feedbackMessage = `# PR Review Feedback (via GitHub)
+
+**Reviewer:** ${reviewer}
+**PR:** #${args.prNumber}
+
+The reviewer has requested changes on your PR. Please address the feedback and push fixes.
+
+## Review comment:
+${args.reviewBody || '(No body — check inline comments on the PR)'}
+
+## What to do:
+1. Read the full review: \`gh pr view ${args.prNumber} --comments\`
+2. Check for inline comments on the PR
+3. Address each issue — fix the code
+4. Commit and push to the same branch`;
+
+    void (async () => {
+      try {
+        const boardData = getOrCreateBoard(stmts, project.id);
+        const cols = boardData?.board
+          ? (stmts.getKanbanColumns.all(boardData.board.id) as Array<{ id: string; name: string }>)
+          : [];
+        const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
+        if (inProgressCol && card.column_id !== inProgressCol.id && stmts.moveKanbanCard) {
+          stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+          deps.broadcast({ type: 'kanban_update', projectId: project.id });
+        }
+
+        const result = await dispatchAutofixFeedback(
+          { stmts },
+          card,
+          project,
+          'review-changes-requested',
+          feedbackMessage,
+          (c, p, content) => dispatchReviewFeedback(deps, c, p, content),
+        );
+        console.log(
+          `[PR Review] REQUEST_CHANGES on #${args.prNumber} — author dispatch session=${result.sessionId ?? '(none)'} persisted=${result.userMessagePersisted}`,
+        );
+        if (
+          result.userMessagePersisted &&
+          args.reviewId != null &&
+          Number.isFinite(args.reviewId)
+        ) {
+          recordDispatchedChangesRequestedReview(card.id, args.reviewId);
+          try {
+            stmts.setCardLastDispatchedReviewId?.run(args.reviewId, card.id);
+          } catch {
+            /* non-critical */
+          }
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[PR Review] Author autofix dispatch failed for #${args.prNumber}: ${msg}`);
+      }
+    })();
+  }
+
   function persistReviewLog(args: {
     prUrl: string;
-    event: PrReviewBody['event'];
+    event: 'APPROVE' | 'REQUEST_CHANGES';
     body: string | undefined;
     reviewerLogin: string | null | undefined;
   }): void {
@@ -453,13 +545,17 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
     }
-    if (!event || !ALLOWED_REVIEW_EVENTS.has(event)) {
+    if (event === 'COMMENT') {
+      return res.status(400).json({ error: COMMENT_REVIEW_REJECTED_MESSAGE });
+    }
+    if (!event || !ALLOWED_REVIEW_EVENTS.has(event as 'APPROVE' | 'REQUEST_CHANGES')) {
       return res
         .status(400)
-        .json({ error: 'Invalid review event (must be APPROVE, REQUEST_CHANGES, or COMMENT)' });
+        .json({ error: 'Invalid review event (must be APPROVE or REQUEST_CHANGES)' });
     }
+    const reviewEvent = event as 'APPROVE' | 'REQUEST_CHANGES';
 
-    const bodyValidation = validateFormalReviewBody(event, body);
+    const bodyValidation = validateFormalReviewBody(reviewEvent, body);
     if (!bodyValidation.valid) {
       return res.status(400).json({ error: bodyValidation.error });
     }
@@ -472,7 +568,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       state?: string;
     }
 
-    const reviewPayload: Record<string, unknown> = { event, body: reviewBody };
+    const reviewPayload: Record<string, unknown> = { event: reviewEvent, body: reviewBody };
     if (commitId) reviewPayload.commit_id = commitId;
 
     // Surfaced in the final 501/502 response so operators can see exactly
@@ -499,19 +595,33 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           )) as ReviewApiResponse;
           // Fire-and-forget: mark the Check Run as completed with the mapped
           // conclusion so the PR's Checks strip flips to green/yellow/red.
-          completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
+          completeReviewerCheckRun(pr, reviewEvent, reviewBody).catch(() => {
             /* best-effort */
           });
           // Fire-and-forget: soft-delete the reviewer's session + remove
           // its worktree clone now that the review has landed. Failure
           // here must not change the response.
           reclaimReviewerSession(pr);
-          persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
+          persistReviewLog({
+            prUrl,
+            event: reviewEvent,
+            body: reviewBody,
+            reviewerLogin: data.user?.login,
+          });
+          if (reviewEvent === 'REQUEST_CHANGES') {
+            dispatchAuthorAutofixForChangesRequested({
+              prUrl,
+              prNumber: pr.number,
+              reviewBody,
+              reviewerLogin: data.user?.login,
+              reviewId: typeof data.id === 'number' ? data.id : undefined,
+            });
+          }
           return res.json({
             ok: true,
             method: 'github-app',
             pr: pr.number,
-            event,
+            event: reviewEvent,
             reviewId: data.id,
             reviewUrl: data.html_url,
             reviewer: data.user?.login,
@@ -549,16 +659,30 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           throw new Error(`GitHub API ${ghRes.status}: ${text.split('\n')[0]}`);
         }
         const data = (await ghRes.json()) as ReviewApiResponse;
-        completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
+        completeReviewerCheckRun(pr, reviewEvent, reviewBody).catch(() => {
           /* best-effort */
         });
         reclaimReviewerSession(pr);
-        persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
+        persistReviewLog({
+          prUrl,
+          event: reviewEvent,
+          body: reviewBody,
+          reviewerLogin: data.user?.login,
+        });
+        if (reviewEvent === 'REQUEST_CHANGES') {
+          dispatchAuthorAutofixForChangesRequested({
+            prUrl,
+            prNumber: pr.number,
+            reviewBody,
+            reviewerLogin: data.user?.login,
+            reviewId: typeof data.id === 'number' ? data.id : undefined,
+          });
+        }
         return res.json({
           ok: true,
           method: 'bot-token',
           pr: pr.number,
-          event,
+          event: reviewEvent,
           reviewId: data.id,
           reviewUrl: data.html_url,
           reviewer: data.user?.login,

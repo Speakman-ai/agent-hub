@@ -7,7 +7,7 @@
  * degenerate (e.g. the model emits "test" and still picks APPROVE).
  */
 
-export type FormalReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+export type FormalReviewEvent = 'APPROVE' | 'REQUEST_CHANGES';
 
 /** Minimum trimmed length for any formal review body (all events). */
 export const MIN_FORMAL_REVIEW_BODY_CHARS = 40;
@@ -114,7 +114,7 @@ export function validateFormalReviewBody(
   event: FormalReviewEvent,
   body: string | undefined,
 ): ValidateFormalReviewBodyResult {
-  void event; // same rules for APPROVE / REQUEST_CHANGES / COMMENT
+  void event; // same rules for APPROVE and REQUEST_CHANGES
   const trimmed = typeof body === 'string' ? body.trim() : '';
   if (!trimmed) {
     return { valid: false, error: 'body is required and must not be empty or whitespace-only' };

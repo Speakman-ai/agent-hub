@@ -197,20 +197,18 @@ describe('dispatchReviewerForPR — prompt content', () => {
     // self-approval works (App identity ≠ PR author identity). Using `gh pr review`
     // directly would submit as the CLI user and silently downgrade APPROVE → COMMENTED.
     expect(msg.content).toContain('/api/pr/review');
-    // All three events must be presented — the curl example must NOT hardcode one,
-    // or the reviewer will anchor on that event as the default (historically APPROVE,
-    // which is how the "always approve with non-blocking comments" bias was produced).
+    // Only APPROVE and REQUEST_CHANGES are allowed at POST /api/pr/review.
     expect(msg.content).toContain('"event":"<EVENT>"');
     expect(msg.content).not.toContain('"event":"APPROVE"');
     expect(msg.content).toContain('APPROVE');
     expect(msg.content).toContain('REQUEST_CHANGES');
-    expect(msg.content).toContain('COMMENT');
+    expect(msg.content).toMatch(/rejects.*COMMENT|Never send.*COMMENT|returns 400/i);
     // Reviewer should NEVER edit code or merge — those are non-negotiable.
     expect(msg.content).toMatch(/Do \*\*NOT\*\* edit code/);
     expect(msg.content).toMatch(/Do \*\*NOT\*\* merge/);
   });
 
-  it('presents a balanced decision tree that prevents both APPROVE-bias and COMMENT-bias', () => {
+  it('presents a two-outcome decision tree (APPROVE vs REQUEST_CHANGES; COMMENT rejected at API)', () => {
     const deps = makeDeps();
     const project = makeProject('reviewer');
 
@@ -236,27 +234,12 @@ describe('dispatchReviewerForPR — prompt content', () => {
     // APPROVE became unreachable in practice.
     expect(msg.content).toMatch(/mergeable as-is/i);
 
-    // Both anti-patterns must be explicitly named so neither bias recurs:
-    //   don't over-correct → defaulting non-blocking reviews to COMMENT
-    //   don't rubber-stamp → burying a real blocker in an APPROVE body
-    expect(msg.content).toMatch(/don't over-correct/i);
     expect(msg.content).toMatch(/don't rubber-stamp/i);
+    expect(msg.content).toMatch(/Never send.*COMMENT|rejects.*COMMENT|returns 400/i);
+    expect(msg.content).not.toMatch(/3\.\s+\*\*Only if you genuinely cannot decide\*\*/);
 
-    // COMMENT must be scoped to its narrow, genuine use (undecided / design
-    // question), not "the default for non-nit feedback" as the prior prompt
-    // had it. Catch positive-framing phrasings that would re-introduce the bias.
-    // We intentionally use a tight proximity (≤40 non-period chars between the
-    // word "default" and "COMMENT") so discouragement phrasing like
-    // "Defaulting … to COMMENT destroys the signal" elsewhere in the prompt
-    // doesn't trip the check.
-    expect(msg.content).not.toMatch(/\bdefault\b[^.]{0,40}\bCOMMENT\b/i);
-    expect(msg.content).not.toMatch(/\bCOMMENT\b[^.]{0,40}\bis the default\b/i);
-
-    // All three events must still be presented (redundant with the earlier
-    // test but worth asserting alongside the tree wording).
     expect(msg.content).toContain('APPROVE');
     expect(msg.content).toContain('REQUEST_CHANGES');
-    expect(msg.content).toContain('COMMENT');
   });
 
   it('instructs the reviewer to score every finding 1–10 and block on >3', () => {

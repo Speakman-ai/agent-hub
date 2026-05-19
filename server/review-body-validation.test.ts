@@ -30,7 +30,7 @@ describe('validateFormalReviewBody', () => {
 
   it('rejects bodies shorter than MIN_FORMAL_REVIEW_BODY_CHARS', () => {
     const short = 'x'.repeat(MIN_FORMAL_REVIEW_BODY_CHARS - 1);
-    const r = validateFormalReviewBody('COMMENT', short);
+    const r = validateFormalReviewBody('REQUEST_CHANGES', short);
     expect(r.valid).toBe(false);
     if (!r.valid) expect(r.error).toContain(String(MIN_FORMAL_REVIEW_BODY_CHARS));
   });

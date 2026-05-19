@@ -11,8 +11,8 @@
 #   gh-pr.sh files    <number>
 #   gh-pr.sh checkout <number>
 #   gh-pr.sh review   <number> --approve
-#   gh-pr.sh review   <number> --request-changes [--body <text>]
-#   gh-pr.sh review   <number> --comment --body <text>
+#   gh-pr.sh review   <number> --request-changes --body <text>
+#   (Formal reviews in Agent Hub spawns: POST /api/pr/review with APPROVE or REQUEST_CHANGES only)
 #   gh-pr.sh comment  <number> --body <text>
 #   gh-pr.sh merge    <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]
 #   gh-pr.sh ready    <number>          # mark draft as ready for review
@@ -85,7 +85,7 @@ land under the GitHub App identity instead of a personal credential. Use:
   curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
     -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
     -H "Content-Type: application/json" \\
-    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
+    -d '{"prUrl":"<pr url>","event":"APPROVE|REQUEST_CHANGES","body":"<markdown>"}'
 
 (Other subcommands — comment/merge/close/ready/view/diff/list — remain available.)
 LOCKED
@@ -292,7 +292,7 @@ cmd_checkout() {
 # ---------------------------------------------------------------------------
 cmd_review() {
   _reviewer_locked review
-  [[ $# -lt 1 ]] && gh_die "pr review <number> --approve | --request-changes [--body <text>] | --comment --body <text>"
+  [[ $# -lt 1 ]] && gh_die "pr review <number> --approve [--body <text>] | --request-changes --body <text>"
 
   local number="$1"; shift
 
@@ -301,7 +301,9 @@ cmd_review() {
     case "$1" in
       --approve)          approve=true;      shift   ;;
       --request-changes)  req_changes=true;  shift   ;;
-      --comment)          comment=true;      shift   ;;
+      --comment)
+        gh_die "pr review --comment is not supported: COMMENT formal reviews do not count toward required approval. Use --approve (non-blocking notes in --body) or --request-changes. In reviewer spawns use POST /api/pr/review with event APPROVE or REQUEST_CHANGES."
+        ;;
       --body)             body="$2";         shift 2 ;;
       *) gh_die "pr review: unknown flag '$1'" ;;
     esac
@@ -318,12 +320,8 @@ cmd_review() {
     _require_arg "--body (required for request-changes)" "$body"
     gh pr review "$number" --request-changes --body "$body"
     echo "Requested changes on PR #$number"
-  elif [[ "$comment" == true ]]; then
-    _require_arg "--body (required for comment)" "$body"
-    gh pr review "$number" --comment --body "$body"
-    echo "Review comment posted on PR #$number"
   else
-    gh_die "pr review: specify one of --approve, --request-changes, --comment"
+    gh_die "pr review: specify --approve or --request-changes"
   fi
 }
 
@@ -463,7 +461,7 @@ Subcommands:
   diff      <number>
   files     <number>
   checkout  <number>
-  review    <number> --approve | --request-changes --body <text> | --comment --body <text>
+  review    <number> --approve [--body <text>] | --request-changes --body <text>
   comment   <number> --body <text>
   merge     <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]
   ready     <number>

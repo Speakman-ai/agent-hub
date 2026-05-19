@@ -142,8 +142,8 @@ describe('POST /api/pr/review — reviewer-session cleanup', () => {
       .post('/api/pr/review')
       .send({
         prUrl: setup.prUrl,
-        event: 'COMMENT',
-        body: 'Inline comments left on the diff — none are blocking, just heads up for the next iteration.',
+        event: 'APPROVE',
+        body: 'Reviewed the diff — inline notes are non-blocking nits only; nothing scores above 3 on the severity rubric. Approving as mergeable.',
       })
       .expect(200);
 

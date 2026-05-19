@@ -43,6 +43,7 @@ import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import { resolveOrgOwnerGithubToken, autoGitChildEnv } from '../auto-git.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
+import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
 import type {
   AppConfig,
   RouteDeps,
@@ -1365,12 +1366,11 @@ Example:
 Walk this in order and pick the **first** match — do not hedge:
 
 1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
-2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
-3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
+2. **Otherwise (every finding scored ≤ 3, including "CI still running but diff looks fine")** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking notes (nits, style, "CI pending") belong in the APPROVE body.
 
-**Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
+**Hard rule:** Never send \`COMMENT\` — \`POST /api/pr/review\` rejects it (400). A formal review whose JSON \`event\` is \`COMMENT\` is **never** an approving review for merge, even if the body says "LGTM." If nothing blocks merge, use \`APPROVE\` with your notes. If uncertain on correctness, use \`REQUEST_CHANGES\`.
 
-**Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
+**Hard rule (don't rubber-stamp):** If there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
 ${
   opts.reason === 'synchronize'
     ? `
@@ -1391,12 +1391,11 @@ If you do any of the above without also calling \`POST /api/pr/review\`, the pre
 
 ### What DOES count
 
-Exactly one \`POST /api/pr/review\` call with an \`event\` of \`APPROVE\`, \`REQUEST_CHANGES\`, or \`COMMENT\`. Use the event decision tree above to pick:
+Exactly one \`POST /api/pr/review\` call with \`event\` **\`APPROVE\`** or **\`REQUEST_CHANGES\`** only (\`COMMENT\` is rejected). Use the decision tree above:
 
-- If the autofix / new commits resolved every prior blocker and nothing new scores > 3 → \`APPROVE\`. Mention which prior finding the new commits resolved in the body.
+- If the autofix / new commits resolved every prior blocker and nothing new scores > 3 → \`APPROVE\`. Mention which prior finding the new commits resolved in the body. Include non-blocking notes (e.g. "CI still running") in the body — still use \`APPROVE\`, not \`COMMENT\`.
 - If new findings score > 3 (or a prior blocker is still not fixed) → \`REQUEST_CHANGES\`. List what's still outstanding plus any new findings.
-- A formal review whose JSON \`event\` is **\`COMMENT\`** is **never** an approving review for merge, even if the markdown body says "Approved for merge" or "LGTM." Reserve \`COMMENT\` for the rare "genuinely cannot decide" case from the decision tree — not for "re-confirming" after a merge-conflict or autofix commit.
-- Many repos enable **"dismiss stale reviews"**, so an older \`APPROVE\` no longer counts toward required reviews even if GitHub still shows it. Resubmit on every synchronize.
+- Many repos enable **"dismiss stale reviews"**, so an older \`APPROVE\` on a prior head no longer counts toward required reviews. You **must** submit a fresh \`APPROVE\` on the new head after every synchronize — a \`COMMENT\` re-review does not unblock automerge.
 
 ### Quick self-check before you end the session
 
@@ -1414,7 +1413,7 @@ curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
   -d '{"prUrl":"${opts.prUrl}","event":"<EVENT>","body":"<markdown body>"}'
 \`\`\`
 
-Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. **Every event requires a substantive \`body\`** (minimum length + not placeholder-only — trivial strings like \`test\` are rejected server-side). Use markdown with concrete file:line references.
+Replace \`<EVENT>\` with exactly one of \`APPROVE\` or \`REQUEST_CHANGES\` per the rubric above (\`COMMENT\` returns 400). **Every event requires a substantive \`body\`** (minimum length + not placeholder-only — trivial strings like \`test\` are rejected server-side). Use markdown with concrete file:line references.
 
 Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
 }
@@ -1668,6 +1667,57 @@ function buildWebhookContext(event: string, action: string, payload: GitHubWebho
 
 // ─── Kanban Board Webhook Lifecycle Handlers ────────────────────
 
+function isTerminalKanbanColumnName(name: string): boolean {
+  const n = name.toLowerCase().trim();
+  return n === 'done' || n === 'cancelled' || n === 'canceled' || n === 'closed';
+}
+
+/**
+ * When a PR exists on GitHub but the kanban card was never linked (`pr_url`
+ * still null), match by exact title and backfill the URL. Used for review,
+ * CI, and sync events — not only `pull_request.opened` — so a missed agent
+ * `PUT /cards/:id { pr_url }` does not strand the card when feedback arrives.
+ *
+ * Only matches cards with no `pr_url` or the same URL, and skips terminal
+ * columns (Done, etc.) so a new PR with a recycled title cannot hijack a
+ * closed card's session.
+ */
+export function tryLinkKanbanCardByPrTitle(
+  stmts: Stmts,
+  boardId: string,
+  prUrl: string,
+  prTitle: string,
+  cols: KanbanColumnRow[],
+  prNumber?: number,
+): KanbanCardRow | undefined {
+  const terminalColIds = new Set(
+    cols.filter((c) => isTerminalKanbanColumnName(c.name)).map((c) => c.id),
+  );
+  const allCards = stmts.getKanbanCards.all(boardId) as KanbanCardRow[];
+  const titleLower = prTitle.toLowerCase().trim();
+  // First title match wins — duplicate card titles on a board are rare but possible;
+  // prefer explicit pr_url / branch session linking when available.
+  const existing = allCards.find(
+    (c) =>
+      !terminalColIds.has(c.column_id) &&
+      c.title.toLowerCase().trim() === titleLower &&
+      (!c.pr_url || c.pr_url === prUrl),
+  );
+  if (!existing) return undefined;
+
+  if (!existing.pr_url) {
+    try {
+      stmts.setCardPrUrl.run(prUrl, existing.id);
+    } catch {
+      /* non-critical */
+    }
+  }
+  console.log(
+    `[Webhook/Kanban] Linked PR #${prNumber ?? '?'} to existing card "${existing.title}" by title match`,
+  );
+  return existing;
+}
+
 async function handleKanbanWebhookEvent(
   deps: RouteDeps,
   event: string,
@@ -1693,29 +1743,42 @@ async function handleKanbanWebhookEvent(
 
   let card = stmts.getKanbanCardByPrUrl?.get(prUrl) as KanbanCardRow | undefined;
 
-  if (!card && payload.pull_request?.head?.ref) {
+  const project = projects.find((p) => p.id === webhookConfig.project_id);
+  const boardData = project ? (getOrCreateBoard(stmts, project.id) as BoardData | null) : null;
+
+  if (!card && boardData?.board && payload.pull_request?.head?.ref) {
     const branchSessionMatch = payload.pull_request.head.ref.match(/session-([a-f0-9]{8})/);
     if (branchSessionMatch) {
       const shortId = branchSessionMatch[1];
-      const boardData = getOrCreateBoard(stmts, webhookConfig.project_id) as BoardData | null;
-      if (boardData?.board) {
-        const allCards = stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[];
-        card = allCards.find((c) => c.session_id && c.session_id.startsWith(shortId));
-        if (card && !card.pr_url) {
-          try {
-            stmts.setCardPrUrl.run(prUrl, card.id);
-            console.log(
-              `[Webhook/Kanban] Auto-linked PR URL on card "${card.title}" via branch session ID`,
-            );
-          } catch (_e) {
-            /* non-critical */
-          }
+      const allCards = stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[];
+      card = allCards.find((c) => c.session_id && c.session_id.startsWith(shortId));
+      if (card && !card.pr_url) {
+        try {
+          stmts.setCardPrUrl.run(prUrl, card.id);
+          console.log(
+            `[Webhook/Kanban] Auto-linked PR URL on card "${card.title}" via branch session ID`,
+          );
+        } catch (_e) {
+          /* non-critical */
         }
       }
     }
   }
 
-  const project = projects.find((p) => p.id === webhookConfig.project_id);
+  const boardCols = boardData?.board
+    ? (stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[])
+    : [];
+
+  if (!card && boardData?.board && payload.pull_request?.title) {
+    card = tryLinkKanbanCardByPrTitle(
+      stmts,
+      boardData.board.id,
+      prUrl,
+      payload.pull_request.title,
+      boardCols,
+      payload.pull_request.number,
+    );
+  }
 
   // ─── Check Run / Check Suite "Re-run" ───────────────────────────
   // The user clicked the "Re-run" button in GitHub's Checks tab — either on our
@@ -1801,65 +1864,49 @@ async function handleKanbanWebhookEvent(
     }
   }
 
-  const boardData = getOrCreateBoard(stmts, project.id) as BoardData | null;
   if (!boardData?.board) return false;
-  const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
+  const cols =
+    boardCols.length > 0
+      ? boardCols
+      : (stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[]);
 
-  // When a PR is opened with no card yet linked, try to find an existing card
-  // by exact-title match and auto-link the PR URL to it. We intentionally do
-  // NOT create a new card here — agent-authored PRs race with the agent's own
-  // `PUT /cards/:id {pr_url}` call, which produced duplicate cards. Cards are
-  // now created exclusively by agents (or the "Create PR" button), and external
-  // PRs that don't match a card simply won't appear on the board.
+  // `pull_request.opened` with no card: title match may have linked above; if still
+  // none, log and stop (we never auto-create cards on webhook — agents do that).
   if (!card && event === 'pull_request' && action === 'opened' && payload.pull_request) {
     const pr = payload.pull_request;
-
-    // Dedup: check for existing card with same title (case-insensitive) on this board
-    const allCards = stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[];
-    const titleLower = pr.title.toLowerCase().trim();
-    const existingByTitle = allCards.find((c) => c.title.toLowerCase().trim() === titleLower);
-    if (existingByTitle) {
-      // Link the PR URL to the existing card if not already set
-      if (!existingByTitle.pr_url) {
-        try {
-          stmts.setCardPrUrl.run(prUrl, existingByTitle.id);
-        } catch {
-          /* non-critical */
-        }
-      }
-      console.log(
-        `[Webhook/Kanban] Linked PR #${pr.number} to existing card "${existingByTitle.title}" by title match`,
-      );
-      card = existingByTitle;
-
-      // Still trigger capture for the PR even if card already exists
-      const repoHtmlUrl = payload.repository?.html_url;
-      if (repoHtmlUrl && pr.head?.ref) {
-        triggerCaptureForPR(
-          { stmts, broadcast },
-          {
-            projectId: project.id,
-            prNumber: pr.number,
-            prUrl: pr.html_url,
-            branch: pr.head.ref,
-            commitSha: pr.head.sha || null,
-            repoUrl: repoHtmlUrl,
-          },
-        ).catch((err) => {
-          console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
-        });
-      }
-
-      return true;
-    }
-
     console.log(
       `[Webhook/Kanban] PR #${pr.number} "${pr.title}" opened with no matching card — not auto-creating (by design)`,
     );
     return false;
   }
 
+  if (card && event === 'pull_request' && action === 'opened' && payload.pull_request?.head?.ref) {
+    const pr = payload.pull_request;
+    const headRef = pr.head?.ref;
+    const repoHtmlUrl = payload.repository?.html_url;
+    if (repoHtmlUrl && headRef) {
+      triggerCaptureForPR(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          prNumber: pr.number,
+          prUrl: pr.html_url,
+          branch: headRef,
+          commitSha: pr.head?.sha || null,
+          repoUrl: repoHtmlUrl,
+        },
+      ).catch((err) => {
+        console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
+      });
+    }
+  }
+
   if (!card) return false;
+
+  // Opened is handled above (reviewer dispatch, title/session link, capture).
+  if (event === 'pull_request' && action === 'opened') {
+    return true;
+  }
 
   const eventKey = action ? `${event}.${action}` : event;
   const sender = payload.sender?.login || 'unknown';
@@ -1872,7 +1919,8 @@ async function handleKanbanWebhookEvent(
     case 'pull_request.synchronize':
       return handleWebhookPrSynchronize(deps, card, project, cols, payload, sender);
     case 'check_suite.completed':
-      return handleWebhookCheckSuiteCompleted(deps, card, project, cols, payload, sender);
+    case 'check_run.completed':
+      return await handleWebhookCiCompleted(deps, card, project, cols, payload, sender);
     case 'pull_request_review_comment.created':
       return handleWebhookReviewComment(deps, card, project, cols, payload, sender);
     default:
@@ -2053,36 +2101,8 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
       prNumber,
     });
     return true;
-  } else if (state === 'commented' && reviewBody && reviewBody.trim().length > 20) {
-    const feedbackMessage = `# PR Review Comment (via GitHub)
-
-**Reviewer:** ${sender}
-**PR:** #${prNumber}
-
-A reviewer left comments on your PR. Please review and address if needed.
-
-## Review comment:
-${reviewBody}
-
-## What to do:
-1. Read the full review: \`gh pr view ${prNumber} --comments\`
-2. Check for inline comments: \`gh api repos/${payload.repository?.full_name}/pulls/${prNumber}/comments\`
-3. If changes are needed, fix the code and push
-4. If it's informational, acknowledge with a comment on the PR
-
-**Important:** Always prefix your comment body with \`<!-- agent-hub-bot -->\` so the system knows it was posted by an agent.`;
-
-    const { sessionId, userMessagePersisted } = await dispatchReviewAutofix(
-      deps,
-      card,
-      project,
-      'review-commented',
-      feedbackMessage,
-    );
-    console.log(
-      `[Webhook/Kanban] Commented review on "${card.title}" by ${sender} (substantive) — dispatched to session ${sessionId || '(failed)'} (persisted: ${userMessagePersisted})`,
-    );
-
+  } else if (state === 'commented') {
+    // COMMENT formal reviews do not block merge; surface them in the UI only.
     broadcast({
       type: 'webhook_pr_review',
       projectId: project.id,
@@ -2449,21 +2469,23 @@ function handleWebhookPrSynchronize(
   return true;
 }
 
-function handleWebhookCheckSuiteCompleted(
+async function handleWebhookCiCompleted(
   deps: RouteDeps,
   card: KanbanCardRow,
   project: Project,
   cols: KanbanColumnRow[],
   payload: GitHubWebhookPayload,
   _sender: string,
-): boolean {
-  const { stmts, broadcast, handleChat } = deps;
-  const checkSuite = payload.check_suite;
-  if (!checkSuite) return false;
+): Promise<boolean> {
+  const { stmts, broadcast } = deps;
+  const check = payload.check_suite || payload.check_run;
+  if (!check) return false;
 
-  const conclusion = checkSuite.conclusion;
-  const prs = checkSuite.pull_requests || [];
-  const prNumber = prs[0]?.number;
+  const conclusion = check.conclusion;
+  const prs = check.pull_requests || [];
+  const prNumber = prs[0]?.number ?? payload.pull_request?.number;
+  const checkLabel =
+    ('name' in check && typeof check.name === 'string' && check.name) || check.app?.name || 'CI';
 
   console.log(`[Webhook/Kanban] CI ${conclusion} on card "${card.title}" (PR #${prNumber || '?'})`);
 
@@ -2474,76 +2496,100 @@ function handleWebhookCheckSuiteCompleted(
     cardTitle: card.title,
     prNumber,
     conclusion,
-    checkSuiteName: checkSuite.app?.name || 'CI',
+    checkSuiteName: checkLabel,
   });
 
-  if (conclusion === 'failure' && card.session_id) {
-    const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
-    if (reviewCol && card.column_id === reviewCol.id) {
-      const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
+  if (!conclusion || !CI_FAIL_CONCLUSIONS.has(conclusion)) {
+    return true;
+  }
 
-      if (inProgressCol) {
-        stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
-        broadcast({ type: 'kanban_update', projectId: project.id });
-      }
+  // GitHub delivers check_run.completed per job and check_suite.completed once
+  // per workflow. Autofix is driven only by check_run (deduped below).
+  if (payload.check_suite && !payload.check_run) {
+    return true;
+  }
 
-      if (prNumber) {
-        const existing = stmts.getAnyRecentEscalationByTypeAndPr.get(
-          project.id,
-          'ci_failure',
+  const checkRunId =
+    payload.check_run && typeof payload.check_run.id === 'number' ? payload.check_run.id : null;
+  if (checkRunId == null) {
+    return true;
+  }
+
+  const lastDispatched =
+    card.last_dispatched_check_run_id != null
+      ? Number(card.last_dispatched_check_run_id)
+      : undefined;
+  if (lastDispatched !== undefined && checkRunId <= lastDispatched) {
+    console.log(
+      `[Webhook/Kanban] CI check run #${checkRunId} already dispatched (last=${lastDispatched}) — skipping autofix`,
+    );
+    return true;
+  }
+
+  const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
+  const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
+  const inAutofixColumn =
+    (reviewCol && card.column_id === reviewCol.id) ||
+    (inProgressCol && card.column_id === inProgressCol.id);
+
+  if (!inAutofixColumn) {
+    console.log(
+      `[Webhook/Kanban] CI ${conclusion} on "${card.title}" — card not in Review/In Progress, skipping autofix`,
+    );
+    return true;
+  }
+
+  if (reviewCol && card.column_id === reviewCol.id && inProgressCol) {
+    stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+    broadcast({ type: 'kanban_update', projectId: project.id });
+  }
+
+  if (prNumber) {
+    const existing = stmts.getAnyRecentEscalationByTypeAndPr.get(
+      project.id,
+      'ci_failure',
+      prNumber,
+    );
+    if (existing) {
+      console.log(`[Webhook/Kanban] Repeated CI failure on PR #${prNumber} — escalating to human`);
+      createEscalation(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          type: 'ci_failure',
+          title: `CI failing repeatedly on PR #${prNumber}`,
+          description: `CI checks have failed multiple times on "${card.title}". The agent was unable to fix the issue automatically. Human intervention is needed to diagnose and resolve the failures.\n\nCheck: ${checkLabel}`,
           prNumber,
-        );
-        if (existing) {
-          console.log(
-            `[Webhook/Kanban] Repeated CI failure on PR #${prNumber} — escalating to human`,
-          );
-          createEscalation(
-            { stmts, broadcast },
-            {
-              projectId: project.id,
-              type: 'ci_failure',
-              title: `CI failing repeatedly on PR #${prNumber}`,
-              description: `CI checks have failed multiple times on "${card.title}". The agent was unable to fix the issue automatically. Human intervention is needed to diagnose and resolve the failures.\n\nCheck suite: ${checkSuite.app?.name || 'CI'}`,
-              prNumber,
-              prUrl: payload.repository
-                ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
-                : null,
-              cardId: card.id,
-              source: 'webhook',
-            },
-          );
-        } else {
-          createEscalation(
-            { stmts, broadcast },
-            {
-              projectId: project.id,
-              type: 'ci_failure',
-              title: `CI failed on PR #${prNumber}`,
-              description: `CI checks failed on "${card.title}". The agent has been notified to fix the issue.\n\nCheck suite: ${checkSuite.app?.name || 'CI'}`,
-              prNumber,
-              prUrl: payload.repository
-                ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
-                : null,
-              cardId: card.id,
-              source: 'webhook',
-              silent: true,
-            },
-          );
-        }
-      }
+          prUrl: payload.repository
+            ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
+            : null,
+          cardId: card.id,
+          source: 'webhook',
+        },
+      );
+    } else {
+      createEscalation(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          type: 'ci_failure',
+          title: `CI failed on PR #${prNumber}`,
+          description: `CI checks failed on "${card.title}". The agent has been notified to fix the issue.\n\nCheck: ${checkLabel}`,
+          prNumber,
+          prUrl: payload.repository
+            ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
+            : null,
+          cardId: card.id,
+          source: 'webhook',
+          silent: true,
+        },
+      );
+    }
+  }
 
-      const originalSession = stmts.getSession.get(card.session_id) as SessionRow | undefined;
-      if (originalSession) {
-        console.log(
-          `[Webhook/Kanban] CI failed — dispatching fix request to session ${card.session_id}`,
-        );
-        handleChat(null, {
-          type: 'chat',
-          agentId: originalSession.agent_id,
-          sessionId: card.session_id,
-          content: `# CI Check Failed
+  const feedbackMessage = `# CI Check Failed
 
-The CI checks on your PR have **failed**. Please investigate and fix.
+The CI checks on your PR have **failed** (${checkLabel}: ${conclusion}). Please investigate and fix.
 
 ## What to do:
 1. Check the failure details: \`gh pr checks ${prNumber || ''}\`
@@ -2556,9 +2602,27 @@ The CI checks on your PR have **failed**. Please investigate and fix.
    git push
    \`\`\`
 
-The CI will re-run automatically after you push.`,
-        });
-      }
+The CI will re-run automatically after you push.`;
+
+  const { sessionId, userMessagePersisted } = await dispatchReviewAutofix(
+    deps,
+    card,
+    project,
+    'ci-failure',
+    feedbackMessage,
+  );
+  console.log(
+    `[Webhook/Kanban] CI ${conclusion} on "${card.title}" — dispatched to session ${sessionId || '(failed)'} (persisted: ${userMessagePersisted})`,
+  );
+
+  if (userMessagePersisted) {
+    try {
+      stmts.setCardLastDispatchedCheckRunId?.run(checkRunId, card.id);
+    } catch (persistErr) {
+      console.warn(
+        `[Webhook/Kanban] Failed to persist last_dispatched_check_run_id for card ${card.id}:`,
+        (persistErr as Error).message,
+      );
     }
   }
 

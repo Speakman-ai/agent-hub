@@ -111,6 +111,12 @@ describe('Webhook config default events when seeded via PATCH githubRepo', () =>
     // was ~24% of the 1,079-invocation storm.
     expect(events['check_suite.completed']).toBeDefined();
     expect(events['check_suite.completed']?.enabled).toBe(false);
+
+    // Per-job check_run.completed fires alongside check_suite.completed for
+    // normal Actions runs. Kanban autofix listens on check_run only (deduped);
+    // both events stay off for the Claude handler by default.
+    expect(events['check_run.completed']).toBeDefined();
+    expect(events['check_run.completed']?.enabled).toBe(false);
   });
 });
 

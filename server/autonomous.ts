@@ -20,6 +20,7 @@ import {
 } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
+import { CI_FAIL_CONCLUSIONS } from './ci-conclusions.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import type {
   Stmts,
@@ -1348,13 +1349,8 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
   }
 }
 
-/**
- * Conclusions on a GitHub check_run that mean "this CI run failed and the
- * author needs to fix something". Matches the set used by the webhook-driven
- * `handleWebhookCheckSuiteCompleted` path so the poller and the event path
- * agree on what counts as a failure.
- */
-const CI_FAIL_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'cancelled']);
+/** Kanban columns where an open PR on the card is no longer actionable. */
+const TERMINAL_KANBAN_COLUMN_NAMES = new Set(['done', 'cancelled', 'canceled', 'closed']);
 
 /**
  * Bot login names whose review comments should never trigger an author-side
@@ -1411,17 +1407,18 @@ export async function pollForMissedReviews(): Promise<void> {
     }>;
     const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
     const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
-    if (!reviewCol && !inProgressCol) continue;
 
-    const seenCardIds = new Set<string>();
-    const cardsToScan: KanbanCardRow[] = [];
-    for (const col of [reviewCol, inProgressCol].filter(Boolean) as Array<(typeof cols)[0]>) {
-      for (const c of d.stmts.getKanbanCardsByColumn.all(col.id) as KanbanCardRow[]) {
-        if (seenCardIds.has(c.id)) continue;
-        seenCardIds.add(c.id);
-        cardsToScan.push(c);
-      }
-    }
+    // Scan every non-terminal card with a linked PR — not only Review/In Progress.
+    // Autonomous cards often sit in To Do while a PR is open; Done cards are
+    // excluded so we don't spend a gh call per merged PR every poll cycle.
+    const terminalColIds = new Set(
+      cols
+        .filter((c) => TERMINAL_KANBAN_COLUMN_NAMES.has(c.name.toLowerCase().trim()))
+        .map((c) => c.id),
+    );
+    const cardsToScan = (d.stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[]).filter(
+      (c) => c.pr_url && !terminalColIds.has(c.column_id),
+    );
 
     for (const card of cardsToScan) {
       if (!card.pr_url) continue;
@@ -1523,8 +1520,11 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
             }
           }
         }
-      } catch {
-        // gh CLI not available or API error — skip silently
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[ReviewPoll] CHANGES_REQUESTED probe failed for card "${card.title}" (${repoFullName}#${prNumber}): ${msg}`,
+        );
       }
 
       // ── Missed CI failures + inline review comments ────────────────────
@@ -1653,8 +1653,11 @@ The CI will re-run automatically once you push.`;
               }
             }
           }
-        } catch {
-          // check-runs API error — skip silently and try again next poll.
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[ReviewPoll] check-runs probe failed for card "${card.title}" (${repoFullName}#${prNumber}): ${msg}`,
+          );
         }
       }
 
@@ -1758,8 +1761,11 @@ ${commentSummary}${newComments.length > 5 ? `\n…and ${newComments.length - 5} 
             }
           }
         }
-      } catch {
-        // pulls/comments API error — skip silently and try again next poll.
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[ReviewPoll] inline-comment probe failed for card "${card.title}" (${repoFullName}#${prNumber}): ${msg}`,
+        );
       }
     }
   }

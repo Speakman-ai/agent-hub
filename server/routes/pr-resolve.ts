@@ -29,11 +29,10 @@ import { AUTOFIX_KINDS, loadAutofixTemplate, type AutofixKind } from '../prompts
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
 
 /** CLI (`CONFLICTING`) and App (`dirty`, `conflicting`) values both get caught here. */
 const CONFLICT_STATES = new Set(['dirty', 'conflicting']);
-
-const CI_FAIL_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'cancelled']);
 
 type PrRecord = Record<string, unknown>;
 type ReviewRecord = Record<string, unknown>;

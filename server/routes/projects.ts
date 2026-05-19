@@ -1588,6 +1588,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         'pull_request.closed': { enabled: false },
         'pull_request_review.submitted': { enabled: false },
         'check_suite.completed': { enabled: false },
+        'check_run.completed': { enabled: false },
       });
 
       let created: WebhookConfigRow;
@@ -2401,6 +2402,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
           'pull_request.closed': { enabled: false },
           'pull_request_review.submitted': { enabled: false },
           'check_suite.completed': { enabled: false },
+          'check_run.completed': { enabled: false },
         });
         stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1, '[]');
       }

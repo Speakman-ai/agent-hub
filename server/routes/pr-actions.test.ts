@@ -263,7 +263,7 @@ describe('PR Actions route', () => {
       expect(res.body.error).toMatch(/Invalid review event/);
     });
 
-    it('accepts APPROVE, REQUEST_CHANGES, COMMENT only with substantive bodies', async () => {
+    it('accepts APPROVE and REQUEST_CHANGES only with substantive bodies', async () => {
       const approveNoBody = await request(app)
         .post('/api/pr/review')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
@@ -291,26 +291,17 @@ describe('PR Actions route', () => {
       expect(rcNoBody.status).toBe(400);
       expect(rcNoBody.body.error).toMatch(/body is required|at least \d+ characters/);
 
-      const commentNoBody = await request(app)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'COMMENT' });
-      expect(commentNoBody.status).toBe(400);
-
-      const commentTooShort = await request(app).post('/api/pr/review').send({
-        prUrl: 'https://github.com/owner/repo/pull/42',
-        event: 'COMMENT',
-        body: 'notes',
-      });
-      expect(commentTooShort.status).toBe(400);
-
-      const commentOk = await request(app)
+      const commentRejected = await request(app)
         .post('/api/pr/review')
         .send({
           prUrl: 'https://github.com/owner/repo/pull/42',
           event: 'COMMENT',
-          body: `${SUBSTANTIVE_REVIEW_BODY} Need author input on API shape before endorsing merge.`,
+          body: `${SUBSTANTIVE_REVIEW_BODY} Non-blocking notes only — should still be APPROVE.`,
         });
-      expect(commentOk.status).not.toBe(400);
+      expect(commentRejected.status).toBe(400);
+      expect(commentRejected.body.error).toMatch(/COMMENT reviews do not count toward required approval/);
+      expect(commentRejected.body.error).toMatch(/APPROVE/);
+      expect(commentRejected.body.error).toMatch(/REQUEST_CHANGES/);
     });
 
     it('returns 501 when no GitHub App installation and no bot token are configured', async () => {
@@ -746,20 +737,6 @@ describe('PR Actions route', () => {
       const args = createReviewLogRun.mock.calls[0];
       expect(args[7]).toBe('changes_requested');
       expect(args[8]).toContain('missing null guard');
-    });
-
-    it('maps COMMENT → ambiguous', async () => {
-      resolveInstallationId.mockReturnValue(42);
-      githubApiRequest.mockResolvedValue({ id: 101, user: { login: 'reviewer-bot' } });
-
-      await request(app).post('/api/pr/review').send({
-        prUrl: 'https://github.com/owner/repo/pull/42',
-        event: 'COMMENT',
-        body: '**[3/10]** `src/utils.ts:22` — nit: naming could match project conventions. I am leaving COMMENT because I want the author to confirm the preferred export style before merge.',
-      });
-
-      expect(createReviewLogRun).toHaveBeenCalledTimes(1);
-      expect(createReviewLogRun.mock.calls[0][7]).toBe('ambiguous');
     });
 
     it('skips persistence when the PR is not linked to any kanban card', async () => {

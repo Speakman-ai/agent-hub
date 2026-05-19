@@ -204,7 +204,7 @@ reviews via the server-mediated endpoint:
   curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
     -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
     -H "Content-Type: application/json" \\
-    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
+    -d '{"prUrl":"<pr url>","event":"APPROVE|REQUEST_CHANGES","body":"<markdown>"}'
 
 That endpoint uses the GitHub App / bot identity. Direct invocations of
 \`gh pr create / merge / close / ready / edit\` and arbitrary write
