@@ -40,7 +40,7 @@ import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js
  * copy/setup/lint/test phases, and the github executor handles
  * mint-token/gh-create/gh-push. Each executor delegates unknown
  * phases to its `fallback`, and the outermost fallback is the stub
- * — so phases nobody implements (e.g. git-init in dev) still succeed.
+ * — so phases nobody implements (e.g. validate) still succeed.
  */
 export function defaultExecutorFactory(deps: RouteDeps): ProvisioningExecutor {
   // E2E / deterministic-happy-path hook. Setting
