@@ -831,13 +831,23 @@ export async function dispatchReviewFeedback(
     }
 
     const sessionId = crypto.randomUUID();
-    const engine = agent.engine || 'claude-code';
+    // Card-level `assign_engine` (when set) hard-pins the spawn engine,
+    // overriding the assignee agent's shared engine — same precedence as
+    // the manual /assign path. Falls back to the agent engine when no
+    // override or the override is unknown.
+    const cardEngineRaw = typeof card.assign_engine === 'string' ? card.assign_engine.trim() : '';
+    const engine =
+      cardEngineRaw && config.engineValidModels?.[cardEngineRaw]
+        ? cardEngineRaw
+        : agent.engine || 'claude-code';
     const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
     const allowedForEngine = config.engineValidModels[engine] || [];
     const resolvedModel =
       cardRaw && allowedForEngine.includes(cardRaw)
         ? cardRaw
-        : (agent.model as string | undefined) || defaultModelForEngine(engine);
+        : (engine === (agent.engine || 'claude-code') && (agent.model as string | undefined)) ||
+          config.engineDefaultModels?.[engine] ||
+          defaultModelForEngine(engine);
     stmts.createSession.run(
       sessionId,
       agent.id,
@@ -872,6 +882,7 @@ export async function dispatchReviewFeedback(
       card.pr_url,
       card.epic_id,
       card.assign_model,
+      card.assign_engine ?? null,
       card.pr_base_branch ?? null,
       card.id,
     );

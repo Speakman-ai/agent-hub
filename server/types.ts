@@ -382,6 +382,11 @@ export interface KanbanCardRow {
   dispatched_by_autonomous: number;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
+  /** Optional engine override chosen at assign time. When set, the spawn engine
+   *  is forced to this id regardless of the assignee agent's shared engine.
+   *  Validated against `cfg.engineValidModels` keys at the route layer; the
+   *  effective-model resolver treats it as `explicitEngine`. */
+  assign_engine?: string | null;
   /** @deprecated Triage gating is gone — autonomous dispatch now routes
    *  by labels with a lead fallback. The column remains for backward-compat
    *  with existing rows but is no longer written by the dispatch path. */

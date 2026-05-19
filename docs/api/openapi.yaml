@@ -618,6 +618,10 @@ components:
         assign_model:
           type: string
           nullable: true
+        assign_engine:
+          type: string
+          nullable: true
+          description: Optional engine override pinned at assign / update time. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". Overrides the assignee agent's shared engine at session spawn.
         pr_base_branch:
           type: string
           nullable: true
@@ -5064,6 +5068,10 @@ paths:
                 assignModel:
                   type: string
                   nullable: true
+                assignEngine:
+                  type: string
+                  nullable: true
+                  description: Optional engine override for the session spawn. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, overrides the assignee agent's shared engine.
                 prBaseBranch:
                   type: string
                   nullable: true
@@ -5172,6 +5180,10 @@ paths:
                 model:
                   type: string
                   nullable: true
+                engine:
+                  type: string
+                  nullable: true
+                  description: Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent's shared engine. Validated against the server's engineValidModels — unknown engines yield 400.
               required:
                 - agentId
       responses:

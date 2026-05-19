@@ -408,10 +408,7 @@ describe('KanbanBoard reassign active session', () => {
     );
     fireEvent.change(assigneeSelect, { target: { value: 'AgentB' } });
 
-    const modelSelect = combos.find((c) =>
-      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
-    );
-    expect(modelSelect).toBeDefined();
+    const modelSelect = await within(modal).findByTestId('card-model-select-new');
     fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
 
     api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-2' });
@@ -490,29 +487,28 @@ describe('KanbanBoard reassign active session', () => {
     const modal = await screen.findByTestId('card-detail-modal');
 
     // The Session model dropdown should be visible without clicking Reassign.
-    const combos = within(modal).getAllByRole('combobox');
-    const modelSelect = combos.find((c) =>
-      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
-    );
-    expect(modelSelect).toBeDefined();
+    const modelSelect = await within(modal).findByTestId('card-model-select');
     // Current value should match card's assign_model.
     expect(modelSelect.value).toBe('claude-opus-4-7');
 
-    // "Save model override" button should NOT appear yet (no change).
-    expect(within(modal).queryByRole('button', { name: /Save model override/i })).toBeNull();
+    // "Save override" button should NOT appear yet (no change).
+    expect(within(modal).queryByRole('button', { name: /Save override/i })).toBeNull();
 
     // Change to a different model.
     fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
 
-    // "Save model override" button should now appear.
-    const saveBtn = await within(modal).findByRole('button', { name: /Save model override/i });
+    // "Save override" button should now appear.
+    const saveBtn = await within(modal).findByRole('button', { name: /Save override/i });
     expect(saveBtn).toBeInTheDocument();
 
-    // Click save — should call updateCard with the new model.
+    // Click save — should call updateCard with the new model. The engine
+    // override is unchanged (null on both sides) so it still goes in the
+    // payload as null — same diff as before the engine selector shipped.
     fireEvent.click(saveBtn);
     await waitFor(() =>
       expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', {
         assign_model: 'claude-sonnet-4-20250514',
+        assign_engine: null,
       }),
     );
   });
@@ -545,21 +541,18 @@ describe('KanbanBoard reassign active session', () => {
     fireEvent.click(screen.getByText('Active card'));
     const modal = await screen.findByTestId('card-detail-modal');
 
-    const combos = within(modal).getAllByRole('combobox');
-    const modelSelect = combos.find((c) =>
-      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
-    );
-    expect(modelSelect).toBeDefined();
+    const modelSelect = await within(modal).findByTestId('card-model-select');
 
-    // Clear the model override by selecting "Agent default".
+    // Clear the model override by selecting "Engine default" (empty value).
     fireEvent.change(modelSelect, { target: { value: '' } });
 
-    const saveBtn = await within(modal).findByRole('button', { name: /Save model override/i });
+    const saveBtn = await within(modal).findByRole('button', { name: /Save override/i });
     fireEvent.click(saveBtn);
 
     await waitFor(() =>
       expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', {
         assign_model: null,
+        assign_engine: null,
       }),
     );
   });
@@ -724,6 +717,141 @@ describe('KanbanBoard drag-and-drop', () => {
       columnId: 'col-progress',
       position: 0,
     });
+  });
+});
+
+describe('KanbanBoard Session engine dropdown', () => {
+  beforeEach(() => {
+    api.getBoard.mockReset();
+    api.get.mockReset();
+    api.getCardComments.mockReset();
+    api.getModelConfig.mockReset();
+    api.assignCard.mockReset();
+    api.updateCard.mockReset();
+    api.get.mockResolvedValue([]);
+    api.getCardComments.mockResolvedValue([]);
+    // Multi-engine config so the engine selector has > 1 option.
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-7', 'codex-cli': 'gpt-5.3-codex' },
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'],
+        'codex-cli': ['gpt-5.3-codex', 'gpt-5.4'],
+      },
+    });
+  });
+
+  it('passes both engine + model to assignCard when an unassigned card is started cross-engine', async () => {
+    // Card has no session yet → the picker shows the assignee dropdown +
+    // engine selector + model selector. Pick a claude-code agent but
+    // override the engine to codex-cli and the model to a codex model.
+    // Both must be sent to api.assignCard.
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Unassigned card',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Unassigned card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Unassigned card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    // Pick assignee — engine + model selectors should render.
+    const initialCombos = within(modal).getAllByRole('combobox');
+    const assigneeSelect = initialCombos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Unassigned'),
+    );
+    fireEvent.change(assigneeSelect, { target: { value: 'AgentA' } });
+
+    // The engine dropdown carries a `data-testid` so it's unambiguous.
+    const engineSelect = await within(modal).findByTestId('card-engine-select-new');
+    expect(engineSelect).toBeDefined();
+    expect(
+      Array.from(engineSelect.options)
+        .map((o) => o.value)
+        .filter(Boolean),
+    ).toEqual(expect.arrayContaining(['claude-code', 'codex-cli']));
+
+    // Switch engine to codex-cli — the model dropdown must repopulate with
+    // codex models AND must NOT carry over a stale claude-code model.
+    fireEvent.change(engineSelect, { target: { value: 'codex-cli' } });
+
+    const modelSelect = await within(modal).findByTestId('card-model-select-new');
+    expect(
+      Array.from(modelSelect.options)
+        .map((o) => o.value)
+        .filter(Boolean),
+    ).toEqual(expect.arrayContaining(['gpt-5.3-codex', 'gpt-5.4']));
+    fireEvent.change(modelSelect, { target: { value: 'gpt-5.3-codex' } });
+
+    api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-x' });
+    fireEvent.click(within(modal).getByRole('button', { name: /Assign & Start/i }));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', {
+        model: 'gpt-5.3-codex',
+        engine: 'codex-cli',
+      }),
+    );
+  });
+
+  it('PUT updateCard includes both assign_engine + assign_model on an active card', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Active card',
+          column_id: 'col-todo',
+          position: 0,
+          assignee: 'AgentA',
+          session_id: 'sess-1',
+          assign_model: null,
+          assign_engine: null,
+        },
+      ]),
+    );
+    api.updateCard.mockResolvedValue({});
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Active card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    // The active-state engine dropdown carries its own test id.
+    const engineSelect = await within(modal).findByTestId('card-engine-select');
+    fireEvent.change(engineSelect, { target: { value: 'codex-cli' } });
+
+    const modelSelect = await within(modal).findByTestId('card-model-select');
+    fireEvent.change(modelSelect, { target: { value: 'gpt-5.3-codex' } });
+
+    const saveBtn = await within(modal).findByRole('button', { name: /Save override/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', {
+        assign_engine: 'codex-cli',
+        assign_model: 'gpt-5.3-codex',
+      }),
+    );
   });
 });
 

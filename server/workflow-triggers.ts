@@ -336,6 +336,9 @@ export function kanbanCardTriggerPayload(card: KanbanCardRow): Record<string, un
   if (card.assign_model != null && card.assign_model !== undefined) {
     base.assign_model = card.assign_model;
   }
+  if (card.assign_engine != null && card.assign_engine !== undefined) {
+    base.assign_engine = card.assign_engine;
+  }
   return base;
 }
 

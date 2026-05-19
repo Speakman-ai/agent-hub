@@ -543,6 +543,7 @@ export default function KanbanBoard({
       priority: card.priority || 'medium',
       assignee: card.assignee || '',
       assign_model: card.assign_model || '',
+      assign_engine: card.assign_engine || '',
       labels: card.labels || '',
       github_issue_url: card.github_issue_url || '',
       pr_url: card.pr_url || '',
@@ -1568,61 +1569,120 @@ export default function KanbanBoard({
                             Session active
                           </span>
                         </div>
-                        {/* Model override display/edit for assigned cards */}
+                        {/* Engine + model override display/edit for assigned cards.
+                            The engine selector lists every engine the user is
+                            authed for (modelConfig.engineValidModels keys
+                            with non-empty model lists). When unset, the
+                            spawn falls back to the assignee agent's shared
+                            engine — same behaviour as before this picker
+                            shipped. Changing the engine clears the model
+                            selection so we can't save a model that's not
+                            valid for the chosen engine. */}
                         {modelConfig &&
                           (() => {
                             const selAgent = agents.find(
                               (a) => a.name === (selectedCard.assignee || detailForm.assignee),
                             );
-                            const eng = selAgent?.engine || 'claude-code';
-                            const opts = modelConfig.engineValidModels?.[eng] || [];
-                            if (opts.length === 0) return null;
+                            const agentEng = selAgent?.engine || 'claude-code';
+                            const engineEntries = Object.entries(
+                              modelConfig.engineValidModels || {},
+                            ).filter(([, models]) => (models?.length ?? 0) > 0);
+                            const effectiveEngine =
+                              (detailForm.assign_engine && detailForm.assign_engine.trim()) ||
+                              agentEng;
+                            const modelOpts =
+                              modelConfig.engineValidModels?.[effectiveEngine] || [];
+                            if (engineEntries.length === 0 && modelOpts.length === 0) return null;
+                            const engineChanged =
+                              (detailForm.assign_engine || '') !==
+                              (selectedCard.assign_engine || '');
+                            const modelChanged =
+                              (detailForm.assign_model || '') !== (selectedCard.assign_model || '');
                             return (
-                              <div className="mb-3">
-                                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
-                                  Session model
-                                </label>
-                                <select
-                                  value={detailForm.assign_model || ''}
-                                  onChange={(e) =>
-                                    setDetailForm((f) => ({ ...f, assign_model: e.target.value }))
-                                  }
-                                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
-                                >
-                                  <option value="">Agent default</option>
-                                  {opts.map((m) => (
-                                    <option key={m} value={m}>
-                                      {m}
-                                    </option>
-                                  ))}
-                                </select>
-                                {detailForm.assign_model !== (selectedCard.assign_model || '') && (
+                              <div className="mb-3 space-y-2">
+                                {engineEntries.length > 0 && (
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+                                      Session engine
+                                    </label>
+                                    <select
+                                      data-testid="card-engine-select"
+                                      value={detailForm.assign_engine || ''}
+                                      onChange={(e) =>
+                                        setDetailForm((f) => ({
+                                          ...f,
+                                          assign_engine: e.target.value,
+                                          // Reset the model whenever the
+                                          // engine changes — a saved
+                                          // claude-code model is invalid
+                                          // under codex-cli.
+                                          assign_model: '',
+                                        }))
+                                      }
+                                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                    >
+                                      <option value="">Agent default ({agentEng})</option>
+                                      {engineEntries.map(([eng]) => (
+                                        <option key={eng} value={eng}>
+                                          {eng}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                                {modelOpts.length > 0 && (
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+                                      Session model
+                                    </label>
+                                    <select
+                                      data-testid="card-model-select"
+                                      value={detailForm.assign_model || ''}
+                                      onChange={(e) =>
+                                        setDetailForm((f) => ({
+                                          ...f,
+                                          assign_model: e.target.value,
+                                        }))
+                                      }
+                                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                    >
+                                      <option value="">Engine default</option>
+                                      {modelOpts.map((m) => (
+                                        <option key={m} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                                {(engineChanged || modelChanged) && (
                                   <button
                                     onClick={async () => {
                                       setSaving(true);
                                       try {
-                                        const updated = await api.updateCard(
-                                          projectId,
-                                          selectedCard.id,
-                                          {
-                                            assign_model: detailForm.assign_model || null,
-                                          },
-                                        );
+                                        await api.updateCard(projectId, selectedCard.id, {
+                                          assign_engine: detailForm.assign_engine || null,
+                                          assign_model: detailForm.assign_model || null,
+                                        });
                                         setSelectedCard((c) => ({
                                           ...c,
+                                          assign_engine: detailForm.assign_engine || null,
                                           assign_model: detailForm.assign_model || null,
                                         }));
                                         fetchBoard();
                                       } catch (err) {
-                                        console.error('Failed to update model override:', err);
+                                        console.error(
+                                          'Failed to update engine/model override:',
+                                          err,
+                                        );
                                       } finally {
                                         setSaving(false);
                                       }
                                     }}
                                     disabled={saving}
-                                    className="mt-1 w-full text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg transition-colors disabled:opacity-50"
+                                    className="w-full text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg transition-colors disabled:opacity-50"
                                   >
-                                    {saving ? 'Saving…' : 'Save model override'}
+                                    {saving ? 'Saving…' : 'Save override'}
                                   </button>
                                 )}
                               </div>
@@ -1645,6 +1705,7 @@ export default function KanbanBoard({
                             setDetailForm((f) => ({
                               ...f,
                               assign_model: selectedCard.assign_model || '',
+                              assign_engine: selectedCard.assign_engine || '',
                               assignee: selectedCard.assignee || f.assignee,
                             }));
                           }}
@@ -1659,7 +1720,12 @@ export default function KanbanBoard({
                             try {
                               const updated = await api.unassignCard(projectId, selectedCard.id);
                               setSelectedCard(updated);
-                              setDetailForm((f) => ({ ...f, assignee: '', assign_model: '' }));
+                              setDetailForm((f) => ({
+                                ...f,
+                                assignee: '',
+                                assign_model: '',
+                                assign_engine: '',
+                              }));
                               setShowReassign(false);
                               fetchBoard();
                             } catch (err) {
@@ -1683,6 +1749,7 @@ export default function KanbanBoard({
                               ...f,
                               assignee: e.target.value,
                               assign_model: '',
+                              assign_engine: '',
                             }))
                           }
                           className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
@@ -1698,29 +1765,70 @@ export default function KanbanBoard({
                           modelConfig &&
                           (() => {
                             const selAgent = agents.find((a) => a.name === detailForm.assignee);
-                            const eng = selAgent?.engine || 'claude-code';
-                            const opts = modelConfig.engineValidModels?.[eng] || [];
-                            if (opts.length === 0) return null;
+                            const agentEng = selAgent?.engine || 'claude-code';
+                            const engineEntries = Object.entries(
+                              modelConfig.engineValidModels || {},
+                            ).filter(([, models]) => (models?.length ?? 0) > 0);
+                            const effectiveEngine =
+                              (detailForm.assign_engine && detailForm.assign_engine.trim()) ||
+                              agentEng;
+                            const modelOpts =
+                              modelConfig.engineValidModels?.[effectiveEngine] || [];
+                            if (engineEntries.length === 0 && modelOpts.length === 0) return null;
                             return (
-                              <div className="mt-2">
-                                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                                  Session model
-                                </label>
-                                <select
-                                  value={detailForm.assign_model || ''}
-                                  onChange={(e) =>
-                                    setDetailForm((f) => ({ ...f, assign_model: e.target.value }))
-                                  }
-                                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
-                                >
-                                  <option value="">Agent default</option>
-                                  {opts.map((m) => (
-                                    <option key={m} value={m}>
-                                      {m}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
+                              <>
+                                {engineEntries.length > 0 && (
+                                  <div className="mt-2">
+                                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                                      Session engine
+                                    </label>
+                                    <select
+                                      data-testid="card-engine-select-new"
+                                      value={detailForm.assign_engine || ''}
+                                      onChange={(e) =>
+                                        setDetailForm((f) => ({
+                                          ...f,
+                                          assign_engine: e.target.value,
+                                          assign_model: '',
+                                        }))
+                                      }
+                                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                    >
+                                      <option value="">Agent default ({agentEng})</option>
+                                      {engineEntries.map(([eng]) => (
+                                        <option key={eng} value={eng}>
+                                          {eng}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                                {modelOpts.length > 0 && (
+                                  <div className="mt-2">
+                                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                                      Session model
+                                    </label>
+                                    <select
+                                      data-testid="card-model-select-new"
+                                      value={detailForm.assign_model || ''}
+                                      onChange={(e) =>
+                                        setDetailForm((f) => ({
+                                          ...f,
+                                          assign_model: e.target.value,
+                                        }))
+                                      }
+                                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                    >
+                                      <option value="">Engine default</option>
+                                      {modelOpts.map((m) => (
+                                        <option key={m} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                              </>
                             );
                           })()}
                         {detailForm.assignee && (
@@ -1733,6 +1841,8 @@ export default function KanbanBoard({
                                 const assignOpts = {};
                                 if (detailForm.assign_model?.trim())
                                   assignOpts.model = detailForm.assign_model.trim();
+                                if (detailForm.assign_engine?.trim())
+                                  assignOpts.engine = detailForm.assign_engine.trim();
                                 const result = await api.assignCard(
                                   projectId,
                                   selectedCard.id,

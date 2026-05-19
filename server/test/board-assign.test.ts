@@ -165,6 +165,60 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
     expect((res.body as { error?: string }).error).toContain('not valid for engine');
   });
 
+  it('accepts an engine override + model from the override engine and persists both', async () => {
+    // A claude-code agent + an engine override to codex-cli with a codex
+    // model. The spawned session must use the override engine + model, NOT
+    // the agent's shared engine. This is the core path for the Kanban
+    // engine + model dropdown introduced for card dfbc6a6c.
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, engine: 'claude-code' });
+    const card = await createCard(projectId, { title: 'Cross-engine card' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.3-codex' })
+      .expect(200);
+
+    const cardOut = res.body.card as { assign_model: string | null; assign_engine: string | null };
+    expect(cardOut.assign_engine).toBe('codex-cli');
+    expect(cardOut.assign_model).toBe('gpt-5.3-codex');
+    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
+    expect(sessionRes.body.engine).toBe('codex-cli');
+    expect(sessionRes.body.model).toBe('gpt-5.3-codex');
+  });
+
+  it('returns 400 for an unknown engine override', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Bad engine card' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, engine: 'not-a-real-engine' })
+      .expect(400);
+
+    expect((res.body as { error?: string }).error).toContain('Invalid engine');
+  });
+
+  it('rejects a model that is not valid for the override engine', async () => {
+    // Engine override = codex-cli, but model is a claude-code id. The
+    // engine-keyed validator must reject — otherwise the spawn would start
+    // codex-cli with a non-existent model id and stall.
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, engine: 'claude-code' });
+    const card = await createCard(projectId, { title: 'Mismatched model card' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'claude-opus-4-7' })
+      .expect(400);
+
+    expect((res.body as { error?: string }).error).toContain('not valid for engine');
+  });
+
   it('calls getDevHubApiKey when card has cross-hub:dev label (manual assign)', async () => {
     const project = await createProject();
     const projectId = project.id as string;

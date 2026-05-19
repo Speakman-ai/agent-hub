@@ -1032,6 +1032,7 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
           card.pr_url,
           card.epic_id,
           card.assign_model ?? null,
+          card.assign_engine ?? null,
           card.pr_base_branch ?? null,
           card.id,
         );

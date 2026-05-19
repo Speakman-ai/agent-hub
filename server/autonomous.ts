@@ -850,6 +850,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
           card.pr_url,
           card.epic_id,
           card.assign_model,
+          card.assign_engine ?? null,
           card.pr_base_branch ?? null,
           card.id,
         );
@@ -909,9 +910,10 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const autonomousOwnerId = resolveAutonomousOwnerUserId(card, epic);
 
       // Resolve the (engine, model) pair for the spawn. Card-level
-      // `assign_model` wins over epic-level `autonomous_model`; either may
-      // cross engines (e.g. operator picks `composer-2.5` for an agent whose
-      // default engine is `claude-code`), in which case we spawn under the
+      // `assign_engine` (when set) hard-pins the engine; `assign_model` then
+      // wins over epic-level `autonomous_model`. Either may cross engines
+      // (e.g. operator picks `composer-2.5` for an agent whose default
+      // engine is `claude-code`), in which case we spawn under the
       // engine that owns the model so the operator's selection isn't
       // silently dropped.
       //
@@ -920,17 +922,33 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       // isn't recognised by any configured engine.
       let engine: string;
       let model: string;
-      const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
-      if (cardRaw) {
-        const agentAllowed = engineValidModels[agentEngine] || [];
-        if (agentAllowed.includes(cardRaw)) {
-          engine = agentEngine;
-          model = cardRaw;
+      const cardRawModel = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
+      const cardRawEngine = typeof card.assign_engine === 'string' ? card.assign_engine.trim() : '';
+      const cardEngineValid =
+        cardRawEngine && Object.prototype.hasOwnProperty.call(engineValidModels, cardRawEngine)
+          ? cardRawEngine
+          : '';
+      if (cardEngineValid) {
+        // Explicit engine override always wins — pair it with the chosen
+        // model when that model is valid for the override engine, otherwise
+        // fall back to the engine's default.
+        engine = cardEngineValid;
+        const allowedForEngine = engineValidModels[cardEngineValid] || [];
+        if (cardRawModel && allowedForEngine.includes(cardRawModel)) {
+          model = cardRawModel;
         } else {
-          const otherEngine = engineForModel(cardRaw, engineValidModels);
+          model = cfg.engineDefaultModels?.[cardEngineValid] || allowedForEngine[0] || '';
+        }
+      } else if (cardRawModel) {
+        const agentAllowed = engineValidModels[agentEngine] || [];
+        if (agentAllowed.includes(cardRawModel)) {
+          engine = agentEngine;
+          model = cardRawModel;
+        } else {
+          const otherEngine = engineForModel(cardRawModel, engineValidModels);
           if (otherEngine) {
             engine = otherEngine;
-            model = cardRaw;
+            model = cardRawModel;
           } else {
             ({ engine, model } = sessionEngineAndModelForAutonomousDispatch(
               epic,
@@ -987,6 +1005,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
         card.pr_url,
         card.epic_id,
         card.assign_model,
+        card.assign_engine ?? null,
         card.pr_base_branch ?? null,
         card.id,
       );

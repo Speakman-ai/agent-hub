@@ -116,6 +116,10 @@ export const KanbanCardComponent = registerComponent(
       documented: z.number().int(),
       dispatched_by_autonomous: z.number().int(),
       assign_model: z.string().nullable().optional(),
+      assign_engine: z.string().nullable().optional().openapi({
+        description:
+          'Optional engine override pinned at assign / update time. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". Overrides the assignee agent\'s shared engine at session spawn.',
+      }),
       pr_base_branch: z.string().nullable().optional(),
       created_at: z.string(),
       updated_at: z.string(),
@@ -248,6 +252,7 @@ export const UpdateCardRequestSchema = z.preprocess(
     prUrl: 'pr_url',
     epicId: 'epic_id',
     assignModel: 'assign_model',
+    assignEngine: 'assign_engine',
     prBaseBranch: 'pr_base_branch',
   }),
   z.object({
@@ -261,6 +266,10 @@ export const UpdateCardRequestSchema = z.preprocess(
     prUrl: z.string().nullable().optional(),
     epicId: z.string().nullable().optional(),
     assignModel: z.string().nullable().optional(),
+    assignEngine: z.string().nullable().optional().openapi({
+      description:
+        'Optional engine override for the session spawn. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, overrides the assignee agent\'s shared engine.',
+    }),
     prBaseBranch: z.string().nullable().optional(),
   }),
 );
@@ -336,6 +345,10 @@ export const LinkEpicRequestSchema = z.object({
 export const AssignCardRequestSchema = z.object({
   agentId: z.string({ error: 'agentId is required' }).min(1, 'agentId is required'),
   model: z.string().nullable().optional(),
+  engine: z.string().nullable().optional().openapi({
+    description:
+      'Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent\'s shared engine. Validated against the server\'s engineValidModels — unknown engines yield 400.',
+  }),
 });
 
 // ─── OpenAPI path registrations ───────────────────────────────────

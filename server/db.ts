@@ -1102,6 +1102,21 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN assign_model TEXT');
   }
 
+  // Optional per-card override of the spawn engine. NULL = use the assignee
+  // agent's engine (current default). Any string is one of the recognized
+  // engine ids (`claude-code | cursor-agent | gemini-cli | codex-cli`). Set
+  // alongside `assign_model` so a ticket assigned to a Claude agent can still
+  // be run under codex-cli without reassigning to a different agent. The
+  // engine is validated against `cfg.engineValidModels` keys at assign time;
+  // an unknown engine yields HTTP 400. Wired into spawn paths via
+  // `resolveEffectiveEngineAndModel({ explicitEngine })`. See wiki:
+  // `kanban-card-model-override-assign-with-custom-model`.
+  try {
+    db.prepare('SELECT assign_engine FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN assign_engine TEXT');
+  }
+
   // Triage routing — autonomous mode runs eligible cards through the project's
   // intake (or lead) agent before any specialist picks them up. Triage rewrites
   // description/AC and picks a suggested_assignee. `triaged_at` is the gate:
@@ -2410,7 +2425,7 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
