@@ -6,6 +6,16 @@ import { loadProjectEnvForSpawn } from './preview/preview-secrets-store.js';
  *
  * Existing keys in `base` win (Hub-injected AGENT_HUB_* / credentials are
  * never overwritten). Reserved keys are rejected at write time.
+ *
+ * `opts.sessionId` is the chat session driving the spawn, used solely for
+ * audit-log attribution on decryption failures (see the `TOOL_ERROR` line
+ * in the catch block below). Pass the interactive session id for chat /
+ * design / autonomous spawns. Pass `null` when no single owning session
+ * exists — heartbeats and crons (scheduled, no session), and room/
+ * conference spawns (multiple participating sessions, no single owner).
+ * The audit entry then records `session: null` as the correct
+ * attribution for "system-initiated decrypt", not as a placeholder for
+ * a missing interactive value.
  */
 export function mergeProjectSecretsSpawnEnv(
   base: NodeJS.ProcessEnv,

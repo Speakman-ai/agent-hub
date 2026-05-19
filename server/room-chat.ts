@@ -389,6 +389,10 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
               agentId: agent.id,
               project: proj,
             });
+            // sessionId: null — a room spawn has multiple participating
+            // sessions and no single owning one; decrypt-failure audit
+            // entries attribute to the room as system-initiated. See
+            // mergeProjectSecretsSpawnEnv.
             mergeProjectSecretsSpawnEnv(roomEnv, { projectId: proj.id, sessionId: null });
             mergeProjectAwsSpawnEnv(roomEnv, proj);
           }

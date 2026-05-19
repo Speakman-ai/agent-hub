@@ -226,6 +226,9 @@ export function runClaude(
     });
     if (options.skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
+      // sessionId: null — heartbeats are scheduled, not driven by an
+      // interactive chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
       mergeProjectSecretsSpawnEnv(heartbeatEnv, {
         projectId: options.skillCredentialMerge.project.id,
         sessionId: null,
@@ -387,6 +390,9 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
         agentId: agent.id,
         project: hbProject,
       });
+      // sessionId: null — heartbeats are scheduled, not driven by an
+      // interactive chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
       mergeProjectSecretsSpawnEnv(heartbeatEnv, { projectId: hbProject.id, sessionId: null });
       mergeProjectAwsSpawnEnv(heartbeatEnv, hbProject);
     }
@@ -580,6 +586,9 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         agentId: cronSkillAgentId,
         project: cronProject,
       });
+      // sessionId: null — crons are scheduled, not driven by an interactive
+      // chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
       mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
       mergeProjectAwsSpawnEnv(cronEnv, cronProject);
     }
