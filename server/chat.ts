@@ -2568,8 +2568,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
           );
         }
-        // HOME swap policy: sessions with a real persisted owner always
-        // Swap to per-user HOME when the session has a persisted owner, or
+        // HOME swap: use per-user HOME when the session has a persisted owner, or
         // when the billing owner has their own CLI identity (API keys and/or
         // browser OAuth caches). Reviewer sessions with no per-account
         // material keep the host HOME so `~/.claude/.credentials.json` and
