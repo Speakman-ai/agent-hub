@@ -35,6 +35,7 @@ import {
   buildCardDescription,
   buildPrTitle,
   buildPrBody,
+  buildPushArgs,
   isGarbageTitle,
   getProjectPreCommitCommands,
   getProjectCheckHealCommands,
@@ -220,6 +221,72 @@ function installExecAndGhMock(
     },
   );
 }
+
+describe('buildPushArgs — lease pinning', () => {
+  // The whole reason this helper exists: when the pre-push rebase rewrote
+  // history we MUST pin `--force-with-lease` to the SHA we resolved from
+  // origin via `ls-remote`, not the local `refs/remotes/origin/<branch>`
+  // cache. Otherwise a parallel push by another actor trips the lease as
+  // `! [rejected] <branch> -> <branch> (stale info)` and the session bails.
+  // These tests freeze the argv shape so a future refactor can't silently
+  // regress back to a bare lease.
+
+  it('plain push (no lease) when the rebase did NOT rewrite history', () => {
+    expect(
+      buildPushArgs({
+        branch: 'feature/x',
+        rebaseRewroteHistory: false,
+        expectedRemoteSha: 'deadbeef'.repeat(5),
+      }),
+    ).toEqual(['push', '-u', 'origin', 'feature/x']);
+  });
+
+  it('plain push when rebase did not rewrite history, even if no expected SHA is known', () => {
+    expect(
+      buildPushArgs({
+        branch: 'feature/x',
+        rebaseRewroteHistory: false,
+        expectedRemoteSha: null,
+      }),
+    ).toEqual(['push', '-u', 'origin', 'feature/x']);
+  });
+
+  it('PINS the lease to the expected SHA when rebase rewrote history and origin SHA is known', () => {
+    const sha = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    expect(
+      buildPushArgs({
+        branch: 'feature/x',
+        rebaseRewroteHistory: true,
+        expectedRemoteSha: sha,
+      }),
+    ).toEqual(['push', `--force-with-lease=feature/x:${sha}`, '-u', 'origin', 'feature/x']);
+  });
+
+  it('falls back to bare --force-with-lease when rebase rewrote history but branch is brand-new on origin', () => {
+    // Bare `--force-with-lease` correctly treats an absent remote ref as
+    // the empty value, so a brand-new branch push still passes the lease
+    // check. We document this fallback in the comment on `buildPushArgs`.
+    expect(
+      buildPushArgs({
+        branch: 'feature/brand-new',
+        rebaseRewroteHistory: true,
+        expectedRemoteSha: null,
+      }),
+    ).toEqual(['push', '--force-with-lease', '-u', 'origin', 'feature/brand-new']);
+  });
+
+  it('preserves slashes in branch names when pinning the lease (typical agent-hub/<project>/<short-uuid> shape)', () => {
+    const sha = 'cafebabe'.repeat(5);
+    const branch = 'agent-hub/agent-hub/session-1a2b3c4d';
+    expect(
+      buildPushArgs({
+        branch,
+        rebaseRewroteHistory: true,
+        expectedRemoteSha: sha,
+      }),
+    ).toEqual(['push', `--force-with-lease=${branch}:${sha}`, '-u', 'origin', branch]);
+  });
+});
 
 describe('truncateForGitCommitMessage', () => {
   it('returns unchanged text when under the cap', () => {

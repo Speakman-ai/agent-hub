@@ -201,6 +201,173 @@ describe('rebaseOntoBase', () => {
     expect(calls.some((c) => c[0] === 'rebase' && c[1] === '--abort')).toBe(false);
   });
 
+  describe('featureBranch → expectedRemoteSha (lease pinning support)', () => {
+    // These tests cover the new `featureBranch` option that lets the caller
+    // pin `--force-with-lease=<branch>:<sha>` instead of falling back to the
+    // bare lease (which compares against the local
+    // `refs/remotes/origin/<branch>` cache and trips `(stale info)` whenever
+    // a parallel actor pushed the same branch in between).
+
+    it('returns the live origin SHA for the feature branch even when the rebase is a noop', async () => {
+      // Push the feature branch to origin so it has a SHA we can compare.
+      git(clone, 'push -u origin feature/x');
+      const expected = git(clone, 'rev-parse refs/remotes/origin/feature/x');
+
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'feature/x',
+      });
+
+      expect(out.kind).toBe('noop');
+      if (out.kind === 'noop') {
+        expect(out.expectedRemoteSha).toBe(expected);
+      }
+    });
+
+    it('returns the live origin SHA when the rebase actually runs', async () => {
+      // Establish the feature branch on origin first.
+      git(clone, 'push -u origin feature/x');
+      const expected = git(clone, 'rev-parse refs/remotes/origin/feature/x');
+
+      // Sibling pushes a non-conflicting change to main → rebase will run.
+      const sibling = path.join(tmpRoot, 'sibling-rebased');
+      execSync(`git clone --quiet "${originBare}" "${sibling}"`, { stdio: 'pipe' });
+      git(sibling, 'config user.email "sib@example.com"');
+      git(sibling, 'config user.name "Sib"');
+      writeFileSync(path.join(sibling, 'sibling.txt'), 'sibling change\n');
+      git(sibling, 'add sibling.txt');
+      git(sibling, 'commit -m "sibling commit"');
+      git(sibling, 'push origin main');
+
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'feature/x',
+      });
+
+      expect(out.kind).toBe('rebased');
+      if (out.kind === 'rebased') {
+        // The expected SHA is whatever was on origin BEFORE this push attempt
+        // — it must not reflect any post-rebase local activity, only the
+        // server-side snapshot we use for the lease check.
+        expect(out.expectedRemoteSha).toBe(expected);
+      }
+    });
+
+    it('returns expectedRemoteSha === null when the feature branch is brand-new on origin', async () => {
+      // feature/x has NOT been pushed to origin yet; ls-remote returns empty.
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'feature/brand-new-never-pushed',
+      });
+
+      expect(out.kind).toBe('noop');
+      if (out.kind === 'noop') {
+        expect(out.expectedRemoteSha).toBeNull();
+      }
+    });
+
+    it('reflects a concurrent push by another actor in the SHA returned to the caller', async () => {
+      // First push gets origin into a known state.
+      git(clone, 'push -u origin feature/x');
+      const firstPushSha = git(clone, 'rev-parse refs/remotes/origin/feature/x');
+
+      // A parallel actor (reviewer agent on a different worktree, second Hub
+      // session, human) pushes a fix commit to the same branch.
+      const parallel = path.join(tmpRoot, 'parallel');
+      execSync(`git clone --quiet "${originBare}" "${parallel}"`, { stdio: 'pipe' });
+      git(parallel, 'config user.email "rev@example.com"');
+      git(parallel, 'config user.name "Reviewer"');
+      git(parallel, 'fetch origin feature/x');
+      git(parallel, 'checkout -b feature/x origin/feature/x');
+      writeFileSync(path.join(parallel, 'reviewer-fix.txt'), 'reviewer fix\n');
+      git(parallel, 'add reviewer-fix.txt');
+      git(parallel, 'commit -m "reviewer fix"');
+      git(parallel, 'push origin feature/x');
+
+      // Our clone's local `refs/remotes/origin/feature/x` is now stale —
+      // it still says `firstPushSha`, but origin has advanced.
+      expect(git(clone, 'rev-parse refs/remotes/origin/feature/x')).toBe(firstPushSha);
+
+      // The whole point of using ls-remote: we get the authoritative origin
+      // value back, NOT the stale local cache. This is what makes
+      // `--force-with-lease=<branch>:<sha>` safe in this scenario — when we
+      // pin the lease to this value, GitHub will accept the push iff origin
+      // is still at this SHA; otherwise it rejects loudly so we can recover.
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'feature/x',
+      });
+
+      expect(out.kind).toBe('noop');
+      if (out.kind === 'noop') {
+        expect(out.expectedRemoteSha).not.toBe(firstPushSha);
+        // It must equal whatever ls-remote sees on origin right now, which is
+        // the parallel actor's commit. Re-resolve via a fresh ls-remote
+        // (without updating local refs) to compare.
+        const livestamp = execSync(`git ls-remote origin refs/heads/feature/x`, { cwd: clone })
+          .toString()
+          .trim()
+          .split(/\s/)[0];
+        expect(out.expectedRemoteSha).toBe(livestamp);
+      }
+    });
+
+    it('omits expectedRemoteSha from the outcome when featureBranch is not supplied (legacy contract)', async () => {
+      // Existing callers that haven't migrated to the new option get the
+      // original outcome shape. The field is `undefined`, not `null`.
+      const out = await rebaseOntoBase({ cwd: clone, baseBranch: 'main' });
+      expect(out.kind).toBe('noop');
+      expect((out as { expectedRemoteSha?: unknown }).expectedRemoteSha).toBeUndefined();
+    });
+
+    it('rejects an unsafe feature branch name but still completes the rebase', async () => {
+      // We don't want to abort the rebase entirely just because the feature
+      // branch name failed validation — the rebase doesn't depend on it.
+      // The caller falls back to a bare lease.
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'evil; rm -rf /',
+      });
+
+      expect(out.kind).toBe('noop');
+      if (out.kind === 'noop') {
+        expect(out.expectedRemoteSha).toBeNull();
+      }
+    });
+
+    it('falls back to expectedRemoteSha === null when ls-remote itself fails', async () => {
+      // Stub runGit so the base fetch + merge-base + rev-parse succeed but
+      // the ls-remote call throws. The rebase should still complete its
+      // normal contract (noop in this case) and just report null for the
+      // expected SHA so the caller falls back to bare --force-with-lease.
+      const out = await rebaseOntoBase({
+        cwd: clone,
+        baseBranch: 'main',
+        featureBranch: 'feature/x',
+        runGit: async (args) => {
+          if (args[0] === 'ls-remote') {
+            throw new Error('simulated network error during ls-remote');
+          }
+          // Pretend nothing has moved on origin so we end up in 'noop'.
+          if (args[0] === 'merge-base' || args[0] === 'rev-parse') {
+            return { stdout: 'abc123\n', stderr: '' };
+          }
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      expect(out.kind).toBe('noop');
+      if (out.kind === 'noop') {
+        expect(out.expectedRemoteSha).toBeNull();
+      }
+    });
+  });
+
   it('passes through a real conflict + real abort and the worktree returns clean', async () => {
     // End-to-end equivalent of the unit test above using a real git repo:
     // ensures the default on-disk probe correctly sees that we've cleaned
