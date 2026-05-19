@@ -161,13 +161,19 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
   const runGit = opts.runGit ?? defaultRunGit;
   const isRebaseInProgress = opts.isRebaseInProgress ?? isRebaseInProgressOnDisk;
   const wantExpectedSha = typeof featureBranch === 'string' && featureBranch.length > 0;
+  // True iff the caller asked for an expected SHA AND the supplied branch
+  // name passes our argv-safety regex. Single source of truth for the
+  // ls-remote gate below — keeps the `as string` cast and the regex out of
+  // multiple call sites. When false we just fall through to a bare
+  // `--force-with-lease` at the caller (the rebase itself is unaffected).
+  const featureBranchIsSafe = wantExpectedSha && SAFE_BRANCH_RE.test(featureBranch as string);
 
   if (!baseBranch || !SAFE_BRANCH_RE.test(baseBranch)) {
     return wantExpectedSha
       ? { kind: 'skipped', reason: `unsafe base branch "${baseBranch}"`, expectedRemoteSha: null }
       : { kind: 'skipped', reason: `unsafe base branch "${baseBranch}"` };
   }
-  if (wantExpectedSha && !SAFE_BRANCH_RE.test(featureBranch as string)) {
+  if (wantExpectedSha && !featureBranchIsSafe) {
     // Treat as "no expected SHA" rather than aborting the rebase entirely —
     // the rebase itself doesn't depend on the feature branch name, and the
     // caller will fall back to a bare `--force-with-lease`.
@@ -227,7 +233,7 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
   // `(stale info)` failure mode, which is what the rest of the system
   // already handles.
   let expectedRemoteSha: string | null = null;
-  if (wantExpectedSha && SAFE_BRANCH_RE.test(featureBranch as string)) {
+  if (featureBranchIsSafe) {
     const featureRef = `refs/heads/${featureBranch as string}`;
     prLog?.(`$ git ls-remote origin ${featureRef}\n`);
     try {
