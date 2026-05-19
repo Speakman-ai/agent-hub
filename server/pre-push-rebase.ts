@@ -20,6 +20,8 @@
  *   "rebase in progress" limbo.
  */
 import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import path from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +42,14 @@ export type RebaseOutcome =
 
 export interface RebaseOntoBaseOptions {
   cwd: string;
+  /**
+   * Required. Pre-resolved by the caller (e.g. `commitPushAndCreatePR`
+   * walks card.pr_base_branch → epic.pr_base_branch → repo default). The
+   * helper does NOT re-resolve the default branch — passing an empty
+   * string or an obviously-unsafe value is treated as `skipped` so the
+   * caller never accidentally rebases onto `main` when the configured
+   * integration branch is some `release/*` line.
+   */
   baseBranch: string;
   /** Env to inject (so `git fetch` over HTTPS uses the session's GitHub token). */
   env?: NodeJS.ProcessEnv;
@@ -53,6 +63,12 @@ export interface RebaseOntoBaseOptions {
     args: string[],
     opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number },
   ) => Promise<{ stdout: string; stderr: string }>;
+  /**
+   * Hook for tests that need to override the mid-rebase-state probe. In
+   * production this defaults to checking `.git/rebase-merge` /
+   * `.git/rebase-apply` directly on disk via `fs.existsSync`.
+   */
+  isRebaseInProgress?: (cwd: string) => boolean;
 }
 
 interface GitRunResult {
@@ -73,6 +89,23 @@ function defaultRunGit(
 }
 
 /**
+ * Detect leftover state from a prior aborted/killed rebase. Git records
+ * an in-progress rebase by creating either `.git/rebase-merge` (the
+ * default merge backend) or `.git/rebase-apply` (the legacy "am"
+ * backend). When the parent process is killed mid-rebase the worktree
+ * is left with conflict markers and the next `git rebase` invocation
+ * refuses with "It seems that there is already a rebase-merge directory".
+ * Cheaper to probe the filesystem than to spawn a `git status` just for
+ * this — the dirs are sentinels git itself uses.
+ */
+function isRebaseInProgressOnDisk(cwd: string): boolean {
+  const gitDir = path.join(cwd, '.git');
+  return (
+    existsSync(path.join(gitDir, 'rebase-merge')) || existsSync(path.join(gitDir, 'rebase-apply'))
+  );
+}
+
+/**
  * Rebase the current branch onto `origin/<baseBranch>` and return a
  * structured outcome.
  *
@@ -89,9 +122,34 @@ function defaultRunGit(
 export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<RebaseOutcome> {
   const { cwd, baseBranch, env, prLog } = opts;
   const runGit = opts.runGit ?? defaultRunGit;
+  const isRebaseInProgress = opts.isRebaseInProgress ?? isRebaseInProgressOnDisk;
 
   if (!baseBranch || !SAFE_BRANCH_RE.test(baseBranch)) {
     return { kind: 'skipped', reason: `unsafe base branch "${baseBranch}"` };
+  }
+
+  // Defensive cleanup: a prior rebase invocation that got SIGTERM'd or
+  // timed out can leave `.git/rebase-merge` behind. Git will then refuse
+  // the new `git rebase` with "there is already a rebase-merge
+  // directory", and the subsequent `git status --porcelain` upstream of
+  // us sees `UU` markers and triggers a misleading `commit_failed`.
+  // Abort any leftover state before the new attempt so we always start
+  // from a known-clean rebase position.
+  if (isRebaseInProgress(cwd)) {
+    prLog?.(
+      `\n  (detected leftover rebase state in .git — running \`git rebase --abort\` before continuing)\n`,
+    );
+    try {
+      await runGit(['rebase', '--abort'], {
+        cwd,
+        env,
+        timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+      });
+    } catch {
+      // `git rebase --abort` exits non-zero when no rebase is in progress.
+      // Both branches of the on-disk probe ↔ git's idea of state can drift
+      // (e.g. a manually deleted dir), so a failed abort here is informational.
+    }
   }
 
   // Fetch the latest tip of the base branch.
@@ -191,5 +249,6 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
 // Re-export the internals only via a __test bag, matching the project pattern.
 export const __test = {
   defaultRunGit,
+  isRebaseInProgressOnDisk,
   SAFE_BRANCH_RE,
 };

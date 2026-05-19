@@ -50,10 +50,10 @@ export function shortSha(sha) {
  *
  *   { kind: 'pr_failed', code, error, branch, cardId, cardTitle, agentName }
  *
- * `code` is one of 'commit_failed' | 'push_failed' | 'pr_failed'.
- * (`nothing_to_publish` is a benign no-op and is never persisted.)
- * Malformed metadata returns null so the caller can fall back to a generic
- * system-message render.
+ * `code` is one of 'commit_failed' | 'push_failed' | 'pr_failed' |
+ * 'rebase_conflict'. (`nothing_to_publish` is a benign no-op and is never
+ * persisted.) Malformed metadata returns null so the caller can fall back to a
+ * generic system-message render.
  */
 export function parsePrFailedMetadata(metadataString) {
   if (metadataString == null) return null;
@@ -65,7 +65,7 @@ export function parsePrFailedMetadata(metadataString) {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.kind !== 'pr_failed') return null;
-  const allowedCodes = new Set(['commit_failed', 'push_failed', 'pr_failed']);
+  const allowedCodes = new Set(['commit_failed', 'push_failed', 'pr_failed', 'rebase_conflict']);
   if (typeof parsed.code !== 'string' || !allowedCodes.has(parsed.code)) return null;
   if (typeof parsed.error !== 'string') return null;
   return {
@@ -90,6 +90,8 @@ export function describePrFailureCode(code) {
       return 'Commit failed';
     case 'pr_failed':
       return 'PR creation failed';
+    case 'rebase_conflict':
+      return 'Rebase conflict';
     default:
       return 'Auto-PR failed';
   }

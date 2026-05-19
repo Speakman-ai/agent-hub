@@ -923,7 +923,9 @@ export default function App() {
                   ? 'Commit failed'
                   : data.code === 'pr_failed'
                     ? 'PR creation failed'
-                    : 'Auto-PR failed';
+                    : data.code === 'rebase_conflict'
+                      ? 'Rebase conflict'
+                      : 'Auto-PR failed';
             setToasts((prev) => [
               ...prev,
               {

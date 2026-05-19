@@ -153,7 +153,7 @@ describe('parsePrFailedMetadata', () => {
   });
 
   it('accepts each whitelisted failure code', () => {
-    for (const code of ['commit_failed', 'push_failed', 'pr_failed']) {
+    for (const code of ['commit_failed', 'push_failed', 'pr_failed', 'rebase_conflict']) {
       const out = parsePrFailedMetadata(JSON.stringify({ ...valid, code }));
       expect(out?.code).toBe(code);
     }
@@ -165,6 +165,7 @@ describe('describePrFailureCode', () => {
     expect(describePrFailureCode('push_failed')).toBe('Push rejected');
     expect(describePrFailureCode('commit_failed')).toBe('Commit failed');
     expect(describePrFailureCode('pr_failed')).toBe('PR creation failed');
+    expect(describePrFailureCode('rebase_conflict')).toBe('Rebase conflict');
   });
 
   it('falls back to generic label for unknown codes', () => {

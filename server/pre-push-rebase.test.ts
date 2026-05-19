@@ -3,9 +3,9 @@
  * is needed — we set up a bare `origin` and clone it locally). The whole
  * thing runs under `os.tmpdir()` and is cleaned up after each test.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { rebaseOntoBase } from './pre-push-rebase.js';
@@ -144,5 +144,82 @@ describe('rebaseOntoBase', () => {
     });
     const joined = logged.join('');
     expect(joined).toContain('git fetch origin main');
+  });
+
+  it('aborts a leftover mid-rebase state before starting a new rebase', async () => {
+    // Simulate the scenario where a previous `rebaseOntoBase` invocation
+    // was SIGTERM'd / timed out mid-rebase: `.git/rebase-merge` exists,
+    // git would otherwise refuse the next rebase with "already a
+    // rebase-merge directory". Capture the spawn order to assert the
+    // probe → abort → fetch → rebase sequence.
+    const calls: string[][] = [];
+    const probe = vi.fn().mockReturnValueOnce(true);
+
+    const out = await rebaseOntoBase({
+      cwd: clone,
+      baseBranch: 'main',
+      isRebaseInProgress: probe,
+      runGit: async (args) => {
+        calls.push(args);
+        // Simulate base hasn't advanced → noop after the abort.
+        if (args[0] === 'merge-base' || args[0] === 'rev-parse') {
+          return { stdout: 'abc\n', stderr: '' };
+        }
+        return { stdout: '', stderr: '' };
+      },
+    });
+
+    // The first git invocation MUST be `rebase --abort`, before any
+    // fetch / merge-base / rebase activity.
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(calls[0]).toEqual(['rebase', '--abort']);
+    expect(calls[1]).toEqual(['fetch', '--no-tags', 'origin', 'main']);
+    // Noop outcome because we faked merge-base === origin tip.
+    expect(out.kind).toBe('noop');
+  });
+
+  it('does not invoke `rebase --abort` when no leftover state is detected', async () => {
+    const calls: string[][] = [];
+    const probe = vi.fn().mockReturnValueOnce(false);
+
+    await rebaseOntoBase({
+      cwd: clone,
+      baseBranch: 'main',
+      isRebaseInProgress: probe,
+      runGit: async (args) => {
+        calls.push(args);
+        if (args[0] === 'merge-base' || args[0] === 'rev-parse') {
+          return { stdout: 'abc\n', stderr: '' };
+        }
+        return { stdout: '', stderr: '' };
+      },
+    });
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    // First call must be the fetch — no leading abort.
+    expect(calls[0]).toEqual(['fetch', '--no-tags', 'origin', 'main']);
+    expect(calls.some((c) => c[0] === 'rebase' && c[1] === '--abort')).toBe(false);
+  });
+
+  it('passes through a real conflict + real abort and the worktree returns clean', async () => {
+    // End-to-end equivalent of the unit test above using a real git repo:
+    // ensures the default on-disk probe correctly sees that we've cleaned
+    // up after a conflicting rebase and the helper is re-callable.
+    writeFileSync(path.join(clone, 'main.txt'), 'feature-side edit\n');
+    execSync('git add main.txt && git commit -m "feature edit"', { cwd: clone, stdio: 'pipe' });
+
+    const sibling = path.join(tmpRoot, 'sibling-cleanup');
+    execSync(`git clone --quiet "${originBare}" "${sibling}"`, { stdio: 'pipe' });
+    execSync('git config user.email "sib@example.com"', { cwd: sibling });
+    execSync('git config user.name "Sib"', { cwd: sibling });
+    writeFileSync(path.join(sibling, 'main.txt'), 'sibling edit\n');
+    execSync('git add main.txt && git commit -m "sib edit"', { cwd: sibling, stdio: 'pipe' });
+    execSync('git push origin main', { cwd: sibling, stdio: 'pipe' });
+
+    const first = await rebaseOntoBase({ cwd: clone, baseBranch: 'main' });
+    expect(first.kind).toBe('conflict');
+    // No leftover sentinels after the helper's own abort.
+    expect(existsSync(path.join(clone, '.git', 'rebase-merge'))).toBe(false);
+    expect(existsSync(path.join(clone, '.git', 'rebase-apply'))).toBe(false);
   });
 });

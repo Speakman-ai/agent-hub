@@ -1361,6 +1361,8 @@ function humanizeCommitPrFailure(r: Extract<CommitPushPrResult, { ok: false }>):
       return `Git commit failed: ${r.error}`;
     case 'no_diff_vs_base':
       return `No pull request opened: ${r.error}`;
+    case 'rebase_conflict':
+      return `Pre-push rebase failed: the base branch has conflicting changes. Resolve the conflicts (\`git fetch origin && git rebase origin/<base>\`) and retry — the push was skipped to avoid opening a conflicting PR.`;
     default:
       return r.error;
   }

@@ -1964,6 +1964,139 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
     );
     expect(errorMatches).toHaveLength(0);
   });
+
+  it('autonomous path: rebase_conflict aborts the push, posts a card comment, and surfaces via persistAndBroadcastPrFailure', async () => {
+    // Build the autonomous-card surface the same way the push_failed test
+    // does, then stub `git rebase` to fail with a conflict-shaped error.
+    // The expected flow:
+    //   1. Pre-push commit succeeds (status reports uncommitted)
+    //   2. `git rebase origin/main` rejects → `rebase_conflict`
+    //   3. Card comment is created (Agent Hub (pre-push rebase) author)
+    //   4. `persistAndBroadcastPrFailure` fires → pr_failed system message
+    //      + auto_pr_failed broadcast, both carrying `code: 'rebase_conflict'`
+    //   5. `git push` is never invoked
+    const execCalls: string[] = [];
+    const createKanbanCardComment = vi.fn();
+    const stmts = makeAutonomousStmts({
+      id: 'card-rebase-conflict',
+      title: 'Drift conflict on push',
+      description: 'desc',
+      priority: 'medium',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    });
+    (stmts as { createKanbanCardComment?: unknown }).createKanbanCardComment = {
+      run: createKanbanCardComment,
+    };
+
+    // Capture the inserted pr_failed metadata by routing addMessage through
+    // a payload map (same trick as the push_failed test).
+    const insertedRows: Record<string, unknown> = {};
+    (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run = vi.fn(
+      (id: string, sessionId: string, role: string, content: string, ...rest: unknown[]) => {
+        insertedRows[id] = {
+          id,
+          session_id: sessionId,
+          role,
+          content,
+          engine: rest[0] ?? null,
+          model: rest[1] ?? null,
+          attachments: rest[2] ?? null,
+          metadata: rest[3] ?? null,
+          created_at: new Date().toISOString(),
+        };
+      },
+    );
+    (stmts.getMessageById as { get: ReturnType<typeof vi.fn> }).get = vi.fn(
+      (id: string) => insertedRows[id],
+    );
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/rebase-conflict\n');
+        if (cmd.startsWith('git rev-parse origin/main')) return ok('basetip\n');
+        if (cmd.startsWith('git rev-parse HEAD')) return ok('abc123def\n');
+        if (cmd.startsWith('git merge-base ')) return ok('mergebase\n');
+        if (cmd.startsWith('git rev-list --count'))
+          // Pretend the base advanced one commit.
+          return ok('1\n');
+        if (cmd.startsWith('git fetch')) return ok('');
+        // The rebase itself fails with a conflict-shaped error.
+        if (cmd.startsWith('git rebase origin/main')) {
+          return fail(
+            'CONFLICT (content): Merge conflict in file.ts\nerror: could not apply abc... change',
+          );
+        }
+        if (cmd.startsWith('git rebase --abort')) return ok('');
+        if (cmd.startsWith('git push')) return fail('Push should never be called');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'Hub Lead Dev', role: 'dev' } as never;
+    await autoCommitAndPR(
+      'sess-rebase-conflict',
+      'agent-1',
+      project,
+      agent,
+      '/repo/.worktrees/x',
+      '',
+    );
+
+    // 1) Card comment was posted with the pre-push rebase author.
+    expect(createKanbanCardComment).toHaveBeenCalled();
+    const commentArgs = createKanbanCardComment.mock.calls[0] as unknown[];
+    // INSERT … (id, card_id, author, content) — author is arg[2].
+    expect(commentArgs[2]).toContain('pre-push rebase');
+    expect(String(commentArgs[3])).toMatch(/conflict|rebase/i);
+
+    // 2) pr_failed system message persisted with code 'rebase_conflict'.
+    const addMessageCalls = (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    const prFailedInsert = addMessageCalls.find((args: unknown[]) => {
+      const role = args[2];
+      const metaJson = args[7];
+      if (role !== 'system' || typeof metaJson !== 'string') return false;
+      try {
+        const meta = JSON.parse(metaJson);
+        return meta?.kind === 'pr_failed' && meta?.code === 'rebase_conflict';
+      } catch {
+        return false;
+      }
+    });
+    expect(prFailedInsert).toBeTruthy();
+
+    // 3) auto_pr_failed broadcast fired with the failure code.
+    const autoPrFailed = mockBroadcast.mock.calls.find((args: unknown[]) => {
+      const payload = args[0] as { type?: string; code?: string };
+      return payload?.type === 'auto_pr_failed' && payload?.code === 'rebase_conflict';
+    });
+    expect(autoPrFailed).toBeTruthy();
+
+    // 4) `git push` was NEVER invoked — the rebase failure short-circuited the flow.
+    const pushedCommands = execCalls.filter((c) => /\bgit push\b/.test(c));
+    expect(pushedCommands).toHaveLength(0);
+  });
 });
 
 describe('buildCardDescription', () => {
