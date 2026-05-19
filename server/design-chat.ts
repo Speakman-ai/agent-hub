@@ -18,6 +18,8 @@ import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { buildSpawnEnv } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
+import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
@@ -318,6 +320,11 @@ export async function handleDesignChat(
         agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
         project: linkedProject,
       });
+      mergeProjectSecretsSpawnEnv(spawnEnv, {
+        projectId: linkedProject.id,
+        sessionId: `design:${designId}`,
+      });
+      mergeProjectAwsSpawnEnv(spawnEnv, linkedProject);
     }
 
     const finalTextOut = await new Promise<string>((resolve, reject) => {

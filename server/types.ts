@@ -1788,6 +1788,22 @@ export interface Project {
    * default to that agent automatically). Persisted in `projects.json`.
    */
   cronSkillPrincipalAgentId?: string;
+  /**
+   * IAM Identity Center (SSO) profiles for this project. Rendered to
+   * `AWS_CONFIG_FILE` at spawn time; tokens cache under the user's HOME.
+   * See `project-aws-profiles.ts`.
+   */
+  awsSsoProfiles?: Record<
+    string,
+    {
+      sso_account_id: string;
+      sso_start_url: string;
+      sso_region: string;
+      sso_role_name: string;
+      region: string;
+      output?: string;
+    }
+  >;
   agents: Agent[];
   [key: string]: unknown;
 }

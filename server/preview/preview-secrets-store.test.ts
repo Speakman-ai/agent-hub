@@ -142,6 +142,13 @@ describe('replacePreviewSecrets — validation', () => {
     ).toThrow();
   });
 
+  it('preserves secret ciphertext when PUT sends the MASK sentinel', () => {
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: 'real-secret', kind: 'secret' }]);
+    replacePreviewSecrets(PROJECT_A, [{ key: 'TOKEN', value: MASK, kind: 'secret' }]);
+    const env = loadProjectEnvForSpawn(PROJECT_A, { sessionId: 's' });
+    expect(env.TOKEN).toBe('real-secret');
+  });
+
   it('throws on duplicate keys in the same batch (no partial write)', () => {
     expect(() =>
       replacePreviewSecrets(PROJECT_A, [

@@ -39,6 +39,7 @@ import {
   type DeleteOverrideFileFn,
   type HealthFetchFn as ComposeHealthFetchFn,
 } from './preview-compose-runtime.js';
+import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 
 export interface CreatePreviewRuntimesDeps {
   db: Database;
@@ -207,6 +208,8 @@ export function createPreviewRuntimes(
     logSink,
     config: deps.legacyConfig,
     notifyLog: deps.notifyLog,
+    loadProjectEnv: (projectId, ctx) =>
+      loadProjectEnvForSpawn(projectId, { sessionId: ctx.sessionId }),
   });
 
   const previewComposeRuntime = new PreviewComposeRuntime({

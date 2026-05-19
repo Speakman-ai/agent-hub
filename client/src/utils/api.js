@@ -43,6 +43,35 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getProjectSecrets: (projectId) => fetchJSON(`/projects/${projectId}/secrets`),
+  putProjectSecrets: (projectId, secrets) =>
+    fetchJSON(`/projects/${projectId}/secrets`, {
+      method: 'PUT',
+      body: JSON.stringify({ secrets }),
+    }),
+  importProjectSecrets: (projectId, env, opts = {}) =>
+    fetchJSON(`/projects/${projectId}/secrets/import`, {
+      method: 'POST',
+      body: JSON.stringify({
+        env,
+        mode: opts.mode || 'merge',
+        defaultKind: opts.defaultKind,
+      }),
+    }),
+  getProjectAwsProfiles: (projectId) => fetchJSON(`/projects/${projectId}/aws-profiles`),
+  putProjectAwsProfiles: (projectId, profiles) =>
+    fetchJSON(`/projects/${projectId}/aws-profiles`, {
+      method: 'PUT',
+      body: JSON.stringify({ profiles }),
+    }),
+  getProjectAwsSsoStatus: (projectId, profile) =>
+    fetchJSON(`/projects/${projectId}/aws-sso/status?profile=${encodeURIComponent(profile)}`),
+  startProjectAwsSsoLogin: (projectId, profile) =>
+    fetchJSON(`/projects/${projectId}/aws-sso/login`, {
+      method: 'POST',
+      body: JSON.stringify({ profile }),
+      timeout: 60_000,
+    }),
   // Persist the sidebar project order. `projectIds` must be a permutation
   // of the caller-visible project ids (see PUT /api/projects/order). The
   // server broadcasts `projects_updated` so other open clients refresh.

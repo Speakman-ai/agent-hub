@@ -1,8 +1,10 @@
 /**
  * Worktree preview secrets — per-project encrypted key/value store.
  *
- * Backs the `/api/projects/:id/preview/secrets` REST surface and the
- * `loadProjectEnv()` hook the preview runtime calls at spawn time. See
+ * Backs the `/api/projects/:id/secrets` (and legacy `/preview/secrets`)
+ * REST surface. Decrypted values are merged at spawn time for interactive
+ * sessions, heartbeats, crons, and preview runtimes via
+ * `mergeProjectSecretsSpawnEnv` / `loadProjectEnvForSpawn`. See
  * `preview-secrets-schema.ts` for the DDL + design rationale.
  *
  * Crypto pattern is shared with skill credentials and Slack bot tokens
@@ -233,17 +235,35 @@ export function listPreviewSecrets(projectId: string): PreviewSecretRow[] {
  *
  * Returns the resulting masked list.
  */
+type NormalizedSecretWrite =
+  | { key: string; kind: SecretKind; mode: 'encrypt'; value: string }
+  | {
+      key: string;
+      kind: SecretKind;
+      mode: 'preserve';
+      ciphertext: string;
+      iv: string;
+      tag: string;
+    };
+
 export function replacePreviewSecrets(
   projectId: string,
   inputs: readonly PreviewSecretInput[],
   actorUserId?: string | null,
 ): PreviewSecretRow[] {
+  const db = getDb();
+  const existingByKey = new Map<string, RawRow>();
+  for (const row of db
+    .prepare(`SELECT * FROM worktree_preview_secrets WHERE project_id = ?`)
+    .all(projectId) as RawRow[]) {
+    existingByKey.set(row.key, row);
+  }
+
   // Validate first so we don't write half a batch before throwing.
-  const normalized: Array<{ key: string; value: string; kind: SecretKind }> = [];
+  const normalized: NormalizedSecretWrite[] = [];
   const seen = new Set<string>();
   for (const raw of inputs) {
     validateKeyOrThrow(raw.key);
-    validateValueOrThrow(raw.value, raw.key);
     const kind = validateKindOrThrow(raw.kind, raw.key);
     if (seen.has(raw.key)) {
       throw new PreviewSecretValidationError(
@@ -251,10 +271,27 @@ export function replacePreviewSecrets(
       );
     }
     seen.add(raw.key);
-    normalized.push({ key: raw.key, value: raw.value, kind });
+    if (kind === 'secret' && raw.value === MASK) {
+      const existing = existingByKey.get(raw.key);
+      if (!existing) {
+        throw new PreviewSecretValidationError(
+          `value for "${raw.key}" is required when creating a new secret`,
+        );
+      }
+      normalized.push({
+        key: raw.key,
+        kind,
+        mode: 'preserve',
+        ciphertext: existing.value_ciphertext,
+        iv: existing.value_iv,
+        tag: existing.value_tag,
+      });
+      continue;
+    }
+    validateValueOrThrow(raw.value, raw.key);
+    normalized.push({ key: raw.key, value: raw.value, kind, mode: 'encrypt' });
   }
 
-  const db = getDb();
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
     const insert = db.prepare(
@@ -263,9 +300,13 @@ export function replacePreviewSecrets(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of normalized) {
-      const ciphertext = encryptSecret(row.value);
-      const { iv, tag } = splitIvTag(ciphertext);
-      insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+      if (row.mode === 'preserve') {
+        insert.run(uuidv4(), projectId, row.key, row.ciphertext, row.iv, row.tag, row.kind);
+      } else {
+        const ciphertext = encryptSecret(row.value);
+        const { iv, tag } = splitIvTag(ciphertext);
+        insert.run(uuidv4(), projectId, row.key, ciphertext, iv, tag, row.kind);
+      }
     }
   });
   tx();
@@ -382,6 +423,13 @@ export function replacePreviewSecretsMixed(
   });
 
   return listPreviewSecrets(projectId);
+}
+
+/** Remove all secrets (and audit rows) for a project. Used on project delete. */
+export function deleteAllPreviewSecretsForProject(projectId: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM worktree_preview_secrets WHERE project_id = ?`).run(projectId);
+  db.prepare(`DELETE FROM worktree_preview_secret_audit WHERE project_id = ?`).run(projectId);
 }
 
 /** Delete a single (project, key) entry. Returns `true` if a row was deleted. */

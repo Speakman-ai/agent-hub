@@ -40,8 +40,10 @@ error: AWS session token has expired.
 Run: aws sso login --profile my-sso
 ```
 
-The agent **never runs `aws sso login` automatically** — it requires an
-interactive browser step and must be initiated by the user.
+When the project has Hub-managed AWS profiles (`AGENT_HUB_AWS_PROFILE_NAMES`),
+use the Hub API to start browser-less SSO and return the device URL to the user
+(see `SKILL.md` → Project-configured profiles). Otherwise the agent **does not**
+run `aws sso login` directly without user involvement.
 
 ### Refresh tokens
 

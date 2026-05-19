@@ -332,3 +332,16 @@ describe('POST /api/projects/:id/preview/secrets/import', () => {
     expect(list.body.secrets).toHaveLength(0);
   });
 });
+
+describe('GET /api/projects/:id/secrets (canonical alias)', () => {
+  it('lists secrets on the non-preview path', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/secrets`)
+      .send({ secrets: [{ key: 'ALIAS_KEY', value: 'x', kind: 'plain' }] })
+      .expect(200);
+    const res = await request.get(`/api/projects/${projectId}/secrets`).expect(200);
+    expect(res.body.secrets).toHaveLength(1);
+    expect(res.body.secrets[0].key).toBe('ALIAS_KEY');
+  });
+});

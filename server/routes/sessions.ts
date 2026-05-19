@@ -37,6 +37,8 @@ import type {
   Project,
 } from '../types.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
+import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { closeBrowserSession } from '../browser.js';
@@ -244,6 +246,11 @@ export function summarizeTranscript(
     const spawnEnv = { ...buildSpawnEnv(config) };
     if (skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(spawnEnv, skillCredentialMerge);
+      mergeProjectSecretsSpawnEnv(spawnEnv, {
+        projectId: skillCredentialMerge.project.id,
+        sessionId: null,
+      });
+      mergeProjectAwsSpawnEnv(spawnEnv, skillCredentialMerge.project);
     }
 
     const proc = spawn(bin, args, {

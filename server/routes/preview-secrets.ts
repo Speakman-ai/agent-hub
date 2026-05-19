@@ -1,19 +1,14 @@
 /**
- * Worktree preview secrets REST surface.
+ * Per-project secrets REST surface.
  *
- *   GET    /api/projects/:projectId/preview/secrets         (Admin+)
- *   PUT    /api/projects/:projectId/preview/secrets         (Owner)
- *   POST   /api/projects/:projectId/preview/secrets/import  (Owner)
+ *   GET    /api/projects/:projectId/secrets         (Admin+)
+ *   PUT    /api/projects/:projectId/secrets         (Owner)
+ *   POST   /api/projects/:projectId/secrets/import  (Owner)
  *
- * The list endpoint returns the MASK constant for any `secret`-kind row
- * — no caller-side path ever reveals decrypted secret-kind values
- * (the only decrypt happens inside `loadProjectEnvForSpawn`, called by
- * the preview runtime at spawn time).
- *
- * Authz model mirrors Slack bots / instance backups: Admin can read
- * (the team's preview config is shared context), Owner can write
- * (changing the env that preview boots with is a production-shaped
- * action).
+ * Legacy aliases under `/preview/secrets` remain for scripts and older
+ * clients. Values are merged into spawned sessions via
+ * `mergeProjectSecretsSpawnEnv` — list/GET never returns decrypted
+ * `secret`-kind values (MASK sentinel on PUT preserves unchanged rows).
  */
 import { Router, Request, Response } from 'express';
 import { requireRole } from '../roles.js';
@@ -60,15 +55,22 @@ function normalizeInputs(raw: unknown): PreviewSecretInput[] {
   });
 }
 
+const SECRETS_PATHS = [
+  '/api/projects/:projectId/secrets',
+  '/api/projects/:projectId/preview/secrets',
+] as const;
+
+const IMPORT_PATHS = [
+  '/api/projects/:projectId/secrets/import',
+  '/api/projects/:projectId/preview/secrets/import',
+] as const;
+
 export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
   const { findProject } = deps;
   const router = Router();
 
-  // ─── GET — Admin+ ────────────────────────────────────────────────
-  router.get(
-    '/api/projects/:projectId/preview/secrets',
-    requireRole('Admin'),
-    (req: Request, res: Response) => {
+  for (const listPath of SECRETS_PATHS) {
+    router.get(listPath, requireRole('Admin'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -76,14 +78,9 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
       }
       const secrets = listPreviewSecrets(project.id);
       res.json({ secrets });
-    },
-  );
+    });
 
-  // ─── PUT — Owner — bulk replace ──────────────────────────────────
-  router.put(
-    '/api/projects/:projectId/preview/secrets',
-    requireRole('Owner'),
-    (req: Request, res: Response) => {
+    router.put(listPath, requireRole('Owner'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -101,30 +98,11 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         }
         throw err;
       }
-    },
-  );
+    });
+  }
 
-  // ─── POST /import — Owner — parse .env blob, dedupe by key ───────
-  //
-  // Two contracts:
-  //   - `mode: 'replace'` (default) → behaves like PUT after parsing.
-  //   - `mode: 'merge'`             → reads the current raw rows,
-  //                                    keeps every existing row whose
-  //                                    key is NOT in the parsed blob
-  //                                    (carrying secret-kind ciphertext
-  //                                    through without decrypting), and
-  //                                    upserts the parsed entries on
-  //                                    top. "Later wins" only when the
-  //                                    same key appears in the blob.
-  //
-  // The merge path uses `replacePreviewSecretsMixed` so secret-kind
-  // rows survive a merge even though their value is masked on GET —
-  // the store round-trips their ciphertext rather than re-encrypting
-  // MASK as plaintext.
-  router.post(
-    '/api/projects/:projectId/preview/secrets/import',
-    requireRole('Owner'),
-    (req: Request, res: Response) => {
+  for (const importPath of IMPORT_PATHS) {
+    router.post(importPath, requireRole('Owner'), (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) {
         res.status(404).json({ error: 'Project not found' });
@@ -137,10 +115,6 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
           throw new PreviewSecretValidationError('env must be a string');
         }
         const mode = body.mode === 'merge' ? 'merge' : 'replace';
-        // Optional default kind for newly-imported keys; rarely set,
-        // but lets callers import a curated config block as `plain`.
-        // `parseDotEnv` returns entries with `kind` undefined so this
-        // override is the only thing that classifies them.
         const defaultKind: SecretKind = body.defaultKind === 'plain' ? 'plain' : 'secret';
         if (
           body.defaultKind !== undefined &&
@@ -160,10 +134,6 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
         let result;
         if (mode === 'merge') {
-          // Pull raw rows so secret-kind ciphertext can round-trip
-          // through the merge without ever decrypting it. Rows whose
-          // key is also in the parsed blob will be overwritten by the
-          // freshly-encrypted input inside `replacePreviewSecretsMixed`.
           const existingRaw = listRawPreviewSecretRows(project.id);
           result = replacePreviewSecretsMixed(project.id, inputs, existingRaw, actorUserId);
         } else {
@@ -181,8 +151,8 @@ export default function createPreviewSecretsRoutes(deps: RouteDeps): Router {
         }
         throw err;
       }
-    },
-  );
+    });
+  }
 
   return router;
 }
