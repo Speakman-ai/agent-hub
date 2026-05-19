@@ -682,16 +682,29 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
   // the same umbrella branch). Previously every active process — interactive
   // or autonomous — consumed a slot, so a single human chat could pin the
   // only assignable agent at 0 slots forever and the dispatch loop would
-  // silently break with no log line. We detect autonomous origin by looking
-  // up the linked kanban card (sessions don't carry a dispatch-origin column
-  // of their own; `kanban_cards.dispatched_by_autonomous` is the source of
-  // truth, set inside the slot-claim transaction below).
+  // silently break with no log line.
+  //
+  // ── DO NOT "fix" this by filtering on `session.ask_mode` ────────────────
+  // It looks tempting — `ask_mode` is on the SessionRow and easy to read
+  // here — but `ask_mode` is the read-only / plan-mode flag (see
+  // `chat.ts:~2319` where it gates `--yolo`), not a dispatch-origin marker.
+  // Autonomous-dispatched sessions are created with `ask_mode = 0`
+  // (`createSession.run(..., 0, 1)` at the autonomous spawn site below;
+  // column order at `db.ts: createSession`'s prepare), *identical* to a
+  // default interactive chat. So `session.ask_mode !== 0` would only
+  // separate plan-mode sessions from everything else, and the original
+  // bug (regular human chat consuming an autonomous slot) would still fire.
+  // The kanban card's `dispatched_by_autonomous` flag is the only signal
+  // that distinguishes the two; it's set inside the slot-claim transaction
+  // (`markCardDispatchedByAutonomous` further down) before the session is
+  // created, so any session linked to a card with that flag is autonomous
+  // by construction. Sessions without a linked card (interactive chat,
+  // cron-spawned, ad-hoc heartbeats) are never autonomous-dispatched by
+  // this loop. (See PR #1064 history if a reviewer flags this filter again.)
   for (const [sid] of activeProcesses) {
     const session = d.stmts.getSession.get(sid) as { agent_id: string } | undefined;
     if (!session) continue;
-    const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as
-      | { dispatched_by_autonomous?: number }
-      | undefined;
+    const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as KanbanCardRow | undefined;
     if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
     agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
   }
