@@ -1606,6 +1606,17 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             );
             if (!v.ok) importAssignModel = null;
           }
+          const importAssignEngineRaw = (card as { assign_engine?: string | null }).assign_engine;
+          let importAssignEngine =
+            typeof importAssignEngineRaw === 'string' && importAssignEngineRaw.trim()
+              ? importAssignEngineRaw.trim()
+              : null;
+          // Drop the engine override silently if it's not a recognised engine
+          // id on the target instance — same fail-safe pattern as the
+          // model-override import above.
+          if (importAssignEngine && !config.engineValidModels?.[importAssignEngine]) {
+            importAssignEngine = null;
+          }
           stmts.createKanbanCard.run(
             newCardId,
             newColId,
@@ -1621,7 +1632,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             importAssignModel,
             card.position || 0,
           );
-          if (newEpicId) {
+          if (newEpicId || importAssignEngine) {
             stmts.updateKanbanCard.run(
               card.title,
               card.description || '',
@@ -1633,6 +1644,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               card.pr_url || null,
               newEpicId,
               importAssignModel,
+              importAssignEngine,
               card.pr_base_branch ?? null,
               newCardId,
             );

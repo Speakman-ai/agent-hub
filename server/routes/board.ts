@@ -383,6 +383,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const epicId = parsed.epicId;
     const hasAssignModel = parsed.assignModel !== undefined;
     const assignModel = parsed.assignModel;
+    const hasAssignEngine = (parsed as { assignEngine?: string | null }).assignEngine !== undefined;
+    const assignEngine = (parsed as { assignEngine?: string | null }).assignEngine;
 
     const hasPrBaseBranch = parsed.prBaseBranch !== undefined;
     let prBaseBranch: string | null | undefined;
@@ -426,12 +428,48 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     }
 
     const nextAssignee = hasAssignee ? (effectiveAssignee ?? null) : card.assignee;
+    // Normalize + validate the engine override first because the model
+    // validation below needs to know the *resolved* engine, not the
+    // assignee agent's shared engine, so an operator can switch a card to
+    // codex-cli + gpt-5.3-codex in a single PATCH without the model
+    // validator rejecting "gpt-5.3-codex is not valid for claude-code".
+    let nextAssignEngine: string | null | undefined;
+    if (hasAssignEngine) {
+      const trimmed =
+        assignEngine != null && String(assignEngine).trim() ? String(assignEngine).trim() : null;
+      if (trimmed) {
+        const allowedEngines = Object.keys(config.engineValidModels || {});
+        if (!allowedEngines.includes(trimmed)) {
+          return res.status(400).json({
+            error: `Invalid engine "${trimmed}". Allowed: ${allowedEngines.join(', ')}`,
+          });
+        }
+        nextAssignEngine = trimmed;
+      } else {
+        nextAssignEngine = null;
+      }
+    }
+    const resolvedEngineForValidation =
+      (nextAssignEngine ?? (hasAssignEngine ? null : (card.assign_engine ?? null))) || null;
     if (hasAssignModel) {
       const normalized =
         assignModel != null && String(assignModel).trim() ? String(assignModel).trim() : null;
       if (normalized) {
-        const v = validateKanbanAssignModel(normalized, project, nextAssignee, config);
-        if (!v.ok) return res.status(400).json({ error: v.error });
+        // When the card has an explicit engine override (either being set
+        // now or already on the row), validate the model against THAT
+        // engine — otherwise `validateKanbanAssignModel` would fall back
+        // to the assignee agent's engine and reject cross-engine combos.
+        if (resolvedEngineForValidation) {
+          const v = validateKanbanAssignModelForEngine(
+            normalized,
+            resolvedEngineForValidation,
+            config,
+          );
+          if (!v.ok) return res.status(400).json({ error: v.error });
+        } else {
+          const v = validateKanbanAssignModel(normalized, project, nextAssignee, config);
+          if (!v.ok) return res.status(400).json({ error: v.error });
+        }
       }
     }
 
@@ -450,6 +488,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           ? String(assignModel).trim()
           : null
         : card.assign_model,
+      hasAssignEngine ? (nextAssignEngine ?? null) : (card.assign_engine ?? null),
       hasPrBaseBranch ? (prBaseBranch ?? null) : (card.pr_base_branch ?? null),
       req.params.cardId,
     );
@@ -536,7 +575,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const parsedAssign = parseBody(AssignCardRequestSchema, req, res);
       if (!parsedAssign) return;
-      const { agentId, model: modelBody } = parsedAssign;
+      const { agentId, model: modelBody, engine: engineBody } = parsedAssign;
 
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -547,23 +586,39 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const sessionId = crypto.randomUUID();
       const trimmedOverride =
         typeof modelBody === 'string' && modelBody.trim() ? modelBody.trim() : null;
+      // Validate the optional engine override against the configured
+      // engineValidModels keys before passing it to the resolver — an
+      // unknown engine id has to be a 400, not a silent fallback to the
+      // shared agent engine. NULL/missing = "no override".
+      const trimmedEngineOverride =
+        typeof engineBody === 'string' && engineBody.trim() ? engineBody.trim() : null;
+      if (trimmedEngineOverride) {
+        const allowedEngines = Object.keys(config.engineValidModels || {});
+        if (!allowedEngines.includes(trimmedEngineOverride)) {
+          return res.status(400).json({
+            error: `Invalid engine "${trimmedEngineOverride}". Allowed: ${allowedEngines.join(', ')}`,
+          });
+        }
+      }
       const assignOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
         agentId,
         agentEngine: agent.engine || 'claude-code',
         agentModel: agent.model ?? null,
         ownerUserId: assignOwnerUid,
+        explicitEngine: trimmedEngineOverride,
         explicitModel: trimmedOverride,
       });
       if (trimmedOverride) {
         // Validate the model against the engine the spawn will actually use
-        // — which may be the per-user override engine rather than the
-        // agent's shared engine. Going through the engine-keyed validator
-        // avoids the agent-name fallback in `validateKanbanAssignModel`,
-        // which would otherwise widen the allowlist to `cfg.allValidModels`
-        // (the global union across every engine) when the resolved engine
-        // doesn't match `agent.engine` — letting e.g. a claude-code model
-        // through even though the spawn will use codex-cli.
+        // — which may be the explicit engine override, the per-user override
+        // engine, or the agent's shared engine. Going through the
+        // engine-keyed validator avoids the agent-name fallback in
+        // `validateKanbanAssignModel`, which would otherwise widen the
+        // allowlist to `cfg.allValidModels` (the global union across every
+        // engine) when the resolved engine doesn't match `agent.engine` —
+        // letting e.g. a claude-code model through even though the spawn
+        // will use codex-cli.
         const v = validateKanbanAssignModelForEngine(trimmedOverride, engine, config);
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
@@ -590,6 +645,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.pr_url,
         card.epic_id,
         trimmedOverride,
+        trimmedEngineOverride,
         card.pr_base_branch ?? null,
         req.params.cardId,
       );
@@ -701,6 +757,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        null,
         null,
         card.pr_base_branch ?? null,
         req.params.cardId,
