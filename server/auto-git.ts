@@ -285,6 +285,54 @@ export const STREAM_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
  */
 export const MAX_GIT_COMMIT_MESSAGE_CHARS = 27_000;
 
+/**
+ * Build the argv for the auto-commit pipeline's `git push`. Three shapes:
+ *
+ *   1. Rebase rewrote history AND we know the authoritative origin SHA
+ *      (looked up via `ls-remote` in `pre-push-rebase.ts`):
+ *      pin the lease to that SHA so the check is independent of the local
+ *      `refs/remotes/origin/<branch>` cache. This is the fix for the
+ *      `! [rejected] <branch> -> <branch> (stale info)` failure mode that
+ *      bare `--force-with-lease` produced whenever any parallel worker
+ *      (reviewer agent, second Hub session, human, autonomous worker) had
+ *      pushed the same branch in between.
+ *   2. Rebase rewrote history but `expectedRemoteSha` is null — either the
+ *      branch is brand-new on origin OR the `ls-remote` lookup itself
+ *      failed (network/auth). In both cases we fall back to bare
+ *      `--force-with-lease`, which git treats as "expect the locally
+ *      cached remote tip". For a brand-new branch that cache is empty, so
+ *      the lease passes; for an `ls-remote` failure we accept the legacy
+ *      stale-cache race instead of aborting the push — the rebase already
+ *      validated the local tip is on top of origin/<base>, so the worst
+ *      case is the original `(stale info)` rejection, which surfaces
+ *      loudly and recovers on the next session.
+ *   3. Rebase did NOT rewrite history: plain push, no lease — server-side
+ *      fast-forward enforcement catches concurrent pushes.
+ *
+ * TOCTOU window: between `ls-remote` (inside `rebaseOntoBase`) and the
+ * `git push` below, another actor can race a push to origin/<branch>.
+ * That window is milliseconds vs. the session lifetime, and git rejects
+ * the lease with `(stale info)` on the loser — we just retry on the next
+ * session pickup. Acceptable.
+ *
+ * Pulled out as a pure function so `auto-git.test.ts` can assert the argv
+ * shape without standing up the full `commitPushAndCreatePR` mock harness.
+ */
+export function buildPushArgs(opts: {
+  branch: string;
+  rebaseRewroteHistory: boolean;
+  expectedRemoteSha: string | null;
+}): string[] {
+  const { branch, rebaseRewroteHistory, expectedRemoteSha } = opts;
+  if (!rebaseRewroteHistory) {
+    return ['push', '-u', 'origin', branch];
+  }
+  const lease = expectedRemoteSha
+    ? `--force-with-lease=${branch}:${expectedRemoteSha}`
+    : '--force-with-lease';
+  return ['push', lease, '-u', 'origin', branch];
+}
+
 /** Strip NULs (invalid in git metadata) and hard-cap length for argv safety. */
 export function truncateForGitCommitMessage(message: string): string {
   const noNul = message.replace(/\0/g, '');
@@ -1728,10 +1776,21 @@ async function commitPushAndCreatePR(
     // committed earlier and we're only re-pushing).
     const rebaseTarget = resolvedBaseBranch ?? (await resolveDefaultBranch(effectiveCwd)) ?? null;
     let rebaseRewroteHistory = false;
+    // The authoritative origin SHA for `changes.branch`, captured fresh by
+    // `rebaseOntoBase` via `ls-remote`. Used below to pin
+    // `--force-with-lease=<branch>:<sha>` so the lease check does not depend
+    // on the local `refs/remotes/origin/<branch>` cache. Without this,
+    // a parallel push by any other worker (reviewer agent, second Hub
+    // session, human pushing from a laptop, autonomous worker on a sibling
+    // worktree) trips the lease as `! [rejected] <branch> -> <branch>
+    // (stale info)` and the session bails. See wiki page
+    // `troubleshooting-auto-commit-push-rejected-remote-branch-ahead`.
+    let expectedRemoteSha: string | null = null;
     if (rebaseTarget) {
       const rebaseOutcome = await rebaseOntoBase({
         cwd: effectiveCwd,
         baseBranch: rebaseTarget,
+        featureBranch: changes.branch,
         env: autoGitChildEnv(githubToken),
         prLog,
       });
@@ -1764,20 +1823,24 @@ async function commitPushAndCreatePR(
       }
       if (rebaseOutcome.kind === 'rebased') {
         rebaseRewroteHistory = true;
+        expectedRemoteSha = rebaseOutcome.expectedRemoteSha ?? null;
         console.log(
           `[auto-commit] Pre-push rebased onto origin/${rebaseTarget} (${rebaseOutcome.commitsBehind} commit(s))`,
         );
       }
-      // 'noop' and 'skipped' fall through to a normal push.
+      // 'noop' and 'skipped' fall through to a plain push (no `--force`, no
+      // lease). A non-fast-forward update on origin will be rejected by the
+      // server, which is the correct failure for those cases — the lease is
+      // only meaningful when we'd otherwise force-overwrite the remote tip.
+      // `rebaseOutcome.expectedRemoteSha` IS still populated on those
+      // branches (see `pre-push-rebase.ts`); we just don't need it here.
     }
 
-    // Use `--force-with-lease` when the rebase rewrote history AND the
-    // branch already exists on origin (resumed sessions push again). For
-    // a brand-new branch the lease still works: `git push` treats an
-    // absent remote ref as the empty value and the lease check passes.
-    const pushArgs = rebaseRewroteHistory
-      ? ['push', '--force-with-lease', '-u', 'origin', changes.branch]
-      : ['push', '-u', 'origin', changes.branch];
+    const pushArgs = buildPushArgs({
+      branch: changes.branch,
+      rebaseRewroteHistory,
+      expectedRemoteSha,
+    });
     prLog(`\n$ git ${pushArgs.join(' ')}\n`);
     let pushResult: { code: number | null; stdout: string; stderr: string };
     try {
