@@ -6,7 +6,7 @@
  * See `ChatMessage.extraEnv` in `server/types.ts`.
  */
 
-export const EXTRA_ENV_ALLOWLIST = new Set<string>(['DEV_HUB_API_KEY']);
+export const EXTRA_ENV_ALLOWLIST = new Set<string>(['DEV_HUB_API_KEY', 'GH_REPO']);
 
 /**
  * Merges allowlisted keys from `extraEnv` into `spawnEnv` in place.
