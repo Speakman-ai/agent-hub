@@ -115,7 +115,12 @@ if [ -f package.json ]; then npm install; fi
 if [ -f Cargo.toml ]; then cargo build; fi
 
 # Python
-if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+# `--break-system-packages` opts out of PEP 668 on Debian/Ubuntu hosts
+# (e.g. the Agent Hub runtime image) — needed when the system Python is
+# marked "externally managed" and you are not in a venv. Inert on
+# non-PEP-668 hosts. Switch to a project venv (`python3 -m venv .venv`)
+# if you want package isolation.
+if [ -f requirements.txt ]; then pip install --break-system-packages -r requirements.txt; fi
 if [ -f pyproject.toml ]; then poetry install; fi
 
 # Go

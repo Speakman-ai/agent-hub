@@ -165,6 +165,15 @@ RUN npx --yes playwright install chromium
 ENV AGENT_HUB_DATA_DIR=/data
 ENV AGENT_HUB_HOST=0.0.0.0
 ENV NODE_ENV=production
+# PEP 668: this Debian Bookworm runtime marks the system Python as
+# "externally managed", so `pip install ...` outside a venv fails with
+# `error: externally-managed-environment`. The same opt-out is set on the
+# per-spawn install env in server/worktree.ts; setting it on the image
+# means agent-driven shells (e.g. `pip install` from a skill or user
+# instruction) also work without per-call --break-system-packages flags.
+# Operators who want PEP 668 enforcement back can set
+# PIP_REQUIRE_VIRTUALENV=1, which pip honours over PIP_BREAK_SYSTEM_PACKAGES.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 WORKDIR /app/server
 
