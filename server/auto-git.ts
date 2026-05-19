@@ -24,6 +24,7 @@ import {
 import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
+import { rebaseOntoBase } from './pre-push-rebase.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1340,7 +1341,8 @@ export type CommitPushPrFailureCode =
   | 'commit_failed'
   | 'push_failed'
   | 'no_diff_vs_base'
-  | 'pr_failed';
+  | 'pr_failed'
+  | 'rebase_conflict';
 
 /** User-facing outcome of `manualCommitAndPR` (Create PR button / API). */
 export type ManualPrResult =
@@ -1715,10 +1717,69 @@ async function commitPushAndCreatePR(
       console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);
     }
 
-    prLog(`\n$ git push -u origin ${changes.branch}\n`);
+    // ── Pre-push rebase ────────────────────────────────────────────────
+    // Fold any commits that have landed on the base branch since this
+    // session forked. Catches conflicts now instead of after the PR opens,
+    // back when the agent / user can still do something about it (the
+    // session may still be alive; the worktree is local; abort is cheap).
+    // The tree is clean at this point — we just committed (or the agent
+    // committed earlier and we're only re-pushing).
+    const rebaseTarget = resolvedBaseBranch ?? (await resolveDefaultBranch(effectiveCwd)) ?? null;
+    let rebaseRewroteHistory = false;
+    if (rebaseTarget) {
+      const rebaseOutcome = await rebaseOntoBase({
+        cwd: effectiveCwd,
+        baseBranch: rebaseTarget,
+        env: autoGitChildEnv(githubToken),
+        prLog,
+      });
+      if (rebaseOutcome.kind === 'conflict') {
+        const headline = `Pre-push rebase onto \`origin/${rebaseTarget}\` hit conflicts; the push was skipped to avoid opening a conflicting PR.`;
+        prLog(`\n${headline}\n`);
+        // Post a card comment so the next session (resolve-PR auto-dispatch,
+        // a polling sweep, or a human) has actionable context.
+        if (card) {
+          try {
+            const trimmedDetail = rebaseOutcome.detail.slice(0, 2000);
+            d.stmts.createKanbanCardComment.run(
+              crypto.randomUUID(),
+              card.id,
+              'Agent Hub (pre-push rebase)',
+              `${headline}\n\nResolve the conflicts manually and retry:\n\n\`\`\`\ngit fetch origin\ngit rebase origin/${rebaseTarget}\n\`\`\`\n\nGit output:\n\n\`\`\`\n${trimmedDetail}\n\`\`\``,
+            );
+            d.broadcast({ type: 'kanban_update', projectId: project.id });
+          } catch (commentErr: unknown) {
+            const cmsg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+            console.warn(`[auto-commit] Failed to post pre-push rebase comment: ${cmsg}`);
+          }
+        }
+        return {
+          ok: false,
+          error: headline,
+          code: 'rebase_conflict',
+          branch: changes.branch,
+        };
+      }
+      if (rebaseOutcome.kind === 'rebased') {
+        rebaseRewroteHistory = true;
+        console.log(
+          `[auto-commit] Pre-push rebased onto origin/${rebaseTarget} (${rebaseOutcome.commitsBehind} commit(s))`,
+        );
+      }
+      // 'noop' and 'skipped' fall through to a normal push.
+    }
+
+    // Use `--force-with-lease` when the rebase rewrote history AND the
+    // branch already exists on origin (resumed sessions push again). For
+    // a brand-new branch the lease still works: `git push` treats an
+    // absent remote ref as the empty value and the lease check passes.
+    const pushArgs = rebaseRewroteHistory
+      ? ['push', '--force-with-lease', '-u', 'origin', changes.branch]
+      : ['push', '-u', 'origin', changes.branch];
+    prLog(`\n$ git ${pushArgs.join(' ')}\n`);
     let pushResult: { code: number | null; stdout: string; stderr: string };
     try {
-      pushResult = await spawnProcessStreaming('git', ['push', '-u', 'origin', changes.branch], {
+      pushResult = await spawnProcessStreaming('git', pushArgs, {
         cwd: effectiveCwd,
         timeoutMs: 300_000,
         onChunk: prLog,
