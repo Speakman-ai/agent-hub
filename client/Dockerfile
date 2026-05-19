@@ -12,6 +12,8 @@ RUN npm ci
 
 # Copy client source and build
 COPY client/ ./
+# Vite reads repo-root package.json for VITE_APP_VERSION (see vite.config.js).
+COPY package.json /app/package.json
 RUN VITE_API_PORT="" npm run build
 
 FROM nginx:alpine
