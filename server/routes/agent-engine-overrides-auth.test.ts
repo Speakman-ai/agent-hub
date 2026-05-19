@@ -10,9 +10,6 @@
  *   - PUT rejects unknown engines
  *   - PUT rejects models that aren't valid for the named engine
  *   - PUT with an empty map clears all overrides
- *   - The endpoint does NOT clobber `engineDefaultModels` (the other
- *     preference sub-map) — that's the regression guard for the merge
- *     helper added alongside the new routes.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
@@ -160,25 +157,6 @@ describe('agent-engine-overrides routes', () => {
     expect(r.status).toBe(200);
     expect(r.body.agentEngineOverrides).toEqual({});
     expect(getUserPreferencesRow('u1').agentEngineOverrides).toBeUndefined();
-  });
-
-  it('does not clobber engineDefaultModels stored on the same user row', async () => {
-    createUser({ id: 'u1', username: 'alice', passwordHash: 'x' });
-    replaceUserPreferencesJson('u1', {
-      engineDefaultModels: { 'claude-code': 'claude-sonnet-4.5' },
-    });
-    const app = buildStubbedApp({ authUserId: 'u1' });
-    const r = await supertest(app)
-      .put('/api/auth/me/agent-engine-overrides')
-      .send({
-        agentEngineOverrides: { 'agent-hub': { engine: 'codex-cli' } },
-      });
-    expect(r.status).toBe(200);
-
-    const stored = getUserPreferencesRow('u1');
-    // The merge helper must preserve the other sub-map.
-    expect(stored.engineDefaultModels?.['claude-code']).toBe('claude-sonnet-4.5');
-    expect(stored.agentEngineOverrides?.['agent-hub'].engine).toBe('codex-cli');
   });
 });
 

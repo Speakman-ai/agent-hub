@@ -14,7 +14,6 @@ import {
 } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
-import MyEngineDefaultModelsSection from './MyEngineDefaultModelsSection.jsx';
 import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
 import MyBrowserAuthSection from './MyBrowserAuthSection.jsx';
 import MySkillCredentialSection from './MySkillCredentialSection.jsx';
@@ -203,8 +202,6 @@ export default function AccountSection() {
       </div>
 
       {me && <MyClaudeAuthSection />}
-
-      {me && <MyEngineDefaultModelsSection />}
 
       {me && (
         <MySingleKeyAuthSection

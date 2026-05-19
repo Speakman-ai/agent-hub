@@ -1,11 +1,11 @@
 /**
  * Canonical model resolution for CLI spawns keyed by session ownership.
  *
- * Order: explicit (request / session picker) → per-user engine default from
- * `preferences_json` → shared `agent.model` (only if allowed for `engine`)
- * → `cfg.engineDefaultModels[engine]`
- * (else `cfg.defaultModel`; if `cfg` is partial in tests or legacy mocks, falls
- * back to process `defaultModelForEngine(engine)` — same singleton as startup).
+ * Order: explicit (request / session picker) → shared `agent.model` (only if
+ * allowed for `engine`) → `cfg.engineDefaultModels[engine]` (else
+ * `cfg.defaultModel`; if `cfg` is partial in tests or legacy mocks, falls
+ * back to process `defaultModelForEngine(engine)` — same singleton as
+ * startup).
  *
  * `resolveEffectiveEngineAndModel` extends this with a per-user **per-agent**
  * engine override sourced from `agentEngineOverrides` on `preferences_json`. When
@@ -21,7 +21,7 @@ export interface ResolveEffectiveModelOpts {
   explicitModel?: string | null;
   /** Shared agent row (`projects.json`). */
   agentModel?: string | null;
-  /** `sessions.owner_user_id` — when null/absent the user-preferences tier is skipped. */
+  /** `sessions.owner_user_id` — accepted for signature parity; no per-user model tier remains. */
   ownerUserId?: string | null;
 }
 
@@ -32,7 +32,7 @@ export interface ResolveEffectiveEngineAndModelOpts {
   agentEngine: string;
   /** Shared agent model from `projects.json` (for the shared engine). */
   agentModel?: string | null;
-  /** `sessions.owner_user_id`; when null/absent overrides + per-user defaults are skipped. */
+  /** `sessions.owner_user_id`; when null/absent agentEngineOverrides are skipped. */
   ownerUserId?: string | null;
   /**
    * Caller-provided engine override (e.g. from a session-creation body).
@@ -90,7 +90,7 @@ export function resolveEffectiveEngineAndModel(
     if (override?.engine) {
       const model = resolveEffectiveModel(cfg, override.engine, {
         // Per-agent override's `model` is treated as an explicit pick —
-        // it wins over the per-engine default and the shared `agentModel`.
+        // it wins over the shared `agentModel`.
         explicitModel: opts.explicitModel ?? override.model ?? null,
         // Same reasoning as above — drop the shared model when the engine
         // diverges.
@@ -120,21 +120,6 @@ export function resolveEffectiveModel(
 ): string {
   const explicit = opts.explicitModel?.trim();
   if (explicit) return explicit;
-
-  const uid = opts.ownerUserId;
-  if (uid) {
-    let enginePrefs: Record<string, string> | undefined;
-    try {
-      enginePrefs = getUserPreferencesRow(uid).engineDefaultModels;
-    } catch {
-      enginePrefs = undefined;
-    }
-    const pick = enginePrefs?.[engine]?.trim();
-    if (pick) {
-      const allowed = cfg.engineValidModels?.[engine];
-      if (Array.isArray(allowed) && allowed.includes(pick)) return pick;
-    }
-  }
 
   const agentM = opts.agentModel?.trim();
   if (agentM) {

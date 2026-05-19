@@ -537,13 +537,6 @@ export const api = {
   putMyCodexAuth: (body) =>
     fetchJSON('/auth/me/codex-auth', { method: 'PUT', body: JSON.stringify(body) }),
 
-  getMyEngineDefaultModels: () => fetchJSON('/auth/me/engine-default-models'),
-  putMyEngineDefaultModels: (body) =>
-    fetchJSON('/auth/me/engine-default-models', {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
-
   getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
   putMyAgentEngineOverrides: (body) =>
     fetchJSON('/auth/me/agent-engine-overrides', {

@@ -118,7 +118,6 @@ import {
   UpdateSingleKeyAuthBody,
   UpdateUserRoleBody,
   UpsertSkillCredentialBody,
-  PutEngineDefaultModelsBody,
   PutAgentEngineOverridesBody,
   UserSummary,
   ZodErrorResponse,
@@ -409,69 +408,6 @@ registerPath({
     },
     404: {
       description: 'User not found.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/auth/me/engine-default-models',
-  tags: ['Auth'],
-  summary: 'Per-user default CLI model ids by engine.',
-  responses: {
-    200: {
-      description: 'Validated engine→model map (unknown/stale ids are stripped).',
-      content: {
-        'application/json': {
-          schema: z.object({
-            engineDefaultModels: z.record(z.string(), z.string()),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
-  },
-});
-
-registerPath({
-  method: 'put',
-  path: '/api/auth/me/engine-default-models',
-  tags: ['Auth'],
-  summary: 'Replace per-user default CLI models by engine.',
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: PutEngineDefaultModelsBody,
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Updated map.',
-      content: {
-        'application/json': {
-          schema: z.object({
-            engineDefaultModels: z.record(z.string(), z.string()),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Invalid payload.',
-      content: { 'application/json': { schema: ZodErrorResponse } },
-    },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
-    404: {
-      description: 'User row missing.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -1184,41 +1120,6 @@ function buildInviteAcceptLimiter(opts: AuthRoutesOptions) {
   });
 }
 
-function sanitizeEngineDefaultsFromBody(
-  body: Record<string, string>,
-): { ok: true; engineDefaultModels: Record<string, string> } | { ok: false; error: string } {
-  const cleaned: Record<string, string> = {};
-  const knownEngines = new Set(Object.keys(config.engineValidModels));
-  for (const [engine, raw] of Object.entries(body)) {
-    const model = typeof raw === 'string' ? raw.trim() : '';
-    if (!model) continue;
-    if (!knownEngines.has(engine)) {
-      return { ok: false, error: `Unknown engine "${engine}"` };
-    }
-    const allowed = config.engineValidModels[engine] || [];
-    if (!allowed.includes(model)) {
-      return {
-        ok: false,
-        error: `Model "${model}" is not allowed for engine "${engine}". Allowed: ${allowed.join(', ')}`,
-      };
-    }
-    cleaned[engine] = model;
-  }
-  return { ok: true, engineDefaultModels: cleaned };
-}
-
-function filterStoredEngineDefaults(
-  stored: Record<string, string> | undefined,
-): Record<string, string> {
-  if (!stored) return {};
-  const out: Record<string, string> = {};
-  for (const [engine, model] of Object.entries(stored)) {
-    const allowed = config.engineValidModels[engine];
-    if (Array.isArray(allowed) && allowed.includes(model)) out[engine] = model;
-  }
-  return out;
-}
-
 /**
  * Validate a `{ [agentId]: { engine, model? } }` PUT body. Returns the
  * trimmed-and-checked map, or a precise `400` error message naming the
@@ -1260,9 +1161,8 @@ function sanitizeAgentEngineOverridesFromBody(
 
 /**
  * Drop persisted override entries whose engine / model are no longer in
- * the live `engineValidModels`. Mirrors `filterStoredEngineDefaults` —
- * keeps the API output honest after a config change rotates an engine
- * out of the catalogue.
+ * the live `engineValidModels`. Keeps the API output honest after a
+ * config change rotates an engine out of the catalogue.
  */
 function filterStoredAgentEngineOverrides(
   stored: Record<string, AgentEngineOverride> | undefined,
@@ -1790,48 +1690,6 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       });
     });
   }
-
-  router.get('/api/auth/me/engine-default-models', (req: Request, res: Response) => {
-    const authedReq = req as AuthenticatedRequest;
-    if (!authedReq.authUserId) {
-      res.status(401).json({ error: 'Authentication required' });
-      return;
-    }
-    const rowUser = getUserById(authedReq.authUserId);
-    if (!rowUser) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-    const stored = getUserPreferencesRow(authedReq.authUserId).engineDefaultModels;
-    res.json({ engineDefaultModels: filterStoredEngineDefaults(stored) });
-  });
-
-  router.put('/api/auth/me/engine-default-models', (req: Request, res: Response) => {
-    const authedReq = req as AuthenticatedRequest;
-    if (!authedReq.authUserId) {
-      res.status(401).json({ error: 'Authentication required' });
-      return;
-    }
-    const rowUser = getUserById(authedReq.authUserId);
-    if (!rowUser) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-    const parsed = PutEngineDefaultModelsBody.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json(formatZodError(parsed.error));
-      return;
-    }
-    const checked = sanitizeEngineDefaultsFromBody(parsed.data.engineDefaultModels ?? {});
-    if (!checked.ok) {
-      res.status(400).json({ error: checked.error });
-      return;
-    }
-    mergeUserPreferencesJson(authedReq.authUserId, {
-      engineDefaultModels: checked.engineDefaultModels,
-    });
-    res.json({ engineDefaultModels: checked.engineDefaultModels });
-  });
 
   router.get('/api/auth/me/agent-engine-overrides', (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
