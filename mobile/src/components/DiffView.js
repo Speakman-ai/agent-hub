@@ -1,7 +1,7 @@
 import React, { memo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { colors } from '../theme/colors';
-import { parseDiffLines, shortenPath } from '../utils/diff';
+import { parseDiffLines, shortenPath, diffHasDisplayableLines } from '../utils/diff';
 
 const DIFF_PREVIEW_LINES = 5;
 
@@ -12,6 +12,7 @@ const DIFF_PREVIEW_LINES = 5;
 function DiffView({ tool, input }) {
   const { filePath, action, removals, additions } = parseDiffLines(tool, input);
   const [expanded, setExpanded] = useState(false);
+  const hasLines = diffHasDisplayableLines(tool, input);
 
   const addedCount = additions.filter((l) => l && l.trim()).length;
   const removedCount = removals.filter((l) => l && l.trim()).length;
@@ -22,7 +23,11 @@ function DiffView({ tool, input }) {
   const previewKind = additions.length > 0 ? 'add' : 'remove';
   const hiddenCount = totalLines - Math.min(previewLines.length, DIFF_PREVIEW_LINES);
 
-  const diffBody = showFull ? (
+  const diffBody = !hasLines ? (
+    <Text style={styles.emptyHint}>
+      {filePath ? 'Diff content pending or unavailable for this edit.' : 'No diff lines to display.'}
+    </Text>
+  ) : showFull ? (
     <ScrollView style={styles.fullScroll} nestedScrollEnabled>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
         <View>
@@ -170,6 +175,14 @@ const styles = StyleSheet.create({
     borderTopColor: colors.gray800,
   },
   expandFooterText: { fontSize: 10, color: colors.gray500 },
+  emptyHint: {
+    fontSize: 11,
+    color: colors.gray500,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+  },
 });
 
 export default memo(DiffView);

@@ -238,6 +238,33 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
  * between them. Mirrors Cursor's chat where the model gathering context
  * doesn't dominate the timeline.
  */
+describe('eventsToBlocks — cursor Edit tool_use upgrade', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('uses the latest tool_use input when the same call_id is emitted twice', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'e1',
+          tool: 'Edit',
+          input: { path: 'f.ts', strReplace: { oldText: '', newText: '' } },
+        },
+        {
+          type: 'tool_use',
+          id: 'e1',
+          tool: 'Edit',
+          input: { path: 'f.ts', strReplace: { oldText: 'a', newText: 'b' } },
+        },
+        { type: 'tool_result', toolUseId: 'e1', output: 'ok', isError: false },
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('tool');
+    expect(blocks[0].use.input.strReplace.newText).toBe('b');
+  });
+});
+
 describe('eventsToBlocks — explored coalescer', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
   const read = (id, file) => ({ type: 'tool_use', id, tool: 'Read', input: { file_path: file } });

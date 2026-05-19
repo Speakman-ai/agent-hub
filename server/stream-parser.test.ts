@@ -744,6 +744,72 @@ describe('createStreamParser — Cursor Agent', () => {
     }
   });
 
+  it('defers Edit tool_use when started has path-only empty strReplace', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-empty-sr',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'cad/services/foo.ts', strReplace: {} },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'e-empty-sr',
+        tool_call: {
+          editToolCall: {
+            args: {
+              path: 'cad/services/foo.ts',
+              strReplace: { oldText: 'const a = 1;', newText: 'const a = 2;' },
+            },
+            result: { success: {} },
+          },
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    const use = events[0] as ToolUseEvent;
+    expect(use.type).toBe('tool_use');
+    expect(use.tool).toBe('Edit');
+    expect((use.input.strReplace as { oldText: string }).oldText).toBe('const a = 1;');
+  });
+
+  it('upgrades Edit tool_use on completed when started emitted Codex-style changes[] only', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-upgrade',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'f.ts', changes: [{ path: 'f.ts', kind: 'update' }] },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'e-upgrade',
+        tool_call: {
+          editToolCall: {
+            args: {
+              path: 'f.ts',
+              strReplace: { oldText: 'x', newText: 'y' },
+            },
+            result: { success: {} },
+          },
+        },
+      }),
+    ]);
+    const uses = events.filter((e) => e.type === 'tool_use') as ToolUseEvent[];
+    expect(uses).toHaveLength(2);
+    expect((uses[1].input.strReplace as { newText: string }).newText).toBe('y');
+  });
+
   it('merges Write tool args on tool_call completed when started had no fileText (DiffView data)', () => {
     const events = parse([
       JSON.stringify({

@@ -5,7 +5,12 @@ import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponents } from './MarkdownRenderer.jsx';
-import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
+import {
+  isFileModifyingTool,
+  shortenPath,
+  parseDiffLines,
+  diffHasDisplayableLines,
+} from '../utils/diff.js';
 import {
   extractCoordinationBlocks,
   describeHandoffReason,
@@ -380,10 +385,23 @@ const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 
  */
 export function eventsToBlocks(events) {
   const blocks = [];
+  const list = events ?? [];
+
+  // Cursor may emit a second tool_use for the same call_id when completed args
+  // upgrade a path-only started payload — keep the latest input per id.
+  const latestToolUseById = new Map();
+  const lastToolUseIndex = new Map();
+  list.forEach(({ event }, i) => {
+    if (event?.type === 'tool_use' && event.id != null && String(event.id)) {
+      const id = String(event.id);
+      latestToolUseById.set(id, event);
+      lastToolUseIndex.set(id, i);
+    }
+  });
 
   // First pass: index tool_results by tool_use_id for pairing.
   const resultByToolId = {};
-  for (const { event } of events) {
+  for (const { event } of list) {
     if (event?.type === 'tool_result' && event.toolUseId) {
       resultByToolId[event.toolUseId] = event;
     }
@@ -425,7 +443,8 @@ export function eventsToBlocks(events) {
     flushText();
   };
 
-  for (const { event } of events) {
+  for (let i = 0; i < list.length; i++) {
+    const { event } = list[i];
     if (!event) continue;
     const t = event.type;
 
@@ -450,19 +469,22 @@ export function eventsToBlocks(events) {
     if (t === 'rate_limit') continue;
 
     if (t === 'tool_use') {
-      const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
+      const toolId = event.id != null ? String(event.id) : '';
+      if (toolId && lastToolUseIndex.get(toolId) !== i) continue;
+      const use = toolId ? (latestToolUseById.get(toolId) ?? event) : event;
+      const isSubagent = use.tool === 'Task' || use.tool === 'Agent';
       // ExitPlanMode (Claude's plan-mode proposal) routes to a dedicated card
       // so the plan renders as markdown without ERROR styling — its
       // tool_result is `is_error: true` by design under non-interactive CLI
       // ("plan approval declined" is the expected flow).
-      const isExitPlanMode = event.tool === 'ExitPlanMode';
-      const isTodoWrite = event.tool === 'TodoWrite';
-      const result = resultByToolId[event.id];
-      const isExplore = EXPLORE_TOOLS.has(event.tool) && !result?.isError;
+      const isExitPlanMode = use.tool === 'ExitPlanMode';
+      const isTodoWrite = use.tool === 'TodoWrite';
+      const result = resultByToolId[use.id];
+      const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
       if (isExplore) {
         flushText();
         if (!exploredBuf) exploredBuf = { items: [] };
-        exploredBuf.items.push({ use: event, result });
+        exploredBuf.items.push({ use, result });
         continue;
       }
       flushAll();
@@ -470,7 +492,7 @@ export function eventsToBlocks(events) {
       if (isSubagent) kind = 'subagent';
       else if (isExitPlanMode) kind = 'plan_proposal';
       else if (isTodoWrite) kind = 'todos';
-      blocks.push({ kind, use: event, result });
+      blocks.push({ kind, use, result });
       continue;
     }
 
@@ -757,6 +779,7 @@ const DIFF_PREVIEW_LINES = 5;
 export function DiffView({ tool, input }) {
   const { filePath, action, removals, additions } = parseDiffLines(tool, input);
   const [expanded, setExpanded] = useState(false);
+  const hasLines = diffHasDisplayableLines(tool, input);
 
   const addedCount = additions.filter((l) => l.trim()).length;
   const removedCount = removals.filter((l) => l.trim()).length;
@@ -778,7 +801,13 @@ export function DiffView({ tool, input }) {
           {removedCount > 0 && <span className="text-red-400 ml-1">-{removedCount}</span>}
         </span>
       </div>
-      {showFull ? (
+      {!hasLines ? (
+        <p className="px-2 py-2 text-[11px] text-gray-500 border-t border-gray-800/50">
+          {filePath
+            ? 'Diff content pending or unavailable for this edit.'
+            : 'No diff lines to display.'}
+        </p>
+      ) : showFull ? (
         <div className="overflow-x-auto max-h-64 overflow-y-auto">
           {removals.map((line, i) => (
             <div
