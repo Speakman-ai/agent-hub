@@ -5,7 +5,8 @@
 // credentials take precedence over host fallback. Today that covers Claude
 // (anthropic API key / OAuth token) and Cursor (per-user CURSOR_API_KEY in
 // `users.cursor_api_key`, plus OAuth tokens under per-user HOME).
-// Codex is still host-level only.
+// Codex mirrors Cursor: per-user API keys and per-user OAuth caches win;
+// host config/env is fallback only when the caller has no userId.
 //
 // This module is async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
@@ -22,8 +23,12 @@ import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
-import { getUserClaudeAuth, getUserCursorAuth } from './users-store.js';
+import { getUserClaudeAuth, getUserCursorAuth, getUserCodexAuth } from './users-store.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import {
+  hasPopulatedCodexDeviceAuth,
+  perUserCodexHomePath,
+} from './per-user-codex-device-login.js';
 
 export interface EngineAuthStatus {
   claude: boolean;
@@ -148,15 +153,52 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
     hasClaudeHostOauth()
   );
 
-  const codexApiKey = !!(
-    config.codexApiKey ||
-    process.env.CODEX_API_KEY ||
-    process.env.OPENAI_API_KEY
-  );
-  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
-  const codexFs = detectCodexAuthMode(codexHome);
-  const codex =
-    codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
+  let hasUserCodexApiKey = false;
+  if (userId) {
+    try {
+      const stored = getUserCodexAuth(userId);
+      if (stored?.apiKey) hasUserCodexApiKey = true;
+    } catch {
+      hasUserCodexApiKey = false;
+    }
+  }
+
+  let codex = false;
+  if (hasUserCodexApiKey) {
+    codex = true;
+  } else if (userId && dataDir) {
+    try {
+      if (hasPopulatedCodexDeviceAuth(userId, dataDir)) {
+        codex = true;
+      } else {
+        const perHome = ensurePerUserHome(userId, dataDir);
+        const perFs = detectCodexAuthMode(path.join(perHome, '.codex'));
+        codex = perFs.present && (perFs.mode === 'chatgpt' || perFs.mode === 'apikey');
+      }
+    } catch {
+      codex = false;
+    }
+    if (!codex) {
+      try {
+        const isolatedHome = perUserCodexHomePath(userId, dataDir);
+        const isolatedFs = detectCodexAuthMode(isolatedHome);
+        codex =
+          isolatedFs.present && (isolatedFs.mode === 'chatgpt' || isolatedFs.mode === 'apikey');
+      } catch {
+        codex = false;
+      }
+    }
+  } else {
+    const codexApiKey = !!(
+      config.codexApiKey ||
+      process.env.CODEX_API_KEY ||
+      process.env.OPENAI_API_KEY
+    );
+    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexFs = detectCodexAuthMode(codexHome);
+    codex =
+      codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
+  }
 
   // Per-user Cursor credentials win over host probe (see buildSpawnEnv
   // / chat.ts spawn auth resolution). Without this branch the engine

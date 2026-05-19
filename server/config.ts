@@ -484,6 +484,7 @@ export function buildSpawnEnv(
   // only an API key still inherits the host's OAuth token, and vice
   // versa.
   const override = opts.userOverride ?? null;
+  const ownerUserId = presentString(opts.userId);
   const anthropicApiKey =
     presentString(override?.anthropicApiKey) ?? presentString(cfg.anthropicApiKey);
   if (anthropicApiKey) {
@@ -499,11 +500,16 @@ export function buildSpawnEnv(
   } else {
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
-  // Cursor / Gemini / Codex follow the same per-user → host → unset
-  // precedence as the Claude vars above. Each field is resolved
-  // independently so a user that only stored a Gemini key still inherits
-  // the host's Cursor / Codex values, and vice versa.
-  const cursorApiKey = presentString(override?.cursorApiKey) ?? presentString(cfg.cursorApiKey);
+  // Cursor / Gemini / Codex: per-user override → host config when no
+  // `userId` is set. When `userId` is set, host keys are withheld so the
+  // spawn uses only that user's stored keys or OAuth caches under HOME.
+  // When spawning for a known Hub user, never inject the operator's
+  // Cursor/Gemini/Codex API keys — only that user's stored keys (via
+  // `userOverride`) or their per-user OAuth caches under HOME/CODEX_HOME.
+  const inheritHostEngineKeys = !ownerUserId;
+  const cursorApiKey =
+    presentString(override?.cursorApiKey) ??
+    (inheritHostEngineKeys ? presentString(cfg.cursorApiKey) : null);
   if (cursorApiKey) {
     // Cursor Agent CLI (binary name `agent`) reads CURSOR_API_KEY when no
     // cached OAuth token is present. See
@@ -512,7 +518,9 @@ export function buildSpawnEnv(
   } else {
     delete env.CURSOR_API_KEY;
   }
-  const geminiApiKey = presentString(override?.geminiApiKey) ?? presentString(cfg.geminiApiKey);
+  const geminiApiKey =
+    presentString(override?.geminiApiKey) ??
+    (inheritHostEngineKeys ? presentString(cfg.geminiApiKey) : null);
   if (geminiApiKey) {
     // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached
     // OAuth token is present. See https://geminicli.com/docs/cli/cli-reference.
@@ -520,7 +528,9 @@ export function buildSpawnEnv(
   } else {
     delete env.GEMINI_API_KEY;
   }
-  const codexApiKey = presentString(override?.codexApiKey) ?? presentString(cfg.codexApiKey);
+  const codexApiKey =
+    presentString(override?.codexApiKey) ??
+    (inheritHostEngineKeys ? presentString(cfg.codexApiKey) : null);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
     // environment when no ChatGPT OAuth token is cached. See
@@ -566,7 +576,6 @@ export function buildSpawnEnv(
   // intentionally leave HOME alone (the host operator's HOME) so the
   // legacy global-apiKey path and Admin host-wide auth flows keep
   // working untouched.
-  const ownerUserId = presentString(opts.userId);
   if (ownerUserId) {
     try {
       env.HOME = ensurePerUserHome(ownerUserId, cfg.dataDir);
