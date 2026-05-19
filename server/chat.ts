@@ -106,7 +106,7 @@ import {
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
-import { deriveHeuristicTitle, scheduleTitleUpgrade } from './session-title.js';
+import { pickInitialSessionTitle, scheduleTitleUpgrade } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
@@ -1659,6 +1659,73 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         userMsgId ? m.id !== userMsgId : true,
       );
       const isFirstMessage = priorMessages.length === 0;
+
+      // Early auto-rename. Previously the sidebar only got a real title after
+      // the assistant's first response stream completed — that meant tens of
+      // seconds of `Session 5/19/2026, 12:43 PM` for long first turns (and
+      // never, for runs that hang / fail / sit in plan mode). The heuristic
+      // is fully synchronous, so we do the rename + `session-updated`
+      // broadcast right when the first user message lands and kick off the
+      // LLM upgrade in the background. TOCTOU guard inside
+      // `scheduleTitleUpgrade` protects against a concurrent rename.
+      if (isFirstMessage && session && session.name.startsWith('Session ')) {
+        let linkedCardTitle: string | null = null;
+        try {
+          const linkedCard = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+            | KanbanCardRow
+            | undefined;
+          linkedCardTitle = linkedCard?.title ?? null;
+        } catch {
+          /* table missing — ignore */
+        }
+
+        const pick = pickInitialSessionTitle({
+          content,
+          explicitTitle: hookSpecificOutput?.sessionTitle ?? null,
+          linkedCardTitle,
+        });
+
+        stmts.updateSessionName.run(pick.title, sessionId);
+        // Refresh the local row so downstream consumers see the new name.
+        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (session) {
+          broadcast({
+            type: 'session-updated',
+            session: enrichSessionForClient(session),
+          });
+        }
+
+        if (pick.usedHeuristic) {
+          const sessSnapshot = session;
+          const heuristicTitle = pick.title;
+          void scheduleTitleUpgrade({
+            sessionId,
+            heuristicTitle,
+            content,
+            config: {
+              anthropicApiKey: config.anthropicApiKey ?? null,
+              openaiApiKey: config.openaiApiKey ?? null,
+            },
+            getSessionName: (id) => {
+              const row = stmts.getSession.get(id) as SessionRow | undefined;
+              return row?.name ?? null;
+            },
+            updateSessionName: (title, id) => {
+              stmts.updateSessionName.run(title, id);
+            },
+            onUpgrade: (newTitle) => {
+              if (!sessSnapshot) return;
+              broadcast({
+                type: 'session-updated',
+                session: enrichSessionForClient({
+                  ...sessSnapshot,
+                  name: newTitle,
+                } as SessionRow),
+              });
+            },
+          });
+        }
+      }
 
       const engine: string = session!.engine || 'claude-code';
       const sessOwnerUid = getSessionOwner(sessionId);
@@ -3671,83 +3738,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           } catch {}
         }
 
+        // Auto-rename now happens synchronously when the first user message
+        // lands (see the early branch after `isFirstMessage` is computed in
+        // `handleChat`). Nothing to do here at stream-end.
         const sess = S.getSession.get(sessionId) as SessionRow | undefined;
-        if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
-          let autoName: string | undefined;
-          // `usedHeuristic` is true when the synchronous rename used the
-          // first-message heuristic (i.e. no explicit hint and no linked
-          // card). In that case we kick off an async LLM upgrade below.
-          let usedHeuristic = false;
-
-          if (hookSpecificOutput?.sessionTitle) {
-            autoName = hookSpecificOutput.sessionTitle;
-          }
-
-          if (!autoName) {
-            try {
-              const linkedCard = (S as Stmts).getKanbanCardBySession?.get(sessionId) as
-                | KanbanCardRow
-                | undefined;
-              if (linkedCard?.title) {
-                autoName = linkedCard.title;
-              }
-            } catch {
-              /* ignore if table doesn't exist */
-            }
-          }
-
-          if (!autoName) {
-            autoName = deriveHeuristicTitle(content);
-            usedHeuristic = true;
-          }
-
-          S.updateSessionName.run(autoName, sessionId);
-          broadcast({
-            type: 'session-updated',
-            session: enrichSessionForClient({ ...sess, name: autoName } as SessionRow),
-          });
-
-          // Async upgrade: when the sync rename used the heuristic and an LLM
-          // API key is configured, ask a fast model for a sharper title and
-          // broadcast a second `session-updated` once it returns. The
-          // TOCTOU guard inside `scheduleTitleUpgrade` ensures a concurrent
-          // user/system rename is never clobbered.
-          if (usedHeuristic) {
-            const sessSnapshot = sess;
-            const heuristicTitle = autoName;
-            void scheduleTitleUpgrade({
-              sessionId,
-              heuristicTitle,
-              content,
-              config: {
-                anthropicApiKey: config.anthropicApiKey ?? null,
-                openaiApiKey: config.openaiApiKey ?? null,
-              },
-              getSessionName: (id) => {
-                const row = S.getSession.get(id) as SessionRow | undefined;
-                return row?.name ?? null;
-              },
-              updateSessionName: (title, id) => {
-                S.updateSessionName.run(title, id);
-              },
-              onUpgrade: (newTitle) => {
-                broadcast({
-                  type: 'session-updated',
-                  session: enrichSessionForClient({
-                    ...sessSnapshot,
-                    name: newTitle,
-                  } as SessionRow),
-                });
-              },
-            });
-          }
-        }
 
         // Enrich the broadcast with agent + session names so push-notification
         // consumers (mobile) don't need a second round-trip to look them up.
-        // `sess` was re-read above after any rename; fall back to the older
-        // reference if the row is missing.
-        const latestSess = (S.getSession.get(sessionId) as SessionRow | undefined) || sess;
+        // `sess` was just re-read; fall back to the original session row if
+        // it disappeared between the addMessage and this getSession.
+        const latestSess = sess;
         broadcast({
           type: 'done',
           messageId: assistantMsgId,

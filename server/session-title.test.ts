@@ -3,6 +3,7 @@ import {
   DEFAULT_TITLE_ANTHROPIC_MODEL,
   deriveHeuristicTitle,
   generateLlmTitle,
+  pickInitialSessionTitle,
   scheduleTitleUpgrade,
   type LlmTitleOptions,
 } from './session-title.js';
@@ -105,6 +106,63 @@ describe('deriveHeuristicTitle', () => {
     const out = deriveHeuristicTitle('🎉🎉🎉');
     expect(out.length).toBeLessThanOrEqual(60);
     expect(out).not.toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('pickInitialSessionTitle', () => {
+  it('prefers the explicit hint over everything else', () => {
+    const pick = pickInitialSessionTitle({
+      content: 'fix the streaming reconnect bug',
+      explicitTitle: 'Hook: investigate stream drop',
+      linkedCardTitle: 'Card: streaming bug',
+    });
+    expect(pick).toEqual({
+      title: 'Hook: investigate stream drop',
+      source: 'hint',
+      usedHeuristic: false,
+    });
+  });
+
+  it('falls back to the linked card title when no hint is set', () => {
+    const pick = pickInitialSessionTitle({
+      content: 'lets get going',
+      explicitTitle: null,
+      linkedCardTitle: 'Rename session on first user message',
+    });
+    expect(pick).toEqual({
+      title: 'Rename session on first user message',
+      source: 'card',
+      usedHeuristic: false,
+    });
+  });
+
+  it('falls back to the heuristic when neither hint nor card is provided', () => {
+    const pick = pickInitialSessionTitle({
+      content: 'Hey can you fix the streaming reconnect bug',
+    });
+    expect(pick.source).toBe('heuristic');
+    expect(pick.usedHeuristic).toBe(true);
+    expect(pick.title).toBe('Fix the streaming reconnect bug');
+  });
+
+  it('treats whitespace-only hint / card values as missing', () => {
+    const pick = pickInitialSessionTitle({
+      content: 'investigate webhook replay errors',
+      explicitTitle: '   ',
+      linkedCardTitle: '\n\t',
+    });
+    expect(pick.source).toBe('heuristic');
+    expect(pick.usedHeuristic).toBe(true);
+    expect(pick.title).toBe('Investigate webhook replay errors');
+  });
+
+  it('always returns a non-empty title even for empty content', () => {
+    const pick = pickInitialSessionTitle({ content: '' });
+    expect(pick.title).toBe('New chat');
+    expect(pick.source).toBe('heuristic');
+    expect(pick.usedHeuristic).toBe(true);
   });
 });
 
