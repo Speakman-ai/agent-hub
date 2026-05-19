@@ -98,6 +98,66 @@ describe('POST /api/projects/:projectId/preview/detect', () => {
     await request.post('/api/projects/no-such-project/preview/detect').send({}).expect(404);
   });
 
+  it('returns the compose suggestion when a docker-compose.yml lives in the project root', async () => {
+    // Compose-first priority: even if a Vite app is also present the
+    // detect endpoint should prefer the compose shape so the user
+    // lands on PR-4's supported runtime. This mirrors what surveys-
+    // tracker etc. already ship.
+    writePkg(scratchRoot, { dependencies: { vite: '^5.0.0' } });
+    writeFileSync(
+      path.join(scratchRoot, 'docker-compose.yml'),
+      `services:
+  frontend:
+    image: node
+    ports:
+      - "5173:5173"
+  backend:
+    image: redis
+`,
+    );
+    const project = await createProject({ cwd: scratchRoot });
+    const projectId = project.id as string;
+
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/detect`)
+      .send({})
+      .expect(200);
+    const body = res.body as {
+      detected: {
+        stack: string;
+        compose?: {
+          file: string;
+          entryService: string;
+          entryPort: number;
+          services: string[];
+        };
+        captureRoutes: string[];
+        idleTTL: number;
+      } | null;
+    };
+    expect(body.detected).not.toBeNull();
+    expect(body.detected?.stack).toBe('compose');
+    expect(body.detected?.compose).toEqual({
+      file: 'docker-compose.yml',
+      entryService: 'frontend',
+      entryPort: 5173,
+      services: ['frontend', 'backend'],
+    });
+    expect(body.detected?.captureRoutes).toEqual(['/']);
+  });
+
+  it('falls back to the JS-stack suggestion when no compose file is present', async () => {
+    writePkg(scratchRoot, { dependencies: { next: '^14.0.0' } });
+    const project = await createProject({ cwd: scratchRoot });
+    const projectId = project.id as string;
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/detect`)
+      .send({})
+      .expect(200);
+    const body = res.body as { detected: { stack: string } | null };
+    expect(body.detected?.stack).toBe('next');
+  });
+
   it('does not mutate project.prEnv when called', async () => {
     // Pre-existing prEnv block must survive the read-only detect call.
     writePkg(scratchRoot, { dependencies: { vite: '^5.0.0' } });

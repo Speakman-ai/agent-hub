@@ -188,6 +188,29 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
     };
   }
 
+  // Compose-mode dispatch — when `prEnv.preview.compose` is set the
+  // project boots its docker-compose stack via `PreviewComposeRuntime`
+  // for real session previews. The one-shot Test button doesn't yet
+  // own a transient compose lifecycle (separate follow-up card —
+  // running `docker compose up -d --build` and tearing it back down
+  // needs its own teardown-on-throw guarantees, port allocator, and
+  // streaming log handling). For now we report this back to the UI
+  // explicitly so the user understands the Test button is a
+  // spawn-mode-only validator and can still test their compose stack
+  // by starting a session and emitting `<agenthub:preview>`.
+  if (previewCfg.compose) {
+    return {
+      ok: false,
+      ports,
+      durationMs: clock.nowMs() - start,
+      error:
+        'Compose-mode previews are not yet supported by the one-shot Test button. ' +
+        'Start a session in this project and emit <agenthub:preview> to validate the ' +
+        'compose stack with the same runtime used by chat previews.',
+      logTail: [],
+    };
+  }
+
   const startScript = (
     previewCfg.startScript ??
     deps.project.prEnv?.startScript ??

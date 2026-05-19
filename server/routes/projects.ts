@@ -21,6 +21,7 @@ import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, getUserById, createUser } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
+import { detectComposePreview } from '../scaffolding/detect-compose-preview.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
@@ -1700,6 +1701,29 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const cwd = (project as { cwd?: string }).cwd;
     if (!cwd || typeof cwd !== 'string') {
       return res.status(400).json({ error: 'Project has no cwd configured' });
+    }
+    // Priority: a top-level `docker-compose.yml` always wins over the
+    // legacy JS-stack sniff. Surveys-tracker and other compose-pivot
+    // projects ship both a Vite app and a compose file; PR 4 deletes
+    // the script-mode branch entirely, so biasing the suggestion toward
+    // compose-when-present keeps the UI on the supported path. The
+    // legacy JS-stack detector is still run when there's no compose
+    // file so projects without one keep getting useful defaults.
+    let composeDetected: ReturnType<typeof detectComposePreview> = null;
+    try {
+      composeDetected = detectComposePreview(cwd);
+    } catch {
+      composeDetected = null;
+    }
+    if (composeDetected) {
+      return res.json({
+        detected: {
+          stack: composeDetected.stack,
+          compose: composeDetected.compose,
+          captureRoutes: composeDetected.captureRoutes,
+          idleTTL: composeDetected.idleTTL,
+        },
+      });
     }
     let detected: ReturnType<typeof detectPreviewDefaults> = null;
     try {

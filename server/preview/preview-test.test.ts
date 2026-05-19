@@ -161,6 +161,42 @@ describe('runPreviewTest — validation', () => {
     expect(result.error).toMatch(/cwd/i);
   });
 
+  it('returns ok:false with an actionable message when preview is configured for compose mode', async () => {
+    // Compose-mode dispatch is owned by `PreviewComposeRuntime` for
+    // session previews; the one-shot Test endpoint doesn't yet drive a
+    // transient compose lifecycle. We surface this explicitly so the
+    // user knows what to do instead of seeing a confusing
+    // `spawn ENOENT` from trying to run a missing startScript.
+    const harness = makeSpawn();
+    const result = await runPreviewTest({
+      project: makeProject({
+        prEnv: {
+          enabled: false,
+          startScript: 'npm start',
+          internalPort: 3000,
+          healthPath: '/',
+          preview: {
+            enabled: true,
+            compose: {
+              entryService: 'frontend',
+              entryPort: 5173,
+              file: 'docker-compose.yml',
+            },
+          },
+        },
+      }),
+      uploadsDir: '/tmp/uploads',
+      spawn: harness.spawn,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Compose-mode previews/i);
+    expect(result.error).toMatch(/<agenthub:preview>/);
+    // No spawn happened — the compose dispatch short-circuits before
+    // the port allocator runs.
+    expect(harness.calls).toHaveLength(0);
+    expect(result.ports.allocated).toBeNull();
+  });
+
   it('returns ok:false with a clear message when the spawn cwd does not exist', async () => {
     // Regression: Node reports a missing-cwd failure as `spawn sh
     // ENOENT`, attributing the error to the binary name instead of the

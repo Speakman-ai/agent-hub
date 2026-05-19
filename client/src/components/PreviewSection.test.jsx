@@ -4,6 +4,7 @@ import PreviewSection, {
   buildPatchPayload,
   formFromProject,
   shallowEqualForm,
+  PREVIEW_MODES,
 } from './PreviewSection.jsx';
 import { api } from '../utils/api.js';
 
@@ -32,25 +33,157 @@ const projectWithPreview = {
   },
 };
 
+const projectWithCompose = {
+  id: 'proj-compose',
+  name: 'Compose Demo',
+  cwd: '/tmp/compose-demo',
+  prEnv: {
+    enabled: false,
+    healthPath: '/healthz',
+    preview: {
+      enabled: true,
+      compose: {
+        file: 'docker-compose.yml',
+        entryService: 'frontend',
+        entryPort: 3001,
+        envFile: '.env.preview',
+      },
+      idleTTL: 900,
+      captureRoutes: ['/', '/about'],
+    },
+  },
+};
+
+const newProject = {
+  id: 'proj-new',
+  name: 'Brand new',
+  cwd: '/tmp/new',
+  // No prEnv block at all — the "new project" path that should land
+  // on Compose mode by default.
+};
+
 describe('PreviewSection — pure helpers', () => {
-  it('formFromProject hydrates from project.prEnv.preview', () => {
+  it('formFromProject hydrates a script-mode project from prEnv.preview.startScript', () => {
     expect(formFromProject(projectWithPreview)).toEqual({
+      mode: PREVIEW_MODES.SCRIPT,
       enabled: true,
       startScript: 'pnpm dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: '',
+      composeEntryPort: 3000,
+      composeEnvFile: '',
+      composeServices: [],
       healthPath: '/healthz',
       idleTTL: 900,
       captureRoutes: ['/', '/about'],
     });
   });
 
-  it('formFromProject falls back to defaults when prEnv is empty', () => {
-    expect(formFromProject({ id: 'p', name: 'p' })).toEqual({
-      enabled: false,
+  it('formFromProject hydrates a compose-mode project from prEnv.preview.compose', () => {
+    expect(formFromProject(projectWithCompose)).toEqual({
+      mode: PREVIEW_MODES.COMPOSE,
+      enabled: true,
       startScript: 'npm run dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'frontend',
+      composeEntryPort: 3001,
+      composeEnvFile: '.env.preview',
+      composeServices: [],
+      healthPath: '/healthz',
+      idleTTL: 900,
+      captureRoutes: ['/', '/about'],
+    });
+  });
+
+  it('formFromProject defaults a brand-new project (no preview block) to Compose mode', () => {
+    const f = formFromProject(newProject);
+    expect(f.mode).toBe(PREVIEW_MODES.COMPOSE);
+    expect(f.enabled).toBe(false);
+    expect(f.composeFile).toBe('docker-compose.yml');
+  });
+
+  it('formFromProject falls back to defaults when project is null', () => {
+    const f = formFromProject(null);
+    expect(f.mode).toBe(PREVIEW_MODES.COMPOSE);
+    expect(f.startScript).toBe('npm run dev');
+    expect(f.healthPath).toBe('/');
+    expect(f.idleTTL).toBe(600);
+    expect(f.captureRoutes).toEqual(['/']);
+  });
+
+  it('buildPatchPayload emits the compose shape in Compose mode and drops startScript', () => {
+    const form = {
+      mode: PREVIEW_MODES.COMPOSE,
+      enabled: true,
+      startScript: 'should-be-dropped',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'frontend',
+      composeEntryPort: 3001,
+      composeEnvFile: '.env.preview',
+      composeServices: [],
+      healthPath: '/health',
+      idleTTL: 300,
+      captureRoutes: ['/'],
+    };
+    const payload = buildPatchPayload(form, { prEnv: { enabled: false } });
+    expect(payload.prEnv.preview).toEqual({
+      enabled: true,
+      compose: {
+        entryService: 'frontend',
+        entryPort: 3001,
+        file: 'docker-compose.yml',
+        envFile: '.env.preview',
+      },
+      idleTTL: 300,
+      captureRoutes: ['/'],
+    });
+    // The startScript field must NOT leak through in compose mode —
+    // the server's validatePrEnvPreview rejects compose+startScript
+    // as mutually exclusive.
+    expect(payload.prEnv.preview.startScript).toBeUndefined();
+    expect(payload.prEnv.healthPath).toBe('/health');
+  });
+
+  it('buildPatchPayload emits the script shape in Script mode and drops compose', () => {
+    const form = {
+      mode: PREVIEW_MODES.SCRIPT,
+      enabled: true,
+      startScript: 'pnpm dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'frontend',
+      composeEntryPort: 3001,
+      composeEnvFile: '.env.preview',
+      composeServices: [],
       healthPath: '/',
       idleTTL: 600,
       captureRoutes: ['/'],
+    };
+    const payload = buildPatchPayload(form, { prEnv: { enabled: false } });
+    expect(payload.prEnv.preview).toEqual({
+      enabled: true,
+      startScript: 'pnpm dev',
+      idleTTL: 600,
+      captureRoutes: ['/'],
     });
+    expect(payload.prEnv.preview.compose).toBeUndefined();
+  });
+
+  it('buildPatchPayload omits an empty envFile when none is set', () => {
+    const form = {
+      mode: PREVIEW_MODES.COMPOSE,
+      enabled: true,
+      startScript: 'npm run dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: 'web',
+      composeEntryPort: 8080,
+      composeEnvFile: '   ', // whitespace-only must be stripped
+      composeServices: [],
+      healthPath: '/',
+      idleTTL: 600,
+      captureRoutes: ['/'],
+    };
+    const payload = buildPatchPayload(form, {});
+    expect(payload.prEnv.preview.compose.envFile).toBeUndefined();
   });
 
   it('buildPatchPayload preserves parent prEnv fields when toggling preview', () => {
@@ -62,33 +195,43 @@ describe('PreviewSection — pure helpers', () => {
       },
     };
     const form = {
+      mode: PREVIEW_MODES.SCRIPT,
       enabled: true,
       startScript: 'npm run dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: '',
+      composeEntryPort: 3000,
+      composeEnvFile: '',
+      composeServices: [],
       healthPath: '/health',
       idleTTL: 300,
       captureRoutes: ['/'],
     };
     const payload = buildPatchPayload(form, project);
-    expect(payload).toEqual({
-      prEnv: {
+    expect(payload.prEnv).toMatchObject({
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: 3000,
+      healthPath: '/health',
+      preview: {
         enabled: true,
-        startScript: 'npm start',
-        internalPort: 3000,
-        healthPath: '/health',
-        preview: {
-          enabled: true,
-          startScript: 'npm run dev',
-          idleTTL: 300,
-          captureRoutes: ['/'],
-        },
+        startScript: 'npm run dev',
+        idleTTL: 300,
+        captureRoutes: ['/'],
       },
     });
   });
 
   it('buildPatchPayload omits preview-only fields when disabled', () => {
     const form = {
+      mode: PREVIEW_MODES.SCRIPT,
       enabled: false,
       startScript: 'npm run dev',
+      composeFile: 'docker-compose.yml',
+      composeEntryService: '',
+      composeEntryPort: 3000,
+      composeEnvFile: '',
+      composeServices: [],
       healthPath: '/',
       idleTTL: 600,
       captureRoutes: ['/'],
@@ -98,10 +241,46 @@ describe('PreviewSection — pure helpers', () => {
     expect(payload.prEnv.healthPath).toBe('/');
   });
 
+  it('shallowEqualForm detects mode flips', () => {
+    const a = formFromProject(projectWithPreview);
+    const b = { ...a, mode: PREVIEW_MODES.COMPOSE };
+    expect(shallowEqualForm(a, b)).toBe(false);
+  });
+
+  it('shallowEqualForm detects compose-field edits', () => {
+    const a = formFromProject(projectWithCompose);
+    const b = { ...a, composeEntryService: 'backend' };
+    expect(shallowEqualForm(a, b)).toBe(false);
+  });
+
   it('shallowEqualForm detects route additions', () => {
     const a = { ...formFromProject(projectWithPreview) };
     const b = { ...a, captureRoutes: [...a.captureRoutes, '/contact'] };
     expect(shallowEqualForm(a, b)).toBe(false);
+  });
+
+  it('round-trip: formFromProject → buildPatchPayload preserves compose shape', () => {
+    const initial = formFromProject(projectWithCompose);
+    const payload = buildPatchPayload(initial, projectWithCompose);
+    expect(payload.prEnv.preview.compose).toEqual({
+      file: 'docker-compose.yml',
+      entryService: 'frontend',
+      entryPort: 3001,
+      envFile: '.env.preview',
+    });
+    // Re-hydrate from the patched server response (we simulate the
+    // server preserving what we sent) and confirm the form matches.
+    const persisted = {
+      ...projectWithCompose,
+      prEnv: {
+        ...projectWithCompose.prEnv,
+        preview: payload.prEnv.preview,
+      },
+    };
+    const rehydrated = formFromProject(persisted);
+    expect(rehydrated.mode).toBe(PREVIEW_MODES.COMPOSE);
+    expect(rehydrated.composeEntryService).toBe('frontend');
+    expect(rehydrated.composeEntryPort).toBe(3001);
   });
 });
 
@@ -120,11 +299,46 @@ describe('PreviewSection — render & save', () => {
     expect(getByText(/No projects yet/i)).toBeTruthy();
   });
 
-  it('renders form fields hydrated from the project', () => {
-    const { getByTestId } = render(<PreviewSection projects={[projectWithPreview]} />);
+  it('renders the script field for a script-mode project', () => {
+    const { getByTestId, queryByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
     expect(getByTestId('preview-start-script').value).toBe('pnpm dev');
     expect(getByTestId('preview-health-path').value).toBe('/healthz');
     expect(getByTestId('preview-idle-ttl').value).toBe('900');
+    // Compose fields must NOT be rendered in script mode.
+    expect(queryByTestId('preview-compose-file')).toBeNull();
+    expect(queryByTestId('preview-compose-entry-service')).toBeNull();
+  });
+
+  it('renders the compose fields for a compose-mode project', () => {
+    const { getByTestId, queryByTestId } = render(
+      <PreviewSection projects={[projectWithCompose]} />,
+    );
+    expect(getByTestId('preview-compose-file').value).toBe('docker-compose.yml');
+    expect(getByTestId('preview-compose-entry-service').value).toBe('frontend');
+    expect(getByTestId('preview-compose-entry-port').value).toBe('3001');
+    expect(getByTestId('preview-compose-env-file').value).toBe('.env.preview');
+    // Script field is hidden in compose mode.
+    expect(queryByTestId('preview-start-script')).toBeNull();
+  });
+
+  it('mode toggle swaps which fields are visible (compose ↔ script)', () => {
+    api.updateProject.mockResolvedValue(projectWithCompose);
+    const { getByTestId, queryByTestId } = render(
+      <PreviewSection projects={[projectWithCompose]} />,
+    );
+    // Compose fields visible
+    expect(getByTestId('preview-compose-file')).toBeTruthy();
+    expect(queryByTestId('preview-start-script')).toBeNull();
+    // Flip to Script
+    fireEvent.click(getByTestId('preview-mode-script'));
+    expect(getByTestId('preview-start-script')).toBeTruthy();
+    expect(queryByTestId('preview-compose-file')).toBeNull();
+    // Flip back to Compose
+    fireEvent.click(getByTestId('preview-mode-compose'));
+    expect(getByTestId('preview-compose-file')).toBeTruthy();
+    expect(queryByTestId('preview-start-script')).toBeNull();
   });
 
   it('save button is disabled until the form changes', () => {
@@ -149,6 +363,26 @@ describe('PreviewSection — render & save', () => {
     expect(calledPayload.prEnv.healthPath).toBe('/ping');
     expect(calledPayload.prEnv.preview.enabled).toBe(true);
     await waitFor(() => expect(onProjectsChange).toHaveBeenCalled());
+  });
+
+  it('saving in Compose mode posts the compose-shape payload', async () => {
+    api.updateProject.mockResolvedValueOnce(projectWithCompose);
+    const { getByTestId } = render(<PreviewSection projects={[projectWithCompose]} />);
+    fireEvent.change(getByTestId('preview-compose-entry-service'), {
+      target: { value: 'backend' },
+    });
+    fireEvent.click(getByTestId('preview-save-button'));
+    await waitFor(() => {
+      expect(api.updateProject).toHaveBeenCalledTimes(1);
+    });
+    const [, payload] = api.updateProject.mock.calls[0];
+    expect(payload.prEnv.preview.compose).toEqual({
+      file: 'docker-compose.yml',
+      entryService: 'backend',
+      entryPort: 3001,
+      envFile: '.env.preview',
+    });
+    expect(payload.prEnv.preview.startScript).toBeUndefined();
   });
 
   it('surfaces a 400 error inline', async () => {
@@ -179,6 +413,39 @@ describe('PreviewSection — render & save', () => {
     expect(getByTestId('preview-start-script').value).toBe('npm run dev');
   });
 
+  it('Re-detect compose suggestion populates compose fields and switches mode', async () => {
+    api.detectProjectPreview.mockResolvedValueOnce({
+      detected: {
+        stack: 'compose',
+        compose: {
+          file: 'docker-compose.yml',
+          entryService: 'web',
+          entryPort: 8080,
+          services: ['web', 'api', 'redis'],
+        },
+        captureRoutes: ['/'],
+        idleTTL: 600,
+      },
+    });
+    // Start from a script-mode project; accepting the compose suggestion
+    // should flip the form to compose mode and populate fields.
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-detect-button'));
+    const suggestion = await findByTestId('preview-suggestion-compose');
+    expect(suggestion.textContent).toMatch(/compose/);
+    expect(suggestion.textContent).toMatch(/web/);
+    fireEvent.click(getByTestId('preview-suggestion-accept'));
+    // After accept, compose fields are visible and populated; script
+    // field is hidden.
+    expect(getByTestId('preview-compose-file').value).toBe('docker-compose.yml');
+    // The detected services pre-populate the select dropdown.
+    expect(getByTestId('preview-compose-entry-service-select').value).toBe('web');
+    expect(getByTestId('preview-compose-entry-port').value).toBe('8080');
+    expect(queryByTestId('preview-start-script')).toBeNull();
+  });
+
   it('Re-detect shows empty-state when the server returns null', async () => {
     api.detectProjectPreview.mockResolvedValueOnce({ detected: null });
     const { getByTestId, findByTestId } = render(
@@ -203,6 +470,11 @@ describe('PreviewSection — render & save', () => {
     await waitFor(() => {
       expect(getByTestId('preview-test-button').disabled).toBe(false);
     });
+  });
+
+  it('Test button is enabled in compose mode (uses same /preview/test endpoint)', () => {
+    const { getByTestId } = render(<PreviewSection projects={[projectWithCompose]} />);
+    expect(getByTestId('preview-test-button').disabled).toBe(false);
   });
 
   it('Test button is disabled when preview is not enabled', () => {

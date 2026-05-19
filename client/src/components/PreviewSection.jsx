@@ -20,6 +20,19 @@ import { api } from '../utils/api.js';
  * Surface to configure `project.prEnv.preview` (and the shared
  * `project.prEnv.healthPath`) without hand-editing `projects.json`.
  *
+ * Supports two preview modes:
+ *
+ *   - **Compose** — the project's `docker-compose.yml` is brought up and
+ *     the iframe targets the entry service's mapped host port. This is
+ *     the default for new projects and the path the compose pivot
+ *     (Surveys-tracker et al) runs on. Surface: `compose.file`,
+ *     `compose.entryService`, `compose.entryPort`, `compose.envFile`.
+ *
+ *   - **Script** — legacy spawn-based path. A shell `startScript` is
+ *     run inside the worktree and the iframe targets the allocated
+ *     port. Retained for round-trip with existing configs; PR 4 of the
+ *     compose pivot deletes this branch from the schema.
+ *
  * Backed by the existing PATCH /api/projects/:id route — validation
  * lives in `server/routes/projects.ts:validatePrEnvProjectConfig` and
  * `validatePrEnvPreview`. We surface 400 errors inline against the
@@ -28,7 +41,9 @@ import { api } from '../utils/api.js';
  *
  * Re-detect button calls `POST /api/projects/:id/preview/detect` (a
  * pure read of the project's checkout) and shows a suggestion the user
- * can accept-overwrite or dismiss.
+ * can accept-overwrite or dismiss. When the detect endpoint reports a
+ * compose file it suggests the compose shape; otherwise it suggests
+ * the legacy script shape.
  */
 
 // Bounds mirror server-side validators. Keep in lockstep with
@@ -44,22 +59,76 @@ const PREVIEW_MAX_ROUTES = 10;
 const PREVIEW_PORT_RANGE_MIN = 4100;
 const PREVIEW_PORT_RANGE_MAX = 4999;
 
+const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
+const DEFAULT_COMPOSE_ENTRY_PORT = 3000;
+
+const PREVIEW_MODES = Object.freeze({ COMPOSE: 'compose', SCRIPT: 'script' });
+
 const DEFAULT_FORM = Object.freeze({
+  mode: PREVIEW_MODES.COMPOSE,
   enabled: false,
+  // Script-mode field
   startScript: 'npm run dev',
+  // Compose-mode fields
+  composeFile: DEFAULT_COMPOSE_FILE,
+  composeEntryService: '',
+  composeEntryPort: DEFAULT_COMPOSE_ENTRY_PORT,
+  composeEnvFile: '',
+  // Detected services for the compose entry-service dropdown (set by
+  // the Re-detect button when the server parses the compose file).
+  composeServices: [],
+  // Shared fields
   healthPath: '/',
   idleTTL: 600,
   captureRoutes: ['/'],
 });
 
+/**
+ * Hydrate the form from a project's persisted prEnv.preview block.
+ *
+ * Mode selection rules:
+ *   1. If `preview.compose` exists, mode = Compose (compose has been
+ *      explicitly configured — render compose fields).
+ *   2. Else if `preview.startScript` exists, mode = Script (legacy
+ *      project with a script — render the startScript field so the
+ *      saved value round-trips).
+ *   3. Else if `preview` itself is absent OR empty, mode = Compose
+ *      (new project — bias toward the compose default that PR 4 will
+ *      make the only supported path).
+ *   4. Else default to Script (the project has *some* preview config
+ *      but neither a compose nor a startScript signal — preserve the
+ *      pre-existing script-mode hydration so we never silently drop a
+ *      manually configured `captureRoutes`/`idleTTL`).
+ */
 function formFromProject(project) {
   if (!project) return { ...DEFAULT_FORM };
   const prEnv = project.prEnv || {};
   const preview = prEnv.preview || {};
+  const compose = preview.compose || null;
+  // New project → compose. Existing script-mode project → script.
+  const hasComposeKey = !!compose;
+  const hasScriptKey = !!(preview.startScript || prEnv.startScript);
+  const previewIsEmpty =
+    !preview || (typeof preview === 'object' && !preview.compose && !preview.startScript);
+  let mode;
+  if (hasComposeKey) mode = PREVIEW_MODES.COMPOSE;
+  else if (hasScriptKey) mode = PREVIEW_MODES.SCRIPT;
+  else if (previewIsEmpty) mode = PREVIEW_MODES.COMPOSE;
+  else mode = PREVIEW_MODES.SCRIPT;
+
   return {
+    mode,
     enabled: !!preview.enabled,
     startScript: preview.startScript || prEnv.startScript || DEFAULT_FORM.startScript,
-    healthPath: prEnv.healthPath || DEFAULT_FORM.healthPath,
+    composeFile: compose?.file || DEFAULT_FORM.composeFile,
+    composeEntryService: compose?.entryService || '',
+    composeEntryPort:
+      typeof compose?.entryPort === 'number' && Number.isFinite(compose.entryPort)
+        ? compose.entryPort
+        : DEFAULT_FORM.composeEntryPort,
+    composeEnvFile: compose?.envFile || '',
+    composeServices: [],
+    healthPath: compose?.healthPath || prEnv.healthPath || DEFAULT_FORM.healthPath,
     idleTTL:
       typeof preview.idleTTL === 'number' && Number.isFinite(preview.idleTTL)
         ? preview.idleTTL
@@ -76,6 +145,12 @@ function formFromProject(project) {
  * existing parent prEnv.enabled/startScript/internalPort so toggling
  * the worktree-preview switch doesn't accidentally drop a separately-
  * configured PR-env block (legacy installs may still carry one).
+ *
+ * Mode emits the right sub-shape: Compose mode emits `preview.compose`
+ * and strips the script field; Script mode emits `preview.startScript`
+ * and strips the compose block. Mutual exclusivity is enforced by the
+ * server-side `validatePrEnvPreview` — emitting both would fail with
+ * "compose and startScript are mutually exclusive".
  */
 function buildPatchPayload(form, project) {
   const prevPrEnv = project?.prEnv || {};
@@ -83,8 +158,22 @@ function buildPatchPayload(form, project) {
     enabled: !!form.enabled,
   };
   if (form.enabled) {
-    const startScript = (form.startScript || '').trim();
-    if (startScript) preview.startScript = startScript;
+    if (form.mode === PREVIEW_MODES.COMPOSE) {
+      const entryService = (form.composeEntryService || '').trim();
+      const entryPortRaw = form.composeEntryPort;
+      const entryPort = Number(entryPortRaw);
+      const composeFile = (form.composeFile || '').trim();
+      const envFile = (form.composeEnvFile || '').trim();
+      const composeBlock = {};
+      if (entryService) composeBlock.entryService = entryService;
+      if (Number.isInteger(entryPort) && entryPort > 0) composeBlock.entryPort = entryPort;
+      if (composeFile) composeBlock.file = composeFile;
+      if (envFile) composeBlock.envFile = envFile;
+      preview.compose = composeBlock;
+    } else {
+      const startScript = (form.startScript || '').trim();
+      if (startScript) preview.startScript = startScript;
+    }
     const idleTTL = Number(form.idleTTL);
     if (Number.isInteger(idleTTL)) preview.idleTTL = idleTTL;
     const routes = (form.captureRoutes || [])
@@ -107,8 +196,13 @@ function buildPatchPayload(form, project) {
 
 function shallowEqualForm(a, b) {
   if (!a || !b) return a === b;
+  if (a.mode !== b.mode) return false;
   if (a.enabled !== b.enabled) return false;
   if ((a.startScript || '') !== (b.startScript || '')) return false;
+  if ((a.composeFile || '') !== (b.composeFile || '')) return false;
+  if ((a.composeEntryService || '') !== (b.composeEntryService || '')) return false;
+  if (Number(a.composeEntryPort) !== Number(b.composeEntryPort)) return false;
+  if ((a.composeEnvFile || '') !== (b.composeEnvFile || '')) return false;
   if ((a.healthPath || '') !== (b.healthPath || '')) return false;
   if (Number(a.idleTTL) !== Number(b.idleTTL)) return false;
   const ar = a.captureRoutes || [];
@@ -158,7 +252,7 @@ export default function PreviewSection({
   const [saveError, setSaveError] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null);
   const [detecting, setDetecting] = useState(false);
-  const [suggestion, setSuggestion] = useState(null); // { stack, startScript, port, captureRoutes, idleTTL } | { empty: true }
+  const [suggestion, setSuggestion] = useState(null); // detected payload (compose or script) | { empty: true }
   const [detectError, setDetectError] = useState(null);
   // Test-preview state.
   //   testPhase: null → 'starting' → 'health' → 'ready' | 'failed'
@@ -293,8 +387,39 @@ export default function PreviewSection({
       setSuggestion(null);
       return;
     }
+    // Compose-shape suggestion → switch the form to Compose mode and
+    // pre-populate the fields the user can override before saving.
+    if (suggestion.compose) {
+      setForm((prev) => ({
+        ...prev,
+        mode: PREVIEW_MODES.COMPOSE,
+        composeFile: suggestion.compose.file || prev.composeFile,
+        composeEntryService: suggestion.compose.entryService || prev.composeEntryService,
+        composeEntryPort:
+          typeof suggestion.compose.entryPort === 'number' &&
+          Number.isFinite(suggestion.compose.entryPort)
+            ? suggestion.compose.entryPort
+            : prev.composeEntryPort,
+        composeEnvFile: suggestion.compose.envFile || prev.composeEnvFile,
+        composeServices: Array.isArray(suggestion.compose.services)
+          ? [...suggestion.compose.services]
+          : prev.composeServices,
+        idleTTL:
+          typeof suggestion.idleTTL === 'number' && Number.isFinite(suggestion.idleTTL)
+            ? suggestion.idleTTL
+            : prev.idleTTL,
+        captureRoutes:
+          Array.isArray(suggestion.captureRoutes) && suggestion.captureRoutes.length > 0
+            ? [...suggestion.captureRoutes]
+            : prev.captureRoutes,
+      }));
+      setSuggestion(null);
+      return;
+    }
+    // Legacy script-shape suggestion.
     setForm((prev) => ({
       ...prev,
+      mode: PREVIEW_MODES.SCRIPT,
       startScript: suggestion.startScript || prev.startScript,
       idleTTL:
         typeof suggestion.idleTTL === 'number' && Number.isFinite(suggestion.idleTTL)
@@ -310,11 +435,10 @@ export default function PreviewSection({
 
   const dismissSuggestion = () => setSuggestion(null);
 
-  // Test preview — runs the configured startScript + healthPath against
-  // the project's `cwd` in a one-shot runtime, captures a screenshot,
-  // and tears down. Disabled while the form is dirty (user must Save
-  // first so the server is testing the saved config rather than the
-  // unsaved draft).
+  // Test preview — runs the saved preview config against the project's
+  // `cwd` in a one-shot runtime, captures a screenshot, and tears down.
+  // Disabled while the form is dirty (user must Save first so the
+  // server is testing the saved config rather than the unsaved draft).
   const isTesting = testPhase === 'starting' || testPhase === 'health';
 
   const handleTest = async () => {
@@ -403,6 +527,8 @@ export default function PreviewSection({
     );
   }
 
+  const composeMode = form.mode === PREVIEW_MODES.COMPOSE;
+
   return (
     <div className="space-y-6">
       <div>
@@ -465,23 +591,173 @@ export default function PreviewSection({
             </button>
           </div>
 
-          {/* startScript */}
-          <div>
-            <label className="block text-sm font-medium text-gray-200 mb-1">Start script</label>
-            <p className="text-xs text-gray-500 mb-2">
-              Shell command run inside the session worktree to boot the dev server. Defaults to{' '}
-              <code className="text-gray-300">npm run dev</code>.
+          {/* Mode selector — Compose vs Script */}
+          <div className="bg-gray-800/40 border border-gray-800 rounded-xl p-4">
+            <p className="text-sm font-medium text-gray-200 mb-1">Mode</p>
+            <p className="text-xs text-gray-500 mb-3">
+              <strong>Compose</strong> brings up the project&apos;s{' '}
+              <code className="text-gray-300">docker-compose.yml</code> and previews the entry
+              service. <strong>Script</strong> spawns a single dev-server via shell. New projects
+              default to Compose.
             </p>
-            <input
-              type="text"
-              value={form.startScript}
-              onChange={(e) => setField('startScript', e.target.value)}
-              placeholder="npm run dev"
-              disabled={!form.enabled}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
-              data-testid="preview-start-script"
-            />
+            <div
+              className="inline-flex rounded-lg overflow-hidden border border-gray-700"
+              data-testid="preview-mode-toggle"
+            >
+              <button
+                type="button"
+                onClick={() => setField('mode', PREVIEW_MODES.COMPOSE)}
+                disabled={!form.enabled}
+                aria-pressed={composeMode}
+                className={`px-3 py-1.5 text-sm transition-colors disabled:opacity-50 ${
+                  composeMode
+                    ? 'bg-sky-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+                data-testid="preview-mode-compose"
+              >
+                Compose
+              </button>
+              <button
+                type="button"
+                onClick={() => setField('mode', PREVIEW_MODES.SCRIPT)}
+                disabled={!form.enabled}
+                aria-pressed={!composeMode}
+                className={`px-3 py-1.5 text-sm transition-colors disabled:opacity-50 ${
+                  !composeMode
+                    ? 'bg-sky-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+                data-testid="preview-mode-script"
+              >
+                Script (legacy)
+              </button>
+            </div>
           </div>
+
+          {/* Mode-specific fields */}
+          {composeMode ? (
+            <div className="space-y-4" data-testid="preview-compose-fields">
+              {/* compose.file */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-1">Compose file</label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Path to the compose file, relative to the project root. Defaults to{' '}
+                  <code className="text-gray-300">docker-compose.yml</code>.
+                </p>
+                <input
+                  type="text"
+                  value={form.composeFile}
+                  onChange={(e) => setField('composeFile', e.target.value)}
+                  placeholder="docker-compose.yml"
+                  disabled={!form.enabled}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                  data-testid="preview-compose-file"
+                />
+              </div>
+
+              {/* compose.entryService */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-1">
+                  Entry service
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  The compose service the iframe targets. When Re-detect parses the compose file the
+                  dropdown lists every service; otherwise type it in.
+                </p>
+                {form.composeServices && form.composeServices.length > 0 ? (
+                  <select
+                    value={form.composeEntryService}
+                    onChange={(e) => setField('composeEntryService', e.target.value)}
+                    disabled={!form.enabled}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                    data-testid="preview-compose-entry-service-select"
+                  >
+                    <option value="">— pick a service —</option>
+                    {form.composeServices.map((svc) => (
+                      <option key={svc} value={svc}>
+                        {svc}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={form.composeEntryService}
+                    onChange={(e) => setField('composeEntryService', e.target.value)}
+                    placeholder="frontend"
+                    disabled={!form.enabled}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                    data-testid="preview-compose-entry-service"
+                  />
+                )}
+              </div>
+
+              {/* compose.entryPort */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-1">Entry port</label>
+                <p className="text-xs text-gray-500 mb-2">
+                  The container-side port the entry service listens on. The runtime maps a host port
+                  from the {PREVIEW_PORT_RANGE_MIN}–{PREVIEW_PORT_RANGE_MAX} range to this port via{' '}
+                  <code className="text-gray-300">$AGENTHUB_HOST_PORT</code>.
+                </p>
+                <input
+                  type="number"
+                  value={form.composeEntryPort}
+                  min={1}
+                  max={65535}
+                  onChange={(e) =>
+                    setField(
+                      'composeEntryPort',
+                      e.target.value === '' ? '' : Number(e.target.value),
+                    )
+                  }
+                  disabled={!form.enabled}
+                  className="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                  data-testid="preview-compose-entry-port"
+                />
+              </div>
+
+              {/* compose.envFile */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-1">
+                  Env file <span className="text-gray-500 font-normal">(optional)</span>
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Path to a <code className="text-gray-300">.env</code> file the compose run should
+                  load (passed via <code className="text-gray-300">--env-file</code>). Relative to
+                  the project root.
+                </p>
+                <input
+                  type="text"
+                  value={form.composeEnvFile}
+                  onChange={(e) => setField('composeEnvFile', e.target.value)}
+                  placeholder=".env.preview"
+                  disabled={!form.enabled}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                  data-testid="preview-compose-env-file"
+                />
+              </div>
+            </div>
+          ) : (
+            <div data-testid="preview-script-fields">
+              {/* startScript */}
+              <label className="block text-sm font-medium text-gray-200 mb-1">Start script</label>
+              <p className="text-xs text-gray-500 mb-2">
+                Shell command run inside the session worktree to boot the dev server. Defaults to{' '}
+                <code className="text-gray-300">npm run dev</code>.
+              </p>
+              <input
+                type="text"
+                value={form.startScript}
+                onChange={(e) => setField('startScript', e.target.value)}
+                placeholder="npm run dev"
+                disabled={!form.enabled}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono disabled:opacity-50"
+                data-testid="preview-start-script"
+              />
+            </div>
+          )}
 
           {/* healthPath */}
           <div>
@@ -598,8 +874,10 @@ export default function PreviewSection({
               <div className="min-w-0">
                 <p className="text-sm font-medium text-gray-200">Re-detect from repo</p>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Sniff the project&apos;s checkout for a recognised stack (Vite, Next, CRA, Astro,
-                  Nuxt, Expo) and suggest defaults you can accept or dismiss.
+                  Sniff the project&apos;s checkout for a{' '}
+                  <code className="text-gray-300">docker-compose.yml</code> (preferred) or a
+                  recognised JS stack (Vite, Next, CRA, Astro, Nuxt, Expo) and suggest defaults you
+                  can accept or dismiss.
                 </p>
               </div>
               <button
@@ -639,7 +917,46 @@ export default function PreviewSection({
                 </button>
               </div>
             )}
-            {suggestion && !suggestion.empty && (
+            {suggestion && !suggestion.empty && suggestion.compose && (
+              <div
+                className="border border-sky-500/30 bg-sky-500/5 rounded-lg p-3 space-y-2"
+                data-testid="preview-suggestion-compose"
+              >
+                <p className="text-xs text-sky-300">
+                  Detected <strong>compose</strong> — suggested defaults:
+                </p>
+                <ul className="text-xs font-mono text-gray-300 space-y-0.5 pl-3">
+                  <li>file: {suggestion.compose.file}</li>
+                  <li>entryService: {suggestion.compose.entryService || '— pick one —'}</li>
+                  <li>entryPort: {suggestion.compose.entryPort ?? '—'}</li>
+                  {suggestion.compose.envFile && <li>envFile: {suggestion.compose.envFile}</li>}
+                  {Array.isArray(suggestion.compose.services) &&
+                    suggestion.compose.services.length > 0 && (
+                      <li className="text-gray-500">
+                        services: {suggestion.compose.services.join(', ')}
+                      </li>
+                    )}
+                </ul>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={acceptSuggestion}
+                    className="flex items-center gap-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs px-3 py-1.5 rounded-lg"
+                    data-testid="preview-suggestion-accept"
+                  >
+                    <CheckCircle2 size={12} /> Accept
+                  </button>
+                  <button
+                    type="button"
+                    onClick={dismissSuggestion}
+                    className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg"
+                  >
+                    <X size={12} /> Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+            {suggestion && !suggestion.empty && !suggestion.compose && (
               <div
                 className="border border-sky-500/30 bg-sky-500/5 rounded-lg p-3 space-y-2"
                 data-testid="preview-suggestion"
@@ -863,4 +1180,4 @@ export default function PreviewSection({
 }
 
 // Exported for tests.
-export { buildPatchPayload, formFromProject, shallowEqualForm };
+export { buildPatchPayload, formFromProject, shallowEqualForm, PREVIEW_MODES };
