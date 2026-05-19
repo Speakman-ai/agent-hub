@@ -1319,7 +1319,54 @@ export function dispatchReviewerForPR(
  * "dismiss stale reviews" repo setting), and the forcing language is the same
  * in both cases.
  */
+function splitRepoFullName(repoFullName: string): { owner: string; repo: string } {
+  const slash = repoFullName.indexOf('/');
+  if (slash < 0) return { owner: repoFullName, repo: '' };
+  const owner = repoFullName.slice(0, slash);
+  const repo = repoFullName.slice(slash + 1).split('/')[0] ?? '';
+  return { owner, repo };
+}
+
+/**
+ * Instructions for loading PR metadata/diff on reviewer spawns (no GH_TOKEN).
+ * Exported for unit tests — keep in sync with {@link buildReviewerDispatchPrompt}.
+ */
+export function buildReviewerPrFetchInstructions(
+  opts: Pick<ReviewerDispatchOpts, 'prNumber' | 'repoFullName'>,
+): string {
+  const { owner, repo } = splitRepoFullName(opts.repoFullName);
+  return `## Fetching PR context (required)
+
+Your spawn has **no GitHub token** (\`AGENT_HUB_REVIEWER_LOCK=1\`). Bare \`gh pr view\` / \`gh pr diff\` **will not work** — do not use them.
+
+\`GH_REPO\` is preset to \`${opts.repoFullName}\`. Use the **github** skill wrappers (they route through Agent Hub's read proxy):
+
+\`\`\`bash
+# From the github skill directory (skills/github/scripts/ or default-skills/github/scripts/)
+./gh-pr.sh view ${opts.prNumber}
+./gh-pr.sh diff ${opts.prNumber}
+./gh-pr.sh files ${opts.prNumber}
+\`\`\`
+
+Equivalent curl fallback (if the scripts are unavailable):
+
+\`\`\`bash
+curl -sS -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+  "$AGENT_HUB_URL/api/pr/data?owner=${owner}&repo=${repo}&number=${opts.prNumber}"
+curl -sS -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+  "$AGENT_HUB_URL/api/pr/diff?owner=${owner}&repo=${repo}&number=${opts.prNumber}"
+curl -sS -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+  "$AGENT_HUB_URL/api/pr/files?owner=${owner}&repo=${repo}&number=${opts.prNumber}"
+\`\`\`
+
+**Hard rule:** You must successfully load the **PR branch diff** before analyzing or scoring findings.
+
+- If both the scripts and curl proxy fail, emit \`[[STEP:failed:Gather PR context]]\`, **do not** post \`POST /api/pr/review\`, and stop.
+- **Never** review the pre-PR \`main\` branch, the PR description alone, or code from a prior session as a substitute for the diff. That produces stale \`CHANGES_REQUESTED\` on issues already fixed on the PR head.`;
+}
+
 export function buildReviewerDispatchPrompt(opts: ReviewerDispatchOpts): string {
+  const prFetch = buildReviewerPrFetchInstructions(opts);
   return `# PR Review Request (${opts.reason})
 
 You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullName}\`.
@@ -1327,6 +1374,8 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 - **PR URL**: ${opts.prUrl}
 - **Title**: ${opts.prTitle}
 - **Trigger**: ${reviewerTriggerDescription(opts.reason)}
+
+${prFetch}
 
 ## Progress markers (drives the in-Hub ProgressPanel + GitHub Check Run)
 
@@ -1353,7 +1402,7 @@ Example:
     [[STEP:completed:Post formal review]]
 
 ## Your task
-1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
+1. Load PR metadata and diff using the **Fetching PR context** section above (\`./gh-pr.sh\` or \`/api/pr/*\` proxy only — not bare \`gh pr …\`).
 2. Read the changed files in context.
 3. For every issue you find, **assign a severity score from 1 to 10** using the rubric below, then classify it as **blocking** or **non-blocking** based on that score.
 
@@ -1507,6 +1556,7 @@ async function runReviewerDispatch(
     agentId: reviewer.id,
     sessionId,
     content: prompt,
+    extraEnv: { GH_REPO: opts.repoFullName },
     hookSpecificOutput: {
       sessionTitle: `Review: PR #${opts.prNumber} ${opts.prTitle}`.substring(0, 200),
     },

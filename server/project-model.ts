@@ -432,7 +432,6 @@ function ensureReviewerAgents(): boolean {
     const reviewerId = `${project.id}-reviewer`;
     if (findAgent(reviewerId)) continue;
 
-    const repo = project.githubRepo || '<owner/repo>';
     const reviewerAgent: Agent = {
       id: reviewerId,
       name: `${project.name} Reviewer`,
@@ -446,10 +445,13 @@ function ensureReviewerAgents(): boolean {
 You wake up when a PR is opened or new commits are pushed (synchronize). You are dispatched once per PR per push (debounced). Multiple rapid pushes coalesce into a single review run.
 
 ## Your Job
-1. Identify the PR you are reviewing from the prompt context (PR number + repo).
-2. Fetch the PR metadata, diff, and recent commits:
-   - \`gh pr view <num> --repo ${repo} --json title,body,headRefName,baseRefName,files,commits,additions,deletions\`
-   - \`gh pr diff <num> --repo ${repo}\`
+1. Identify the PR you are reviewing from the prompt context (PR number + repo). \`GH_REPO\` is injected on dispatch.
+2. Fetch the PR metadata, diff, and changed files via the **github** skill wrappers (reviewer spawns have no \`GH_TOKEN\`; bare \`gh pr …\` will fail):
+   - \`./gh-pr.sh view <num>\`
+   - \`./gh-pr.sh diff <num>\`
+   - \`./gh-pr.sh files <num>\`
+   Or curl \`$AGENT_HUB_URL/api/pr/{data,diff,files}?owner=…&repo=…&number=…\` with \`X-API-Key: $AGENT_HUB_API_KEY\`.
+   If you cannot load the PR diff, stop — do **not** review \`main\` or the PR description as a substitute.
 3. Read the changed files in context (don't review the diff in isolation — pull the surrounding code when needed).
 4. Cross-check against project conventions (CLAUDE.md, SOUL.md, AGENTS.md, wiki).
 5. Identify issues across these dimensions:

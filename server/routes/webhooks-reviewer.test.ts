@@ -3,6 +3,7 @@ import {
   dispatchReviewerForPR,
   _clearReviewerDebounce,
   buildReviewerDispatchPrompt,
+  buildReviewerPrFetchInstructions,
 } from './webhooks.js';
 import type { Project } from '../types.js';
 
@@ -296,6 +297,36 @@ describe('dispatchReviewerForPR — prompt content', () => {
     // After a push, prior APPROVE may be stale; COMMENT + "approved" prose does not unblock merge.
     expect(msg.content).toMatch(/dismiss stale|stale reviews/i);
     expect(msg.content).toMatch(/COMMENT[\s\S]{0,200}never/i);
+  });
+});
+
+describe('buildReviewerPrFetchInstructions — PR read proxy', () => {
+  it('requires github skill wrappers or /api/pr proxy, forbids bare gh and main-branch fallback', () => {
+    const block = buildReviewerPrFetchInstructions({
+      prNumber: 42,
+      repoFullName: 'Speakman-ai/agent-hub',
+    });
+
+    expect(block).toContain('GH_REPO');
+    expect(block).toContain('Speakman-ai/agent-hub');
+    expect(block).toContain('./gh-pr.sh diff 42');
+    expect(block).toContain('/api/pr/diff?owner=Speakman-ai&repo=agent-hub&number=42');
+    expect(block).toMatch(/will not work|do not use/i);
+    expect(block).toMatch(/Never.*main|pre-PR.*main/i);
+    expect(block).toMatch(/do not.*POST.*\/api\/pr\/review/i);
+  });
+});
+
+describe('dispatchReviewerForPR — GH_REPO spawn env', () => {
+  it('passes GH_REPO in extraEnv so the PR read proxy can resolve owner/repo', () => {
+    const deps = makeDeps();
+    const project = makeProject('reviewer');
+
+    dispatchReviewerForPR(deps as never, project, OPTS);
+    vi.runAllTimers();
+
+    const msg = deps.handleChat.mock.calls[0]?.[1] as { extraEnv?: Record<string, string> };
+    expect(msg.extraEnv).toEqual({ GH_REPO: 'owner/repo' });
   });
 });
 

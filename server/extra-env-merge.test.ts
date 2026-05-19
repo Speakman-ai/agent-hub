@@ -31,6 +31,11 @@ describe('mergeAllowlistedExtraEnv — production extraEnv gate', () => {
     expect(result.ANTHROPIC_API_KEY).toBe('real-key');
   });
 
+  it('allowlisted GH_REPO is injected for reviewer PR read-proxy resolution', () => {
+    const result = withMergedEnv({}, { GH_REPO: 'Speakman-ai/agent-hub' });
+    expect(result.GH_REPO).toBe('Speakman-ai/agent-hub');
+  });
+
   it('non-allowlisted key only in extraEnv is DROPPED even though absent from spawnEnv', () => {
     const result = withMergedEnv(
       {},
