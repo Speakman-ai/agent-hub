@@ -311,6 +311,7 @@ export interface DeviceTokenRow {
   id: number;
   token: string;
   platform: string;
+  user_id?: string | null;
   created_at: string;
   last_used: string | null;
   enabled_events: string | null;

@@ -8,6 +8,7 @@ import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../typ
 import { getLogBuffer } from '../server-log.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
 import { isAuthConfigured } from '../auth-store.js';
+import type { AuthenticatedRequest } from '../auth.js';
 import {
   computeUsageTotals,
   computeUsageByAgent,
@@ -84,6 +85,18 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
   const { allAgents, getEnrichedAgent, stmts } = deps;
   const router = Router();
 
+  const mayAccessToken = (req: Request, row: { user_id?: string | null } | undefined): boolean => {
+    if (!row) return false;
+    const authedReq = req as AuthenticatedRequest;
+    const caller = authedReq.authUserId ?? null;
+    // In local-bundled mode or apiKey break-glass there is no per-user
+    // boundary to enforce.
+    if (!caller) return true;
+    // Legacy rows may have NULL user_id until the device re-registers.
+    if (!row.user_id) return true;
+    return row.user_id === caller;
+  };
+
   router.get('/api/server-logs', (_req: Request, res: Response) => {
     res.json(getLogBuffer());
   });
@@ -147,11 +160,16 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
   router.post('/api/devices', (req: Request, res: Response) => {
     const { token, platform } = req.body as { token?: string; platform?: string };
     if (!token) return res.status(400).json({ error: 'token is required' });
-    stmts.registerDeviceToken.run(token, platform || 'ios');
+    const authedReq = req as AuthenticatedRequest;
+    stmts.registerDeviceToken.run(token, platform || 'ios', authedReq.authUserId ?? null);
     res.json({ ok: true });
   });
 
   router.delete('/api/devices/:token', (req: Request, res: Response) => {
+    const row = stmts.getDeviceToken.get(req.params.token) as
+      | { token: string; user_id: string | null }
+      | undefined;
+    if (!mayAccessToken(req, row)) return res.status(404).json({ error: 'Token not registered' });
     stmts.removeDeviceToken.run(req.params.token);
     res.json({ ok: true });
   });
@@ -160,9 +178,10 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
   // `enabled_events` is either null (all events) or a JSON array of strings.
   router.get('/api/devices/:token', (req: Request, res: Response) => {
     const row = stmts.getDeviceToken.get(req.params.token) as
-      | { token: string; platform: string; enabled_events: string | null }
+      | { token: string; platform: string; user_id: string | null; enabled_events: string | null }
       | undefined;
-    if (!row) return res.status(404).json({ error: 'Token not registered' });
+    if (!row || !mayAccessToken(req, row))
+      return res.status(404).json({ error: 'Token not registered' });
     let enabledEvents: string[] | null = null;
     if (row.enabled_events) {
       try {
@@ -188,8 +207,11 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
   // malformed client can't permanently disable anything.
   router.put('/api/devices/:token/preferences', (req: Request, res: Response) => {
     const body = req.body as { enabledEvents?: string[] | null };
-    const row = stmts.getDeviceToken.get(req.params.token) as { token: string } | undefined;
-    if (!row) return res.status(404).json({ error: 'Token not registered' });
+    const row = stmts.getDeviceToken.get(req.params.token) as
+      | { token: string; user_id: string | null }
+      | undefined;
+    if (!row || !mayAccessToken(req, row))
+      return res.status(404).json({ error: 'Token not registered' });
 
     if (body.enabledEvents == null) {
       stmts.setDeviceTokenPreferences.run(null, req.params.token);

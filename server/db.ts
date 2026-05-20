@@ -360,6 +360,7 @@ function initDb(dataDir: string): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token TEXT NOT NULL UNIQUE,
       platform TEXT NOT NULL DEFAULT 'ios',
+      user_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_used TEXT
     );
@@ -1257,6 +1258,11 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT enabled_events FROM device_tokens LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE device_tokens ADD COLUMN enabled_events TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT user_id FROM device_tokens LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE device_tokens ADD COLUMN user_id TEXT DEFAULT NULL');
   }
 
   db.exec(`
@@ -2384,10 +2390,11 @@ function initDb(dataDir: string): void {
 
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
-      `INSERT INTO device_tokens (token, platform, last_used)
-       VALUES (?, ?, datetime('now'))
+      `INSERT INTO device_tokens (token, platform, user_id, last_used)
+       VALUES (?, ?, ?, datetime('now'))
        ON CONFLICT(token) DO UPDATE SET
          platform = excluded.platform,
+         user_id = excluded.user_id,
          last_used = datetime('now')`,
     ),
     removeDeviceToken: db.prepare('DELETE FROM device_tokens WHERE token = ?'),

@@ -17,17 +17,23 @@ import {
   dispatchPushEvent,
   mapBroadcastToPush,
   handleBroadcastForPush,
+  filterTokensForBroadcastVisibility,
   EXPO_PUSH_URL,
   PUSH_EVENT_TYPES,
   type DeviceTokenRowWithPrefs,
   type ExpoPushMessage,
 } from './push.js';
 
-function token(t: string, enabled?: string[] | null): DeviceTokenRowWithPrefs {
+function token(
+  t: string,
+  enabled?: string[] | null,
+  userId?: string | null,
+): DeviceTokenRowWithPrefs {
   return {
     id: 1,
     token: t,
     platform: 'ios',
+    user_id: userId ?? null,
     created_at: '2026-04-18 00:00:00',
     last_used: null,
     enabled_events:
@@ -399,7 +405,7 @@ describe('handleBroadcastForPush', () => {
       },
       {
         fetchFn,
-        getAllTokens: () => [token('a')],
+        getAllTokens: () => [token('a', null, 'u1')],
         removeToken: () => {},
       },
     );
@@ -410,7 +416,7 @@ describe('handleBroadcastForPush', () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
     const sent = await handleBroadcastForPush(
       { type: 'room_message' },
-      { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
+      { fetchFn, getAllTokens: () => [token('a', null, 'u1')], removeToken: () => {} },
     );
     expect(sent).toBe(0);
     expect(fetchFn).not.toHaveBeenCalled();
@@ -457,5 +463,55 @@ describe('handleBroadcastForPush', () => {
       { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
     );
     expect(sent).toBe(1);
+  });
+
+  it('filters private-project pushes to owning user tokens only', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const sent = await handleBroadcastForPush(
+      {
+        type: 'done',
+        sessionId: 's-private',
+        agentName: 'Hub',
+        sessionName: 'N',
+        message: { content: 'ok' },
+      },
+      {
+        fetchFn,
+        getAllTokens: () => [
+          token('owner-device', null, 'owner-1'),
+          token('other-device', null, 'u2'),
+        ],
+        removeToken: () => {},
+        resolveProjectId: () => 'proj-private',
+        findProjectById: () =>
+          ({ id: 'proj-private', visibility: 'private', ownerUserId: 'owner-1' }) as any,
+      },
+    );
+
+    expect(sent).toBe(1);
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const payload = JSON.parse(String((call[1] as RequestInit).body));
+    expect(payload).toHaveLength(1);
+    expect(payload[0].to).toBe('owner-device');
+  });
+});
+
+describe('filterTokensForBroadcastVisibility', () => {
+  it('keeps all tokens for shared projects', () => {
+    const out = filterTokensForBroadcastVisibility(
+      [token('a', null, 'u1'), token('b', null, 'u2')],
+      { type: 'done', sessionId: 's1' },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () => ({ id: 'p1', visibility: 'shared', ownerUserId: 'u1' }) as any,
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['a', 'b']);
   });
 });
