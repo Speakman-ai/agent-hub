@@ -56,6 +56,7 @@ import {
   describePreviewReason,
   handlePreviewBlock,
 } from './preview/preview-block.js';
+import { handleMutatingToolUseForCodeChange } from './code-change-tracker.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
 import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
 import {
@@ -3036,6 +3037,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             status: event.status,
             startedAt: event.startedAt,
             finishedAt: event.finishedAt ?? null,
+          });
+        }
+
+        if (event.type === 'tool_use' && typeof event.tool === 'string') {
+          const toolInput = (event.input as Record<string, unknown>) || {};
+          const composePreview = !!project.prEnv?.preview?.compose?.entryService;
+          const previewRuntimeForAuto = composePreview
+            ? (getPreviewComposeRuntime?.() ?? null)
+            : (getPreviewRuntime?.() ?? null);
+          handleMutatingToolUseForCodeChange(sessionId, event.tool, toolInput, {
+            stmts: S,
+            broadcast,
+            project,
+            worktreePath: effectiveCwd,
+            runtime: previewRuntimeForAuto,
           });
         }
 

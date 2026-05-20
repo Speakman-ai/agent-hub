@@ -15,6 +15,11 @@ export interface SessionRow {
   worktree_branch: string | null;
   git_worktree_detected: number | null;
   changes_ready: string | null;
+  /**
+   * ISO timestamp of the first worktree mutation detected during this session
+   * (mutating tool_use + `git status --porcelain`). NULL / absent = no tracked edits yet.
+   */
+  code_changed_at?: string | null;
   stale_pr_notified_at: string | null;
   pending_skill_context?: string | null;
   ask_mode: number;
@@ -848,6 +853,7 @@ export interface Stmts {
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
   updateSessionChangesReady: Stmt;
+  updateSessionCodeChangedAt: Stmt;
   updateSessionWikiHybridRagConsumed: Stmt;
   updateSessionWikiHybridRagBudget: Stmt;
   updateSessionWebSearchCallsUsed: Stmt;
@@ -1550,6 +1556,12 @@ export interface PrEnvPreviewConfig {
    * production wiring is a follow-up.
    */
   healthTimeoutMs?: number;
+  /**
+   * When `enabled` is true, start a worktree preview automatically on the
+   * first detected code change in a session. Defaults to true (omit = on).
+   * Set `false` to require an explicit `<agenthub:preview>` block from the agent.
+   */
+  autoStart?: boolean;
   /**
    * Optional multi-process preview graph. When non-empty, `startScript`
    * (above) is ignored and the runtime spawns each entry in topological

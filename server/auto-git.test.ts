@@ -488,6 +488,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
   const mockBroadcast = vi.fn();
   const mockStmts = {
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
+    getSession: { get: vi.fn(() => ({ code_changed_at: null })) },
     updateSessionChangesReady: { run: vi.fn() },
     clearSessionChangesReady: { run: vi.fn() },
   } as Record<string, unknown>;

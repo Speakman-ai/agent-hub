@@ -871,6 +871,12 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN changes_ready TEXT DEFAULT NULL');
   }
 
+  try {
+    db.prepare('SELECT code_changed_at FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN code_changed_at TEXT DEFAULT NULL');
+  }
+
   // Dedup column for the stale PR-creation notifier (see server/stale-pr-check.ts).
   // NULL means "never notified for the current changes_ready"; set to an ISO
   // timestamp once a push has been dispatched so the next cycle skips the row.
@@ -1969,6 +1975,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionCodeChangedAt: db.prepare(
+      "UPDATE sessions SET code_changed_at = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWikiHybridRagConsumed: db.prepare(
       "UPDATE sessions SET wiki_hybrid_rag_consumed = ?, updated_at = datetime('now') WHERE id = ?",

@@ -301,6 +301,7 @@ export interface ValidatedPrEnvPreviewConfig {
   port?: number;
   captureRoutes?: string[];
   idleTTL?: number;
+  autoStart?: boolean;
   compose?: ValidatedPreviewComposeConfig;
 }
 
@@ -769,11 +770,20 @@ function validatePrEnvPreview(
     }
   }
 
+  let autoStart: boolean | undefined;
+  if (obj.autoStart !== undefined && obj.autoStart !== null) {
+    if (typeof obj.autoStart !== 'boolean') {
+      return { ok: false, error: 'prEnv.preview.autoStart must be a boolean' };
+    }
+    autoStart = obj.autoStart;
+  }
+
   const value: ValidatedPrEnvPreviewConfig = { enabled: true };
   if (startScript) value.startScript = startScript;
   if (port !== undefined) value.port = port;
   if (captureRoutes && captureRoutes.length > 0) value.captureRoutes = captureRoutes;
   if (idleTTL !== undefined) value.idleTTL = idleTTL;
+  if (autoStart !== undefined) value.autoStart = autoStart;
   if (composeResult.value) value.compose = composeResult.value;
   return { ok: true, value };
 }

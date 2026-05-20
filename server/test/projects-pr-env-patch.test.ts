@@ -178,6 +178,47 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect(body.error).toMatch(/has-dash/);
   });
 
+  it('persists preview.autoStart through PATCH', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          preview: {
+            enabled: true,
+            startScript: 'npm run dev',
+            autoStart: false,
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: false,
+      preview: {
+        enabled: true,
+        startScript: 'npm run dev',
+        autoStart: false,
+      },
+    });
+  });
+
+  it('rejects preview.autoStart when not a boolean', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          preview: { enabled: true, autoStart: 'yes' },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/autoStart must be a boolean/);
+  });
+
   it('persists a fully-populated preview block round-trip through PATCH', async () => {
     const project = await createProject();
     const projectId = project.id as string;

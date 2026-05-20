@@ -13,6 +13,7 @@ import type {
   BroadcastFn,
   MessageRow,
 } from './types.js';
+import { sessionHasNoPublishableWork } from './code-change-tracker.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
@@ -2372,6 +2373,12 @@ export async function autoCommitAndPR(
     // `manualCommitAndPR` (the button handler) re-queries by sessionId and
     // will attach the PR URL to the card when the user clicks.
     if (!isAutonomousCard) {
+      if (await sessionHasNoPublishableWork(sessionId, effectiveCwd, d.stmts)) {
+        console.log(
+          `[auto-commit] Session ${sessionId} — no code change in session (clean worktree), skipping ad-hoc PR path`,
+        );
+        return;
+      }
       const changes = await checkWorktreeChanges(effectiveCwd);
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
         return;
