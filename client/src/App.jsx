@@ -42,6 +42,7 @@ import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
+import ReleasesView from './components/ReleasesView.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useVisibleIntervalRefresh } from './hooks/useVisibleIntervalRefresh.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
@@ -3413,6 +3414,8 @@ export default function App() {
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
                 />
+              ) : currentView === 'releases' ? (
+                <ReleasesView />
               ) : currentView === 'dashboard' ? (
                 <DashboardView
                   orgId={getActiveOrgApiId()}

@@ -1312,7 +1312,14 @@ export default function Sidebar({
         {isElectron() ? (
           <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
             <div className="flex items-center gap-1.5">
-              <span>v{clientVersion}</span>
+              <button
+                type="button"
+                onClick={() => onNavigate('releases')}
+                className="hover:text-gray-300 transition-colors underline-offset-2 hover:underline"
+                title="What's new in Agent Hub"
+              >
+                v{clientVersion}
+              </button>
               {footerServerVersion && footerServerVersion !== clientVersion && (
                 <span
                   className="inline-flex items-center gap-1 text-amber-400"
@@ -1346,7 +1353,14 @@ export default function Sidebar({
           <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
             {footerServerVersion && (
               <div className="flex items-center gap-1.5">
-                <span>v{footerServerVersion}</span>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('releases')}
+                  className="hover:text-gray-300 transition-colors underline-offset-2 hover:underline"
+                  title="What's new in Agent Hub"
+                >
+                  v{footerServerVersion}
+                </button>
               </div>
             )}
             {footerServerGitHash && (

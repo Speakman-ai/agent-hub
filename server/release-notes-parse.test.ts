@@ -4,7 +4,7 @@ import {
   groupCommits,
   renderReleaseNotes,
   parseArgs,
-} from './format-release-notes.mjs';
+} from './release-notes-parse.js';
 
 describe('parseLogLine', () => {
   it('parses a conventional-commit line', () => {

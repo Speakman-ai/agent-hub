@@ -368,10 +368,18 @@ describe('Sidebar — version footer (server-only in browser)', () => {
   // server-mismatch chip; in a plain browser the client and server are
   // the same artifact, so only the server version renders.
 
+  it('opens the releases page when the version label is clicked', async () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+    const serverVersion = await screen.findByRole('button', { name: 'vtest' });
+    fireEvent.click(serverVersion);
+    expect(onNavigate).toHaveBeenCalledWith('releases');
+  });
+
   it('shows ONLY the server version in a plain browser (no client v-prefix, no mismatch chip)', async () => {
     render(<Sidebar {...buildProps()} />);
     // Wait for the /api/health useEffect to land.
-    const serverVersion = await screen.findByText('vtest');
+    const serverVersion = await screen.findByRole('button', { name: 'vtest' });
     expect(serverVersion).toBeInTheDocument();
     // The mismatch chip is the only other place the literal "server v…"
     // appears — it MUST NOT render in the browser path.

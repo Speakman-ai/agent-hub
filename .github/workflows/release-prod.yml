@@ -102,6 +102,14 @@ jobs:
           git push origin main
           git push origin "$TAG"
 
+      # The format-release-notes script is TypeScript (the server has no
+      # build step — everything runs under tsx). Install the server's dev
+      # deps so `npx tsx` is resolvable, then invoke the script from inside
+      # `server/` so its `.js` imports resolve to neighbouring `.ts` files
+      # via tsx's loader.
+      - name: Install server deps (for tsx)
+        run: cd server && npm ci --include=dev --no-audit --no-fund
+
       - name: Generate release notes
         env:
           TAG: ${{ steps.bump.outputs.tag }}
@@ -115,10 +123,10 @@ jobs:
             RANGE="HEAD"
           fi
           git log --pretty='- %s (%h)' "$RANGE" \
-            | node server/scripts/format-release-notes.mjs \
+            | (cd server && npx tsx scripts/format-release-notes.ts \
                 --version "$TAG" \
                 --previous "${PREV_TAG:-}" \
-                --repo "$REPO" \
+                --repo "$REPO") \
             > notes.md
           echo "--- notes.md ---"
           cat notes.md

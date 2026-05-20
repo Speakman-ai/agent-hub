@@ -95,6 +95,7 @@ import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
+import createReleasesRoutes from './routes/releases.js';
 import { createApiDocsRoutes } from './routes/api-docs.js';
 import createHookRoutes from './routes/hooks.js';
 import createClaudeAuthRoutes from './routes/claude-auth.js';
@@ -601,6 +602,12 @@ app.use(
 // (Preview proxy removed — replaced by lightweight Playwright captures)
 
 app.use(authMiddleware);
+
+// Releases page powers the in-app "What's new" view, only reachable from
+// the logged-in sidebar. Mount AFTER authMiddleware so the `?refresh=1`
+// bypass cannot be looped by an unauthenticated caller to burn the
+// configured GITHUB_TOKEN's rate-limit budget against api.github.com.
+app.use(createReleasesRoutes());
 
 const UPLOADS_DIR: string = path.join(__dirname, 'uploads');
 mkdirSync(UPLOADS_DIR, { recursive: true });

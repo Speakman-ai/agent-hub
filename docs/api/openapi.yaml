@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.29.1
+  version: 1.30.0
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -2947,6 +2947,98 @@ components:
       required:
         - error
       description: Error envelope. `existingConfigId` is set on 409 conflicts to point the UI at the row already in place.
+    UserFacingRelease:
+      type: object
+      properties:
+        version:
+          type: string
+        tag:
+          type: string
+        publishedAt:
+          type: string
+          nullable: true
+        url:
+          type: string
+          nullable: true
+        summary:
+          type: string
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              items:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    text:
+                      type: string
+                    hash:
+                      type: string
+                      nullable: true
+                  required:
+                    - text
+                    - hash
+            required:
+              - title
+              - items
+      required:
+        - version
+        - tag
+        - publishedAt
+        - url
+        - summary
+        - sections
+      description: Single release with user-facing changelog sections.
+    ReleasesListResponse:
+      type: object
+      properties:
+        repo:
+          type: string
+        source:
+          type: string
+          enum:
+            - github
+            - git
+        currentVersion:
+          type: string
+        selected:
+          allOf:
+            - $ref: "#/components/schemas/UserFacingRelease"
+            - nullable: true
+        releases:
+          type: array
+          items:
+            type: object
+            properties:
+              version:
+                type: string
+              tag:
+                type: string
+              publishedAt:
+                type: string
+                nullable: true
+              url:
+                type: string
+                nullable: true
+              summary:
+                type: string
+            required:
+              - version
+              - tag
+              - publishedAt
+              - url
+              - summary
+      required:
+        - repo
+        - source
+        - currentVersion
+        - selected
+        - releases
+      description: Release history for the Agent Hub repo.
     WebhookHmacFailureEntry:
       type: object
       properties:
@@ -10992,6 +11084,105 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+  /api/releases:
+    get:
+      tags:
+        - Health
+      summary: List Agent Hub releases with user-facing summaries
+      description: Fetches GitHub releases for the configured repo (default Speakman-ai/agent-hub), falling back to local git tags when the API is unavailable.
+      parameters:
+        - schema:
+            type: string
+            description: Prefer this version in `selected`.
+          required: false
+          description: Prefer this version in `selected`.
+          name: version
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            enum:
+              - "1"
+              - "true"
+            description: Bypass the in-memory cache.
+          required: false
+          description: Bypass the in-memory cache.
+          name: refresh
+          in: query
+      responses:
+        "200":
+          description: Release list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleasesListResponse"
+        "500":
+          description: Upstream or parsing failure.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/releases/{version}:
+    get:
+      tags:
+        - Health
+      summary: Get one release with full user-facing changelog
+      parameters:
+        - schema:
+            type: string
+            description: Semver or tag (e.g. 1.30.0 or v1.30.0).
+          required: true
+          description: Semver or tag (e.g. 1.30.0 or v1.30.0).
+          name: version
+          in: path
+      responses:
+        "200":
+          description: Release detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  release:
+                    $ref: "#/components/schemas/UserFacingRelease"
+                required:
+                  - repo
+                  - release
+        "404":
+          description: Unknown version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Upstream or parsing failure.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/webhooks/hmac-failures:
     get:
       tags:
