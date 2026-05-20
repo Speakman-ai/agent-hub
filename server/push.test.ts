@@ -566,4 +566,16 @@ describe('filterTokensForBroadcastVisibility', () => {
     );
     expect(out.map((t) => t.token)).toEqual(['a', 'b']);
   });
+
+  it('keeps NULL-user legacy tokens on private projects (global fan-out)', () => {
+    const out = filterTokensForBroadcastVisibility(
+      [token('legacy-null', null, null), token('other', null, 'u2')],
+      { type: 'done', sessionId: 's1' },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }) as any,
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['legacy-null']);
+  });
 });

@@ -1,10 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import supertest from 'supertest';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createHealthRoute } from './misc.js';
+import createMiscRoutes, { createHealthRoute } from './misc.js';
 import type { AppConfig, EnrichedAgent, Project } from '../types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,5 +88,49 @@ describe('GET /api/health', () => {
     const res = await supertest(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.authRequired).toBe(true);
+  });
+});
+
+describe('POST /api/devices', () => {
+  function buildDevicesApp(opts?: { authUserId?: string | null }) {
+    const registerSpy = { run: vi.fn() };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      if (opts && Object.prototype.hasOwnProperty.call(opts, 'authUserId')) {
+        (req as unknown as { authUserId?: string | null }).authUserId =
+          opts.authUserId ?? undefined;
+      }
+      next();
+    });
+    app.use(
+      createMiscRoutes({
+        allAgents: () => [],
+        getEnrichedAgent: () => null,
+        stmts: {
+          registerDeviceToken: registerSpy,
+          removeDeviceToken: { run: vi.fn() },
+          getDeviceToken: { get: vi.fn() },
+          setDeviceTokenPreferences: { run: vi.fn() },
+        },
+      } as any),
+    );
+    return { app, registerSpy };
+  }
+
+  it('stores authUserId as token owner when present', async () => {
+    const { app, registerSpy } = buildDevicesApp({ authUserId: 'user-123' });
+    const res = await supertest(app)
+      .post('/api/devices')
+      .send({ token: 'ExponentPushToken[x]', platform: 'ios' });
+    expect(res.status).toBe(200);
+    expect(registerSpy.run).toHaveBeenCalledWith('ExponentPushToken[x]', 'ios', 'user-123');
+  });
+
+  it('allows no-auth mode registration and stores NULL owner', async () => {
+    const { app, registerSpy } = buildDevicesApp({});
+    const res = await supertest(app).post('/api/devices').send({ token: 'ExponentPushToken[y]' });
+    expect(res.status).toBe(200);
+    expect(registerSpy.run).toHaveBeenCalledWith('ExponentPushToken[y]', 'ios', null);
   });
 });

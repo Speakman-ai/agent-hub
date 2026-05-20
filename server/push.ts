@@ -283,7 +283,12 @@ export function filterTokensForBroadcastVisibility(
   if (!project) return tokens;
   if (!project.ownerUserId) return tokens;
   const localBypass = isLocalBundledServer();
-  return tokens.filter((t) => canViewProject(project, { userId: t.user_id ?? null, localBypass }));
+  // Legacy back-compat: pre-migration rows have NULL user_id. Keep those
+  // tokens on global fan-out so existing devices do not silently stop
+  // receiving push until they re-register and get attributed.
+  return tokens.filter(
+    (t) => !t.user_id || canViewProject(project, { userId: t.user_id ?? null, localBypass }),
+  );
 }
 
 /**
@@ -361,10 +366,7 @@ export async function dispatchPushEvent(
   const visibilityEvent: BroadcastData = {
     type: eventType,
     ...(payload.data ?? {}),
-    projectId:
-      typeof payload.data?.projectId === 'string'
-        ? payload.data.projectId
-        : payload.data?.projectId,
+    projectId: payload.data?.projectId,
   };
   const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), visibilityEvent, d).filter(
     (t) => tokenAcceptsEvent(t, eventType),
