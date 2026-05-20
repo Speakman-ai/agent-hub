@@ -291,6 +291,34 @@ describe('dispatchPushEvent', () => {
     expect(sent).toBe(0);
     expect(fetchFn).not.toHaveBeenCalled();
   });
+
+  it('filters private-project event pushes to owner tokens only', async () => {
+    const tokens = [token('owner', null, 'owner-1'), token('other', null, 'u2')];
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const sent = await dispatchPushEvent(
+      'pr_creation_stale',
+      { title: 'T', body: 'B', data: { projectId: 'proj-private' } },
+      {
+        fetchFn,
+        getAllTokens: () => tokens,
+        removeToken: () => {},
+        resolveProjectId: () => 'proj-private',
+        findProjectById: () =>
+          ({ id: 'proj-private', visibility: 'private', ownerUserId: 'owner-1' }) as any,
+      },
+    );
+    expect(sent).toBe(1);
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const payload = JSON.parse(String((call[1] as RequestInit).body));
+    expect(payload).toHaveLength(1);
+    expect(payload[0].to).toBe('owner');
+  });
 });
 
 describe('mapBroadcastToPush', () => {
@@ -510,6 +538,30 @@ describe('filterTokensForBroadcastVisibility', () => {
       {
         resolveProjectId: () => 'p1',
         findProjectById: () => ({ id: 'p1', visibility: 'shared', ownerUserId: 'u1' }) as any,
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['a', 'b']);
+  });
+
+  it('keeps only the owner token for private projects', () => {
+    const out = filterTokensForBroadcastVisibility(
+      [token('owner', null, 'u1'), token('other', null, 'u2')],
+      { type: 'done', sessionId: 's1' },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }) as any,
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['owner']);
+  });
+
+  it('keeps all tokens when private project has no owner (legacy rows)', () => {
+    const out = filterTokensForBroadcastVisibility(
+      [token('a', null, 'u1'), token('b', null, 'u2')],
+      { type: 'done', sessionId: 's1' },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: null }) as any,
       },
     );
     expect(out.map((t) => t.token)).toEqual(['a', 'b']);

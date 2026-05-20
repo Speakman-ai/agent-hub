@@ -23,6 +23,7 @@ import type { DeviceTokenRow } from './types.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { findProject } from './project-model.js';
 import { canViewProject } from './project-visibility.js';
+import { isLocalBundledServer } from './auth.js';
 
 // ── Event types that can trigger a push ────────────────────────────────
 export const PUSH_EVENT_TYPES = [
@@ -280,9 +281,9 @@ export function filterTokensForBroadcastVisibility(
   if (!projectId) return tokens;
   const project = findProjectById(projectId);
   if (!project) return tokens;
-  return tokens.filter((t) =>
-    canViewProject(project, { userId: t.user_id ?? null, localBypass: false }),
-  );
+  if (!project.ownerUserId) return tokens;
+  const localBypass = isLocalBundledServer();
+  return tokens.filter((t) => canViewProject(project, { userId: t.user_id ?? null, localBypass }));
 }
 
 /**
@@ -356,8 +357,18 @@ export async function dispatchPushEvent(
   payload: { title: string; body: string; data?: Record<string, unknown>; silent?: boolean },
   deps?: PushDispatchDeps,
 ): Promise<number> {
-  const { getAllTokens } = resolveDeps(deps);
-  const tokens = getAllTokens().filter((t) => tokenAcceptsEvent(t, eventType));
+  const d = resolveDeps(deps);
+  const visibilityEvent: BroadcastData = {
+    type: eventType,
+    ...(payload.data ?? {}),
+    projectId:
+      typeof payload.data?.projectId === 'string'
+        ? payload.data.projectId
+        : payload.data?.projectId,
+  };
+  const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), visibilityEvent, d).filter(
+    (t) => tokenAcceptsEvent(t, eventType),
+  );
   if (!tokens.length) return 0;
   const msgs = buildMessages(tokens, payload);
   return sendExpoPush(msgs, deps);
