@@ -332,13 +332,14 @@ async function sendPushNotifications(
   result: string,
   sessionId: string,
   cronId: number,
+  projectId: string | null,
 ): Promise<void> {
   const { dispatchPushEvent, cronCompletePush } = await import('./push.js');
   const { title, body } = cronCompletePush({ cronName, result });
   await dispatchPushEvent('cron', {
     title,
     body,
-    data: { sessionId, cronId: String(cronId), type: 'cron' },
+    data: { sessionId, cronId: String(cronId), projectId, type: 'cron' },
   });
 }
 
@@ -692,7 +693,13 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       // mobile devices don't get pinged via the `thread_entry` channel
       // either. See `handleBroadcastForPush` in `push.ts`.
       if (cronJob.notify_on_run) {
-        await sendPushNotifications(cronJob.name, result, session!.id, cronJob.id);
+        await sendPushNotifications(
+          cronJob.name,
+          result,
+          session!.id,
+          cronJob.id,
+          cronJob.project_id,
+        );
       }
 
       if (onCronSessionUpdate) {

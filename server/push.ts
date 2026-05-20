@@ -20,6 +20,10 @@
 
 import { stmts } from './db.js';
 import type { DeviceTokenRow } from './types.js';
+import { resolveProjectIdFromEvent } from './event-project-resolver.js';
+import { findProject } from './project-model.js';
+import { canViewProject } from './project-visibility.js';
+import { isLocalBundledServer } from './auth.js';
 
 // ── Event types that can trigger a push ────────────────────────────────
 export const PUSH_EVENT_TYPES = [
@@ -240,6 +244,8 @@ export interface PushDispatchDeps {
   removeToken?: (token: string) => void;
   /** Override for tests to silence console noise. */
   log?: (msg: string) => void;
+  resolveProjectId?: (data: BroadcastData) => string | null;
+  findProjectById?: (projectId: string) => ReturnType<typeof findProject>;
 }
 
 function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
@@ -257,7 +263,27 @@ function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
         if (stmts) stmts.removeDeviceToken.run(token);
       }),
     log: deps?.log ?? ((msg: string) => console.error(msg)),
+    resolveProjectId:
+      deps?.resolveProjectId ?? ((data: BroadcastData) => resolveProjectIdFromEvent(data)),
+    findProjectById: deps?.findProjectById ?? ((projectId: string) => findProject(projectId)),
   };
+}
+
+export function filterTokensForBroadcastVisibility(
+  tokens: DeviceTokenRowWithPrefs[],
+  data: BroadcastData,
+  deps?: Pick<PushDispatchDeps, 'resolveProjectId' | 'findProjectById'>,
+): DeviceTokenRowWithPrefs[] {
+  const resolveProjectId =
+    deps?.resolveProjectId ?? ((payload: BroadcastData) => resolveProjectIdFromEvent(payload));
+  const findProjectById = deps?.findProjectById ?? ((projectId: string) => findProject(projectId));
+  const projectId = resolveProjectId(data);
+  if (!projectId) return tokens;
+  const project = findProjectById(projectId);
+  if (!project) return tokens;
+  if (!project.ownerUserId) return tokens;
+  const localBypass = isLocalBundledServer();
+  return tokens.filter((t) => canViewProject(project, { userId: t.user_id ?? null, localBypass }));
 }
 
 /**
@@ -331,8 +357,18 @@ export async function dispatchPushEvent(
   payload: { title: string; body: string; data?: Record<string, unknown>; silent?: boolean },
   deps?: PushDispatchDeps,
 ): Promise<number> {
-  const { getAllTokens } = resolveDeps(deps);
-  const tokens = getAllTokens().filter((t) => tokenAcceptsEvent(t, eventType));
+  const d = resolveDeps(deps);
+  const visibilityEvent: BroadcastData = {
+    type: eventType,
+    ...(payload.data ?? {}),
+    projectId:
+      typeof payload.data?.projectId === 'string'
+        ? payload.data.projectId
+        : payload.data?.projectId,
+  };
+  const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), visibilityEvent, d).filter(
+    (t) => tokenAcceptsEvent(t, eventType),
+  );
   if (!tokens.length) return 0;
   const msgs = buildMessages(tokens, payload);
   return sendExpoPush(msgs, deps);
@@ -365,7 +401,13 @@ export async function handleBroadcastForPush(
   if (data && data.suppressPush === true) return 0;
   const mapped = mapBroadcastToPush(data);
   if (!mapped) return 0;
-  return dispatchPushEvent(mapped.event, mapped.payload, deps);
+  const d = resolveDeps(deps);
+  const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), data, d).filter((t) =>
+    tokenAcceptsEvent(t, mapped.event),
+  );
+  if (!tokens.length) return 0;
+  const msgs = buildMessages(tokens, mapped.payload);
+  return sendExpoPush(msgs, deps);
 }
 
 /**
