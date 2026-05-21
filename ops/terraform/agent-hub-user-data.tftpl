@@ -154,7 +154,26 @@ IMAGE_URI="${image_uri}"
 # container's writable layer and is wiped on every restart — agents then see
 # an empty cwd and silently fail. See `agent-hub-user-data.tftpl` history for
 # the post-mortem.
-install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects"
+#
+# `workspaces` holds per-session git worktrees at
+# /home/node/.agent-hub/workspaces/<project>/<session> inside the container.
+# Without this bind-mount the worktrees live in the container's writable
+# layer with NO host counterpart, which means docker-compose preview bind
+# mounts launched against the worktree path (the iframe a chat session opens)
+# resolve to empty dirs on the host. Card 9b868252 — closes the
+# session-preview-from-worktree gap that PR #1074 explicitly did not fix.
+#
+# ⚠️ Upgrade note (clean-cut migration): on the first restart after this
+# change lands, the bind-mount shadows any in-container worktrees that
+# existed in the prior container's writable layer. Per-session worktrees
+# are ephemeral by design — the next session-touch re-clones from origin
+# via `ensureSessionWorkspace`'s zombie-clone handler — so no operator
+# action is required, but in-flight sessions will see their worktree
+# regenerated on next access. Persistent data (DB rows, kanban, wiki,
+# project checkouts) lives under `data`/`projects` which are bind-mounted
+# already and are NOT affected.
+install -d -m 0755 -o 1000 -g 1000 \
+  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces"
 
 # Write the .env file — same contract as the docker-build path, same server
 # reads it, so switching bootstrap modes is transparent to the app.
@@ -219,7 +238,9 @@ exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
+  -v "\$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
   -e "AGENT_HUB_HOST_PROJECTS_DIR=\$DATA_ROOT/projects" \
+  -e "AGENT_HUB_HOST_WORKSPACES_DIR=\$DATA_ROOT/workspaces" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT
@@ -327,8 +348,13 @@ fi
 # preserve host ownership, so creating these as root would crash-loop on
 # SQLITE_CANTOPEN. Match the image's runtime uid. `projects` mirrors the
 # ECR-pull branch — per-project source checkouts must persist across
-# container restarts.
-install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects"
+# container restarts. `workspaces` makes per-session git worktrees host-
+# visible so docker-compose previews launched from session worktrees
+# (the iframe a chat session opens) can bind-mount source — without this
+# the daemon resolves the bind mount against an empty dir on the host.
+# Card 9b868252; see the ECR-pull branch comment for the upgrade note.
+install -d -m 0755 -o 1000 -g 1000 \
+  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces"
 if [ -n "${docker_env_b64}" ]; then
   umask 077
   printf '%s' "${docker_env_b64}" | base64 -d > $REPO_DIR/.env
@@ -341,7 +367,9 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
   -p ${app_port}:3051 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
   -v "$DATA_ROOT/projects:/home/node/projects" \
+  -v "$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
   -e "AGENT_HUB_HOST_PROJECTS_DIR=$DATA_ROOT/projects" \
+  -e "AGENT_HUB_HOST_WORKSPACES_DIR=$DATA_ROOT/workspaces" \
   --env-file "$REPO_DIR/.env" \
   agenthub:local
 %{ endif ~}

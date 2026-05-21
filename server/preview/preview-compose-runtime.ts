@@ -343,6 +343,24 @@ export function buildComposeDownArgs(opts: {
  *
  * Pure helper — exported so tests can pin the exact YAML emitted to disk
  * without standing up the full runtime.
+ *
+ * ⚠️ Bind-mount trap (PR #1074 reviewer [9/10]):
+ *
+ *   The override file path is persisted as a container-side path
+ *   (`<dataDir>/preview-compose/<groupId>.yml`) and passed to compose
+ *   as a second `-f` flag. That works today because the override only
+ *   carries `ports: !override` — compose reads the file locally and no
+ *   bind-mount resolution touches its path. If a future override stanza
+ *   ever declares `volumes:` or any other bind-mounted source, compose
+ *   will resolve those paths against the override file's directory and
+ *   ship container-side absolute paths to the daemon — which will see
+ *   empty dirs on the host. If you add bind mounts here, you MUST
+ *   either (a) translate the override file path to its host equivalent
+ *   via {@link translateContainerPathToHost} before writing it, or
+ *   (b) emit absolute host paths in the override YAML rather than
+ *   relative sources. The runtime's per-spawn `--project-directory`
+ *   flag only rebases the PRIMARY `-f` file's working dir; it does NOT
+ *   rebase additional `-f` overrides.
  */
 export function buildComposeOverrideYaml(opts: {
   entryService: string;
@@ -571,12 +589,29 @@ export class PreviewComposeRuntime {
     // container `worktreePath` to its host equivalent and pass it
     // through as `--project-directory` so the daemon sees real source.
     const hostProjectDirectoryUp = translateContainerPathToHost(worktreePath);
-    if (hostProjectDirectoryUp.hostPath === null && process.env.AGENT_HUB_HOST_PROJECTS_DIR) {
+    if (
+      hostProjectDirectoryUp.hostPath === null &&
+      (process.env.AGENT_HUB_HOST_PROJECTS_DIR || process.env.AGENT_HUB_HOST_WORKSPACES_DIR)
+    ) {
       this.logger.warn(
         `[preview-compose ${groupId}] could not translate worktreePath to host path ` +
           `(${hostProjectDirectoryUp.skippedReason ?? 'unknown'}); ` +
           `relative bind-mounts in ${cfg.file} may resolve to empty dirs on the daemon side`,
       );
+    }
+    // Card c79c4bc0 — persist the resolved host path so stopPreview can
+    // reproduce the up call's `--project-directory` even if the host env
+    // mapping changes between start and stop (server restart with the
+    // data dir remounted to a different host path, etc.). Without this,
+    // a remount between start and stop would emit an incorrect
+    // `--project-directory` on the down spawn, compose-go can't address
+    // the named volumes that were created under the old mapping, the
+    // `-v` flag fails to drop them, and the allocated port stays
+    // claimed until manual cleanup.
+    if (hostProjectDirectoryUp.hostPath) {
+      this.db
+        .prepare(`UPDATE worktree_preview_groups SET host_project_directory = ? WHERE id = ?`)
+        .run(hostProjectDirectoryUp.hostPath, groupId);
     }
 
     // Spawn `docker compose up -d --build`. The CLI returns immediately
@@ -686,6 +721,7 @@ export class PreviewComposeRuntime {
       .prepare(
         `SELECT g.id, g.session_id, g.project_id, g.compose_project_name,
                 g.worktree_path, g.compose_file, g.entry_port, g.override_file_path,
+                g.host_project_directory,
                 p.port, p.url
            FROM worktree_preview_groups g
            LEFT JOIN worktree_preview_processes p
@@ -702,6 +738,7 @@ export class PreviewComposeRuntime {
           compose_file: string | null;
           entry_port: number | null;
           override_file_path: string | null;
+          host_project_directory: string | null;
           port: number | null;
           url: string | null;
         }
@@ -724,14 +761,30 @@ export class PreviewComposeRuntime {
     // relative bind mounts against the same base on tear-down. Without
     // this, `down` may pick a different working dir (parent of `-f`)
     // and emit "no such file" warnings against bind-mounted volumes.
-    const hostProjectDirectoryDown = row.worktree_path
-      ? translateContainerPathToHost(row.worktree_path)
-      : { containerPath: '', hostPath: null as string | null };
+    //
+    // Prefer the host path persisted at startPreview time
+    // (`host_project_directory`) over re-translating `worktree_path` —
+    // see card c79c4bc0. The persisted value is what the up spawn
+    // actually used; re-translation against current env vars would emit
+    // a different path if the host mapping changed between start and
+    // stop (server restart with the data dir remounted to a new host
+    // path). Legacy rows with `host_project_directory IS NULL` (preview
+    // groups created before this column existed) fall back to the
+    // current translation — those rows can't be helped, the host path
+    // was simply never recorded.
+    let hostProjectDirectoryDown: string | null;
+    if (row.host_project_directory) {
+      hostProjectDirectoryDown = row.host_project_directory;
+    } else if (row.worktree_path) {
+      hostProjectDirectoryDown = translateContainerPathToHost(row.worktree_path).hostPath;
+    } else {
+      hostProjectDirectoryDown = null;
+    }
     const downArgs = buildComposeDownArgs({
       composeProjectName: row.compose_project_name,
       composeFile,
       overrideFile: row.override_file_path,
-      projectDirectory: hostProjectDirectoryDown.hostPath,
+      projectDirectory: hostProjectDirectoryDown,
     });
     const downEnv: NodeJS.ProcessEnv = {
       ...process.env,
@@ -947,6 +1000,17 @@ export class PreviewComposeRuntime {
    *     that the up call set (compose interpolates env on `down` too;
    *     mismatched env emits "variable is not set" warnings and can
    *     refuse to stop services).
+   *   - `override_file_path` — disk path of the per-group compose
+   *     override file written by `writeOverrideFile`; reused on tear-down
+   *     so the down spawn applies the same `-f` chain as the up spawn.
+   *   - `host_project_directory` — the host-side path resolved by
+   *     {@link translateContainerPathToHost} at startPreview time. Stored
+   *     so stopPreview can emit the SAME `--project-directory` flag the
+   *     up spawn used, even when the host env mapping has changed since
+   *     start (server restart with a remounted data dir, etc.). Card
+   *     `c79c4bc0` — closes the stale-mapping risk from PR #1074
+   *     reviewer item [4/10]. NULL for legacy rows that predate this
+   *     column; in that case stopPreview falls back to re-translation.
    *
    * SQLite's `ALTER TABLE … ADD COLUMN` is fast and atomic; re-running
    * on a freshly-migrated DB throws `duplicate column name` which we
@@ -967,6 +1031,7 @@ export class PreviewComposeRuntime {
       `ALTER TABLE worktree_preview_groups ADD COLUMN compose_file TEXT`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN entry_port INTEGER`,
       `ALTER TABLE worktree_preview_groups ADD COLUMN override_file_path TEXT`,
+      `ALTER TABLE worktree_preview_groups ADD COLUMN host_project_directory TEXT`,
     ];
     for (const stmt of additions) {
       try {

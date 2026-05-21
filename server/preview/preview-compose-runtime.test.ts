@@ -859,6 +859,178 @@ describe('PreviewComposeRuntime — teardown', () => {
     expect(runtime.getById(result.previewId)).toBeNull();
   });
 
+  it('runtime: up + down spawns carry the same --project-directory value (PR #1074 reviewer [10/10])', async () => {
+    // Regression test for the PR #1074 reviewer [10/10] blocker — the
+    // builder-level tests pin `--project-directory` placement when the
+    // arg is passed, but they don't prove the runtime actually passes
+    // the same value on both up and down. Without this assertion a
+    // missed translator call on stopPreview could ship undetected:
+    // compose-go would resolve relative bind mounts against a different
+    // base, fail to address the named volumes created on up, and the
+    // `-v` teardown would silently leak.
+    const prevHost = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    process.env.AGENT_HUB_HOST_PROJECTS_DIR = '/host/projects';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn({ exitImmediately: true });
+      const { fetch } = makeFetch({ alwaysFail: true });
+      const clock = makeClock();
+      const runtime = new PreviewComposeRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch,
+        clock,
+        config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      });
+
+      // Container-side worktree path under the projects bind-mount root.
+      // Translates to /host/projects/foo via the env var above.
+      const worktreePath = '/home/node/projects/foo';
+      const result = await runtime.startPreview('sess-pd', makeProject(), worktreePath);
+      await runtime.stopPreview(result.previewId);
+
+      const upCall = harness.calls[0];
+      const downCall = harness.calls[harness.calls.length - 1];
+
+      expect(upCall.args).toContain('--project-directory');
+      expect(downCall.args).toContain('--project-directory');
+
+      const upPdIdx = upCall.args.indexOf('--project-directory');
+      const downPdIdx = downCall.args.indexOf('--project-directory');
+      expect(upCall.args[upPdIdx + 1]).toBe('/host/projects/foo');
+      expect(downCall.args[downPdIdx + 1]).toBe(upCall.args[upPdIdx + 1]);
+    } finally {
+      if (prevHost === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = prevHost;
+    }
+  });
+
+  it('runtime: workspaces-rooted worktree translates to host on both up and down (card 9b868252)', async () => {
+    // Session previews launched from per-session worktrees (the iframe a
+    // chat session opens) now translate through the workspaces root, so
+    // the daemon sees real source instead of empty bind mounts.
+    const prevWs = process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    process.env.AGENT_HUB_HOST_WORKSPACES_DIR = '/host/workspaces';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn({ exitImmediately: true });
+      const { fetch } = makeFetch({ alwaysFail: true });
+      const clock = makeClock();
+      const runtime = new PreviewComposeRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch,
+        clock,
+        config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      });
+
+      const worktreePath = '/home/node/.agent-hub/workspaces/myproj/session-xyz';
+      const result = await runtime.startPreview('sess-ws', makeProject(), worktreePath);
+      await runtime.stopPreview(result.previewId);
+
+      const upCall = harness.calls[0];
+      const downCall = harness.calls[harness.calls.length - 1];
+      const expectedHostPath = '/host/workspaces/myproj/session-xyz';
+      expect(upCall.args[upCall.args.indexOf('--project-directory') + 1]).toBe(expectedHostPath);
+      expect(downCall.args[downCall.args.indexOf('--project-directory') + 1]).toBe(
+        expectedHostPath,
+      );
+    } finally {
+      if (prevWs === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+      else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = prevWs;
+    }
+  });
+
+  it('runtime: stopPreview prefers the host path persisted at start time over re-translation (card c79c4bc0)', async () => {
+    // This is the heart of card c79c4bc0 — between startPreview and
+    // stopPreview the operator changes AGENT_HUB_HOST_PROJECTS_DIR
+    // (think: server restart with the data dir remounted to a new host
+    // path). Re-translating `worktree_path` at stop time would emit a
+    // different host path than the up call used. We persist the
+    // translated host path on the group row at start, so the down spawn
+    // can reproduce the up call's `--project-directory` exactly.
+    const prevHost = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    process.env.AGENT_HUB_HOST_PROJECTS_DIR = '/host/projects-original';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn({ exitImmediately: true });
+      const { fetch } = makeFetch({ alwaysFail: true });
+      const clock = makeClock();
+      const runtime = new PreviewComposeRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch,
+        clock,
+        config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      });
+
+      const worktreePath = '/home/node/projects/proj-x';
+      const result = await runtime.startPreview('sess-persist', makeProject(), worktreePath);
+
+      // Simulate a server restart / data-dir remount: the env var now
+      // points at a different host path. The persisted column must win.
+      process.env.AGENT_HUB_HOST_PROJECTS_DIR = '/host/projects-remounted';
+
+      await runtime.stopPreview(result.previewId);
+
+      const upCall = harness.calls[0];
+      const downCall = harness.calls[harness.calls.length - 1];
+      const upPath = upCall.args[upCall.args.indexOf('--project-directory') + 1];
+      const downPath = downCall.args[downCall.args.indexOf('--project-directory') + 1];
+
+      // The up call used the original mapping; the down call MUST use
+      // the same value (read from `host_project_directory`), NOT the
+      // re-translated post-remount path.
+      expect(upPath).toBe('/host/projects-original/proj-x');
+      expect(downPath).toBe('/host/projects-original/proj-x');
+      expect(downPath).not.toBe('/host/projects-remounted/proj-x');
+    } finally {
+      if (prevHost === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = prevHost;
+    }
+  });
+
+  it('runtime: stopPreview falls back to re-translation when host_project_directory is NULL (legacy row, card c79c4bc0)', async () => {
+    // Belt-and-braces — rows that predate the host_project_directory
+    // column must still tear down correctly. stopPreview detects the
+    // NULL and re-runs the translator against current env vars (the
+    // same behavior PR #1074 shipped).
+    const prevHost = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    process.env.AGENT_HUB_HOST_PROJECTS_DIR = '/host/projects';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn({ exitImmediately: true });
+      const { fetch } = makeFetch({ alwaysFail: true });
+      const clock = makeClock();
+      const runtime = new PreviewComposeRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch,
+        clock,
+        config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      });
+
+      const worktreePath = '/home/node/projects/legacy-proj';
+      const result = await runtime.startPreview('sess-legacy', makeProject(), worktreePath);
+
+      // Simulate a row written before the column existed by clearing it.
+      db.prepare(
+        `UPDATE worktree_preview_groups SET host_project_directory = NULL WHERE id = ?`,
+      ).run(result.previewId);
+
+      await runtime.stopPreview(result.previewId);
+
+      const downCall = harness.calls[harness.calls.length - 1];
+      const downPath = downCall.args[downCall.args.indexOf('--project-directory') + 1];
+      // Re-translation against the env above must succeed and produce
+      // the equivalent host path.
+      expect(downPath).toBe('/host/projects/legacy-proj');
+    } finally {
+      if (prevHost === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = prevHost;
+    }
+  });
+
   it("reuses the up call's worktree cwd + custom compose file on the down spawn", async () => {
     // Regression test for the asymmetric teardown bug: a project that
     // overrides `compose.file` (e.g. `compose.preview.yml`) brings the

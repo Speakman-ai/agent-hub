@@ -2,87 +2,200 @@ import { describe, expect, it } from 'vitest';
 import { translateContainerPathToHost } from './host-path-translation.js';
 
 describe('translateContainerPathToHost', () => {
-  it('returns null and a reason when no host projects dir is configured', () => {
+  it('returns null and a reason when no host root is configured', () => {
     const r = translateContainerPathToHost('/home/node/projects/foo', {
       hostProjectsDir: null,
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBeNull();
-    expect(r.skippedReason).toMatch(/AGENT_HUB_HOST_PROJECTS_DIR/);
+    expect(r.skippedReason).toMatch(/no host root configured/);
   });
 
-  it('returns null when the host projects dir is an empty string', () => {
+  it('returns null when the host projects dir is an empty string and workspaces is unset', () => {
     const r = translateContainerPathToHost('/home/node/projects/foo', {
       hostProjectsDir: '   ',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBeNull();
-    expect(r.skippedReason).toMatch(/AGENT_HUB_HOST_PROJECTS_DIR/);
+    expect(r.skippedReason).toMatch(/no host root configured/);
   });
 
   it('rewrites a path that lives directly under the container projects root', () => {
     const r = translateContainerPathToHost('/home/node/projects/surveytracker', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBe('/var/lib/agent-hub/projects/surveytracker');
+    expect(r.matchedRoot).toBe('projects');
     expect(r.skippedReason).toBeUndefined();
   });
 
   it('rewrites a nested path under the container projects root', () => {
     const r = translateContainerPathToHost('/home/node/projects/surveytracker/frontend/src', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBe('/var/lib/agent-hub/projects/surveytracker/frontend/src');
+    expect(r.matchedRoot).toBe('projects');
   });
 
   it('returns the host root itself when the input is the container root', () => {
     const r = translateContainerPathToHost('/home/node/projects', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBe('/var/lib/agent-hub/projects');
+    expect(r.matchedRoot).toBe('projects');
   });
 
   it('strips a trailing slash on inputs', () => {
     const r = translateContainerPathToHost('/home/node/projects/foo/', {
       hostProjectsDir: '/var/lib/agent-hub/projects/',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBe('/var/lib/agent-hub/projects/foo');
   });
 
-  it('refuses paths outside the bind-mounted root (worktree case)', () => {
+  it('refuses paths outside the bind-mounted roots when only projects is configured', () => {
     const r = translateContainerPathToHost('/home/node/.agent-hub/workspaces/foo/session-abc', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBeNull();
-    expect(r.skippedReason).toMatch(/outside the bind-mounted projects root/);
+    expect(r.skippedReason).toMatch(/outside the bind-mounted/);
   });
 
-  it('refuses a path that is a sibling of the container root (no prefix match)', () => {
+  it('refuses a path that is a sibling of the container projects root (no prefix match)', () => {
     const r = translateContainerPathToHost('/home/node/projects-foo/x', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBeNull();
-    expect(r.skippedReason).toMatch(/outside the bind-mounted projects root/);
+    expect(r.skippedReason).toMatch(/outside the bind-mounted/);
   });
 
   it('honours a custom container projects dir override', () => {
     const r = translateContainerPathToHost('/srv/code/app1/sub', {
       hostProjectsDir: '/data/projects',
       containerProjectsDir: '/srv/code',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBe('/data/projects/app1/sub');
+    expect(r.matchedRoot).toBe('projects');
   });
 
-  it('returns null when the container projects dir resolves to empty', () => {
+  it('returns null when the container projects dir resolves to empty and workspaces is unset', () => {
+    // An empty containerProjectsDir drops the projects pair entirely;
+    // with workspaces also disabled there is no configured root at all.
     const r = translateContainerPathToHost('/home/node/projects/foo', {
       hostProjectsDir: '/data/projects',
       containerProjectsDir: '   ',
+      hostWorkspacesDir: null,
     });
     expect(r.hostPath).toBeNull();
-    expect(r.skippedReason).toMatch(/container projects dir resolves to empty/);
+    expect(r.skippedReason).toMatch(/no host root configured/);
   });
 
   it('returns null + reason when input is empty', () => {
-    const r = translateContainerPathToHost('', { hostProjectsDir: '/data/projects' });
+    const r = translateContainerPathToHost('', {
+      hostProjectsDir: '/data/projects',
+      hostWorkspacesDir: null,
+    });
     expect(r.hostPath).toBeNull();
     expect(r.skippedReason).toMatch(/empty container path/);
+  });
+
+  // ─── Workspaces-root translation ─────────────────────────────────────
+  // Card 9b868252: per-session worktrees must be host-visible for compose
+  // previews launched from worktrees (the iframe a chat session opens).
+  // Before this change the worktree case returned null and the daemon
+  // mounted empty dirs.
+
+  it('rewrites a worktree path under the container workspaces root', () => {
+    const r = translateContainerPathToHost(
+      '/home/node/.agent-hub/workspaces/surveytracker/session-abc',
+      {
+        hostProjectsDir: null,
+        hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+      },
+    );
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/surveytracker/session-abc');
+    expect(r.matchedRoot).toBe('workspaces');
+  });
+
+  it('rewrites a nested worktree path under the container workspaces root', () => {
+    const r = translateContainerPathToHost(
+      '/home/node/.agent-hub/workspaces/surveytracker/session-abc/frontend',
+      {
+        hostProjectsDir: null,
+        hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+      },
+    );
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/surveytracker/session-abc/frontend');
+    expect(r.matchedRoot).toBe('workspaces');
+  });
+
+  it('returns the workspaces host root when input is the container workspaces root', () => {
+    const r = translateContainerPathToHost('/home/node/.agent-hub/workspaces', {
+      hostProjectsDir: null,
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+    });
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces');
+    expect(r.matchedRoot).toBe('workspaces');
+  });
+
+  it('honours a custom container workspaces dir override', () => {
+    const r = translateContainerPathToHost('/var/data/workspaces/proj/sess', {
+      hostProjectsDir: null,
+      hostWorkspacesDir: '/host/workspaces',
+      containerWorkspacesDir: '/var/data/workspaces',
+    });
+    expect(r.hostPath).toBe('/host/workspaces/proj/sess');
+    expect(r.matchedRoot).toBe('workspaces');
+  });
+
+  it('picks projects when both roots are configured and the path lives under projects', () => {
+    const r = translateContainerPathToHost('/home/node/projects/foo/src', {
+      hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+    });
+    expect(r.hostPath).toBe('/var/lib/agent-hub/projects/foo/src');
+    expect(r.matchedRoot).toBe('projects');
+  });
+
+  it('picks workspaces when both roots are configured and the path lives under workspaces', () => {
+    const r = translateContainerPathToHost('/home/node/.agent-hub/workspaces/foo/session-x/src', {
+      hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+    });
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/foo/session-x/src');
+    expect(r.matchedRoot).toBe('workspaces');
+  });
+
+  it('reports a helpful reason listing both roots when neither matches', () => {
+    const r = translateContainerPathToHost('/tmp/elsewhere', {
+      hostProjectsDir: '/var/lib/agent-hub/projects',
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+    });
+    expect(r.hostPath).toBeNull();
+    // Both labels appear, order is longest-first (workspaces > projects).
+    expect(r.skippedReason).toMatch(/projects/);
+    expect(r.skippedReason).toMatch(/workspaces/);
+    expect(r.skippedReason).toMatch(/\/home\/node\/projects/);
+    expect(r.skippedReason).toMatch(/\/home\/node\/\.agent-hub\/workspaces/);
+  });
+
+  it('picks the longest-matching prefix when one root is nested under the other', () => {
+    // Defensive: production roots are disjoint, but a custom operator
+    // setup could in principle nest one root under the other. Make sure
+    // the more-specific (longer) root wins so the suffix is correct.
+    const r = translateContainerPathToHost('/srv/code/.workspaces/foo', {
+      hostProjectsDir: '/host/projects',
+      containerProjectsDir: '/srv/code',
+      hostWorkspacesDir: '/host/workspaces',
+      containerWorkspacesDir: '/srv/code/.workspaces',
+    });
+    expect(r.hostPath).toBe('/host/workspaces/foo');
+    expect(r.matchedRoot).toBe('workspaces');
   });
 });

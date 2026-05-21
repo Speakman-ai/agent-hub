@@ -139,11 +139,63 @@ describe('agent-hub-user-data.tftpl', () => {
     const rootOwned = /install -d -m 0755 -o root -g root "\$DATA_ROOT\/data"/;
     expect(tpl, 'must not create $DATA_ROOT/data as root').not.toMatch(rootOwned);
 
-    const matches = tpl.match(
-      /install -d -m 0755 -o 1000 -g 1000 "\$DATA_ROOT\/data" "\$DATA_ROOT\/uploads"/g,
+    // Tolerate bash line-continuation backslashes: the install line may
+    // wrap across multiple lines when the arg list grows. We assert the
+    // full uid/gid prefix is present and that each required dir appears
+    // (data + uploads + projects + workspaces).
+    const installBlocks = tpl.match(
+      /install -d -m 0755 -o 1000 -g 1000(?:[ \t]*\\?\n?[ \t]*"\$DATA_ROOT\/[a-zA-Z0-9_-]+")+/g,
     );
-    expect(matches, 'expected 1000:1000 install -d in both bootstrap branches').not.toBeNull();
-    expect(matches!.length).toBeGreaterThanOrEqual(2);
+    expect(
+      installBlocks,
+      'expected 1000:1000 install -d in both bootstrap branches',
+    ).not.toBeNull();
+    expect(installBlocks!.length).toBeGreaterThanOrEqual(2);
+    for (const block of installBlocks!) {
+      expect(block, 'each install block must create the data dir').toMatch(/"\$DATA_ROOT\/data"/);
+      expect(block, 'each install block must create the uploads dir').toMatch(
+        /"\$DATA_ROOT\/uploads"/,
+      );
+      expect(block, 'each install block must create the projects dir').toMatch(
+        /"\$DATA_ROOT\/projects"/,
+      );
+      // Card 9b868252 — workspaces becomes a host-visible bind mount so
+      // compose previews launched from per-session worktrees can see
+      // source on the daemon side. Both bootstrap branches must create
+      // the host dir with the container-runtime uid so the bind mount
+      // is writable on first boot.
+      expect(block, 'each install block must create the workspaces dir').toMatch(
+        /"\$DATA_ROOT\/workspaces"/,
+      );
+    }
+  });
+
+  // Card 9b868252 — the workspaces bind mount + env var must reach the
+  // container, otherwise `host-path-translation.ts` falls back to its
+  // null branch for worktree-rooted preview paths and the daemon mounts
+  // empty dirs again. Pinned in both bootstrap branches so a future
+  // template refactor can't silently drop one.
+  describe('workspaces bind-mount (card 9b868252)', () => {
+    it('bind-mounts $DATA_ROOT/workspaces and exports AGENT_HUB_HOST_WORKSPACES_DIR (ECR-pull)', () => {
+      const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE });
+      expect(rendered).toMatch(
+        /-v "\\\$DATA_ROOT\/workspaces:\/home\/node\/\.agent-hub\/workspaces"/,
+      );
+      expect(rendered).toMatch(/-e "AGENT_HUB_HOST_WORKSPACES_DIR=\\\$DATA_ROOT\/workspaces"/);
+    });
+
+    it('bind-mounts $DATA_ROOT/workspaces and exports AGENT_HUB_HOST_WORKSPACES_DIR (legacy docker-build)', () => {
+      const rendered = renderTemplate(tpl, {
+        ...RENDER_VARS_BASE,
+        use_ecr_pull: false,
+        use_docker_bootstrap: true,
+        use_pm2_bootstrap: false,
+      });
+      expect(rendered).toMatch(
+        /-v "\$DATA_ROOT\/workspaces:\/home\/node\/\.agent-hub\/workspaces"/,
+      );
+      expect(rendered).toMatch(/-e "AGENT_HUB_HOST_WORKSPACES_DIR=\$DATA_ROOT\/workspaces"/);
+    });
   });
 
   // ── ECR-pull bootstrap renders the standard docker run invocation ────────

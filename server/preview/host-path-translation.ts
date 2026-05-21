@@ -22,45 +22,92 @@
  *   `docker compose` invocation. compose-go then ships the host-rooted
  *   absolute path to the daemon, which can resolve it correctly.
  *
+ * Design choice — env-var-driven, NOT `/proc/self/mountinfo`:
+ *
+ *   The reviewer of PR #1074 ([8/10] item) called out two plausible
+ *   approaches: parse `/proc/self/mountinfo` to auto-derive the host
+ *   path, OR have operators declare the mapping via env vars. We
+ *   deliberately chose the env-var approach for three reasons:
+ *
+ *     1. **No edge cases.** `mountinfo` has nested-mount, subdirectory
+ *        bind-mount (field 4 `fsRoot` ≠ mount point), and stale-on-remount
+ *        problems. A naïve prefix-replacement gets subdirectory bind
+ *        mounts wrong because the host-side path needs `fsRoot` (field 4)
+ *        prepended to the suffix, not just the mount-point prefix swapped.
+ *
+ *     2. **Operator-controlled.** Terraform / Docker Compose / Kubernetes
+ *        already render the mapping at deploy time — the env var just
+ *        surfaces what the operator declared, so the runtime never
+ *        guesses.
+ *
+ *     3. **Testable.** Tests inject `hostProjectsDir` / `hostWorkspacesDir`
+ *        directly without mocking `/proc`, so the helper stays a pure
+ *        function.
+ *
+ *   The trade-off: an operator who forgets to set the env var on a
+ *   container deploy gets a `null` translation + a warning, not an
+ *   auto-discovered mapping. That trade-off is fine because the failure
+ *   surface is loud (the wizard build fails) and the fix is one env
+ *   var. Auto-detection would silently mis-resolve for any operator who
+ *   used a nested or subdirectory mount layout.
+ *
  * Contract:
  *
  *   - `AGENT_HUB_HOST_PROJECTS_DIR` (env): set by the deployment scripts
  *     to the host filesystem path that backs the bind-mount of the
  *     container's projects directory. On EC2 this is `<DATA_ROOT>/projects`
  *     where `DATA_ROOT` is the data root that terraform configures.
- *     When unset, translation is a no-op so dev / Electron / non-container
- *     installs are unaffected.
+ *     When unset, projects-root translation is a no-op so dev / Electron
+ *     / non-container installs are unaffected.
  *
- *   - `AGENT_HUB_CONTAINER_PROJECTS_DIR` (env, optional): the container-side
+ *   - `AGENT_HUB_CONTAINER_PROJECTS_DIR` (env, optional): the container
  *     mountpoint. Defaults to `/home/node/projects` which matches the
  *     terraform-rendered docker run.
  *
+ *   - `AGENT_HUB_HOST_WORKSPACES_DIR` (env): set by the deployment
+ *     scripts to the host filesystem path that backs the bind-mount of
+ *     the container's per-session worktree workspaces directory. On EC2
+ *     this is `<DATA_ROOT>/workspaces`. When unset, workspaces-root
+ *     translation is a no-op (matches pre-PR behavior — worktrees were
+ *     not bind-mounted at all, so the previous code returned `null` for
+ *     these paths via the "outside the bind-mounted projects root" reason).
+ *
+ *   - `AGENT_HUB_CONTAINER_WORKSPACES_DIR` (env, optional): the
+ *     container mountpoint for workspaces. Defaults to
+ *     `/home/node/.agent-hub/workspaces`, matching {@link WORKSPACES_ROOT}
+ *     in `server/worktree.ts`.
+ *
  *   - {@link translateContainerPathToHost} rewrites a container path that
- *     starts with the container projects root so the equivalent host path
- *     is returned. Paths outside the bind-mounted root (most notably
- *     worktrees under `~/.agent-hub/workspaces/`, which are NOT
- *     bind-mounted) come back as `null` with a warning surfaced via the
- *     `onWarn` callback — the caller decides whether to continue with no
+ *     starts with EITHER the projects root OR the workspaces root so the
+ *     equivalent host path is returned. Paths under neither bind-mounted
+ *     root (legacy operators who haven't redeployed the terraform
+ *     user-data, plus Electron / dev installs without docker-in-docker)
+ *     come back as `null` with a warning reason surfaced via
+ *     `skippedReason` — the caller decides whether to continue with no
  *     `--project-directory` flag or to surface a hard error.
  *
- * Worktree caveat:
+ * Worktree case (resolved in this PR):
  *
- *   This translation only helps when the compose preview launches against
- *   `project.cwd` (the bind-mounted projects dir). When it launches from
- *   a worktree, the worktree itself isn't bind-mounted to the host, so
- *   there's no host path that contains the source files at all. That's a
- *   separate, larger design problem — tracked under follow-up card.
+ *   Until this PR landed, worktrees under
+ *   `/home/node/.agent-hub/workspaces/` lived in the container's
+ *   writable layer with NO host counterpart, so the translator returned
+ *   `null` for any worktree-rooted preview. The terraform user-data
+ *   now bind-mounts `<DATA_ROOT>/workspaces:/home/node/.agent-hub/workspaces`
+ *   and exports `AGENT_HUB_HOST_WORKSPACES_DIR`, so session previews
+ *   launched from worktrees translate correctly through this helper's
+ *   second root mapping below.
  */
 
 const DEFAULT_CONTAINER_PROJECTS_DIR = '/home/node/projects';
+const DEFAULT_CONTAINER_WORKSPACES_DIR = '/home/node/.agent-hub/workspaces';
 
 export interface HostPathTranslation {
   /** Container path that was passed in (unchanged). */
   readonly containerPath: string;
   /**
    * Host-side path docker daemon can resolve. `null` when translation
-   * isn't possible (env unset, or `containerPath` outside the bind-mounted
-   * root).
+   * isn't possible (env unset, or `containerPath` outside any
+   * bind-mounted root).
    */
   readonly hostPath: string | null;
   /**
@@ -68,6 +115,13 @@ export interface HostPathTranslation {
    * `hostPath` is `null`, so callers can log it consistently.
    */
   readonly skippedReason?: string;
+  /**
+   * Which root the translation matched against, when it succeeded.
+   * `undefined` when `hostPath` is `null`. Exposed so callers / tests
+   * can distinguish projects-root hits from workspaces-root hits without
+   * re-running prefix checks.
+   */
+  readonly matchedRoot?: 'projects' | 'workspaces';
 }
 
 export interface TranslateContainerPathOptions {
@@ -82,6 +136,19 @@ export interface TranslateContainerPathOptions {
    * env var is set.
    */
   readonly containerProjectsDir?: string | null;
+  /**
+   * Override for the `AGENT_HUB_HOST_WORKSPACES_DIR` env var. Tests
+   * inject this so the helper can be exercised without mutating
+   * process env. Pass `null` (or leave unset) to disable workspaces-root
+   * translation.
+   */
+  readonly hostWorkspacesDir?: string | null;
+  /**
+   * Override for the `AGENT_HUB_CONTAINER_WORKSPACES_DIR` env var.
+   * Defaults to {@link DEFAULT_CONTAINER_WORKSPACES_DIR} when neither
+   * this nor the env var is set.
+   */
+  readonly containerWorkspacesDir?: string | null;
 }
 
 function trimTrailingSlash(p: string): string {
@@ -89,10 +156,48 @@ function trimTrailingSlash(p: string): string {
   return p;
 }
 
+interface RootPair {
+  readonly containerRoot: string;
+  readonly hostRoot: string;
+  readonly label: 'projects' | 'workspaces';
+}
+
+/**
+ * Try translating `input` against a single (containerRoot -> hostRoot)
+ * pair. Returns `null` when the input doesn't live under
+ * `containerRoot`. The longest-matching pair must be chosen by the
+ * caller — this helper does no prioritisation.
+ */
+function tryTranslateWithRoot(input: string, pair: RootPair): string | null {
+  if (input === pair.containerRoot) return pair.hostRoot;
+  const containerRootWithSlash = `${pair.containerRoot}/`;
+  if (!input.startsWith(containerRootWithSlash)) return null;
+  const suffix = input.slice(pair.containerRoot.length);
+  return `${pair.hostRoot}${suffix}`;
+}
+
+function resolveRootPair(
+  label: 'projects' | 'workspaces',
+  hostDirRaw: string | null | undefined,
+  containerDirRaw: string | null | undefined,
+  containerDefault: string,
+): RootPair | null {
+  if (!hostDirRaw || !hostDirRaw.trim()) return null;
+  const containerRoot = trimTrailingSlash((containerDirRaw ?? containerDefault).trim());
+  const hostRoot = trimTrailingSlash(hostDirRaw.trim());
+  if (!containerRoot) return null;
+  return { containerRoot, hostRoot, label };
+}
+
 /**
  * Translate a container-visible path to the equivalent host path the
  * docker daemon would see. Returns `{ hostPath: null, skippedReason }`
  * when translation isn't possible — never throws.
+ *
+ * Resolution order: tries the projects root first, then the workspaces
+ * root. The longest matching prefix wins on a tie (defensive — the two
+ * roots are disjoint in the production layout but custom env-var
+ * overrides could in principle make them overlap).
  */
 export function translateContainerPathToHost(
   containerPath: string,
@@ -111,40 +216,61 @@ export function translateContainerPathToHost(
     options.hostProjectsDir !== undefined
       ? options.hostProjectsDir
       : (process.env.AGENT_HUB_HOST_PROJECTS_DIR ?? null);
-  if (!hostProjectsDirRaw || !hostProjectsDirRaw.trim()) {
-    return {
-      containerPath,
-      hostPath: null,
-      skippedReason: 'AGENT_HUB_HOST_PROJECTS_DIR is unset',
-    };
-  }
-
   const containerProjectsDirRaw =
     options.containerProjectsDir !== undefined
       ? options.containerProjectsDir
-      : (process.env.AGENT_HUB_CONTAINER_PROJECTS_DIR ?? DEFAULT_CONTAINER_PROJECTS_DIR);
-  const containerRoot = trimTrailingSlash((containerProjectsDirRaw ?? '').trim());
-  const hostRoot = trimTrailingSlash(hostProjectsDirRaw.trim());
-  if (!containerRoot) {
+      : (process.env.AGENT_HUB_CONTAINER_PROJECTS_DIR ?? null);
+
+  const hostWorkspacesDirRaw =
+    options.hostWorkspacesDir !== undefined
+      ? options.hostWorkspacesDir
+      : (process.env.AGENT_HUB_HOST_WORKSPACES_DIR ?? null);
+  const containerWorkspacesDirRaw =
+    options.containerWorkspacesDir !== undefined
+      ? options.containerWorkspacesDir
+      : (process.env.AGENT_HUB_CONTAINER_WORKSPACES_DIR ?? null);
+
+  const projectsPair = resolveRootPair(
+    'projects',
+    hostProjectsDirRaw,
+    containerProjectsDirRaw,
+    DEFAULT_CONTAINER_PROJECTS_DIR,
+  );
+  const workspacesPair = resolveRootPair(
+    'workspaces',
+    hostWorkspacesDirRaw,
+    containerWorkspacesDirRaw,
+    DEFAULT_CONTAINER_WORKSPACES_DIR,
+  );
+
+  if (!projectsPair && !workspacesPair) {
     return {
       containerPath,
       hostPath: null,
-      skippedReason: 'container projects dir resolves to empty string',
+      skippedReason:
+        'no host root configured (set AGENT_HUB_HOST_PROJECTS_DIR or AGENT_HUB_HOST_WORKSPACES_DIR)',
     };
   }
 
   const normalisedInput = trimTrailingSlash(trimmedInput);
-  if (normalisedInput === containerRoot) {
-    return { containerPath, hostPath: hostRoot };
+  const candidates: RootPair[] = [];
+  if (projectsPair) candidates.push(projectsPair);
+  if (workspacesPair) candidates.push(workspacesPair);
+  // Longest-prefix wins on overlap. Stable across env-var swaps.
+  candidates.sort((a, b) => b.containerRoot.length - a.containerRoot.length);
+
+  for (const pair of candidates) {
+    const hostPath = tryTranslateWithRoot(normalisedInput, pair);
+    if (hostPath !== null) {
+      return { containerPath, hostPath, matchedRoot: pair.label };
+    }
   }
-  const containerRootWithSlash = `${containerRoot}/`;
-  if (!normalisedInput.startsWith(containerRootWithSlash)) {
-    return {
-      containerPath,
-      hostPath: null,
-      skippedReason: `path is outside the bind-mounted projects root (expected prefix ${containerRoot})`,
-    };
-  }
-  const suffix = normalisedInput.slice(containerRoot.length);
-  return { containerPath, hostPath: `${hostRoot}${suffix}` };
+
+  const triedLabels = candidates.map((c) => c.label).join(' or ');
+  const triedRoots = candidates.map((c) => c.containerRoot).join(', ');
+  return {
+    containerPath,
+    hostPath: null,
+    skippedReason: `path is outside the bind-mounted ${triedLabels} root (expected prefix one of: ${triedRoots})`,
+  };
 }
