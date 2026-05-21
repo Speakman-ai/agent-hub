@@ -298,6 +298,68 @@ describe('buildComposeDownArgs', () => {
   });
 });
 
+describe('buildCompose*Args --project-directory injection', () => {
+  // Local installs (CLI + daemon on same host) must NOT see the new
+  // flag — compose-go's default WorkingDir (parent of -f) is what makes
+  // bind mounts resolve correctly. Only the EC2 docker-in-docker case,
+  // where the host-path translation succeeded, needs the override.
+
+  it('omits --project-directory when projectDirectory is undefined (local dev)', () => {
+    const upArgs = buildComposeUpArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+    });
+    expect(upArgs).not.toContain('--project-directory');
+    const downArgs = buildComposeDownArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+    });
+    expect(downArgs).not.toContain('--project-directory');
+  });
+
+  it('omits --project-directory when projectDirectory is null', () => {
+    const upArgs = buildComposeUpArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+      projectDirectory: null,
+    });
+    expect(upArgs).not.toContain('--project-directory');
+    const downArgs = buildComposeDownArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+      projectDirectory: null,
+    });
+    expect(downArgs).not.toContain('--project-directory');
+  });
+
+  it('injects --project-directory before the subcommand on up (EC2 docker-in-docker case)', () => {
+    const args = buildComposeUpArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+      projectDirectory: '/var/lib/agent-hub/projects/foo',
+    });
+    expect(args).toContain('--project-directory');
+    const pdIdx = args.indexOf('--project-directory');
+    expect(args[pdIdx + 1]).toBe('/var/lib/agent-hub/projects/foo');
+    // --project-directory is a global flag — must come before the
+    // subcommand to be parsed correctly.
+    const upIdx = args.indexOf('up');
+    expect(pdIdx).toBeLessThan(upIdx);
+  });
+
+  it('injects --project-directory before the subcommand on down so teardown mirrors up', () => {
+    const args = buildComposeDownArgs({
+      composeProjectName: 'p',
+      composeFile: 'f.yml',
+      projectDirectory: '/var/lib/agent-hub/projects/foo',
+    });
+    expect(args).toContain('--project-directory');
+    const pdIdx = args.indexOf('--project-directory');
+    const downIdx = args.indexOf('down');
+    expect(pdIdx).toBeLessThan(downIdx);
+  });
+});
+
 describe('resolveComposeConfig', () => {
   it('fills defaults for the optional fields', () => {
     const cfg = resolveComposeConfig(

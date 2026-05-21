@@ -70,6 +70,7 @@ import {
 } from './preview-schema.js';
 import type { PreviewComposeConfig, PrEnvPreviewConfig, Project } from '../types.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { translateContainerPathToHost } from './host-path-translation.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -269,8 +270,20 @@ export function buildComposeUpArgs(opts: {
   composeFile: string;
   overrideFile?: string | null;
   envFile?: string;
+  /**
+   * When set, emits `--project-directory <projectDirectory>` so compose-go
+   * resolves relative bind-mount sources against that path before sending
+   * absolute paths to the docker daemon. Required when the docker daemon
+   * runs on the host but the compose CLI runs inside a container — see
+   * {@link translateContainerPathToHost}.
+   */
+  projectDirectory?: string | null;
 }): string[] {
-  const args: string[] = ['compose', '-p', opts.composeProjectName, '-f', opts.composeFile];
+  const args: string[] = ['compose', '-p', opts.composeProjectName];
+  if (opts.projectDirectory) {
+    args.push('--project-directory', opts.projectDirectory);
+  }
+  args.push('-f', opts.composeFile);
   if (opts.overrideFile) {
     args.push('-f', opts.overrideFile);
   }
@@ -297,8 +310,14 @@ export function buildComposeDownArgs(opts: {
   composeProjectName: string;
   composeFile: string;
   overrideFile?: string | null;
+  /** See {@link buildComposeUpArgs}. */
+  projectDirectory?: string | null;
 }): string[] {
-  const args: string[] = ['compose', '-p', opts.composeProjectName, '-f', opts.composeFile];
+  const args: string[] = ['compose', '-p', opts.composeProjectName];
+  if (opts.projectDirectory) {
+    args.push('--project-directory', opts.projectDirectory);
+  }
+  args.push('-f', opts.composeFile);
   if (opts.overrideFile) {
     args.push('-f', opts.overrideFile);
   }
@@ -542,6 +561,24 @@ export class PreviewComposeRuntime {
         .run(overrideFilePath, groupId);
     }
 
+    // When the server runs in a container with /var/run/docker.sock
+    // bind-mounted in, the docker daemon resolves bind-mount paths on
+    // the HOST filesystem — not the container's. Without a
+    // `--project-directory` override compose-go resolves relative paths
+    // (e.g. `./frontend:/app`) against the container path of the
+    // compose file, ships those container-rooted absolute paths to the
+    // daemon, and the daemon mounts empty directories. Translate the
+    // container `worktreePath` to its host equivalent and pass it
+    // through as `--project-directory` so the daemon sees real source.
+    const hostProjectDirectoryUp = translateContainerPathToHost(worktreePath);
+    if (hostProjectDirectoryUp.hostPath === null && process.env.AGENT_HUB_HOST_PROJECTS_DIR) {
+      this.logger.warn(
+        `[preview-compose ${groupId}] could not translate worktreePath to host path ` +
+          `(${hostProjectDirectoryUp.skippedReason ?? 'unknown'}); ` +
+          `relative bind-mounts in ${cfg.file} may resolve to empty dirs on the daemon side`,
+      );
+    }
+
     // Spawn `docker compose up -d --build`. The CLI returns immediately
     // once the containers are dispatched; the health check below is
     // what actually decides "ready". The spawn is best-effort — if
@@ -552,6 +589,7 @@ export class PreviewComposeRuntime {
       composeFile: cfg.file,
       overrideFile: overrideFilePath,
       envFile: cfg.envFile,
+      projectDirectory: hostProjectDirectoryUp.hostPath,
     });
 
     // Compose's HOST_PORT override for the entry service is conveyed
@@ -682,10 +720,18 @@ export class PreviewComposeRuntime {
     // the worktree_path / compose_file columns — null guards make this
     // defensible even though startPreview always persists both now.
     const composeFile = row.compose_file ?? this.defaultComposeFile;
+    // Mirror the up call's `--project-directory` so compose-go resolves
+    // relative bind mounts against the same base on tear-down. Without
+    // this, `down` may pick a different working dir (parent of `-f`)
+    // and emit "no such file" warnings against bind-mounted volumes.
+    const hostProjectDirectoryDown = row.worktree_path
+      ? translateContainerPathToHost(row.worktree_path)
+      : { containerPath: '', hostPath: null as string | null };
     const downArgs = buildComposeDownArgs({
       composeProjectName: row.compose_project_name,
       composeFile,
       overrideFile: row.override_file_path,
+      projectDirectory: hostProjectDirectoryDown.hostPath,
     });
     const downEnv: NodeJS.ProcessEnv = {
       ...process.env,

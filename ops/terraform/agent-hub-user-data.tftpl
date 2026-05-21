@@ -219,6 +219,7 @@ exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
+  -e "AGENT_HUB_HOST_PROJECTS_DIR=\$DATA_ROOT/projects" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT
@@ -340,6 +341,7 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
   -p ${app_port}:3051 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
   -v "$DATA_ROOT/projects:/home/node/projects" \
+  -e "AGENT_HUB_HOST_PROJECTS_DIR=$DATA_ROOT/projects" \
   --env-file "$REPO_DIR/.env" \
   agenthub:local
 %{ endif ~}
