@@ -156,6 +156,36 @@ export interface PreviewComposeRuntimeConfig {
   /** Cadence for the health-check loop. Default 1000. */
   healthIntervalMs?: number;
   /**
+   * Upper bound on how long a new `startPreview` call will wait on the
+   * per-session lock before assuming the prior call wedged and proceeding.
+   *
+   * `withSessionLock` previously chained promises through an in-memory
+   * `Map<sessionId, Promise>` with no TTL. If a prior `_startPreview` ever
+   * returned a promise that never settled — an undelivered `child.on('error')`,
+   * a `docker compose down` hung inside `stopPreview(existing.id)`, an
+   * unhandled rejection swallowed by the global hook — every subsequent
+   * `startPreview` for the same sessionId queued behind a dead promise and
+   * blocked **forever**, only clearing on server restart.
+   *
+   * The build-test endpoint reuses a single hardcoded sessionId
+   * (`__preview_build_test__<projectId>`) so the wedge was particularly
+   * easy to hit in Settings → Preview environment → Build and run:
+   * one stuck build permanently bricked the button.
+   *
+   * Bound the wait so a wedged prior call can't deadlock new calls. When
+   * the budget elapses we log a warning, drop the dead entry, and let the
+   * new caller proceed. The default (120s) is comfortably larger than any
+   * legitimate single `_startPreview` — the longest sub-call is
+   * `stopPreview` (30s daemon timeout) plus the synchronous DB / fs work,
+   * well under 120s.
+   *
+   * Tests inject the runtime's `Clock`, which `withSessionLock` uses for
+   * the timeout via `clock.sleep`. Production wires the system clock.
+   *
+   * Default: 120_000 ms (2 min).
+   */
+  sessionLockTimeoutMs?: number;
+  /**
    * Hostname stem for the iframe URL. Defaults to `http://localhost:<port>`.
    * Override for nginx-fronted installs.
    */
@@ -204,6 +234,14 @@ export interface PreviewComposeRuntimeDeps {
 
 const DEFAULT_READY_TIMEOUT_MS = 300_000; // 5 min — cold-build budget.
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
+/**
+ * Hard cap on how long `withSessionLock` will wait on a prior call. Two
+ * minutes is wider than any legitimate single `_startPreview` (which is
+ * dominated by `stopPreview`'s 30s docker-down timeout + synchronous DB
+ * / fs work), and narrow enough that a wedged prior call self-clears in
+ * a few minutes rather than only on server restart.
+ */
+const DEFAULT_SESSION_LOCK_TIMEOUT_MS = 120_000;
 const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
 const DEFAULT_HEALTH_PATH = '/';
 const ENTRY_PROCESS_NAME = 'entry';
@@ -430,6 +468,7 @@ export class PreviewComposeRuntime {
   private readonly portRange: PortRange;
   private readonly readyTimeoutMs: number;
   private readonly healthIntervalMs: number;
+  private readonly sessionLockTimeoutMs: number;
   private readonly urlBase: (port: number) => string;
   private readonly defaultComposeFile: string;
   private readonly defaultHealthPath: string;
@@ -448,6 +487,8 @@ export class PreviewComposeRuntime {
     this.portRange = deps.config?.portRange ?? DEFAULT_PREVIEW_PORT_RANGE;
     this.readyTimeoutMs = deps.config?.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.healthIntervalMs = deps.config?.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
+    this.sessionLockTimeoutMs =
+      deps.config?.sessionLockTimeoutMs ?? DEFAULT_SESSION_LOCK_TIMEOUT_MS;
     this.urlBase = deps.config?.urlBase ?? ((p) => `http://localhost:${p}`);
     this.defaultComposeFile = deps.config?.defaultComposeFile ?? DEFAULT_COMPOSE_FILE;
     this.defaultHealthPath = deps.config?.defaultHealthPath ?? DEFAULT_HEALTH_PATH;
@@ -648,6 +689,19 @@ export class PreviewComposeRuntime {
       overwriteExisting: true,
     });
 
+    // Explicit "we got this far" log line so an operator chasing a
+    // hang can distinguish "spawn was never attempted" (entry missing
+    // here) from "spawn ran but the daemon stalled" (entry present,
+    // no `ready`/`failed` flip, no `docker compose up errored`
+    // follow-up). Without this, the previous gap between
+    // "override file written" and the `child.on('error')` handler
+    // — which only fires when `spawn` itself throws asynchronously —
+    // left the failure mode ambiguous.
+    this.logger.log(
+      `[preview-compose ${groupId}] spawning \`docker compose up\` for project ` +
+        `${projectName} (cwd=${worktreePath}, host_port=${port}, override_file=` +
+        `${overrideFilePath ?? 'none'})`,
+    );
     try {
       const child = this.spawn('docker', upArgs, {
         cwd: worktreePath,
@@ -1250,11 +1304,57 @@ export class PreviewComposeRuntime {
    * Per-session serialization — same shape as PreviewRuntime so two
    * concurrent `startPreview` calls for the same session don't both
    * race past `getActiveBySessionId`.
+   *
+   * **Wedge protection (issue surfaced by Settings → Build and run):**
+   * a prior `_startPreview` that never resolves (undelivered
+   * `child.on('error')`, hung `docker compose down` inside the early
+   * `stopPreview(existing.id)`, swallowed rejection) used to permanently
+   * block every subsequent call for the same sessionId — the chained
+   * `prior.then(() => fn())` would never tick. The build-test endpoint
+   * reuses a single hardcoded sessionId per project, so one wedge bricked
+   * the Build button until server restart.
+   *
+   * Now: bound the wait on `prior` to `sessionLockTimeoutMs`. On timeout,
+   * log a warning, drop the dead entry, and run `fn()` anyway. The
+   * trade-off is conscious — we give up strict serialization with a
+   * presumed-dead prior in exchange for forward progress. Setting the
+   * timeout safely above any legitimate `_startPreview` duration (default
+   * 120s) keeps real overlapping calls serialized while breaking only
+   * the deadlocks they could otherwise produce.
    */
   private async withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-    const prior = this.sessionLocks.get(sessionId) ?? Promise.resolve();
-    const settled = prior.catch(() => {});
-    const next = settled.then(() => fn());
+    const prior = this.sessionLocks.get(sessionId);
+    if (prior) {
+      // Race the prior promise against a sleep-based deadline. A symbol
+      // sentinel keeps the two branches type-safe even when `prior` is
+      // typed `Promise<unknown>` and the eventual value of `prior` is
+      // irrelevant — we only care whether it settled in time.
+      const TIMEOUT_SENTINEL: unique symbol = Symbol('preview-compose lock timeout');
+      type RaceResult = 'settled' | typeof TIMEOUT_SENTINEL;
+      const priorSettled: Promise<RaceResult> = prior.then(
+        () => 'settled' as const,
+        () => 'settled' as const,
+      );
+      const timeout: Promise<RaceResult> = this.clock
+        .sleep(this.sessionLockTimeoutMs)
+        .then(() => TIMEOUT_SENTINEL);
+      const outcome = await Promise.race([priorSettled, timeout]);
+      if (outcome === TIMEOUT_SENTINEL && this.sessionLocks.get(sessionId) === prior) {
+        // Prior call did not settle inside the budget — assume it's
+        // wedged and orphan its entry so we don't keep chaining off a
+        // dead promise. Subsequent overwrites are still atomic via the
+        // `set` below, so a slow-but-not-dead prior that revives later
+        // will simply complete on its own without re-acquiring the slot.
+        this.logger.warn(
+          `[preview-compose] withSessionLock(${sessionId}) prior call did not settle ` +
+            `within ${this.sessionLockTimeoutMs}ms; evicting and proceeding. ` +
+            `Likely cause: a previous _startPreview never resolved (hung docker compose ` +
+            `down inside stopPreview, undelivered spawn error, swallowed rejection).`,
+        );
+        this.sessionLocks.delete(sessionId);
+      }
+    }
+    const next = fn();
     const nextSettled = next.catch(() => {});
     this.sessionLocks.set(sessionId, nextSettled);
     try {

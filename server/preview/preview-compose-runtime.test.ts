@@ -1277,6 +1277,147 @@ describe('PreviewComposeRuntime — replace-on-restart', () => {
   });
 });
 
+// ─── Session-lock wedge protection ─────────────────────────────────────
+
+describe('PreviewComposeRuntime.withSessionLock — wedge protection', () => {
+  // A prior `_startPreview` that never resolves used to permanently
+  // block every subsequent call for the same sessionId. The build-test
+  // endpoint reuses one hardcoded sessionId per project, so a single
+  // wedge bricked Settings → Build and run until server restart. The
+  // runtime now bounds the wait via `sessionLockTimeoutMs`.
+
+  it('evicts a wedged prior lock entry after sessionLockTimeoutMs and lets the new call proceed', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const warnings: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: {
+        readyTimeoutMs: 60_000,
+        healthIntervalMs: 10_000,
+        sessionLockTimeoutMs: 1_000,
+      },
+      logger: {
+        log: () => {},
+        warn: (m) => warnings.push(m),
+        error: () => {},
+      },
+    });
+
+    // Inject a never-resolving promise as the "prior" lock entry. This
+    // simulates the production wedge mode: an earlier `_startPreview`
+    // (or its descendants) returned a promise that never settles.
+    const sessionId = '__preview_build_test__proj-1';
+    const locks = (runtime as unknown as { sessionLocks: Map<string, Promise<unknown>> })
+      .sessionLocks;
+    const wedged = new Promise(() => {}); // never resolves, never rejects
+    locks.set(sessionId, wedged);
+
+    // Kick off a new startPreview. It will race the prior entry against
+    // the 1000ms timeout — we drive the clock past the timeout, the
+    // race resolves with the timeout sentinel, the dead entry is
+    // evicted, and the new call proceeds to spawn.
+    const startPromise = runtime.startPreview(sessionId, makeProject(), '/wt/sess-stuck');
+    await flushMicrotasks();
+    // Before the deadline: no spawn yet, lock is still the wedged entry.
+    expect(harness.calls).toHaveLength(0);
+    expect(locks.get(sessionId)).toBe(wedged);
+    clock.advance(1_000);
+    const result = await startPromise;
+
+    expect(result.previewId).toBeTruthy();
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls[0].args).toContain('up');
+    // The eviction is loud — operators need a single log line that
+    // points at the wedge, not a silent unblock.
+    expect(warnings.some((w) => /did not settle within 1000ms/.test(w))).toBe(true);
+    expect(warnings.some((w) => /evicting and proceeding/.test(w))).toBe(true);
+    // After the new call's _startPreview returns, the lock map either
+    // holds the new call's settled-tracker or has cleared the entry —
+    // crucially, the wedged promise is no longer in residence.
+    expect(locks.get(sessionId)).not.toBe(wedged);
+  });
+
+  it('keeps strict serialization when the prior call settles inside the budget', async () => {
+    // Sanity check: the wedge protection must NOT shortcut a legitimate
+    // back-to-back call. A second startPreview that arrives while a
+    // real first one is still in flight should still wait for it.
+    const db = freshDb();
+    const harness = makeSpawn({ exitImmediately: true });
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: {
+        readyTimeoutMs: 1_000,
+        healthIntervalMs: 10_000,
+        sessionLockTimeoutMs: 60_000,
+      },
+    });
+
+    const first = await runtime.startPreview('sess-serial', makeProject(), '/wt/a');
+    const second = await runtime.startPreview('sess-serial', makeProject(), '/wt/b');
+
+    // Same replace-on-restart contract as the existing test: the
+    // second call tore down the first (up → down → up sequence).
+    expect(first.previewId).not.toBe(second.previewId);
+    const verbs = harness.calls.map((c) => `${c.command}:${c.args.slice(-3).join(' ')}`);
+    expect(verbs[0]).toMatch(/^docker:up -d --build$/);
+    expect(verbs[1]).toMatch(/^docker:down -v --remove-orphans$/);
+    expect(verbs[2]).toMatch(/^docker:up -d --build$/);
+  });
+});
+
+// ─── Spawn observability ───────────────────────────────────────────────
+
+describe('PreviewComposeRuntime._startPreview — spawn log line', () => {
+  // Operators chasing the build-endpoint hang need a log line that
+  // proves whether `this.spawn('docker', …)` was attempted. Previously
+  // the gap between "override file written" and `child.on('error')`
+  // (which only fires when spawn throws asynchronously) left the
+  // failure mode ambiguous.
+
+  it('emits a log line naming the compose project before each spawn', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const logs: Array<{ stream: 'log' | 'warn'; msg: string; spawnsBefore: number }> = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      logger: {
+        log: (m) => logs.push({ stream: 'log', msg: m, spawnsBefore: harness.calls.length }),
+        warn: (m) => logs.push({ stream: 'warn', msg: m, spawnsBefore: harness.calls.length }),
+        error: () => {},
+      },
+    });
+
+    const result = await runtime.startPreview('sess-log', makeProject(), '/wt/log');
+    const spawnLine = logs.find((entry) => /spawning .*docker compose up/i.test(entry.msg));
+    expect(spawnLine).toBeDefined();
+    // The log line must precede the spawn — that's the whole point of
+    // the diagnostic. If it lands after the spawn, an operator reading
+    // logs after a wedge still can't tell whether spawn was attempted.
+    expect(spawnLine!.spawnsBefore).toBe(0);
+    // Identifying detail so the line is searchable in a noisy log.
+    expect(spawnLine!.msg).toContain('agenthub-session-sess-log');
+    expect(spawnLine!.msg).toContain('/wt/log');
+    expect(spawnLine!.msg).toContain(String(result.port));
+  });
+});
+
 // ─── systemClock smoke test ────────────────────────────────────────────
 
 describe('systemClock', () => {
