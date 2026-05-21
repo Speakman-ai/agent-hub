@@ -182,6 +182,37 @@ export function revokeApiKey(userId: string, keyId: string): boolean {
 }
 
 /**
+ * Revoke every active key owned by `userId` with the exact `name`.
+ * Returns how many rows were updated (0 when none matched).
+ */
+export function revokeApiKeysByName(userId: string, name: string): number {
+  const trimmedName = name.trim();
+  if (trimmedName.length === 0) return 0;
+  const db = getOrgsDb();
+  const result = db
+    .prepare(
+      `UPDATE api_keys SET revoked_at = datetime('now')
+       WHERE user_id = ? AND name = ? AND revoked_at IS NULL`,
+    )
+    .run(userId, trimmedName);
+  return result.changes;
+}
+
+/** Revoke active `spawn:<sessionId>` keys (any owner). Used on session purge. */
+export function revokeApiKeysBySpawnSession(sessionId: string): number {
+  const trimmedId = sessionId.trim();
+  if (trimmedId.length === 0) return 0;
+  const db = getOrgsDb();
+  const result = db
+    .prepare(
+      `UPDATE api_keys SET revoked_at = datetime('now')
+       WHERE name = ? AND revoked_at IS NULL`,
+    )
+    .run(`spawn:${trimmedId}`);
+  return result.changes;
+}
+
+/**
  * Verify a presented token and, on success, return the owning user id.
  *
  *   - Returns null for malformed strings, unknown prefixes, expired keys,

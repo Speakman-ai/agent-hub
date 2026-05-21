@@ -47,10 +47,10 @@ export interface ResolveSessionCliSpawnEnvOpts {
   ownerId: string | null;
   credsOwnerId: string | null;
   /**
-   * Owning session id, only used for `TOOL_ERROR` observability when the
-   * per-user CLI auth lookup throws. Pre-extraction the equivalent block in
-   * `server/chat.ts` emitted the structured log line — keep that signal so
-   * silent fallbacks to host config are still visible in operator logs.
+   * Owning session id. Passed to `buildSpawnEnv` for per-session spawn-creds
+   * minting when the deployment has no global `cfg.apiKey`. Also included in
+   * `TOOL_ERROR` metadata when the per-user CLI auth lookup throws so silent
+   * fallbacks to host config remain visible in operator logs.
    */
   sessionId?: string | null;
 }
@@ -106,7 +106,13 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
   const homeUserId =
     ownerId ??
     (credsOwnerId && userHasPerUserCliIdentity(credsOwnerId, cfg.dataDir) ? credsOwnerId : null);
-  const buildOpts: BuildSpawnEnvOptions = { userOverride, userId: homeUserId };
+  const spawnCredsUserId = credsOwnerId ?? ownerId;
+  const buildOpts: BuildSpawnEnvOptions = {
+    userOverride,
+    userId: homeUserId,
+    sessionId: sessionId ?? null,
+    spawnCredsUserId,
+  };
   return buildSpawnEnv(cfg, buildOpts);
 }
 

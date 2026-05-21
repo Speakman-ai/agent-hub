@@ -21,10 +21,10 @@
  * the credential a runtime lookup instead of a frozen env capture, so
  * the next tool call after the file is written succeeds.
  *
- * Trigger points (W1):
- *   - `/api/auth/setup` writes a freshly-minted `ahub_*` token for every
- *     session whose owner_user_id is null or matches the new Owner.
- *   - Future spawns should also write here (W2 follow-up).
+ * Trigger points:
+ *   - `/api/auth/setup` recovery (`spawn-creds-setup-recovery.ts`, W1).
+ *   - Every `buildSpawnEnv` call with `sessionId` + `spawnCredsUserId` when
+ *     the deployment has no global `cfg.apiKey` (W2, `spawn-creds-mint.ts`).
  *
  * ## Security
  *

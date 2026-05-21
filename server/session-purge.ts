@@ -34,6 +34,8 @@ import {
 } from './worktree.js';
 import { getProjects as defaultGetProjects } from './project-model.js';
 import { pruneOrphanSessionEvents } from './session-events-store.js';
+import { cleanupSpawnCredsForSession } from './spawn-creds-mint.js';
+import config from './config.js';
 import type { Project, Stmts } from './types.js';
 import type Database from 'better-sqlite3';
 
@@ -104,6 +106,7 @@ export function purgeExpiredArchivedSessions(deps: PurgeDeps = defaultDeps()): P
     try {
       stmts.deleteSession.run(row.id);
       rowsDeleted++;
+      cleanupSpawnCredsForSession(row.id, config.dataDir);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Purge] deleteSession(${row.id}) failed:`, message);

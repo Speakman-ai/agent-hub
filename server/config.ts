@@ -12,6 +12,7 @@ import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
 } from './per-user-codex-device-login.js';
+import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -445,6 +446,18 @@ export interface BuildSpawnEnvOptions {
   /** Per-user override; takes precedence over `cfg` for the matching fields. */
   userOverride?: SpawnEnvOverride | null;
   /**
+   * Chat session id. When set (with `spawnCredsUserId` or `userId`) and the
+   * deployment has no global `cfg.apiKey`, mints a per-session `ahub_*` token
+   * into `<dataDir>/spawn-creds/<sessionId>.token` for `ah-api.sh`.
+   */
+  sessionId?: string | null;
+  /**
+   * User id for spawn-creds minting. Defaults to `userId` when omitted.
+   * Chat passes `credsOwnerId ?? ownerId` so reviewer sessions (NULL owner)
+   * still get org-owner API access without stamping session ownership.
+   */
+  spawnCredsUserId?: string | null;
+  /**
    * Owning user id. When set, the spawn runs with HOME pinned to
    * `<dataDir>/per-user-creds/<userId>/home` so CLI engines that
    * authenticate via HOME (`cursor-agent`, `codex`, Gemini OAuth) write
@@ -623,6 +636,12 @@ export function buildSpawnEnv(
     } catch {
       /* fall through to process.env.HOME */
     }
+  }
+
+  const sessionId = presentString(opts.sessionId);
+  const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
+  if (sessionId && spawnCredsUserId) {
+    ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
   }
 
   return env;
