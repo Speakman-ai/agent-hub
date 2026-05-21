@@ -6,6 +6,7 @@ import {
   relativePrTime,
   diffSummary,
   prStateBadge,
+  linkedPrDisplayStatus,
   summarizeChecks,
   checksBadge,
   summarizeReviews,
@@ -148,6 +149,54 @@ describe('prStateBadge', () => {
 
   it('handles null', () => {
     expect(prStateBadge(null).label).toBe('unknown');
+  });
+});
+
+describe('linkedPrDisplayStatus', () => {
+  it('returns Merged when merged_at is set', () => {
+    expect(
+      linkedPrDisplayStatus({ pr: { merged_at: '2026-05-01T00:00:00Z', state: 'closed' } }),
+    ).toMatchObject({ key: 'merged', label: 'Merged' });
+  });
+
+  it('returns Has conflicts when mergeable is false', () => {
+    expect(linkedPrDisplayStatus({ pr: { state: 'open', mergeable: false } })).toMatchObject({
+      key: 'conflicts',
+      label: 'Has conflicts',
+    });
+  });
+
+  it('returns Closed for closed unmerged PRs', () => {
+    expect(linkedPrDisplayStatus({ pr: { state: 'closed', merged_at: null } })).toMatchObject({
+      key: 'closed',
+      label: 'Closed',
+    });
+  });
+
+  it('returns Pending revisions from card review_status', () => {
+    expect(
+      linkedPrDisplayStatus({
+        pr: { state: 'open' },
+        linkedCardReviewStatus: 'changes_requested',
+      }),
+    ).toMatchObject({ key: 'pending_revisions', label: 'Pending revisions' });
+  });
+
+  it('returns Pending review from REVIEW_REQUIRED', () => {
+    expect(
+      linkedPrDisplayStatus({
+        pr: { state: 'open', review_decision: 'REVIEW_REQUIRED' },
+      }),
+    ).toMatchObject({ key: 'pending_review', label: 'Pending review' });
+  });
+
+  it('returns Pending review for awaiting_review on the card', () => {
+    expect(
+      linkedPrDisplayStatus({
+        pr: { state: 'open' },
+        linkedCardReviewStatus: 'awaiting_review',
+      }),
+    ).toMatchObject({ key: 'pending_review', label: 'Pending review' });
   });
 });
 

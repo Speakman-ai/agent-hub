@@ -3,9 +3,8 @@
 // <agenthub:skill> protocol says the session sidebar must dedupe by stable
 // skill id so that hot-reloads / repeat loads don't pile up duplicate rows.
 //
-// Accepts rows in either snake_case (server -> SkillInvocationsPanel:
-// `{skill_id, created_at}`) or camelCase (server -> SessionSummarySidebar:
-// `{skillId, createdAt}`). Unknown shapes fall through unchanged so callers
+// Accepts rows in either snake_case (`{skill_id, created_at}`) or camelCase
+// (`{skillId, createdAt}`). Unknown shapes fall through unchanged so callers
 // can keep using `.id` as a React key when needed.
 export function dedupeSkillInvocations(rows) {
   if (!Array.isArray(rows)) return [];

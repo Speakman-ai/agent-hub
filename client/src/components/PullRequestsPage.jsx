@@ -658,6 +658,8 @@ export default function PullRequestsPage({
   onToast,
   /** Bumped from App when GitHub/kanban activity should re-sync the open PR list. */
   listRefreshNonce = 0,
+  /** When set, opens this PR's detail view on mount (e.g. from session summary). */
+  initialPrNumber = null,
 }) {
   const [state, setState] = useState('open');
   const [pulls, setPulls] = useState([]);
@@ -767,6 +769,15 @@ export default function PullRequestsPage({
     },
     [projectId],
   );
+
+  useEffect(() => {
+    if (initialPrNumber == null || !projectId) return;
+    const n = Number.parseInt(String(initialPrNumber), 10);
+    if (!Number.isFinite(n) || n < 1) return;
+    setSelectedNumber(n);
+    setDetail(null);
+    loadDetail(n);
+  }, [initialPrNumber, projectId, loadDetail]);
 
   const handleSelect = (pr) => {
     setSelectedNumber(pr.number);

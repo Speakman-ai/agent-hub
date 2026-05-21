@@ -101,7 +101,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       // Empty messages list — drives the empty-state branch.
       getMessages: vi.fn().mockResolvedValue([]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
-      getSessionSkillInvocations: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),
     },
   };

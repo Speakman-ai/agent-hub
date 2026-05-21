@@ -21,7 +21,6 @@ import {
   clearSessionPreviewStorage,
   previewIdFromEvent,
 } from './utils/sessionPreviewState.js';
-import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
 import {
@@ -125,7 +124,6 @@ export default function App() {
   // source session — used by HandoffCard to render an "Open session" link.
   const [sessionHandoffs, setSessionHandoffs] = useState([]);
   // Sub-lg viewports: inline skill list (the full summary panel is lg+ only).
-  const [sessionSkillInvocations, setSessionSkillInvocations] = useState([]);
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
@@ -237,6 +235,8 @@ export default function App() {
   const [capturesProjectId, setCapturesProjectId] = useState(null);
   // Pull Requests state
   const [pullsProjectId, setPullsProjectId] = useState(null);
+  /** Deep-link into Pull Requests detail (e.g. session summary linked PR). Cleared when leaving pulls view. */
+  const [pullsOpenPrNumber, setPullsOpenPrNumber] = useState(null);
   /** Bumped when the server signals PR/board activity for the open Pulls view — keeps GitHub list live without reload. */
   const [pullsListRefreshNonce, setPullsListRefreshNonce] = useState(0);
   /** Cleared when user opens the Workflows view — set by workflow WebSocket activity. */
@@ -2334,29 +2334,6 @@ export default function App() {
     };
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (!activeSessionId) {
-      setSessionSkillInvocations([]);
-      return;
-    }
-    let cancelled = false;
-    const load = () =>
-      api
-        .getSessionSkillInvocations(activeSessionId)
-        .then((rows) => {
-          if (!cancelled) setSessionSkillInvocations(Array.isArray(rows) ? rows : []);
-        })
-        .catch(() => {
-          if (!cancelled) setSessionSkillInvocations([]);
-        });
-    load();
-    const timer = setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [activeSessionId]);
-
   // Navigate into a handoff's target session (called from HandoffCard).
   const handleOpenHandoffSession = useCallback(
     (targetAgentId, targetSessionId) => {
@@ -3126,6 +3103,19 @@ export default function App() {
     setPullsProjectId(currentProjectId);
     setCurrentView('pulls');
   };
+
+  const handleOpenPrDetail = useCallback((projectId, prNumber) => {
+    const n = Number.parseInt(String(prNumber), 10);
+    if (!projectId || !Number.isFinite(n) || n < 1) return;
+    setPullsProjectId(projectId);
+    setPullsOpenPrNumber(n);
+    setCurrentView('pulls');
+    setSidebarOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (currentView !== 'pulls') setPullsOpenPrNumber(null);
+  }, [currentView]);
   const newConferenceRoom = () => {
     // MVP: prompt for name. A richer inline picker is tracked separately.
     const name =
@@ -3408,6 +3398,15 @@ export default function App() {
                 }
               />
 
+              {currentView === 'chat' && activeSessionId && (
+                <SessionSummarySidebar
+                  sessionId={activeSessionId}
+                  isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                  variant="top"
+                  onOpenPrDetail={handleOpenPrDetail}
+                />
+              )}
+
               {currentView.startsWith('kanban:') ? (
                 <KanbanBoard
                   projectId={currentView.split(':')[1]}
@@ -3516,6 +3515,7 @@ export default function App() {
                   projectId={pullsProjectId}
                   project={projects.find((p) => p.id === pullsProjectId)}
                   listRefreshNonce={pullsListRefreshNonce}
+                  initialPrNumber={pullsOpenPrNumber}
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
                 />
@@ -3602,114 +3602,155 @@ export default function App() {
                   }}
                 />
               ) : (
-                <div className="flex-1 flex flex-col lg:flex-row min-h-0 min-w-0 overflow-hidden">
-                  <div className="flex-1 flex flex-col min-w-0 min-h-0">
-                    {/* Messages */}
-                    <div
-                      ref={scrollContainerRef}
-                      onScroll={handleScrollEvent}
-                      className="flex-1 overflow-y-auto p-3 md:p-6 relative"
-                    >
-                      <div className="mx-auto" ref={messagesColumnRef}>
-                        {/* Cursor-style timed checklist — rendered at top of chat
+                <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+                  <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden lg:flex-row">
+                    <div className="flex-1 flex flex-col min-w-0 min-h-0">
+                      {/* Messages */}
+                      <div
+                        ref={scrollContainerRef}
+                        onScroll={handleScrollEvent}
+                        className="flex-1 overflow-y-auto p-3 md:p-6 relative"
+                      >
+                        <div className="mx-auto" ref={messagesColumnRef}>
+                          {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
-                        {orchestrationTimelineEntries.length > 0 && (
-                          <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
-                        )}
-                        {(sessionProgress[activeSessionId] || []).length > 0 && (
-                          <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
-                            <ProgressPanel
-                              steps={sessionProgress[activeSessionId]}
-                              sessionRunning={Boolean(
-                                streamingMsgId || activeTasks[activeSessionId],
-                              )}
-                            />
-                          </div>
-                        )}
-                        {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-                          <ReactLoopObservabilityPanel
-                            steps={reactLoopStepsBySession[activeSessionId]}
-                            streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                          />
-                        )}
-                        {messages.length === 0 && !thinking && !streamingContent && (
-                          <div
-                            className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
-                            data-testid={
-                              sessionMessagesLoading ? 'chat-messages-loading' : 'chat-empty-state'
-                            }
-                          >
-                            {sessionMessagesLoading ? (
-                              <>
-                                <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
-                                <p className="text-lg">Loading conversation</p>
-                                <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
-                              </>
-                            ) : (
-                              <>
-                                <MessageCircle size={40} className="mb-3 text-gray-600" />
-                                {sessionsListLoading && projectDataReady && activeAgent ? (
-                                  <>
-                                    <p className="text-lg">Loading conversation</p>
-                                    <p className="text-sm mt-1 text-gray-500">
-                                      Sessions are syncing…
-                                    </p>
-                                  </>
-                                ) : activeAgent ? (
-                                  <>
-                                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                      Chat
-                                    </p>
-                                    <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                      Talk to {activeAgent.name}
-                                    </h2>
-                                    <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                      This is a chat session with{' '}
-                                      <span className="text-gray-300">{activeAgent.name}</span>.
-                                      Type a message below to ask a question, hand off a task, or
-                                      pair on changes — replies stream in real time.
-                                    </p>
-                                  </>
-                                ) : (
-                                  <>
-                                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                      Chat
-                                    </p>
-                                    <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                      No agent selected
-                                    </h2>
-                                    <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                      Pick an agent from the sidebar to start a conversation, or
-                                      jump to the dashboard to see what&apos;s happening across your
-                                      projects.
-                                    </p>
-                                  </>
+                          {orchestrationTimelineEntries.length > 0 && (
+                            <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
+                          )}
+                          {(sessionProgress[activeSessionId] || []).length > 0 && (
+                            <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                              <ProgressPanel
+                                steps={sessionProgress[activeSessionId]}
+                                sessionRunning={Boolean(
+                                  streamingMsgId || activeTasks[activeSessionId],
                                 )}
-                              </>
-                            )}
-                            <p className="text-xs text-gray-700 mt-5 hidden sm:block">
-                              Ctrl+K to switch agents · Esc to cancel
-                            </p>
-                          </div>
-                        )}
-                        {(() => {
-                          const queuedIds = new Set(
-                            (messageQueues[activeSessionId] || []).map((q) => q.id),
-                          );
-                          // Render non-queued messages inline, queued messages stick to bottom
-                          const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
-                          const queued = messages.filter((msg) => queuedIds.has(msg.id));
-                          return (
-                            <>
-                              {nonQueued.map((msg) =>
-                                msg.role === 'assistant' ? (
+                              />
+                            </div>
+                          )}
+                          {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                            <ReactLoopObservabilityPanel
+                              steps={reactLoopStepsBySession[activeSessionId]}
+                              streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                            />
+                          )}
+                          {messages.length === 0 && !thinking && !streamingContent && (
+                            <div
+                              className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
+                              data-testid={
+                                sessionMessagesLoading
+                                  ? 'chat-messages-loading'
+                                  : 'chat-empty-state'
+                              }
+                            >
+                              {sessionMessagesLoading ? (
+                                <>
+                                  <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
+                                  <p className="text-lg">Loading conversation</p>
+                                  <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
+                                </>
+                              ) : (
+                                <>
+                                  <MessageCircle size={40} className="mb-3 text-gray-600" />
+                                  {sessionsListLoading && projectDataReady && activeAgent ? (
+                                    <>
+                                      <p className="text-lg">Loading conversation</p>
+                                      <p className="text-sm mt-1 text-gray-500">
+                                        Sessions are syncing…
+                                      </p>
+                                    </>
+                                  ) : activeAgent ? (
+                                    <>
+                                      <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                        Chat
+                                      </p>
+                                      <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                        Talk to {activeAgent.name}
+                                      </h2>
+                                      <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                        This is a chat session with{' '}
+                                        <span className="text-gray-300">{activeAgent.name}</span>.
+                                        Type a message below to ask a question, hand off a task, or
+                                        pair on changes — replies stream in real time.
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                        Chat
+                                      </p>
+                                      <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                        No agent selected
+                                      </h2>
+                                      <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                        Pick an agent from the sidebar to start a conversation, or
+                                        jump to the dashboard to see what&apos;s happening across
+                                        your projects.
+                                      </p>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                              <p className="text-xs text-gray-700 mt-5 hidden sm:block">
+                                Ctrl+K to switch agents · Esc to cancel
+                              </p>
+                            </div>
+                          )}
+                          {(() => {
+                            const queuedIds = new Set(
+                              (messageQueues[activeSessionId] || []).map((q) => q.id),
+                            );
+                            // Render non-queued messages inline, queued messages stick to bottom
+                            const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
+                            const queued = messages.filter((msg) => queuedIds.has(msg.id));
+                            return (
+                              <>
+                                {nonQueued.map((msg) =>
+                                  msg.role === 'assistant' ? (
+                                    <SessionTail
+                                      key={msg.id}
+                                      message={msg}
+                                      events={eventsByMessage[msg.id]}
+                                      agentColor={activeAgent?.color}
+                                      onEventsLoaded={handleEventsLoaded}
+                                      onAskSubmit={handleAskSubmit}
+                                      askSubmittedIds={askSubmitted}
+                                      fromAgent={activeAgent}
+                                      agents={agents}
+                                      sessionHandoffs={sessionHandoffs}
+                                      sessionDelegations={delegations[activeSessionId]}
+                                      delegationDispatchError={
+                                        delegationDispatchErrors[activeSessionId]
+                                      }
+                                      onOpenSession={handleOpenHandoffSession}
+                                      browserScreenshots={
+                                        browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                                      }
+                                    />
+                                  ) : (
+                                    <ChatMessage
+                                      key={msg.id}
+                                      message={msg}
+                                      agentColor={activeAgent?.color}
+                                    />
+                                  ),
+                                )}
+                                {thinking && !streamingMsgId && (
+                                  <ThinkingIndicator agentColor={activeAgent?.color} />
+                                )}
+                                {streamingMsgId && (
                                   <SessionTail
-                                    key={msg.id}
-                                    message={msg}
-                                    events={eventsByMessage[msg.id]}
+                                    key={streamingMsgId}
+                                    message={{
+                                      id: streamingMsgId,
+                                      role: 'assistant',
+                                      engine: streamingEngine,
+                                      model: sessionModel,
+                                      content: streamingContent,
+                                    }}
+                                    events={eventsByMessage[streamingMsgId]}
                                     agentColor={activeAgent?.color}
-                                    onEventsLoaded={handleEventsLoaded}
+                                    streaming
                                     onAskSubmit={handleAskSubmit}
                                     askSubmittedIds={askSubmitted}
                                     fromAgent={activeAgent}
@@ -3721,278 +3762,232 @@ export default function App() {
                                     }
                                     onOpenSession={handleOpenHandoffSession}
                                     browserScreenshots={
-                                      browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                                      activeSessionId
+                                        ? (browserScreensBySession[activeSessionId]?.[
+                                            streamingMsgId
+                                          ] ?? {})
+                                        : {}
                                     }
                                   />
-                                ) : (
+                                )}
+                                {doneVerifyLogBySession[activeSessionId] && (
+                                  <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
+                                    <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
+                                      <div className="text-xs font-semibold text-amber-100/90 mb-1">
+                                        Pre-done verification
+                                      </div>
+                                      <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
+                                        {doneVerifyLogBySession[activeSessionId]}
+                                      </pre>
+                                    </div>
+                                  </div>
+                                )}
+                                {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                                {delegations[activeSessionId] &&
+                                  delegations[activeSessionId].tasks.length > 0 && (
+                                    <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                                      <DelegationPanel
+                                        delegations={delegations[activeSessionId].tasks}
+                                        sessionId={activeSessionId}
+                                        throttled={throttle[activeSessionId]?.active}
+                                        onCancel={(sid) =>
+                                          send({ type: 'delegation_cancel', sessionId: sid })
+                                        }
+                                      />
+                                    </div>
+                                  )}
+                                {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
+                                {changesReady[activeSessionId] &&
+                                  !streamingMsgId &&
+                                  !chatProjectIsWorkflow &&
+                                  activeResolvePrBannerInfo && (
+                                    <ResolveSessionPrBanner
+                                      prUrl={activeResolvePrBannerInfo.prUrl}
+                                      prNumber={activeResolvePrBannerInfo.prNumber}
+                                      branchLabel={changesReady[activeSessionId]?.branch}
+                                      sessionId={activeSessionId}
+                                      onDismiss={(sessionId) => {
+                                        setChangesReady((prev) => {
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                        setCreatePrLogBySession((prev) => {
+                                          if (!prev[sessionId]) return prev;
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  )}
+                                {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
+                                {changesReady[activeSessionId] &&
+                                  !streamingMsgId &&
+                                  !chatProjectIsWorkflow &&
+                                  !activeResolvePrBannerInfo && (
+                                    <ChangesReadyBox
+                                      sessionId={activeSessionId}
+                                      changes={changesReady[activeSessionId]}
+                                      livePrLog={createPrLogBySession[activeSessionId] || ''}
+                                      onPublishStart={(sessionId) => {
+                                        setCreatePrLogBySession((prev) => {
+                                          if (!prev[sessionId]) return prev;
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                      }}
+                                      defaultAutoMerge={
+                                        projects.find((p) => p.id === activeAgent?.projectId)
+                                          ?.githubWorkflow?.autoMerge ?? false
+                                      }
+                                      onCreated={(sessionId, result) => {
+                                        setChangesReady((prev) => {
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                        setCreatePrLogBySession((prev) => {
+                                          if (!prev[sessionId]) return prev;
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                        setToasts((prev) => [
+                                          ...prev,
+                                          {
+                                            id: `pr-created-${Date.now()}`,
+                                            type: 'success',
+                                            message: `PR created: ${result.prUrl}`,
+                                            duration: 8000,
+                                          },
+                                        ]);
+                                      }}
+                                      onDismiss={(sessionId) => {
+                                        setChangesReady((prev) => {
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                        setCreatePrLogBySession((prev) => {
+                                          if (!prev[sessionId]) return prev;
+                                          const next = { ...prev };
+                                          delete next[sessionId];
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  )}
+                                {/* Queued messages always render at the very bottom */}
+                                {queued.map((msg) => (
                                   <ChatMessage
                                     key={msg.id}
-                                    message={msg}
+                                    message={{ ...msg, queued: true }}
                                     agentColor={activeAgent?.color}
+                                    onDequeue={handleDequeue}
+                                    onEditQueued={handleEditQueuedMessage}
                                   />
-                                ),
-                              )}
-                              {thinking && !streamingMsgId && (
-                                <ThinkingIndicator agentColor={activeAgent?.color} />
-                              )}
-                              {streamingMsgId && (
-                                <SessionTail
-                                  key={streamingMsgId}
-                                  message={{
-                                    id: streamingMsgId,
-                                    role: 'assistant',
-                                    engine: streamingEngine,
-                                    model: sessionModel,
-                                    content: streamingContent,
-                                  }}
-                                  events={eventsByMessage[streamingMsgId]}
-                                  agentColor={activeAgent?.color}
-                                  streaming
-                                  onAskSubmit={handleAskSubmit}
-                                  askSubmittedIds={askSubmitted}
-                                  fromAgent={activeAgent}
-                                  agents={agents}
-                                  sessionHandoffs={sessionHandoffs}
-                                  sessionDelegations={delegations[activeSessionId]}
-                                  delegationDispatchError={
-                                    delegationDispatchErrors[activeSessionId]
-                                  }
-                                  onOpenSession={handleOpenHandoffSession}
-                                  browserScreenshots={
-                                    activeSessionId
-                                      ? (browserScreensBySession[activeSessionId]?.[
-                                          streamingMsgId
-                                        ] ?? {})
-                                      : {}
-                                  }
-                                />
-                              )}
-                              {doneVerifyLogBySession[activeSessionId] && (
-                                <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
-                                  <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
-                                    <div className="text-xs font-semibold text-amber-100/90 mb-1">
-                                      Pre-done verification
-                                    </div>
-                                    <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
-                                      {doneVerifyLogBySession[activeSessionId]}
-                                    </pre>
-                                  </div>
-                                </div>
-                              )}
-                              {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                              {delegations[activeSessionId] &&
-                                delegations[activeSessionId].tasks.length > 0 && (
-                                  <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                                    <DelegationPanel
-                                      delegations={delegations[activeSessionId].tasks}
-                                      sessionId={activeSessionId}
-                                      throttled={throttle[activeSessionId]?.active}
-                                      onCancel={(sid) =>
-                                        send({ type: 'delegation_cancel', sessionId: sid })
-                                      }
-                                    />
-                                  </div>
-                                )}
-                              <div className="px-4 max-w-[95%] sm:max-w-[90%] lg:hidden">
-                                <SkillInvocationsPanel invocations={sessionSkillInvocations} />
-                              </div>
-                              {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
-                              {changesReady[activeSessionId] &&
-                                !streamingMsgId &&
-                                !chatProjectIsWorkflow &&
-                                activeResolvePrBannerInfo && (
-                                  <ResolveSessionPrBanner
-                                    prUrl={activeResolvePrBannerInfo.prUrl}
-                                    prNumber={activeResolvePrBannerInfo.prNumber}
-                                    branchLabel={changesReady[activeSessionId]?.branch}
-                                    sessionId={activeSessionId}
-                                    onDismiss={(sessionId) => {
-                                      setChangesReady((prev) => {
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                      setCreatePrLogBySession((prev) => {
-                                        if (!prev[sessionId]) return prev;
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                    }}
-                                  />
-                                )}
-                              {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
-                              {changesReady[activeSessionId] &&
-                                !streamingMsgId &&
-                                !chatProjectIsWorkflow &&
-                                !activeResolvePrBannerInfo && (
-                                  <ChangesReadyBox
-                                    sessionId={activeSessionId}
-                                    changes={changesReady[activeSessionId]}
-                                    livePrLog={createPrLogBySession[activeSessionId] || ''}
-                                    onPublishStart={(sessionId) => {
-                                      setCreatePrLogBySession((prev) => {
-                                        if (!prev[sessionId]) return prev;
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                    }}
-                                    defaultAutoMerge={
-                                      projects.find((p) => p.id === activeAgent?.projectId)
-                                        ?.githubWorkflow?.autoMerge ?? false
-                                    }
-                                    onCreated={(sessionId, result) => {
-                                      setChangesReady((prev) => {
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                      setCreatePrLogBySession((prev) => {
-                                        if (!prev[sessionId]) return prev;
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                      setToasts((prev) => [
-                                        ...prev,
-                                        {
-                                          id: `pr-created-${Date.now()}`,
-                                          type: 'success',
-                                          message: `PR created: ${result.prUrl}`,
-                                          duration: 8000,
-                                        },
-                                      ]);
-                                    }}
-                                    onDismiss={(sessionId) => {
-                                      setChangesReady((prev) => {
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                      setCreatePrLogBySession((prev) => {
-                                        if (!prev[sessionId]) return prev;
-                                        const next = { ...prev };
-                                        delete next[sessionId];
-                                        return next;
-                                      });
-                                    }}
-                                  />
-                                )}
-                              {/* Queued messages always render at the very bottom */}
-                              {queued.map((msg) => (
-                                <ChatMessage
-                                  key={msg.id}
-                                  message={{ ...msg, queued: true }}
-                                  agentColor={activeAgent?.color}
-                                  onDequeue={handleDequeue}
-                                  onEditQueued={handleEditQueuedMessage}
-                                />
-                              ))}
-                            </>
-                          );
-                        })()}
+                                ))}
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Scroll to bottom button */}
+                        {showScrollBtn && (
+                          <button
+                            onClick={() => scrollToBottom(false)}
+                            className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
+                            style={{ width: 'fit-content', display: 'flex' }}
+                          >
+                            <svg
+                              className="w-3.5 h-3.5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2.5}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                              />
+                            </svg>
+                            Scroll to bottom
+                          </button>
+                        )}
                       </div>
 
-                      {/* Scroll to bottom button */}
-                      {showScrollBtn && (
-                        <button
-                          onClick={() => scrollToBottom(false)}
-                          className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
-                          style={{ width: 'fit-content', display: 'flex' }}
-                        >
-                          <svg
-                            className="w-3.5 h-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19 14l-7 7m0 0l-7-7m7 7V3"
-                            />
-                          </svg>
-                          Scroll to bottom
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Show-preview pill — visible only when there's a
+                      {/* Show-preview pill — visible only when there's a
                         preview event for this session but the user has
                         closed the pane. One-click reopen. */}
-                    {activeSessionId &&
-                      previewEventBySession[activeSessionId] &&
-                      previewPaneOpenBySession[activeSessionId] === false && (
-                        <div className="px-3 md:px-6 pb-1">
-                          <button
-                            type="button"
-                            data-testid="reopen-preview-pane"
-                            onClick={() => {
-                              setPreviewPaneOpenBySession((prev) => ({
-                                ...prev,
-                                [activeSessionId]: true,
-                              }));
-                              try {
-                                const key = paneOpenStorageKey(activeSessionId);
-                                if (key) window.localStorage.setItem(key, 'true');
-                              } catch {
-                                /* storage unavailable */
-                              }
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-sky-800/60 hover:bg-sky-700/70 text-sky-100 border border-sky-700/60"
-                          >
-                            <ArrowLeftRight size={12} /> Show preview
-                          </button>
+                      {activeSessionId &&
+                        previewEventBySession[activeSessionId] &&
+                        previewPaneOpenBySession[activeSessionId] === false && (
+                          <div className="px-3 md:px-6 pb-1">
+                            <button
+                              type="button"
+                              data-testid="reopen-preview-pane"
+                              onClick={() => {
+                                setPreviewPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: true,
+                                }));
+                                try {
+                                  const key = paneOpenStorageKey(activeSessionId);
+                                  if (key) window.localStorage.setItem(key, 'true');
+                                } catch {
+                                  /* storage unavailable */
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-sky-800/60 hover:bg-sky-700/70 text-sky-100 border border-sky-700/60"
+                            >
+                              <ArrowLeftRight size={12} /> Show preview
+                            </button>
+                          </div>
+                        )}
+
+                      {activeSessionId && (
+                        <div className="px-3 md:px-6 pb-2 flex items-center gap-2 border-t border-gray-800/80 pt-2">
+                          <SessionPreviewStartButton
+                            sessionId={activeSessionId}
+                            project={activeChatProject}
+                            previewEvent={previewEventBySession[activeSessionId]}
+                            disabled={!connected || !activeChatProject}
+                            starting={!!previewStartingBySession[activeSessionId]}
+                            onStart={handleStartSessionPreview}
+                            onConfigure={handlePreviewConfigure}
+                          />
                         </div>
                       )}
 
-                    {activeSessionId && (
-                      <div className="px-3 md:px-6 pb-2 flex items-center gap-2 border-t border-gray-800/80 pt-2">
-                        <SessionPreviewStartButton
-                          sessionId={activeSessionId}
-                          project={activeChatProject}
-                          previewEvent={previewEventBySession[activeSessionId]}
-                          disabled={!connected || !activeChatProject}
-                          starting={!!previewStartingBySession[activeSessionId]}
-                          onStart={handleStartSessionPreview}
-                          onConfigure={handlePreviewConfigure}
-                        />
-                      </div>
+                      {/* Input */}
+                      <MessageInput
+                        onSend={handleSend}
+                        onCancel={handleCancel}
+                        disabled={!activeAgent || !connected}
+                        isProcessing={isProcessing}
+                        queueLength={(messageQueues[activeSessionId] || []).length}
+                        agentColor={activeAgent?.color}
+                        skills={skills}
+                        askMode={sessionAskMode}
+                        readOnly={activeAgent?.role === 'reviewer'}
+                        draftKey={activeSessionId || activeAgentId || 'none'}
+                        onFileError={(msg) => showToast(msg, 'error', 6000)}
+                      />
+                    </div>
+                    {showSessionPreviewPane && (
+                      <SessionPreviewPane
+                        sessionId={activeSessionId}
+                        event={activePreviewEvent}
+                        onClose={handlePreviewClose}
+                        onTouch={handlePreviewTouch}
+                        onStop={handlePreviewStop}
+                        onConfigure={handlePreviewConfigure}
+                      />
                     )}
-
-                    {/* Input */}
-                    <MessageInput
-                      onSend={handleSend}
-                      onCancel={handleCancel}
-                      disabled={!activeAgent || !connected}
-                      isProcessing={isProcessing}
-                      queueLength={(messageQueues[activeSessionId] || []).length}
-                      agentColor={activeAgent?.color}
-                      skills={skills}
-                      askMode={sessionAskMode}
-                      readOnly={activeAgent?.role === 'reviewer'}
-                      draftKey={activeSessionId || activeAgentId || 'none'}
-                      onFileError={(msg) => showToast(msg, 'error', 6000)}
-                    />
                   </div>
-                  {activeSessionId && (
-                    <SessionSummarySidebar
-                      sessionId={activeSessionId}
-                      isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                    />
-                  )}
-                  {showSessionPreviewPane && (
-                    <SessionPreviewPane
-                      sessionId={activeSessionId}
-                      event={activePreviewEvent}
-                      onClose={handlePreviewClose}
-                      onTouch={handlePreviewTouch}
-                      onStop={handlePreviewStop}
-                      onConfigure={handlePreviewConfigure}
-                    />
-                  )}
                 </div>
               )}
             </>

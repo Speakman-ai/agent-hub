@@ -111,6 +111,65 @@ export function prStateBadge(pr) {
 }
 
 /**
+ * Compact linked-PR status for session summary (merged, review, conflicts, closed).
+ * @param {{ pr?: { state?: string, merged_at?: string|null, mergeable?: boolean|null, review_decision?: string|null }|null,
+ *           linkedCardReviewStatus?: string|null,
+ *           reviews?: Array<{ state?: string, user?: string|null, submitted_at?: string|null }> }} input
+ * @returns {{ key: string, label: string, color: string, bg: string }|null}
+ */
+export function linkedPrDisplayStatus({ pr, linkedCardReviewStatus, reviews }) {
+  const card = (linkedCardReviewStatus || '').toLowerCase();
+  const rev = summarizeReviews(reviews);
+
+  if (pr?.merged_at) {
+    return { key: 'merged', label: 'Merged', color: TOKEN.purple.text, bg: TOKEN.purple.bg };
+  }
+  if (pr?.mergeable === false) {
+    return { key: 'conflicts', label: 'Has conflicts', color: TOKEN.red.text, bg: TOKEN.red.bg };
+  }
+  const state = (pr?.state || '').toLowerCase();
+  if (state === 'closed') {
+    return { key: 'closed', label: 'Closed', color: TOKEN.red.text, bg: TOKEN.red.bg };
+  }
+  if (card === 'changes_requested' || rev === 'changes_requested') {
+    return {
+      key: 'pending_revisions',
+      label: 'Pending revisions',
+      color: TOKEN.red.text,
+      bg: TOKEN.red.bg,
+    };
+  }
+
+  const reviewDecision = (pr?.review_decision || '').toUpperCase();
+  const pendingReview =
+    card === 'awaiting_review' ||
+    card === 'reviewing' ||
+    rev === 'pending' ||
+    reviewDecision === 'REVIEW_REQUIRED' ||
+    (rev === 'none' && state === 'open');
+
+  if (pendingReview) {
+    return {
+      key: 'pending_review',
+      label: 'Pending review',
+      color: TOKEN.yellow.text,
+      bg: TOKEN.yellow.bg,
+    };
+  }
+
+  if (state === 'open') {
+    return {
+      key: 'pending_review',
+      label: 'Pending review',
+      color: TOKEN.yellow.text,
+      bg: TOKEN.yellow.bg,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Decide whether the "Mergeable" / "Conflicts" badge should render.
  * Only show when `mergeable` is a real boolean. `null` means GitHub is still
  * computing — suppress the badge rather than showing a misleading "Conflicts".

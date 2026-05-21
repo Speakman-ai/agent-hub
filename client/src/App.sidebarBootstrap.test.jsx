@@ -95,7 +95,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn().mockResolvedValue([]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
-      getSessionSkillInvocations: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),
     },
   };

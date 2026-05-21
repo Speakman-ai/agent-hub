@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import SessionSummarySidebar from './SessionSummarySidebar.jsx';
 
 vi.mock('../utils/api.js', () => ({
@@ -11,28 +11,37 @@ vi.mock('../utils/api.js', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 
 describe('SessionSummarySidebar variant prop', () => {
-  it('default (panel) variant uses hidden lg:flex outer class', () => {
+  it('default (top) variant spans full width under chat header', () => {
     const { container } = render(<SessionSummarySidebar sessionId="s1" isLive={false} />);
     const aside = container.querySelector('aside');
     expect(aside).not.toBeNull();
-    // panel mode must include `hidden` so it's desktop-only
-    expect(aside.className).toMatch(/hidden/);
-    // and the right-column width class
-    expect(aside.className).toMatch(/lg:flex/);
+    expect(aside.className).toMatch(/w-full/);
+    expect(aside.className).toMatch(/border-b/);
+    expect(aside.className).not.toMatch(/hidden/);
+    expect(aside.className).not.toMatch(/border-t/);
+  });
+
+  it('starts collapsed by default and expands on toggle', async () => {
+    render(<SessionSummarySidebar sessionId="s2" isLive={false} />);
+    expect(screen.getByTestId('session-summary-toggle')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('session-linked-pr')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    expect(screen.getByTestId('session-summary-toggle')).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    expect(screen.getByTestId('session-summary-toggle')).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('sidebar variant uses flex flex-col w-full (no hidden)', () => {
     const { container } = render(
-      <SessionSummarySidebar sessionId="s2" isLive={false} variant="sidebar" />,
+      <SessionSummarySidebar sessionId="s3" isLive={false} variant="sidebar" />,
     );
     const aside = container.querySelector('aside');
     expect(aside).not.toBeNull();
-    // sidebar mode must NOT hide on small screens
     expect(aside.className).not.toMatch(/hidden/);
-    // sidebar mode must include w-full
     expect(aside.className).toMatch(/w-full/);
   });
 });

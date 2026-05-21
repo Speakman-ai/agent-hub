@@ -124,7 +124,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
         return ctl.deferredFor(sid).promise;
       }),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
-      getSessionSkillInvocations: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),
     },
   };

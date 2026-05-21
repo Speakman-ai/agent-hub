@@ -103,7 +103,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
         .fn()
         .mockResolvedValue([{ id: 'm-x', role: 'user', content: 'hi', created_at: '' }]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
-      getSessionSkillInvocations: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),
     },
   };
