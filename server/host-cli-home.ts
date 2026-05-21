@@ -50,9 +50,9 @@ function operatorCursorCachePath(): string | null {
 }
 
 /**
- * One-time best-effort copy of the operator's existing `~/.cursor` cache into
- * the persistent host HOME when the destination has no cache yet. Lets
- * upgrades keep working auth without forcing a re-login.
+ * One-time best-effort source for the operator's existing `~/.codex` cache so
+ * an upgrade can migrate it into the persistent host HOME without forcing a
+ * re-login. Honors an explicit `CODEX_HOME` from the server process env.
  */
 function operatorCodexCachePath(): string | null {
   const fromEnv = process.env.CODEX_HOME?.trim();
@@ -64,6 +64,27 @@ function operatorCodexCachePath(): string | null {
     }
   }
   const src = path.join(os.homedir(), '.codex');
+  if (!existsSync(src)) return null;
+  try {
+    if (readdirSync(src).length === 0) return null;
+  } catch {
+    return null;
+  }
+  return src;
+}
+
+/**
+ * One-time best-effort source for the operator's existing `~/.claude` cache.
+ * Native `claude auth login` writes OAuth credentials to
+ * `~/.claude/.credentials.json`; with the host HOME now pinned to the data
+ * volume, an upgrade would silently lose that cache. Migrating it (when
+ * present and the destination is empty) keeps native Claude OAuth working
+ * across instance restarts. Agent Hub's explicit `ANTHROPIC_API_KEY` /
+ * `CLAUDE_CODE_OAUTH_TOKEN` config paths are unaffected — only operators
+ * who authenticated via the native CLI need this migration.
+ */
+function operatorClaudeCachePath(): string | null {
+  const src = path.join(os.homedir(), '.claude');
   if (!existsSync(src)) return null;
   try {
     if (readdirSync(src).length === 0) return null;
@@ -109,10 +130,28 @@ function migrateOperatorCursorCacheIfNeeded(hostHome: string): void {
   }
 }
 
+function migrateOperatorClaudeCacheIfNeeded(hostHome: string): void {
+  const dest = path.join(hostHome, '.claude');
+  if (existsSync(dest)) {
+    try {
+      if (readdirSync(dest).length > 0) return;
+    } catch {
+      return;
+    }
+  }
+  const src = operatorClaudeCachePath();
+  if (!src) return;
+  try {
+    cpSync(src, dest, { recursive: true });
+  } catch {
+    /* non-fatal — operator can re-login via Settings */
+  }
+}
+
 /**
  * Create the persistent host HOME (mode 0700), verify the running process
- * owns it, and migrate legacy operator `~/.cursor` / `~/.codex` when
- * present. Returns the absolute path.
+ * owns it, and migrate legacy operator `~/.cursor` / `~/.codex` / `~/.claude`
+ * when present. Returns the absolute path.
  *
  * Ownership guard: on Docker, the data volume may have been populated by a
  * prior container running under a different UID. If the leaf already
@@ -123,12 +162,10 @@ function migrateOperatorCursorCacheIfNeeded(hostHome: string): void {
  */
 export function ensureHostCliHome(dataDir: string): string {
   const home = hostCliHomePath(dataDir);
+  // `recursive: true` already creates every missing parent directory, so a
+  // single mkdir is enough — a second `mkdirSync(path.dirname(home))` call
+  // would be dead.
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  try {
-    mkdirSync(path.dirname(home), { recursive: true, mode: 0o700 });
-  } catch {
-    /* already exists */
-  }
 
   const geteuid = (process as NodeJS.Process & { geteuid?: () => number }).geteuid?.bind(process);
   if (typeof geteuid === 'function') {
@@ -150,5 +187,6 @@ export function ensureHostCliHome(dataDir: string): string {
 
   migrateOperatorCursorCacheIfNeeded(home);
   migrateOperatorCodexCacheIfNeeded(home);
+  migrateOperatorClaudeCacheIfNeeded(home);
   return home;
 }

@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
   existsSync,
   rmSync,
   readdirSync,
@@ -10,7 +11,12 @@ import {
 } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ensureHostCliHome, hostCliHomePath, hostCodexHomePath } from './host-cli-home.js';
+import {
+  ensureHostCliHome,
+  hostCliHomePath,
+  hostCodexHomePath,
+  resolveCodexHomeForProbe,
+} from './host-cli-home.js';
 
 describe('host-cli-home', () => {
   let dataDir: string;
@@ -97,5 +103,67 @@ describe('host-cli-home', () => {
     expect(migrated).toBe(path.join(hostHome, '.codex'));
     expect(existsSync(migrated)).toBe(true);
     expect(readdirSync(migrated)).toContain('auth.json');
+  });
+
+  it('migrates operator ~/.claude into host HOME when destination is empty', () => {
+    // Native `claude auth login` writes OAuth credentials to
+    // `~/.claude/.credentials.json`. With HOME pinned to the data volume an
+    // upgrade would silently lose that cache — migration keeps native Claude
+    // OAuth working until the operator opts into per-user creds.
+    const operatorClaude = path.join(operatorHome, '.claude');
+    mkdirSync(operatorClaude, { recursive: true });
+    writeFileSync(path.join(operatorClaude, '.credentials.json'), '{"oauth":{}}');
+
+    const hostHome = ensureHostCliHome(dataDir);
+    const migrated = path.join(hostHome, '.claude');
+    expect(existsSync(migrated)).toBe(true);
+    expect(readdirSync(migrated)).toContain('.credentials.json');
+  });
+
+  it('does not overwrite an existing ~/.claude under host HOME', () => {
+    const operatorClaude = path.join(operatorHome, '.claude');
+    mkdirSync(operatorClaude, { recursive: true });
+    writeFileSync(path.join(operatorClaude, '.credentials.json'), '{"oauth":"operator"}');
+
+    const dest = path.join(hostCliHomePath(dataDir), '.claude');
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(path.join(dest, '.credentials.json'), '{"oauth":"persistent"}');
+
+    ensureHostCliHome(dataDir);
+
+    const body = readFileSync(path.join(dest, '.credentials.json'), 'utf8');
+    expect(body).toBe('{"oauth":"persistent"}');
+  });
+});
+
+describe('resolveCodexHomeForProbe', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(path.join(os.tmpdir(), 'ah-host-codex-probe-'));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('honors an explicit CODEX_HOME from env above everything else', () => {
+    const explicit = path.join(dataDir, 'explicit-codex');
+    const result = resolveCodexHomeForProbe({ CODEX_HOME: explicit, HOME: '/some/home' }, dataDir);
+    expect(result).toBe(explicit);
+  });
+
+  it('falls back to $HOME/.codex when CODEX_HOME is missing or blank', () => {
+    const home = path.join(dataDir, 'operator-home');
+    expect(resolveCodexHomeForProbe({ HOME: home }, dataDir)).toBe(path.join(home, '.codex'));
+    // Blank / whitespace-only CODEX_HOME is treated the same as unset.
+    expect(resolveCodexHomeForProbe({ CODEX_HOME: '   ', HOME: home }, dataDir)).toBe(
+      path.join(home, '.codex'),
+    );
+  });
+
+  it('falls back to the persistent host tree when neither env var is set', () => {
+    expect(resolveCodexHomeForProbe({}, dataDir)).toBe(hostCodexHomePath(dataDir));
+    expect(resolveCodexHomeForProbe(undefined, dataDir)).toBe(hostCodexHomePath(dataDir));
   });
 });

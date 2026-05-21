@@ -46,6 +46,13 @@ export interface ResolveSessionCliSpawnEnvOpts {
   cfg: AppConfig;
   ownerId: string | null;
   credsOwnerId: string | null;
+  /**
+   * Owning session id, only used for `TOOL_ERROR` observability when the
+   * per-user CLI auth lookup throws. Pre-extraction the equivalent block in
+   * `server/chat.ts` emitted the structured log line — keep that signal so
+   * silent fallbacks to host config are still visible in operator logs.
+   */
+  sessionId?: string | null;
 }
 
 /**
@@ -54,7 +61,7 @@ export interface ResolveSessionCliSpawnEnvOpts {
  * cursor-agent invocation for the same session shares credentials.
  */
 export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): NodeJS.ProcessEnv {
-  const { cfg, ownerId, credsOwnerId } = opts;
+  const { cfg, ownerId, credsOwnerId, sessionId } = opts;
   let userOverride: SpawnEnvOverride | null = null;
   try {
     if (credsOwnerId) {
@@ -77,8 +84,24 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
         };
       }
     }
-  } catch {
-    /* best-effort — host config remains the safety net */
+  } catch (err) {
+    // Best-effort — host config remains the safety net. Surface the failure
+    // as a structured TOOL_ERROR so operator logs preserve the signal the
+    // equivalent inline block in `chat.ts` used to emit pre-extraction.
+    const summary = (err as Error).message
+      .replace(/[\r\n|]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    const meta = JSON.stringify({
+      v: 2,
+      sev: 'soft',
+      resolution: 'recovered',
+      session: sessionId ?? null,
+      tags: ['per-user-cli-auth', 'spawn'],
+    });
+    console.error(
+      `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
+    );
   }
   const homeUserId =
     ownerId ??
