@@ -298,31 +298,41 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses } = deps;
 
   /**
-   * Best-effort teardown of any preview groups owned by `sessionId`.
-   * Runs across both runtimes — `stopBySessionId` is a no-op on each
-   * for rows it doesn't own (compose runtime ignores spawn rows;
-   * legacy runtime ignores compose rows). Fire-and-forget: a
-   * teardown failure must never block the archive itself.
+   * Tear down any preview groups owned by `sessionId` across both runtimes.
+   * Each runtime's `stopBySessionId` is a no-op for rows it does not own.
    */
-  function stopPreviewsBestEffort(sessionId: string): void {
+  async function stopPreviewsForSession(sessionId: string): Promise<void> {
     const composeRuntime = deps.getPreviewComposeRuntime?.();
     const legacyRuntime = deps.getPreviewRuntime?.();
+    const tasks: Promise<unknown>[] = [];
     if (composeRuntime) {
-      void composeRuntime.stopBySessionId(sessionId).catch((err) => {
-        console.warn(
-          `[sessions] preview-compose stopBySessionId failed (${sessionId}):`,
-          (err as Error).message,
-        );
-      });
+      tasks.push(
+        composeRuntime.stopBySessionId(sessionId).catch((err) => {
+          console.warn(
+            `[sessions] preview-compose stopBySessionId failed (${sessionId}):`,
+            (err as Error).message,
+          );
+        }),
+      );
     }
     if (legacyRuntime) {
-      void legacyRuntime.stopBySessionId(sessionId).catch((err) => {
-        console.warn(
-          `[sessions] preview stopBySessionId failed (${sessionId}):`,
-          (err as Error).message,
-        );
-      });
+      tasks.push(
+        legacyRuntime.stopBySessionId(sessionId).catch((err) => {
+          console.warn(
+            `[sessions] preview stopBySessionId failed (${sessionId}):`,
+            (err as Error).message,
+          );
+        }),
+      );
     }
+    await Promise.all(tasks);
+  }
+
+  /** Fire-and-forget variant for bulk archive loops. */
+  function stopPreviewsBestEffort(sessionId: string): void {
+    void stopPreviewsForSession(sessionId).catch((err) => {
+      console.warn(`[sessions] preview teardown failed (${sessionId}):`, (err as Error).message);
+    });
   }
 
   const router = Router();
@@ -697,7 +707,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // soft-delete semantics. Hard removal (DB row + worktree) happens when the
   // agent or project is deleted, or when the hourly workspace-purge tick in
   // server/session-purge.ts drops rows past the 24-hour recovery window.
-  router.delete('/api/sessions/:sessionId', (req: Request, res: Response) => {
+  router.delete('/api/sessions/:sessionId', async (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
     const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -715,7 +725,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     closeBrowserBestEffort(sessionId);
-    stopPreviewsBestEffort(sessionId);
+    await stopPreviewsForSession(sessionId);
 
     stmts.softDeleteSession.run(sessionId);
 

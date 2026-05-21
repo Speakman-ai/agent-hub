@@ -9,6 +9,7 @@ import {
   AlertCircle,
   CheckCircle2,
   ArrowLeftCircle,
+  GripVertical,
 } from 'lucide-react';
 import {
   derivePaneState,
@@ -69,6 +70,7 @@ export default function SessionPreviewPane({
   // null       — not popped out.
   const [popMode, setPopMode] = useState(null);
   const [footerOpen, setFooterOpen] = useState(defaultFooterOpen);
+  const [isResizing, setIsResizing] = useState(false);
   const poppedWindowRef = useRef(null);
 
   // Resizable width — persisted per session in localStorage.
@@ -81,6 +83,19 @@ export default function SessionPreviewPane({
       return DEFAULT_PANE_WIDTH;
     }
   });
+
+  useEffect(() => {
+    if (!widthKey) {
+      setWidth(DEFAULT_PANE_WIDTH);
+      return;
+    }
+    try {
+      setWidth(clampPaneWidth(window.localStorage.getItem(widthKey)));
+    } catch {
+      setWidth(DEFAULT_PANE_WIDTH);
+    }
+  }, [widthKey]);
+
   useEffect(() => {
     if (!widthKey) return;
     try {
@@ -91,30 +106,42 @@ export default function SessionPreviewPane({
     }
   }, [widthKey, width]);
 
-  // Resize drag handle.
   const dragStateRef = useRef(null);
-  const onResizeStart = (e) => {
-    dragStateRef.current = { startX: e.clientX, startWidth: width };
-    e.preventDefault();
-  };
-  useEffect(() => {
-    const onMove = (e) => {
-      if (!dragStateRef.current) return;
-      const { startX, startWidth } = dragStateRef.current;
-      // The pane lives on the right — dragging the handle left expands it.
-      const next = clampPaneWidth(startWidth + (startX - e.clientX));
-      setWidth(next);
-    };
-    const onUp = () => {
-      dragStateRef.current = null;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
+  const endResize = useCallback(() => {
+    dragStateRef.current = null;
+    setIsResizing(false);
   }, []);
+
+  const onResizePointerDown = useCallback(
+    (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      dragStateRef.current = { startX: e.clientX, startWidth: width };
+      setIsResizing(true);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* unsupported in some test environments */
+      }
+    },
+    [width],
+  );
+
+  const onResizePointerMove = useCallback((e) => {
+    if (!dragStateRef.current) return;
+    const { startX, startWidth } = dragStateRef.current;
+    // Pane is on the right — drag the left edge leftward to widen.
+    setWidth(clampPaneWidth(startWidth + (startX - e.clientX)));
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return undefined;
+    const prev = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.body.style.userSelect = prev;
+    };
+  }, [isResizing]);
 
   // Reset iframe + popped state when the active preview rotates (different
   // previewId — fresh boot in the same pane).
@@ -238,19 +265,35 @@ export default function SessionPreviewPane({
   return (
     <aside
       data-testid="session-preview-pane"
-      className="hidden lg:flex flex-col shrink-0 border-l border-gray-800 bg-gray-950 relative"
+      className={`hidden lg:flex flex-col shrink-0 border-l border-gray-800 bg-gray-950 relative ${
+        isResizing ? 'select-none' : ''
+      }`}
       style={{ width: `${width}px` }}
       aria-label="Session preview"
     >
-      {/* Resize handle — invisible 6px gutter on the left edge. */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize preview pane"
-        onMouseDown={onResizeStart}
-        className="absolute top-0 left-0 h-full w-1.5 cursor-col-resize hover:bg-sky-500/40"
+        aria-valuenow={width}
+        aria-valuemin={320}
+        aria-valuemax={1400}
+        title="Drag to resize preview"
+        onPointerDown={onResizePointerDown}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        className={`absolute top-0 left-0 z-20 flex h-full w-3 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center transition-colors ${
+          isResizing ? 'bg-sky-500/50' : 'bg-gray-800/80 hover:bg-sky-500/35'
+        }`}
         data-testid="session-preview-pane-resize-handle"
-      />
+      >
+        <GripVertical
+          size={14}
+          className={`text-gray-500 ${isResizing ? 'text-sky-200' : 'hover:text-sky-300'}`}
+          aria-hidden
+        />
+      </div>
 
       {/* Top bar — status pill, URL display, copy/refresh/popout/stop, close */}
       <div className="flex items-center gap-2 px-2 py-2 border-b border-gray-800 bg-gray-900/60">

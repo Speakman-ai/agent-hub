@@ -278,4 +278,34 @@ describe('SessionPreviewPane', () => {
     const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
     expect(aside.style.width).toBe('800px');
   });
+
+  it('widens the pane when the resize handle is dragged left', () => {
+    const { container } = render(
+      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
+    );
+    const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
+    const handle = screen.getByTestId('session-preview-pane-resize-handle');
+    expect(aside.style.width).toBe('560px');
+
+    fireEvent.pointerDown(handle, { clientX: 600, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+
+    expect(aside.style.width).toBe('660px');
+    expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('660');
+  });
+
+  it('loads per-session width when sessionId changes', () => {
+    window.localStorage.setItem('previewPaneWidth:s-a', '420');
+    window.localStorage.setItem('previewPaneWidth:s-b', '900');
+    const { container, rerender } = render(
+      <SessionPreviewPane sessionId="s-a" event={readyEvent} onClose={() => {}} />,
+    );
+    let aside = container.querySelector('aside[data-testid="session-preview-pane"]');
+    expect(aside.style.width).toBe('420px');
+
+    rerender(<SessionPreviewPane sessionId="s-b" event={readyEvent} onClose={() => {}} />);
+    aside = container.querySelector('aside[data-testid="session-preview-pane"]');
+    expect(aside.style.width).toBe('900px');
+  });
 });

@@ -5,6 +5,8 @@ import {
   clampPaneWidth,
   paneOpenStorageKey,
   paneWidthStorageKey,
+  previewIdFromEvent,
+  clearSessionPreviewStorage,
 } from './sessionPreviewState.js';
 
 describe('derivePaneState', () => {
@@ -158,5 +160,20 @@ describe('paneOpenStorageKey / paneWidthStorageKey', () => {
     expect(paneOpenStorageKey(null)).toBe(null);
     expect(paneOpenStorageKey(undefined)).toBe(null);
     expect(paneWidthStorageKey('')).toBe(null);
+  });
+});
+
+describe('previewIdFromEvent / clearSessionPreviewStorage', () => {
+  it('extracts previewId from WS payloads', () => {
+    expect(previewIdFromEvent({ previewId: 'p-9' })).toBe('p-9');
+    expect(previewIdFromEvent({})).toBe('');
+  });
+
+  it('removes pane open/width keys from localStorage', () => {
+    window.localStorage.setItem('previewPaneOpen:s-x', 'true');
+    window.localStorage.setItem('previewPaneWidth:s-x', '640');
+    clearSessionPreviewStorage('s-x');
+    expect(window.localStorage.getItem('previewPaneOpen:s-x')).toBeNull();
+    expect(window.localStorage.getItem('previewPaneWidth:s-x')).toBeNull();
   });
 });

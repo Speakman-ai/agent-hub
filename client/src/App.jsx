@@ -16,7 +16,11 @@ import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
-import { paneOpenStorageKey } from './utils/sessionPreviewState.js';
+import {
+  paneOpenStorageKey,
+  clearSessionPreviewStorage,
+  previewIdFromEvent,
+} from './utils/sessionPreviewState.js';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
@@ -204,6 +208,9 @@ export default function App() {
   const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState({});
   /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
   const [previewStartingBySession, setPreviewStartingBySession] = useState({});
+  const previewEventBySessionRef = useRef(previewEventBySession);
+  previewEventBySessionRef.current = previewEventBySession;
+  const tearDownSessionPreviewRef = useRef(null);
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -1794,6 +1801,7 @@ export default function App() {
         }
 
         case 'session_deleted':
+          tearDownSessionPreviewRef.current?.(data.sessionId);
           setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
           if (activeSessionIdRef.current === data.sessionId) {
             setActiveSessionId(null);
@@ -1865,6 +1873,7 @@ export default function App() {
           // the user explicitly closed.
           const sid = data.sessionId;
           if (!sid) break;
+          if (!sessionsRef.current.some((s) => s.id === sid)) break;
           setPreviewEventBySession((prev) => ({ ...prev, [sid]: data }));
           setPreviewStartingBySession((prev) => {
             if (!prev[sid]) return prev;
@@ -2569,6 +2578,38 @@ export default function App() {
     }
   }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
 
+  const tearDownSessionPreview = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      const previewId = previewIdFromEvent(previewEventBySessionRef.current[sessionId]);
+      if (previewId) {
+        void handlePreviewStop({ previewId });
+      }
+      clearSessionPreviewStorage(sessionId);
+      setPreviewEventBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      setPreviewPaneOpenBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      setPreviewStartingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    },
+    [handlePreviewStop],
+  );
+
+  tearDownSessionPreviewRef.current = tearDownSessionPreview;
+
   const handlePreviewConfigure = useCallback(() => {
     setCurrentView('settings:preview');
   }, [setCurrentView]);
@@ -2751,6 +2792,7 @@ export default function App() {
 
   const handleDeleteSession = async (sessionId) => {
     setDeletingSessionIds((prev) => new Set(prev).add(sessionId));
+    tearDownSessionPreview(sessionId);
     // Capture the row before the filter so we can optimistically add it to
     // the Archived list — avoids a round-trip to refresh the archived view
     // after every delete. The server's `session_restored` / subsequent page
@@ -2830,6 +2872,7 @@ export default function App() {
   const handleClearAllSessions = async () => {
     if (!activeAgentId) return;
     setDeletingBulk('all');
+    for (const s of sessions) tearDownSessionPreview(s.id);
     try {
       const result = await api.clearAllSessions(activeAgentId);
       if (result.ok) {
@@ -2845,8 +2888,11 @@ export default function App() {
   const handleClearInactiveSessions = async () => {
     if (!activeAgentId) return;
     setDeletingBulk('inactive');
+    const activeIds = new Set(Object.keys(activeTasks));
+    for (const s of sessions) {
+      if (!activeIds.has(s.id)) tearDownSessionPreview(s.id);
+    }
     try {
-      const activeIds = new Set(Object.keys(activeTasks));
       const result = await api.clearInactiveSessions(activeAgentId);
       if (result.ok) {
         // Keep only sessions that had active tasks (server skipped them)

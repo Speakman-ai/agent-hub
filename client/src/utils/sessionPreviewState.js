@@ -126,6 +126,26 @@ export function paneWidthStorageKey(sessionId) {
   return `previewPaneWidth:${sessionId}`;
 }
 
+/** Best-effort preview id from a stored `agenthub_preview` WS payload. */
+export function previewIdFromEvent(event) {
+  if (!event || typeof event !== 'object') return '';
+  const id = event.previewId;
+  return typeof id === 'string' ? id : '';
+}
+
+/** Drop per-session preview pane prefs from localStorage (archive / delete). */
+export function clearSessionPreviewStorage(sessionId) {
+  if (!sessionId) return;
+  try {
+    const openKey = paneOpenStorageKey(sessionId);
+    const widthKey = paneWidthStorageKey(sessionId);
+    if (openKey) window.localStorage.removeItem(openKey);
+    if (widthKey) window.localStorage.removeItem(widthKey);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 /**
  * Default pane width in pixels. Used as the `useState` initial value in
  * SessionPreviewPane and as the `fallback` in `clampPaneWidth`, so the two
