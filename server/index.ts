@@ -58,6 +58,8 @@ import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
+import { sessionUsesWorktree } from './project-mode.js';
+import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
@@ -87,6 +89,7 @@ import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
 import createPreviewWizardRoutes from './routes/preview-wizard.js';
+import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
 import createProvisioningRoutes from './routes/provisioning.js';
 import createAuditRoutes from './routes/audit.js';
 import createAgentRoutes from './routes/agents.js';
@@ -407,6 +410,9 @@ function ensureWorktree(
    */
   githubRepo?: string | null,
 ): Promise<string> {
+  if (isPreviewSetupWizardSession(session) || !sessionUsesWorktree(session)) {
+    return Promise.resolve(projectCwd);
+  }
   return ensureSessionWorkspace(
     session,
     projectCwd,
@@ -809,6 +815,12 @@ app.use(createProjectRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createPreviewWizardRoutes(routeDeps));
+app.use(
+  createPreviewEnvironmentRoutes({
+    ...routeDeps,
+    getPreviewComposeRuntime: () => previewComposeRuntime,
+  }),
+);
 app.use(createProvisioningRoutes(routeDeps));
 app.use(createAuditRoutes(routeDeps));
 app.use(createAgentRoutes(routeDeps));

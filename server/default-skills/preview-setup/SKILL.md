@@ -1,200 +1,95 @@
 ---
 name: preview-setup
 description: >-
-  Cursor-style interactive wizard that walks the user through configuring
-  `prEnv.preview` for a project. Inspects the repo, runs the static
-  detector as a baseline, scans source files for `process.env.X` /
-  `import.meta.env.VITE_X` usages, and emits a single `agenthub:ask`
-  block to confirm the draft + collect values for required env keys.
-  TRIGGER only when a wizard session was spawned by
-  `POST /api/projects/:id/preview/setup-wizard` and the project id has
-  been injected into the prompt.
-version: 1.0.0
+  Default guided walkthrough for Docker Compose preview setup. Triggered by
+  Settings → Preview or POST .../preview/setup-wizard. Reads README, handles
+  monorepos (multiple compose services), collects env vars, persists via
+  setup-apply, validates with preview/build.
+version: 3.0.0
 keep-coding-instructions: true
 ---
 
-# Preview Setup Wizard
+# Preview Setup — Guided Walkthrough (default)
 
-You are running inside a **one-shot wizard session** spawned by the
-Agent Hub server. Your job is to figure out how to boot this project's
-dev server so the worktree-preview runtime can spawn it on demand, and
-to persist the resulting `prEnv.preview` config to `projects.json`.
+**Settings → Preview → Start setup** is the primary path (scan, edit compose/env, **Build and run**). Use this walkthrough only when the user clicks **Agent walkthrough** or asks for help in chat.
 
-The wizard is **read-only with respect to source code**: you may read
-files and run npm/grep/find, but you must **never modify code** in the
-project workspace. The only mutations you make are HTTP calls to the
-local Agent Hub API to persist config and secrets.
+## Bound values
 
-## What you will receive
+- **`PROJECT_ID`**, **`PROJECT_CWD`** — from kickoff.
+- **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`** — set for curl.
 
-The kickoff prompt (the first user message you saw) declares three
-**bound values** under a "Bound values" header. Substitute them
-literally into every command below — they are **not** exported as
-shell env vars:
+## Draft (start here)
 
-- **`PROJECT_ID`** — the project slug. Use it on every API call.
-- **`PROJECT_CWD`** — absolute path to the project checkout on disk.
-- **`SKILL_SCRIPTS_DIR`** — absolute path to the bundled helper scripts
-  (`scan-env-usage.sh`, `scan-package-scripts.sh`). Invoke them by
-  full path; **do not** look for an env var to hold this value.
+Kickoff includes full `draft` JSON:
 
-The standard Agent Hub spawn env vars (`$AGENT_HUB_URL`,
-`$AGENT_HUB_API_KEY`) ARE set — use them as-is in your curl commands.
+| Field | Use |
+|-------|-----|
+| `isMonorepo` | Extra care: list all services, explain UI vs backend |
+| `composeCandidates` | Each compose file + `services[]` with ports |
+| `detected` / `bootstrap` | Defaults for asks |
+| `readme` | `setupExcerpt`, `readmePath` |
+| `envVars` | Keys + `sources` + `required` |
+| `scriptHints` | How devs run apps locally |
 
-## Required steps
+**Do not** re-scan the repo unless the user changed files mid-session.
 
-### 1. Run the static detector as a baseline
+## Step 1 — README
 
-The server exposes the same `detectPreviewDefaults()` helper the
-new-project wizard uses. Call it first and treat its result as your
-starting draft:
+Read `README.md` under `<PROJECT_CWD>`. Summarize local dev and docker instructions in 2–4 sentences before any `agenthub:ask`.
+
+## Step 2 — Monorepo / multi-service
+
+When `isMonorepo` **or** more than two services:
+
+1. Print a bullet list: `serviceName` → role guess (web UI, API, worker, db) using README + compose build commands.
+2. First `agenthub:ask` (if multiple compose files in `composeCandidates`): pick compose **file** path.
+3. Second `agenthub:ask`: pick **entry service** — one option per service in that file, with descriptions (ports from draft).
+
+Single-service repos: one ask combining file confirmation + entry service.
+
+## Step 3 — Bootstrap compose
+
+If `phase === "bootstrap_compose"`:
+
+- Show YAML from `bootstrap.composeYaml`.
+- Ask approval to write `bootstrap.file`.
+- `POST .../preview/setup-compose-bootstrap` with `{ file, content, overwrite: false }`.
+
+## Step 4 — Ports, health, routes
+
+`agenthub:ask` for entry port, health path (`preview.compose.healthPath`), env file, idle TTL, capture routes. Use draft defaults as option labels.
+
+## Step 5 — Environment variables
+
+For each `draft.envVars` entry (required first):
+
+- Ask in prose for values.
+- `kind: secret` for tokens/passwords; `plain` for public URLs.
+
+Bundle into `setup-apply`:
+
+```json
+"secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" }
+```
+
+## Step 6 — Persist + validate
 
 ```bash
-curl -s -X POST \
-  -H "x-api-key: $AGENT_HUB_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/detect"
+curl -s -X POST .../preview/setup-apply -d '{ "enabled": true, "preview": { "compose": { ... } }, "secrets": { ... } }'
+curl -s -X POST .../preview/build -d '{ "compose": { ... }, "envVars": [...] }'
+# or preview/test when build is not suitable
+curl -s -X POST .../preview/wizard-complete
 ```
 
-(Substitute `<PROJECT_ID>` with the literal value from the kickoff
-prompt's Bound values block.)
-
-If `detected` is non-null, the baseline is `{ startScript, port,
-captureRoutes, idleTTL }` plus a `stack` tag (`vite`, `next`, …,
-`fullstack-django-react`, `fullstack-monorepo`, `fullstack-scripts`).
-If `detected` is null, build the draft from scratch — see step 2.
-
-### 2. Scan the workspace
-
-Walk `src/`, `app/`, `pages/`, `backend/`, `frontend/`,
-`apps/*/src` for source files (`.js`, `.jsx`, `.ts`, `.tsx`, `.py`,
-`.rb`, `.go`, `.rs`, `.svelte`, `.vue`) and **grep for environment
-variable reads**:
-
-- `process.env.FOO` / `process.env['FOO']`
-- `import.meta.env.VITE_FOO`
-- `os.environ['FOO']` / `os.environ.get('FOO')`
-- `ENV['FOO']` / `ENV.fetch('FOO')` (Ruby)
-- `os.Getenv("FOO")` (Go)
-
-The bundled helper does this for you. Replace `<SKILL_SCRIPTS_DIR>`
-and `<PROJECT_CWD>` with the literal absolute paths from the kickoff
-prompt:
-
-```bash
-bash "<SKILL_SCRIPTS_DIR>/scan-env-usage.sh" "<PROJECT_CWD>"
-```
-
-It emits one env-key per line, deduped. **Skip `NODE_ENV`,
-`PATH`, `HOME`, `PWD`, `CI`, and any key starting with `VITE_PUBLIC_`**
-— those are runtime-platform vars or already-public values that don't
-need to be collected from the user.
-
-Also enumerate npm scripts to make sure your draft `startScript` is
-plausible:
-
-```bash
-bash "<SKILL_SCRIPTS_DIR>/scan-package-scripts.sh" "<PROJECT_CWD>"
-```
-
-### 3. Propose a draft and ask the user
-
-Emit **one** `agenthub:ask` fenced block with at most 4 questions
-covering:
-
-- **Start script** (single-select). Options: the detected default, the
-  most plausible alternatives from `scan-package-scripts.sh`, and an
-  "Other…" row (the picker UI supplies that automatically — do not add
-  one yourself).
-- **Health path** (single-select). Default `/`; include `/healthz`,
-  `/api/health` as alternatives.
-- **Required env keys** (multi-select). One option per env key you
-  found in step 2. The user toggles which ones are truly required for
-  boot.
-- **Optional capture routes** (multi-select). Suggested routes you
-  found in `pages/` / `app/` / from React Router config.
-
-Use `multiSelect: true` for the env-keys and routes questions;
-`multiSelect: false` for the start-script and health-path questions.
-
-### 4. Collect values for the required env keys
-
-After the user confirms which env keys are required, **ask in plain
-prose** for each value. The values go into the secret store —
-`POST /api/projects/:id/preview/secrets/import` with `mode: 'merge'`.
-Treat anything that *looks* like a secret (API keys, tokens, JWTs,
-DB connection strings, anything with the substring `KEY`, `TOKEN`,
-`SECRET`, `PASSWORD`, `DSN`) as `kind: 'secret'`; everything else as
-`kind: 'plain'`.
-
-### 5. Persist the config
-
-Two API calls, in this order:
-
-1. **Project preview config** via PATCH:
-
-   ```bash
-   curl -s -X PATCH \
-     -H "x-api-key: $AGENT_HUB_API_KEY" \
-     -H "Content-Type: application/json" \
-     -d '{"prEnv":{"healthPath":"/","preview":{"enabled":true,"startScript":"npm run dev","captureRoutes":["/"],"idleTTL":600}}}' \
-     "$AGENT_HUB_URL/api/projects/<PROJECT_ID>"
-   ```
-
-2. **Preview secrets** via the import endpoint with `mode: 'merge'`:
-
-   ```bash
-   curl -s -X POST \
-     -H "x-api-key: $AGENT_HUB_API_KEY" \
-     -H "Content-Type: application/json" \
-     -d '{"mode":"merge","env":"FOO=bar\nBAR=baz\n","defaultKind":"secret"}' \
-     "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/secrets/import"
-   ```
-
-### 6. Optional — verify boot
-
-If the user opted in to a verification run, call:
-
-```bash
-curl -s -X POST \
-  -H "x-api-key: $AGENT_HUB_API_KEY" \
-  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/test"
-```
-
-Report the `ok` / `error` / `durationMs` to the user in your summary.
-
-### 7. Tell the server the wizard finished
-
-When (and only when) both persistence calls in step 5 succeeded, ping
-the completion endpoint so the open Settings panel refetches the
-project:
-
-```bash
-curl -s -X POST \
-  -H "x-api-key: $AGENT_HUB_API_KEY" \
-  "$AGENT_HUB_URL/api/projects/<PROJECT_ID>/preview/wizard-complete"
-```
-
-The server broadcasts a `preview_wizard_complete` WebSocket event.
-
-### 8. Close the linked kanban card
-
-End your turn with an `<agenthub:close-card>` block citing
-`already-done` so the wizard's own session card is moved to Done:
-
-```
+```xml
 <agenthub:close-card>
-{"reason": "already-done", "note": "Preview config persisted. healthPath=/, startScript='npm run dev', 3 secrets."}
+{"reason": "already-done", "note": "Preview walkthrough complete."}
 </agenthub:close-card>
 ```
 
-## What NOT to do
+## Rules
 
-- Don't run the dev server yourself — the runtime's `preview/test`
-  endpoint exists for that, and it handles teardown.
-- Don't write to disk in the project workspace.
-- Don't ask the user the same question twice — collapse into a single
-  `agenthub:ask` block at step 3.
-- Don't echo secret values back into chat after collecting them — the
-  Agent Hub Secret Store will mask them on subsequent reads anyway.
+- **Fenced** `agenthub:ask` only (≥2 options per question). JSON must use **`question`**, **`header`**, and **`options[].label`** + **`options[].description`** — not `prompt`, `id`, or `type` (those show as raw code in chat).
+- Multiple ask rounds are expected for monorepos.
+- Never `startScript` / `processes[]` preview mode.
+- Prefer pointing users to **Settings → Preview** for compose/env edits and **Build and run**; use chat asks for choices you cannot infer from the draft.

@@ -60,7 +60,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { ChildProcess, SpawnOptions } from 'child_process';
+import { spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
@@ -69,6 +69,7 @@ import {
   DEFAULT_PREVIEW_PORT_RANGE,
 } from './preview-schema.js';
 import type { PreviewComposeConfig, PrEnvPreviewConfig, Project } from '../types.js';
+import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -566,6 +567,13 @@ export class PreviewComposeRuntime {
       AGENTHUB_SESSION_ID: sessionId,
       AGENTHUB_PROJECT_ID: project.id,
     };
+    // Wizard-persisted preview secrets must reach `${VAR}` substitutions in
+    // compose files. Without this, only repo `.env` / host process.env apply.
+    mergeProjectSecretsSpawnEnv(composeEnv, {
+      projectId: project.id,
+      sessionId,
+      overwriteExisting: true,
+    });
 
     try {
       const child = this.spawn('docker', upArgs, {
@@ -686,6 +694,11 @@ export class PreviewComposeRuntime {
       AGENTHUB_SESSION_ID: row.session_id,
       AGENTHUB_PROJECT_ID: row.project_id,
     };
+    mergeProjectSecretsSpawnEnv(downEnv, {
+      projectId: row.project_id,
+      sessionId: row.session_id,
+      overwriteExisting: true,
+    });
     try {
       const child = this.spawn('docker', downArgs, {
         cwd: row.worktree_path ?? undefined,
@@ -739,18 +752,39 @@ export class PreviewComposeRuntime {
     return rows.length;
   }
 
-  /**
-   * Compose previews don't (yet) buffer stdout/stderr in memory the way
-   * `PreviewRuntime` does — containers log via `docker logs` and the
-   * runtime never reads them. Returns `[]` so callers that branch on
-   * runtime shape (e.g. `preview-block.ts`) don't have to special-case
-   * compose vs spawn. A future enhancement could pipe `docker compose
-   * logs --follow` into an in-memory ring buffer, mirroring the legacy
-   * runtime's tail behaviour.
-   */
-
-  getLogTail(_groupId: string): string[] {
-    return [];
+  /** Fetch recent `docker compose logs` for a compose-managed group. */
+  getLogTail(groupId: string): string[] {
+    const row = this.db
+      .prepare(
+        `SELECT compose_project_name, worktree_path, compose_file, override_file_path
+           FROM worktree_preview_groups WHERE id = ?`,
+      )
+      .get(groupId) as
+      | {
+          compose_project_name: string | null;
+          worktree_path: string | null;
+          compose_file: string | null;
+          override_file_path: string | null;
+        }
+      | undefined;
+    if (!row?.compose_project_name || !row.worktree_path) return [];
+    const composeFile = row.compose_file ?? this.defaultComposeFile;
+    const args = ['compose', '-p', row.compose_project_name, '-f', composeFile];
+    if (row.override_file_path) args.push('-f', row.override_file_path);
+    args.push('logs', '--tail', '120', '--no-color');
+    try {
+      const result = spawnSync('docker', args, {
+        cwd: row.worktree_path,
+        encoding: 'utf8',
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: 15_000,
+      });
+      const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+      if (!text) return [];
+      return text.split(/\r?\n/).filter((line) => line.length > 0);
+    } catch {
+      return [];
+    }
   }
 
   /** Bump `last_active_at` so the reaper's idle-TTL clock resets. */

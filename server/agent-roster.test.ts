@@ -16,6 +16,7 @@ const { mockAllAgents, mockFindProject } = vi.hoisted(() => ({
 }));
 
 vi.mock('./db.js', () => ({
+  db: {},
   stmts: {
     getAgentSkillOverrides: { all: () => [] },
   },

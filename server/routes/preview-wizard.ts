@@ -2,44 +2,45 @@
  * AI-assisted preview setup wizard routes.
  *
  *   POST /api/projects/:projectId/preview/setup-wizard
- *     Admin+. Spawns a one-shot session against the project's lead
- *     agent with the `preview-setup` default skill instructions baked
- *     into the kickoff prompt. Returns `{ sessionId, agentId }` so the
- *     client can attach to the standard chat stream via
- *     `useSessionStream(sessionId)`.
+ *     Admin+. Spawns a one-shot session with a server-precomputed draft
+ *     (compose-only detect + env scan) embedded in the kickoff
+ *     prompt. Returns `{ sessionId, agentId, draft, session }`.
+ *
+ *   POST /api/projects/:projectId/preview/setup-compose-bootstrap
+ *     Admin+. Writes a starter docker-compose file when the draft is in
+ *     `bootstrap_compose` phase (user-approved only).
+ *
+ *   POST /api/projects/:projectId/preview/setup-apply
+ *     Admin+. Persists compose preview config + optional secrets in one call.
  *
  *   POST /api/projects/:projectId/preview/wizard-complete
- *     The wizard skill's last step. Broadcasts a
- *     `preview_wizard_complete` WebSocket event so the open Settings →
- *     Preview panel can refetch the project record. No body; pure
- *     side-effect.
- *
- * Design notes:
- *
- * - The wizard reuses the existing session/message machinery so the
- *   user-facing UX is identical to any other chat. No new schema, no
- *   new transport.
- * - `use_worktree=0` because the wizard reads the project checkout but
- *   never mutates code. `ask_mode=0` so the agent can run the scanner
- *   helpers and call the local API to persist config.
- * - The completion endpoint requires User-level auth to prevent existence
- *   oracles and broadcast spam from unauthenticated callers.
+ *     User+. Broadcasts `preview_wizard_complete` for the Settings panel.
  */
 import path from 'path';
+import { existsSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
+import { collectPreviewSetupDraft, type PreviewSetupDraft } from '../preview-setup-draft.js';
+import {
+  buildPrEnvPatchFromWizardApply,
+  type PreviewSetupApplyBody,
+} from '../preview-setup-apply.js';
+import {
+  listRawPreviewSecretRows,
+  parseDotEnv,
+  replacePreviewSecrets,
+  replacePreviewSecretsMixed,
+  PreviewSecretValidationError,
+} from '../preview/preview-secrets-store.js';
+import type { PreviewSecretInput } from '../preview/preview-secrets-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Absolute path to the bundled preview-setup skill's scripts directory.
-// We surface this in the kickoff prompt so the agent can shell out to
-// the env-usage / package-script scanners without needing an env-var
-// injection path through the spawn allowlist. Exported for tests.
 export const PREVIEW_SETUP_SKILL_SCRIPTS_DIR = path.resolve(
   __dirname,
   '..',
@@ -48,64 +49,94 @@ export const PREVIEW_SETUP_SKILL_SCRIPTS_DIR = path.resolve(
   'scripts',
 );
 
-/**
- * Choose the agent the wizard session should attach to. Prefer the
- * project's first agent (conventionally the lead). Returns null when
- * the project has no agents at all — caller surfaces a 400.
- */
 function pickWizardAgent(project: Project): string | null {
   if (!project.agents || !Array.isArray(project.agents) || project.agents.length === 0) {
     return null;
   }
-  // The "lead" agent is the first one in the canonical roster. We
-  // could prefer role=lead explicitly, but `Agent` doesn't have a
-  // role field in `Project.agents` — falling back to position is fine.
   return project.agents[0].id;
 }
 
-/**
- * Compose the kickoff prompt the wizard agent receives as the first
- * user message. The prompt deliberately tells the agent which skill to
- * load via the `<agenthub:skill>` block so the SKILL.md body is
- * injected on the next turn — same protocol as any other skill load.
- */
-// Exported for tests so the prompt-contract regression in
-// `preview-wizard-prompt.test.ts` can assert the bound values land
-// verbatim in the kickoff message body.
+export function isPreviewSetupWizardSession(session: { name?: string | null }): boolean {
+  return typeof session.name === 'string' && session.name.startsWith('[Preview Setup]');
+}
+
+const ALLOWED_COMPOSE_ROOT_FILES = new Set([
+  'docker-compose.yml',
+  'compose.yml',
+  'docker-compose.yaml',
+  'compose.yaml',
+]);
+
+const COMPOSE_PATH_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
+
 export function buildKickoffPrompt(
   projectId: string,
   projectCwd: string,
-  skillScriptsDir: string,
+  _skillScriptsDir: string,
+  draft: PreviewSetupDraft,
 ): string {
+  const draftJson = JSON.stringify(draft, null, 2);
+  const mono = draft.isMonorepo ? 'yes' : 'no';
+  const serviceCount =
+    draft.detected?.compose.services?.length ??
+    draft.composeCandidates?.[0]?.services?.length ??
+    draft.bootstrap?.services?.length ??
+    0;
   return [
-    '# Preview Setup Wizard',
+    '# Preview Setup — guided walkthrough (required)',
     '',
-    'You have been spawned to walk the user through configuring the per-session worktree preview for this project.',
+    'You are the **default** setup path for this project. Walk the user through preview configuration **interactively** — do not tell them to use Settings forms. This repo scan says **monorepo: ' +
+      mono +
+      '** with **' +
+      String(serviceCount) +
+      '+** compose service(s) in the draft.',
     '',
-    '## Bound values (substitute these verbatim wherever SKILL.md references them)',
+    '## Bound values',
     '',
     `- **PROJECT_ID**: \`${projectId}\``,
     `- **PROJECT_CWD**: \`${projectCwd}\``,
-    `- **SKILL_SCRIPTS_DIR**: \`${skillScriptsDir}\``,
     '',
-    'Use these literal values directly in every curl URL and shell invocation in the skill body. **Do not** rely on shell env vars named `$PREVIEW_WIZARD_PROJECT_ID`, `$PREVIEW_WIZARD_CWD`, or `$AGENT_HUB_SKILL_DIR` — they are NOT set in your spawn environment.',
+    '## Server-provided draft (repo scan — do not re-run scanners)',
     '',
-    'Load the `preview-setup` skill and follow its instructions. The skill explains the full step-by-step flow (static detector → env-usage scan → `agenthub:ask` block → persist → optional verification → broadcast completion).',
+    '```json',
+    draftJson,
+    '```',
+    '',
+    'Key fields: `composeCandidates[]` (every compose file + services/ports), `isMonorepo`, `readme`, `envVars`, `scriptHints`, `phase`.',
+    '',
+    '## Required walkthrough order',
+    '',
+    '1. **Read README** — `Read` `<PROJECT_CWD>/README.md` (or path in `draft.readme.readmePath`). Summarize how the team runs the app locally and any docker/compose notes. Quote `draft.readme.setupExcerpt` if set.',
+    '2. **Monorepo / multi-service** — When `draft.isMonorepo` or `composeCandidates[].services.length > 2`:',
+    '   - List **every** service name (and port if known) from `composeCandidates` or `draft.detected.compose.services`.',
+    '   - Explain which service is the **browser entry** (UI) vs API/worker/DB — previews iframe the **entry** service only.',
+    '   - Use a fenced `agenthub:ask` so the user picks **compose file** (if multiple in `composeCandidates`) and **entry service** (one option per service, with short descriptions).',
+    '3. **Bootstrap** — If `draft.phase === "bootstrap_compose"`: propose `draft.bootstrap.composeYaml`, get approval, `POST .../preview/setup-compose-bootstrap`, then continue.',
+    '4. **Compose details** — `agenthub:ask` for entry port, health path, env file, idle TTL, capture routes (use draft defaults as option labels).',
+    '5. **Environment variables** — For each key in `draft.envVars` (especially `required: true`), ask in **plain prose** for values. Do not echo secrets back. Then include in `setup-apply` `secrets.env` as dotenv lines.',
+    '6. **Persist** — `POST .../preview/setup-apply` with `preview.compose` only (health on `preview.compose.healthPath`).',
+    '7. **Validate** — `POST .../preview/build` with the same compose + secrets (or `POST .../preview/test` if build unavailable) and report pass/fail.',
+    '8. **`POST .../preview/wizard-complete`** then `<agenthub:close-card>`.',
+    '',
+    'Use **multiple** `agenthub:ask` rounds if needed (monorepos need separate file vs service questions). Only **triple-backtick** fenced blocks render as pickers.',
+    '',
+    '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type` (those render as raw code).',
+    '',
+    '**Never** use script/`startScript`/`processes[]` preview mode.',
     '',
     '<agenthub:skill>',
     JSON.stringify({
       name: 'preview-setup',
-      reason: 'one-shot wizard kickoff — full instructions live in the skill body',
+      reason: 'guided monorepo-aware walkthrough — draft embedded above',
     }),
     '</agenthub:skill>',
   ].join('\n');
 }
 
 export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
-  const { findProject, findAgent, stmts, handleChat, broadcast, config } = deps;
+  const { findProject, findAgent, stmts, handleChat, broadcast, config, saveProjects } = deps;
   const router = Router();
 
-  // ─── Spawn the wizard session ─────────────────────────────────────
   router.post(
     '/api/projects/:projectId/preview/setup-wizard',
     requireRole('Admin'),
@@ -127,11 +158,11 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       }
       const agentLookup = findAgent(agentId);
       if (!agentLookup) {
-        // Defensive — would mean projects.json is internally inconsistent.
         res.status(500).json({ error: 'Wizard agent could not be resolved' });
         return;
       }
 
+      const draft = collectPreviewSetupDraft(cwd);
       const sessionId = uuidv4();
       const engine = agentLookup.agent.engine || 'claude-code';
       const wizOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
@@ -140,9 +171,6 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         ownerUserId: wizOwnerUid,
       });
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
-      // The wizard explicitly never mutates code — it only reads the
-      // project checkout. So we always opt out of worktree isolation,
-      // regardless of project mode or default flag.
       const useWorktree = 0;
       const askMode = 0;
       stmts.createSession.run(
@@ -157,21 +185,12 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       );
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
-      const prompt = buildKickoffPrompt(project.id, cwd, PREVIEW_SETUP_SKILL_SCRIPTS_DIR);
-      // Fire-and-forget — `handleChat` writes the user message and
-      // kicks off the streaming spawn. The HTTP response carries
-      // enough to attach the client side.
+      const prompt = buildKickoffPrompt(project.id, cwd, PREVIEW_SETUP_SKILL_SCRIPTS_DIR, draft);
       void handleChat(null, {
         type: 'chat',
         agentId,
         sessionId,
         content: prompt,
-        // Intentionally no `extraEnv`: the kickoff prompt surfaces
-        // PROJECT_ID / PROJECT_CWD / SKILL_SCRIPTS_DIR as literal
-        // "bound values" and SKILL.md references them via
-        // `<PROJECT_ID>` placeholders. The `EXTRA_ENV_ALLOWLIST` is
-        // also locked to `DEV_HUB_API_KEY` only, so spawning any
-        // other keys here would be dropped at merge time anyway.
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
@@ -181,26 +200,119 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         sessionId,
         agentId,
       });
-      res.status(201).json({ sessionId, agentId, session });
+      res.status(201).json({ sessionId, agentId, draft, session });
     },
   );
 
-  // ─── Wizard reports persistence is done ───────────────────────────
-  //
-  // The skill calls this after PUT-ing `prEnv.preview` + secrets so
-  // the open Settings panel knows to refetch. No body — the broadcast
-  // payload identifies the project.
-  //
-  // Gated behind `requireRole('User')` so anonymous callers can't
-  // (a) probe project-id existence via the 404/200 split, or
-  // (b) spam refetches across every connected browser. The wizard
-  // session inherits the spawning user's identity / API key so the
-  // gate is transparent to legitimate callers.
-  //
-  // We deliberately do NOT distinguish "unknown project" from
-  // "known project" in the response — both return `{ ok: true }` —
-  // so the route reveals nothing beyond "you're authenticated". The
-  // broadcast only fires when the project exists.
+  router.post(
+    '/api/projects/:projectId/preview/setup-compose-bootstrap',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const cwd = project.cwd;
+      if (!cwd || typeof cwd !== 'string') {
+        res.status(400).json({ error: 'Project has no cwd configured' });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        file?: string;
+        content?: string;
+        overwrite?: boolean;
+      };
+      const file = (body.file || 'docker-compose.yml').trim();
+      if (!ALLOWED_COMPOSE_ROOT_FILES.has(file)) {
+        res.status(400).json({
+          error:
+            'file must be one of docker-compose.yml, compose.yml, docker-compose.yaml, compose.yaml at the project root',
+        });
+        return;
+      }
+      if (COMPOSE_PATH_TRAVERSAL_RE.test(file) || file.startsWith('/')) {
+        res.status(400).json({ error: 'compose file path must be a relative root filename' });
+        return;
+      }
+      const content = typeof body.content === 'string' ? body.content : '';
+      if (!content.trim()) {
+        res.status(400).json({ error: 'content must be a non-empty compose YAML string' });
+        return;
+      }
+      const target = path.join(cwd, file);
+      if (existsSync(target) && !body.overwrite) {
+        res.status(409).json({
+          error: `${file} already exists — pass overwrite:true after the user confirms replacing it`,
+        });
+        return;
+      }
+      try {
+        writeFileSync(target, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: `Failed to write compose file: ${message}` });
+        return;
+      }
+      const draft = collectPreviewSetupDraft(cwd);
+      res.json({ ok: true, file, draft });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/preview/setup-apply',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const body = (req.body ?? {}) as PreviewSetupApplyBody;
+      const prEnvResult = buildPrEnvPatchFromWizardApply(project, body);
+      if (!prEnvResult.ok) {
+        res.status(400).json({ error: prEnvResult.error });
+        return;
+      }
+      (project as Record<string, unknown>).prEnv = prEnvResult.prEnv;
+      saveProjects();
+
+      let secretsImported = 0;
+      if (body.secrets && typeof body.secrets.env === 'string') {
+        try {
+          const rawMode = body.secrets.mode;
+          if (rawMode !== undefined && rawMode !== 'merge' && rawMode !== 'replace') {
+            res.status(400).json({ error: 'secrets.mode must be "merge" or "replace"' });
+            return;
+          }
+          const mode = rawMode === 'replace' ? 'replace' : 'merge';
+          const defaultKind = body.secrets.defaultKind === 'plain' ? 'plain' : 'secret';
+          const parsed = parseDotEnv(body.secrets.env);
+          const inputs: PreviewSecretInput[] = parsed.map((p) => ({
+            ...p,
+            kind: p.kind ?? defaultKind,
+          }));
+          const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+          if (mode === 'merge') {
+            const existingRaw = listRawPreviewSecretRows(project.id);
+            replacePreviewSecretsMixed(project.id, inputs, existingRaw, actorUserId);
+          } else {
+            replacePreviewSecrets(project.id, inputs, actorUserId);
+          }
+          secretsImported = inputs.length;
+        } catch (err) {
+          if (err instanceof PreviewSecretValidationError) {
+            res.status(err.statusCode).json({ error: err.message });
+            return;
+          }
+          throw err;
+        }
+      }
+
+      res.json({ ok: true, secretsImported });
+    },
+  );
+
   router.post(
     '/api/projects/:projectId/preview/wizard-complete',
     requireRole('User'),

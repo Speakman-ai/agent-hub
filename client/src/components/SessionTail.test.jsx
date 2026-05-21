@@ -110,6 +110,66 @@ describe('eventsToBlocks — browser_tool_activity handling', () => {
   });
 });
 
+describe('eventsToBlocks — agenthub:ask recovery', () => {
+  it('renders a picker for flat fenced envelope (askId + question at top level)', () => {
+    const body = JSON.stringify({
+      askId: 'preview-bootstrap-approval',
+      header: 'Write docker-compose.yml?',
+      question: 'May I create docker-compose.yml?',
+      multiSelect: false,
+      options: [
+        { label: 'Yes', description: 'Create file' },
+        { label: 'No', description: 'Skip' },
+      ],
+    });
+    const events = [
+      {
+        seq: 0,
+        event: {
+          type: 'assistant_text',
+          text: `Approve bootstrap:\n\n\`\`\`agenthub:ask\n${body}\n\`\`\`\n`,
+        },
+      },
+    ];
+    const blocks = eventsToBlocks(events);
+    expect(blocks.some((b) => b.kind === 'ask_question')).toBe(true);
+    expect(blocks.find((b) => b.kind === 'ask_question')?.event.askId).toBe(
+      'preview-bootstrap-approval',
+    );
+    const textBlock = blocks.find((b) => b.kind === 'text');
+    expect(textBlock?.text ?? '').not.toContain('agenthub:ask');
+  });
+
+  it('renders a picker when ask XML is only in assistant_text (no ask_user_question event)', () => {
+    const payload = JSON.stringify({
+      questions: [
+        {
+          question: 'Start script?',
+          header: 'Script',
+          multiSelect: false,
+          options: [
+            { label: 'npm run dev', description: 'vite' },
+            { label: 'npm start', description: 'prod' },
+          ],
+        },
+      ],
+    });
+    const events = [
+      {
+        seq: 0,
+        event: {
+          type: 'assistant_text',
+          text: `Pick one:\n\n<agenthub:ask>\n${payload}\n</agenthub:ask>\n`,
+        },
+      },
+    ];
+    const blocks = eventsToBlocks(events);
+    expect(blocks.some((b) => b.kind === 'ask_question')).toBe(true);
+    const textBlock = blocks.find((b) => b.kind === 'text');
+    expect(textBlock?.text ?? '').not.toContain('<agenthub:ask>');
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 

@@ -1,12 +1,13 @@
 import { Router, Request, Response } from 'express';
 import type { RouteDeps, SessionRow } from '../types.js';
+import { sessionUsesWorktree } from '../project-mode.js';
 
 /**
  * Must match chat.ts: when worktree is off, the CLI runs in project.cwd even if
  * a stale worktree_path remains on the session row.
  */
 export function effectiveCwdForSession(projectCwd: string, session: SessionRow): string {
-  if (session.use_worktree && session.worktree_path) {
+  if (sessionUsesWorktree(session) && session.worktree_path) {
     return session.worktree_path;
   }
   return projectCwd;

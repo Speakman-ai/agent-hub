@@ -63,3 +63,26 @@ export function buildSessionIdInUseRecoveryMessage(sessionId: string): string {
     `please send your message again to continue.`
   );
 }
+
+const NO_CONVERSATION_RE =
+  /No conversation found with session ID:\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
+
+/**
+ * Claude Code returns this when `--resume <id>` is used but no JSONL exists for
+ * `<id>` under the spawn cwd's project encoding (common when the prior turn
+ * used a different cwd, e.g. worktree vs project checkout).
+ */
+export function detectNoConversationFoundError(text: string): { sessionId: string } | null {
+  if (!text) return null;
+  const m = NO_CONVERSATION_RE.exec(text);
+  if (!m) return null;
+  return { sessionId: m[1] };
+}
+
+export function buildNoConversationFoundRecoveryMessage(sessionId: string): string {
+  return (
+    `Claude could not resume session ${sessionId} (no on-disk conversation for the ` +
+    `spawn working directory). Agent Hub cleared the engine link — please send your ` +
+    `message again to start a fresh CLI turn with transcript context.`
+  );
+}

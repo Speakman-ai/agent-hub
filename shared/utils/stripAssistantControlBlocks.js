@@ -11,6 +11,8 @@ const TAGS = [
   'agenthub:wiki',
   'agenthub:task-state',
   'agenthub:triage',
+  // Server-side protocol only — no UI card; always hide from the transcript.
+  'agenthub:close-card',
 ];
 
 // `[[STEP:<status>:<label>]]` progress-marker protocol — see

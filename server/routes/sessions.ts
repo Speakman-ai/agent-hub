@@ -57,6 +57,11 @@ import {
   getSessionOwner,
   getOrgOwnerUserId,
 } from '../session-ownership.js';
+import { requireRole } from '../roles.js';
+import {
+  startSessionPreview,
+  type StartSessionPreviewDeps,
+} from '../preview/start-session-preview.js';
 import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
@@ -1026,6 +1031,40 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  router.post(
+    '/api/sessions/:sessionId/preview/start',
+    requireRole('User'),
+    async (req: Request, res: Response) => {
+      try {
+        const sessionId = req.params.sessionId as string;
+        const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (!session) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        const body = (req.body ?? {}) as { route?: string; reason?: string };
+        const result = await startSessionPreview({
+          sessionId,
+          body,
+          broadcast: deps.broadcast,
+          findAgent,
+          getPreviewRuntime: deps.getPreviewRuntime as StartSessionPreviewDeps['getPreviewRuntime'],
+          getPreviewComposeRuntime:
+            deps.getPreviewComposeRuntime as StartSessionPreviewDeps['getPreviewComposeRuntime'],
+          getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
+        });
+        if (!result.ok) {
+          return res.status(result.statusCode).json({ error: result.error });
+        }
+        return res.json({ ok: true, started: true });
+      } catch (err) {
+        return res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
 
   router.post('/api/sessions/:sessionId/summarize', async (req: Request, res: Response) => {
     try {

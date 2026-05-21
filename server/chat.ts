@@ -86,6 +86,8 @@ import { ensureSpawnCwd } from './spawn-cwd.js';
 import {
   detectSessionIdInUseError,
   buildSessionIdInUseRecoveryMessage,
+  detectNoConversationFoundError,
+  buildNoConversationFoundRecoveryMessage,
 } from './claude-session-id-conflict.js';
 import { allAgents, findProject } from './project-model.js';
 import {
@@ -144,7 +146,12 @@ import {
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
-import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
+import {
+  getProjectMode,
+  defaultSessionUseWorktreeFlag,
+  sessionUsesWorktree,
+} from './project-mode.js';
+import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import {
   runBrowserReActStep,
@@ -237,6 +244,13 @@ interface InternalChatMessage extends ChatMessage {
   _continuationRetry?: number;
   /** Epoch ms when the current user-turn ReAct chain started (first non-continuation handle). */
   _chainStartedAtMs?: number;
+  /**
+   * Pin the Claude/Cursor spawn cwd across ReAct auto-continuations so
+   * `--resume` targets the same on-disk project encoding as the prior turn.
+   */
+  _spawnCwd?: string;
+  /** One-shot retry after Claude "No conversation found" on `--resume`. */
+  _noConversationRetry?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -874,9 +888,9 @@ When in doubt, shorter and plainer wins.`;
 
     prompt += `\n\n## Asking the User Multi-Choice Questions
 
-Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews) when you emit a fenced code block tagged \`agenthub:ask\`. Use it whenever you'd benefit from a structured answer instead of free-form text — e.g. picking between implementation approaches, libraries, UI variants, or gathering several preferences at once.
+Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews) when you emit a **fenced** code block tagged \`agenthub:ask\` (triple backticks — **not** XML tags like \`<agenthub:ask>\`, which only work for skill/close-card). Use it whenever you'd benefit from a structured answer instead of free-form text — e.g. picking between implementation approaches, libraries, UI variants, or gathering several preferences at once.
 
-**Format** — a fenced block whose body is a JSON array of 1–4 question objects:
+**Format** — a fenced block whose body is JSON: either a **JSON array** of 1–4 question objects, or a **single object** with \`question\`, \`header\`, \`options\`, and optional \`askId\` (do **not** nest under \`prompt\` / \`id\` / \`type\` — those render as raw code).
 
 \`\`\`agenthub:ask
 [
@@ -1830,7 +1844,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         project as ProjectWithCommands,
         agent as AgentWithModel,
         {
-          useWorktree: !!session!.use_worktree,
+          useWorktree: sessionUsesWorktree(session!),
           isFirstMessage,
           sessionId,
           orchestrationPhase: session!.orchestration_phase ?? null,
@@ -1943,8 +1957,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let baseBranchAdvanced: import('./worktree.js').BaseBranchAdvancedInfo | null = null;
 
       let effectiveCwd: string = project.cwd;
-      if (
-        session!.use_worktree &&
+      const pinnedSpawnCwd =
+        typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
+          ? msg._spawnCwd.trim()
+          : null;
+      if (pinnedSpawnCwd) {
+        effectiveCwd = pinnedSpawnCwd;
+      } else if (isPreviewSetupWizardSession(session!)) {
+        // Preview setup wizard: read-only pass over project.cwd (use_worktree=0).
+        effectiveCwd = project.cwd;
+        msg._spawnCwd = project.cwd;
+      } else if (
+        sessionUsesWorktree(session!) &&
         getProjectMode(project as Project) !== 'workflow' &&
         (session!.worktree_path || isNewEngineSession)
       ) {
@@ -1972,7 +1996,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
           );
         }
-      } else if (!isNewEngineSession && !session!.use_worktree && session!.worktree_path) {
+      } else if (!isNewEngineSession && !sessionUsesWorktree(session!) && session!.worktree_path) {
         console.log(
           `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
         );
@@ -3201,6 +3225,52 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               errorMsg = buildSessionIdInUseRecoveryMessage(conflict.sessionId);
             }
           }
+
+          // Self-heal "No conversation found with session ID" — usually a cwd
+          // mismatch between turns (worktree vs project checkout) or a resume
+          // attempt before Claude finished writing the JSONL. Clear the engine
+          // link so the next turn uses `--session-id` + transcript bootstrap.
+          if (engine === 'claude-code' && !isNewEngineSession) {
+            const missing =
+              detectNoConversationFoundError(errorOutput) ||
+              detectNoConversationFoundError(streamErrorMessage) ||
+              detectNoConversationFoundError(errorMsg);
+            if (missing) {
+              try {
+                S.updateSessionEngineSessionId.run(null, sessionId);
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  '[chat] Failed to clear claude engine_session_id during no-conversation recovery:',
+                  message,
+                );
+              }
+              const noConvRetries = msg._noConversationRetry ?? 0;
+              if (noConvRetries < 1) {
+                console.warn(
+                  `[chat] No conversation for resume on session ${sessionId} (${isAutoContinuation ? 'auto-continuation' : 'user turn'}); ` +
+                    `retrying once with --session-id (cwd=${effectiveCwd})`,
+                );
+                setImmediate(() => {
+                  void handleChat(null, {
+                    ...msg,
+                    _noConversationRetry: noConvRetries + 1,
+                    _spawnCwd: effectiveCwd,
+                  } as InternalChatMessage).catch((err: unknown) => {
+                    const message = err instanceof Error ? err.message : String(err);
+                    console.error('[auto-continuation] No-conversation retry failed:', message);
+                    drainQueue(sessionId);
+                  });
+                });
+                if (delegationWorkPromise) {
+                  handleDelegationCancel(sessionId);
+                  delegationWorkPromise = null;
+                }
+                return;
+              }
+              errorMsg = buildNoConversationFoundRecoveryMessage(missing.sessionId);
+            }
+          }
           console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
           console.error(`  bin: ${bin}`);
           console.error(`  cwd: ${effectiveCwd}`);
@@ -4012,6 +4082,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               _autoContinuation: true,
               _continuationDepth: continuationDepth + 1,
               _chainStartedAtMs: chainStartedAtMs,
+              _spawnCwd: effectiveCwd,
             } as InternalChatMessage).catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error('[auto-continuation] Failed:', message);

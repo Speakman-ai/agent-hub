@@ -15,6 +15,16 @@ vi.mock('../utils/orgs.js', () => ({
   updateOrg: vi.fn(),
 }));
 
+vi.mock('../utils/auth.js', () => ({
+  setup: vi.fn().mockResolvedValue({
+    token: 'test-jwt',
+    expiresAt: null,
+    user: { username: 'owner', role: 'Owner' },
+  }),
+}));
+
+import { setup as setupHubAuth } from '../utils/auth.js';
+
 // Stub only the methods the LAN-mode tests inspect; preserve everything
 // else (api.startCodexDeviceLogin, api.getCodexAuth, etc.) via
 // importActual so the Step 3 Codex device-login flow still uses its real
@@ -62,6 +72,42 @@ async function advancePastWelcome() {
   });
   await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
 }
+
+describe('SetupWizard — Hub account step', () => {
+  beforeEach(() => {
+    setupHubAuth.mockClear();
+  });
+
+  it('shows Hub account as step 1 when auth is not configured', () => {
+    render(
+      <SetupWizard setupStatus={{ authConfigured: false, engines: {} }} onComplete={() => {}} />,
+    );
+    expect(screen.getByText(/Create your Hub account/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Welcome to Agent Hub/i)).not.toBeInTheDocument();
+  });
+
+  it('creates the owner account then advances to Welcome', async () => {
+    createOrg.mockResolvedValue({ id: 'org-new' });
+    render(
+      <SetupWizard setupStatus={{ authConfigured: false, engines: {} }} onComplete={() => {}} />,
+    );
+    fireEvent.change(screen.getByTestId('hub-account-username'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByTestId('hub-account-password'), {
+      target: { value: 'longpassword12' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^continue$/i }));
+    });
+    await waitFor(() => {
+      expect(setupHubAuth).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'admin', password: 'longpassword12' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Welcome to Agent Hub/i)).toBeInTheDocument();
+    });
+  });
+});
 
 describe('SetupWizard — welcome auto-creates org', () => {
   it('creates a default local org when continuing from welcome', async () => {

@@ -59,14 +59,18 @@ vi.mock('./components/OpenProjectWizard.jsx', () => ({
 
 // Capture the props handed to the SetupWizard so we can assert which
 // step it starts on without having to render the real implementation.
-vi.mock('./components/SetupWizard.jsx', () => ({
-  default: function MockSetupWizard(p) {
-    if (typeof globalThis !== 'undefined') {
-      globalThis.__ahSetupWizardProps = p;
-    }
-    return <div data-testid="setup-wizard-mock" data-initial-step={String(p.initialStep)} />;
-  },
-}));
+vi.mock('./components/SetupWizard.jsx', async () => {
+  const actual = await vi.importActual('./components/SetupWizard.jsx');
+  return {
+    ...actual,
+    default: function MockSetupWizard(p) {
+      if (typeof globalThis !== 'undefined') {
+        globalThis.__ahSetupWizardProps = p;
+      }
+      return <div data-testid="setup-wizard-mock" data-initial-step={String(p.initialStep)} />;
+    },
+  };
+});
 
 vi.mock('./hooks/useWebSocket.js', () => ({
   useWebSocket: () => ({

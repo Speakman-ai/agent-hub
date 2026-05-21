@@ -34,6 +34,7 @@ import path from 'path';
 import os from 'os';
 
 vi.mock('./db.js', () => ({
+  db: {},
   stmts: { getAgentSkillOverrides: { all: () => [] } },
 }));
 vi.mock('./wiki.js', async (importOriginal) => {

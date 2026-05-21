@@ -445,3 +445,36 @@ registerPath({
     404: errorResponse('Checkpoint not found.'),
   },
 });
+
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/preview/start',
+  tags: ['Sessions'],
+  summary: 'Start worktree preview for a chat session',
+  description:
+    'Boots the project preview runtime for this session (same handler as `<agenthub:preview>`). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.',
+  request: {
+    params: sessionIdParams,
+    body: {
+      content: jsonContent(
+        z
+          .object({
+            route: z.string().optional().openapi({
+              description:
+                'In-app route to load (must start with `/`). Defaults to first capture route or `/`.',
+            }),
+            reason: z.string().optional(),
+          })
+          .openapi({ description: 'Optional preview task overrides.' }),
+      ),
+    },
+  },
+  responses: {
+    200: {
+      description: 'Preview boot kicked off.',
+      content: jsonContent(z.object({ ok: z.literal(true), started: z.literal(true) })),
+    },
+    404: errorResponse('Session not found.'),
+    500: errorResponse('Unexpected server error.'),
+  },
+});

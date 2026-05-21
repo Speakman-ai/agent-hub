@@ -18,3 +18,8 @@ export function getProjectMode(project: Project | null | undefined): ProjectMode
 export function defaultSessionUseWorktreeFlag(_project: Project | null | undefined): 0 | 1 {
   return 1;
 }
+
+/** True only when the session row explicitly opted into worktree isolation. */
+export function sessionUsesWorktree(session: { use_worktree: number }): boolean {
+  return Number(session.use_worktree) === 1;
+}

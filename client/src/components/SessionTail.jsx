@@ -20,6 +20,7 @@ import {
 } from '../utils/coordinationBlocks.js';
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
+import { extractAskBlocks } from '../../../shared/utils/extractAskBlocks.js';
 import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
@@ -478,14 +479,26 @@ export function eventsToBlocks(events) {
 
   const flushText = () => {
     if (!textBuf) return;
-    // Strip agent-side action blocks (<agenthub:skill>, <agenthub:react>, etc.)
-    // before rendering. The server strips these from messages.content at storage
-    // time, but the raw event payloads in session_events are immutable — they
-    // still contain the original blocks. Without this, agents that emit a skill
-    // block (whether naked or wrapped in backtick fences) see the raw XML or a
-    // visible code block in the chat transcript.
     const rawText = textBuf.final || textBuf.partials;
-    const text = stripAssistantControlBlocks(rawText);
+    let prose = rawText;
+    if (prose.includes('agenthub:ask')) {
+      const { strippedText, asks } = extractAskBlocks(prose);
+      if (asks.length > 0) {
+        for (const ask of asks) {
+          blocks.push({
+            kind: 'ask_question',
+            event: {
+              type: 'ask_user_question',
+              askId: ask.askId,
+              questions: ask.questions,
+            },
+          });
+        }
+        prose = strippedText;
+      }
+    }
+    // Strip skill/react/close-card tags from prose (not ask — handled above).
+    const text = stripAssistantControlBlocks(prose);
     if (text && text.trim()) blocks.push({ kind: 'text', text });
     textBuf = null;
   };

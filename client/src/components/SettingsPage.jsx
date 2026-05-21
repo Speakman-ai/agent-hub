@@ -8290,7 +8290,9 @@ export default function SettingsPage({
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   registerGuard={registerTabChangeGuard}
-                  onOpenSession={onOpenSession}
+                  onOpenSession={({ sessionId, agentId }) =>
+                    onOpenSession?.({ sessionId, agentId })
+                  }
                 />
               )}
               {tab === 'heartbeats' && (

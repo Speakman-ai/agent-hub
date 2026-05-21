@@ -32,4 +32,22 @@ describe('mergeProjectSecretsSpawnEnv', () => {
     mergeProjectSecretsSpawnEnv(base, { projectId: PROJECT_ID, sessionId: null });
     expect(base).toEqual({ EXISTING: '1' });
   });
+
+  it('overwrites stale host env when overwriteExisting is true (compose spawn)', () => {
+    replacePreviewSecrets(PROJECT_ID, [
+      { key: 'AWS_ACCESS_KEY_ID', value: 'AKIANEW', kind: 'secret' },
+      { key: 'AWS_SECRET_ACCESS_KEY', value: 'secret-new', kind: 'secret' },
+    ]);
+    const base: NodeJS.ProcessEnv = {
+      AWS_ACCESS_KEY_ID: 'AKIAOLD',
+      AWS_SECRET_ACCESS_KEY: 'secret-old',
+    };
+    mergeProjectSecretsSpawnEnv(base, {
+      projectId: PROJECT_ID,
+      sessionId: 'sess-compose',
+      overwriteExisting: true,
+    });
+    expect(base.AWS_ACCESS_KEY_ID).toBe('AKIANEW');
+    expect(base.AWS_SECRET_ACCESS_KEY).toBe('secret-new');
+  });
 });

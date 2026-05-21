@@ -16,6 +16,19 @@ describe('stripAssistantControlBlocks', () => {
     expect(stripAssistantControlBlocks('')).toBe('');
   });
 
+  it('strips naked <agenthub:close-card> blocks', () => {
+    const text = [
+      'All done.',
+      '',
+      '<agenthub:close-card>',
+      '{"reason":"already-done","note":"Preview saved."}',
+      '</agenthub:close-card>',
+    ].join('\n');
+    const result = stripAssistantControlBlocks(text);
+    expect(result).not.toContain('<agenthub:close-card>');
+    expect(result).toContain('All done.');
+  });
+
   it('strips a naked <agenthub:skill> block', () => {
     const text = [
       'Done with the analysis.',

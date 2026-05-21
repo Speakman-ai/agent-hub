@@ -11,22 +11,42 @@ import {
   LogIn,
   ExternalLink,
   Copy,
+  UserPlus,
+  Lock,
 } from 'lucide-react';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
+import { setup as setupHubAuth } from '../utils/auth.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { api } from '../utils/api.js';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 
-const STEP_LABELS = ['Welcome', 'AI credentials', 'Connect GitHub', 'First Project'];
-
 const DEFAULT_ORG_NAME = 'Personal';
 
-function StepIndicator({ currentStep, minStep = 1 }) {
+/** Step keys and labels when Hub owner auth is not configured yet. */
+export function getSetupWizardStepPlan(setupStatus) {
+  const needsHubAccount = setupStatus?.authConfigured === false;
+  const stepKeys = needsHubAccount
+    ? ['account', 'welcome', 'credentials', 'github', 'project']
+    : ['welcome', 'credentials', 'github', 'project'];
+  const stepLabels = needsHubAccount
+    ? ['Hub account', 'Welcome', 'AI credentials', 'Connect GitHub', 'First Project']
+    : ['Welcome', 'AI credentials', 'Connect GitHub', 'First Project'];
+  return { stepKeys, stepLabels, needsHubAccount };
+}
+
+/** 1-based step index for a logical step key (used by App.jsx initialStep). */
+export function stepIndexForKey(setupStatus, key) {
+  const { stepKeys } = getSetupWizardStepPlan(setupStatus);
+  const idx = stepKeys.indexOf(key);
+  return idx >= 0 ? idx + 1 : 1;
+}
+
+function StepIndicator({ currentStep, minStep = 1, stepLabels }) {
   return (
     <div className="flex items-center justify-center gap-3 mb-8">
-      {STEP_LABELS.map((label, i) => {
+      {stepLabels.map((label, i) => {
         const stepNum = i + 1;
         // Steps before `minStep` were intentionally skipped (e.g. wizard
         // launched from "no AI credentials" path with org already in place).
@@ -105,9 +125,20 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   // (e.g. fresh sandbox reset). The minimum back-target stays pinned to
   // `initialStep` so users can't navigate to earlier steps that were
   // intentionally skipped.
+  const { stepKeys, stepLabels } = getSetupWizardStepPlan(setupStatus);
+  const stepIndex = (key) => {
+    const idx = stepKeys.indexOf(key);
+    return idx >= 0 ? idx + 1 : 1;
+  };
+
   const [step, setStep] = useState(initialStep);
+  const currentKey = stepKeys[step - 1] ?? stepKeys[0];
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  // Hub owner account (first step when authConfigured is false)
+  const [hubUsername, setHubUsername] = useState('');
+  const [hubPassword, setHubPassword] = useState('');
 
   // Step 3 (Connect GitHub) — LAN mode toggle. Mirrors `config.lanMode` on the
   // server (see SettingsPage GitHub section for the same control post-setup).
@@ -165,7 +196,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   // config.json, or an earlier wizard run that already flipped it). Idle
   // on other steps so we don't fetch eagerly on every wizard mount.
   useEffect(() => {
-    if (step !== 3 || lanModeLoaded) return;
+    if (currentKey !== 'github' || lanModeLoaded) return;
     let cancelled = false;
     api
       .getConfig()
@@ -184,7 +215,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     return () => {
       cancelled = true;
     };
-  }, [step, lanModeLoaded]);
+  }, [currentKey, lanModeLoaded]);
 
   const handleToggleLanMode = async (next) => {
     const prev = lanMode;
@@ -281,23 +312,23 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   };
 
   useEffect(() => {
-    if (step === 2) {
+    if (currentKey === 'credentials') {
       fetchClaudeAuth();
       fetchCodexAuth();
     }
-  }, [step]);
+  }, [currentKey]);
 
   // Cursor status must follow the path typed in the wizard (not only the
   // server's persisted config) so correcting a bad auto-detect unblocks the
   // gate before Save & Continue runs /setup/configure.
   useEffect(() => {
-    if (step !== 2) return;
+    if (currentKey !== 'credentials') return;
     void fetchCursorAuth();
     const id = window.setTimeout(() => {
       void fetchCursorAuth();
     }, 400);
     return () => window.clearTimeout(id);
-  }, [step, cursorEnabled, cursorPath, fetchCursorAuth]);
+  }, [currentKey, cursorEnabled, cursorPath, fetchCursorAuth]);
 
   const credsConfigured = !!(
     authState?.apiKey?.configured ||
@@ -514,12 +545,33 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     await switchOrg(org.id);
   };
 
+  const handleHubAccountContinue = async (e) => {
+    e.preventDefault();
+    const username = hubUsername.trim();
+    const password = hubPassword;
+    if (!username || password.length < 12) {
+      setError('Username and a password of at least 12 characters are required.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await setupHubAuth({ baseUrl: getApiBase(), username, password });
+      setHubPassword('');
+      setStep(stepIndex('welcome'));
+    } catch (err) {
+      setError(err.message || 'Failed to create account');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleWelcomeContinue = async () => {
     setSaving(true);
     setError(null);
     try {
       await ensureDefaultOrg();
-      setStep(2);
+      setStep(stepIndex('credentials'));
     } catch (err) {
       setError((err && err.message) || 'Failed to initialize workspace');
     } finally {
@@ -566,7 +618,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
         }
       }
 
-      setStep(3);
+      setStep(stepIndex('github'));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -588,10 +640,83 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 overflow-y-auto">
       <div className="min-h-full w-full max-w-2xl mx-auto p-8">
-        <StepIndicator currentStep={step} minStep={initialStep} />
+        <StepIndicator currentStep={step} minStep={initialStep} stepLabels={stepLabels} />
 
-        {/* Step 1: Welcome */}
-        {step === 1 && (
+        {/* Hub owner account — only when auth.json has no users yet */}
+        {currentKey === 'account' && (
+          <div className="space-y-5 max-w-md mx-auto">
+            <div className="text-center mb-2">
+              <div className="flex justify-center mb-3">
+                <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                  <UserPlus className="w-7 h-7 text-emerald-400" />
+                </div>
+              </div>
+              <h1 className="text-xl font-bold text-white mb-1">Create your Hub account</h1>
+              <p className="text-gray-400 text-sm">
+                This username and password protect Agent Hub on this machine — API access, settings,
+                and org data. Pick something strong; you can add more users later in Settings.
+              </p>
+            </div>
+            <form onSubmit={handleHubAccountContinue} className="space-y-3">
+              <div>
+                <label htmlFor="hub-account-username" className="block text-xs text-gray-400 mb-1">
+                  Username
+                </label>
+                <input
+                  id="hub-account-username"
+                  data-testid="hub-account-username"
+                  type="text"
+                  value={hubUsername}
+                  onChange={(e) => setHubUsername(e.target.value)}
+                  autoFocus
+                  autoComplete="username"
+                  required
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="hub-account-password" className="block text-xs text-gray-400 mb-1">
+                  Password
+                </label>
+                <input
+                  id="hub-account-password"
+                  data-testid="hub-account-password"
+                  type="password"
+                  value={hubPassword}
+                  onChange={(e) => setHubPassword(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                  minLength={12}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  12–256 characters. This credential protects everything served from this
+                  environment.
+                </p>
+              </div>
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 p-2 bg-red-900/30 border border-red-700 rounded-lg text-xs text-red-300"
+                >
+                  <Lock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={saving || hubUsername.trim().length === 0 || hubPassword.length < 12}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {saving && <Loader2 size={16} className="animate-spin" />}
+                {saving ? 'Creating account…' : 'Continue'}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Welcome */}
+        {currentKey === 'welcome' && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
               <Bot size={64} />
@@ -622,8 +747,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           </div>
         )}
 
-        {/* Step 2: AI credentials */}
-        {step === 2 && (
+        {/* AI credentials */}
+        {currentKey === 'credentials' && (
           <div className="space-y-5">
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Configure Your Tools</h1>
@@ -1097,9 +1222,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
             {/* Actions */}
             <div className="flex gap-3 pt-1">
-              {initialStep < 2 && (
+              {step > initialStep && (
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => setStep(step - 1)}
                   className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
                 >
                   Back
@@ -1138,8 +1263,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           </div>
         )}
 
-        {/* Step 3: Connect GitHub (optional) */}
-        {step === 3 && (
+        {/* Connect GitHub (optional) */}
+        {currentKey === 'github' && (
           <div className="space-y-5">
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Connect GitHub</h1>
@@ -1197,13 +1322,13 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => setStep(2)}
+                onClick={() => setStep(stepIndex('credentials'))}
                 className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
               >
                 Back
               </button>
               <button
-                onClick={() => setStep(4)}
+                onClick={() => setStep(stepIndex('project'))}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors"
               >
                 Continue
@@ -1212,8 +1337,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           </div>
         )}
 
-        {/* Step 4: Create First Project */}
-        {step === 4 && (
+        {/* Create First Project */}
+        {currentKey === 'project' && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
               <Rocket size={48} />

@@ -19,14 +19,26 @@ import { loadProjectEnvForSpawn } from './preview/preview-secrets-store.js';
  */
 export function mergeProjectSecretsSpawnEnv(
   base: NodeJS.ProcessEnv,
-  opts: { projectId: string; sessionId?: string | null },
+  opts: {
+    projectId: string;
+    sessionId?: string | null;
+    /**
+     * When true, preview secrets replace keys already present in `base`.
+     * Use for `docker compose` spawn env: Compose interpolates
+     * `process.env` before `.env`, so stale host `AWS_*` must not beat
+     * wizard-persisted values. CLI chat spawns keep the default (false) so
+     * Hub-injected credentials are not clobbered.
+     */
+    overwriteExisting?: boolean;
+  },
 ): void {
   try {
     const projectEnv = loadProjectEnvForSpawn(opts.projectId, {
       sessionId: opts.sessionId ?? null,
     });
+    const overwrite = opts.overwriteExisting === true;
     for (const [key, value] of Object.entries(projectEnv)) {
-      if (base[key] === undefined) {
+      if (overwrite || base[key] === undefined) {
         base[key] = value;
       }
     }

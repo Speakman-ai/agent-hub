@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
+import {
+  getProjectMode,
+  defaultSessionUseWorktreeFlag,
+  sessionUsesWorktree,
+} from './project-mode.js';
 import type { Project } from './types.js';
 
 describe('project-mode', () => {
@@ -12,6 +16,11 @@ describe('project-mode', () => {
 
   it('getProjectMode recognizes workflow', () => {
     expect(getProjectMode({ mode: 'workflow' } as Project)).toBe('workflow');
+  });
+
+  it('sessionUsesWorktree is true only for explicit 1', () => {
+    expect(sessionUsesWorktree({ use_worktree: 1 })).toBe(true);
+    expect(sessionUsesWorktree({ use_worktree: 0 })).toBe(false);
   });
 
   it('defaultSessionUseWorktreeFlag is 1 for every project (worktree-only)', () => {

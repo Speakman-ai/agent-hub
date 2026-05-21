@@ -15,6 +15,8 @@ import { describe, it, expect } from 'vitest';
 import {
   detectSessionIdInUseError,
   buildSessionIdInUseRecoveryMessage,
+  detectNoConversationFoundError,
+  buildNoConversationFoundRecoveryMessage,
 } from './claude-session-id-conflict.js';
 
 describe('detectSessionIdInUseError', () => {
@@ -69,5 +71,26 @@ describe('buildSessionIdInUseRecoveryMessage', () => {
     const msg = buildSessionIdInUseRecoveryMessage('d1de0ab1-dda9-4165-9b0d-26b657d8e2b7');
     expect(msg).toContain('d1de0ab1-dda9-4165-9b0d-26b657d8e2b7');
     expect(msg.toLowerCase()).toContain('please send your message again');
+  });
+});
+
+describe('detectNoConversationFoundError', () => {
+  it('extracts the session id from the canonical CLI stderr line', () => {
+    const stderr = 'No conversation found with session ID: 1971381b-c994-4530-a13f-f7644c49ce7d';
+    expect(detectNoConversationFoundError(stderr)).toEqual({
+      sessionId: '1971381b-c994-4530-a13f-f7644c49ce7d',
+    });
+  });
+
+  it('returns null for unrelated stderr', () => {
+    expect(detectNoConversationFoundError('Session ID foo is already in use')).toBeNull();
+  });
+});
+
+describe('buildNoConversationFoundRecoveryMessage', () => {
+  it('tells the user the engine link was cleared', () => {
+    const msg = buildNoConversationFoundRecoveryMessage('1971381b-c994-4530-a13f-f7644c49ce7d');
+    expect(msg).toContain('1971381b-c994-4530-a13f-f7644c49ce7d');
+    expect(msg.toLowerCase()).toContain('cleared the engine link');
   });
 });

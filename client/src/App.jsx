@@ -15,6 +15,7 @@ import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
+import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import { paneOpenStorageKey } from './utils/sessionPreviewState.js';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
@@ -29,7 +30,7 @@ import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPane
 import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow.jsx';
-import SetupWizard from './components/SetupWizard.jsx';
+import SetupWizard, { stepIndexForKey } from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
 import DashboardView from './components/DashboardView.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
@@ -201,6 +202,8 @@ export default function App() {
   const [previewEventBySession, setPreviewEventBySession] = useState({});
   /** Per-session preview pane open/closed flag (auto-opens on first event). */
   const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState({});
+  /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
+  const [previewStartingBySession, setPreviewStartingBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -1863,6 +1866,12 @@ export default function App() {
           const sid = data.sessionId;
           if (!sid) break;
           setPreviewEventBySession((prev) => ({ ...prev, [sid]: data }));
+          setPreviewStartingBySession((prev) => {
+            if (!prev[sid]) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
           setPreviewPaneOpenBySession((prev) => {
             if (Object.prototype.hasOwnProperty.call(prev, sid)) return prev;
             try {
@@ -1991,15 +2000,17 @@ export default function App() {
         setSetupStatus(status);
         if (status.authConfigured === false) {
           // Truly fresh install — Owner record does not exist. Always
-          // walk the user through the full wizard (welcome → creds → github
-          // → first project) regardless of host CLI auth or the auto-seeded
-          // default org.
+          // walk the user through the full wizard (Hub account → welcome →
+          // creds → github → first project) regardless of host CLI auth or
+          // the auto-seeded default org.
           setSetupInitialStep(1);
           setShowSetup(true);
         } else if (status.hasAnyAiCredentials === false) {
           // If an org already exists, skip Welcome and land on AI credentials.
           // With no orgs (true greenfield) we still want the full wizard.
-          setSetupInitialStep(getOrgs() ? 2 : 1);
+          setSetupInitialStep(
+            getOrgs() ? stepIndexForKey(status, 'credentials') : stepIndexForKey(status, 'welcome'),
+          );
           setShowSetup(true);
         } else if (status.firstRun) {
           if (!getOrgs()) {
@@ -2561,6 +2572,54 @@ export default function App() {
   const handlePreviewConfigure = useCallback(() => {
     setCurrentView('settings:preview');
   }, [setCurrentView]);
+
+  const handleStartSessionPreview = useCallback(
+    async (sessionId) => {
+      if (!sessionId) return;
+      setPreviewStartingBySession((prev) => ({ ...prev, [sessionId]: true }));
+      setPreviewPaneOpenBySession((prev) => ({ ...prev, [sessionId]: true }));
+      try {
+        const key = paneOpenStorageKey(sessionId);
+        if (key) window.localStorage.setItem(key, 'true');
+      } catch {
+        /* storage unavailable */
+      }
+      try {
+        await api.startSessionPreview(sessionId);
+      } catch (err) {
+        setPreviewStartingBySession((prev) => {
+          const next = { ...prev };
+          delete next[sessionId];
+          return next;
+        });
+        showToast(err?.message || 'Failed to start preview', 'error', 6000);
+      }
+    },
+    [showToast],
+  );
+
+  const activeChatProject = useMemo(
+    () => projects.find((p) => p.id === activeAgent?.projectId) ?? null,
+    [projects, activeAgent?.projectId],
+  );
+
+  const activePreviewEvent =
+    (activeSessionId && previewEventBySession[activeSessionId]) ||
+    (activeSessionId && previewStartingBySession[activeSessionId]
+      ? {
+          type: 'agenthub_preview',
+          kind: 'preview_starting',
+          sessionId: activeSessionId,
+          previewId: '',
+          target: 'client',
+          route: '/',
+          agentReason: 'Starting preview…',
+          logTail: [],
+        }
+      : null);
+
+  const showSessionPreviewPane =
+    activeSessionId && activePreviewEvent && previewPaneOpenBySession[activeSessionId] !== false;
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
@@ -3843,6 +3902,20 @@ export default function App() {
                         </div>
                       )}
 
+                    {activeSessionId && (
+                      <div className="px-3 md:px-6 pb-2 flex items-center gap-2 border-t border-gray-800/80 pt-2">
+                        <SessionPreviewStartButton
+                          sessionId={activeSessionId}
+                          project={activeChatProject}
+                          previewEvent={previewEventBySession[activeSessionId]}
+                          disabled={!connected || !activeChatProject}
+                          starting={!!previewStartingBySession[activeSessionId]}
+                          onStart={handleStartSessionPreview}
+                          onConfigure={handlePreviewConfigure}
+                        />
+                      </div>
+                    )}
+
                     {/* Input */}
                     <MessageInput
                       onSend={handleSend}
@@ -3864,18 +3937,16 @@ export default function App() {
                       isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                     />
                   )}
-                  {activeSessionId &&
-                    previewEventBySession[activeSessionId] &&
-                    previewPaneOpenBySession[activeSessionId] !== false && (
-                      <SessionPreviewPane
-                        sessionId={activeSessionId}
-                        event={previewEventBySession[activeSessionId]}
-                        onClose={handlePreviewClose}
-                        onTouch={handlePreviewTouch}
-                        onStop={handlePreviewStop}
-                        onConfigure={handlePreviewConfigure}
-                      />
-                    )}
+                  {showSessionPreviewPane && (
+                    <SessionPreviewPane
+                      sessionId={activeSessionId}
+                      event={activePreviewEvent}
+                      onClose={handlePreviewClose}
+                      onTouch={handlePreviewTouch}
+                      onStop={handlePreviewStop}
+                      onConfigure={handlePreviewConfigure}
+                    />
+                  )}
                 </div>
               )}
             </>

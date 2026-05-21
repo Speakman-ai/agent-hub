@@ -22,6 +22,9 @@
  * kickoff prompt shape.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 
 // The wizard route calls `handleChat` fire-and-forget — it returns
 // 201 with the synchronously-created session row before any CLI spawn
@@ -32,6 +35,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // that contract.
 
 import './setup.js';
+import { isPreviewSetupWizardSession } from '../routes/preview-wizard.js';
 import type supertest from 'supertest';
 import { getRequest } from './helpers.js';
 import { saveAuthRecord, generateJwtSecret } from '../auth-store.js';
@@ -105,6 +109,13 @@ async function makeAgent(projectId: string): Promise<string> {
   return (res.body as { id: string }).id;
 }
 
+describe('isPreviewSetupWizardSession', () => {
+  it('matches wizard session names', () => {
+    expect(isPreviewSetupWizardSession({ name: '[Preview Setup] scrabble-app' })).toBe(true);
+    expect(isPreviewSetupWizardSession({ name: 'Session 5/20/2026' })).toBe(false);
+  });
+});
+
 describe('POST /api/projects/:projectId/preview/setup-wizard', () => {
   it('404 when project does not exist', async () => {
     const res = await request
@@ -156,6 +167,123 @@ describe('POST /api/projects/:projectId/preview/setup-wizard', () => {
     // Session name carries the project label so it's distinguishable
     // in the sidebar.
     expect(res.body.session.name).toMatch(/Preview Setup/);
+    expect(res.body.draft).toBeDefined();
+    expect(Array.isArray(res.body.draft.envVars)).toBe(true);
+    expect(['bootstrap_compose', 'confirm_compose']).toContain(res.body.draft.phase);
+  });
+});
+
+describe('POST /api/projects/:projectId/preview/setup-compose-bootstrap', () => {
+  it('404 when project does not exist', async () => {
+    const res = await request
+      .post('/api/projects/no-such-project/preview/setup-compose-bootstrap')
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ file: 'docker-compose.yml', content: 'services:\n  web:\n    image: nginx\n' });
+    expect(res.status).toBe(404);
+  });
+
+  it('writes compose file and returns confirm_compose draft', async () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'ah-wiz-bootstrap-'));
+    const projectId = uid('proj-compose');
+    await request
+      .post('/api/projects')
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ id: projectId, name: `Test ${projectId}`, cwd: workspace, color: '#3B82F6' })
+      .expect(201);
+    await makeAgent(projectId);
+
+    const yaml = 'services:\n  web:\n    image: nginx\n    ports:\n      - "8080:80"\n';
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/setup-compose-bootstrap`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ file: 'docker-compose.yml', content: yaml })
+      .expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.draft.phase).toBe('confirm_compose');
+    expect(res.body.draft.detected?.compose.file).toBe('docker-compose.yml');
+  });
+});
+
+describe('POST /api/projects/:projectId/preview/setup-apply', () => {
+  it('404 when project does not exist', async () => {
+    const res = await request
+      .post('/api/projects/no-such-project/preview/setup-apply')
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ enabled: true, preview: { startScript: 'npm run dev' } });
+    expect(res.status).toBe(404);
+  });
+
+  it('persists compose preview config', async () => {
+    const projectId = await makeProject();
+    await makeAgent(projectId);
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({
+        enabled: true,
+        preview: {
+          compose: {
+            file: 'docker-compose.yml',
+            entryService: 'web',
+            entryPort: 3000,
+            healthPath: '/healthz',
+          },
+          captureRoutes: ['/'],
+          idleTTL: 600,
+        },
+      })
+      .expect(200);
+    expect(res.body.ok).toBe(true);
+    const projectRes = await request
+      .get(`/api/projects/${projectId}`)
+      .set('Authorization', `Bearer ${adminJwt}`);
+    expect(projectRes.body.prEnv?.preview?.compose?.entryService).toBe('web');
+    expect(projectRes.body.prEnv?.preview?.compose?.healthPath).toBe('/healthz');
+    expect(projectRes.body.prEnv?.preview?.startScript).toBeUndefined();
+  });
+
+  it('defaults secrets.mode to merge when omitted (does not wipe existing keys)', async () => {
+    const projectId = await makeProject();
+    await makeAgent(projectId);
+    await request
+      .post(`/api/projects/${projectId}/preview/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({
+        enabled: true,
+        preview: { compose: { entryService: 'web', entryPort: 3000 } },
+        secrets: { env: 'KEEP_ME=1\nOTHER=2', mode: 'replace' },
+      })
+      .expect(200);
+    await request
+      .post(`/api/projects/${projectId}/preview/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({
+        enabled: true,
+        preview: { compose: { entryService: 'web', entryPort: 3000 } },
+        secrets: { env: 'OTHER=3' },
+      })
+      .expect(200);
+    const listRes = await request
+      .get(`/api/projects/${projectId}/secrets`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .expect(200);
+    const rows = (listRes.body as { secrets: Array<{ key: string }> }).secrets;
+    const keys = rows.map((r) => r.key).sort();
+    expect(keys).toContain('KEEP_ME');
+    expect(keys).toContain('OTHER');
+  });
+
+  it('400 when secrets.mode is invalid', async () => {
+    const projectId = await makeProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/preview/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({
+        enabled: true,
+        preview: { compose: { entryService: 'web', entryPort: 3000 } },
+        secrets: { env: 'X=1', mode: 'nope' },
+      });
+    expect(res.status).toBe(400);
   });
 });
 

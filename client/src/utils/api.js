@@ -102,14 +102,28 @@ export const api = {
       body: JSON.stringify({}),
       timeout: 60_000,
     }),
-  // Spawn the AI-assisted preview setup wizard. Server returns
-  // `{ sessionId, agentId, session }` — the client attaches to the
-  // standard chat panel (`useSessionStream(sessionId)`) so the UX is
-  // identical to any other agent session. Admin+.
+  // Settings → Preview: repo scan + compose draft (no agent session).
+  getPreviewEnvironmentDraft: (projectId) =>
+    fetchJSON(`/projects/${projectId}/preview/environment-draft`),
+  // Default guided setup — spawns wizard session; opens chat in UI.
   startPreviewWizard: (projectId) =>
     fetchJSON(`/projects/${projectId}/preview/setup-wizard`, {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+  // Single-path configure + secrets + compose boot test. Admin+.
+  buildPreviewEnvironment: (projectId, body) =>
+    fetchJSON(`/projects/${projectId}/preview/build`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeout: 200_000,
+    }),
+  /** Boot worktree preview for a chat session (same as agenthub:preview block). */
+  startSessionPreview: (sessionId, body = {}) =>
+    fetchJSON(`/sessions/${sessionId}/preview/start`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeout: 30_000,
     }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {

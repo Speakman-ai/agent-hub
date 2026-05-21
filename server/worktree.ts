@@ -1307,6 +1307,9 @@ export async function ensureSessionWorkspace(
    */
   githubRepo?: string | null,
 ): Promise<string> {
+  if (Number(session.use_worktree) !== 1) {
+    return projectCwd;
+  }
   if (session.worktree_path && existsSync(session.worktree_path)) {
     try {
       await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {

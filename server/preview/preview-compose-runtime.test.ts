@@ -29,7 +29,7 @@
 
 import Database from 'better-sqlite3';
 import { EventEmitter } from 'events';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import {
   PreviewComposeRuntime,
@@ -44,6 +44,12 @@ import {
 } from './preview-compose-runtime.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 import type { Project } from '../types.js';
+
+vi.mock('../project-secrets-spawn.js', () => ({
+  mergeProjectSecretsSpawnEnv: vi.fn(),
+}));
+
+import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 
 // Contract values pinned by the runtime. Inlined here (rather than
 // imported as `__test_*` re-exports from the production module) so the
@@ -398,6 +404,10 @@ describe('PreviewComposeRuntime — schema migration', () => {
 // ─── startPreview happy path ───────────────────────────────────────────
 
 describe('PreviewComposeRuntime.startPreview — happy path', () => {
+  beforeEach(() => {
+    vi.mocked(mergeProjectSecretsSpawnEnv).mockReset();
+  });
+
   it('spawns `docker compose up`, allocates a port, and flips to ready on 2xx', async () => {
     const db = freshDb();
     const harness = makeSpawn();
@@ -451,6 +461,41 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
     expect(row!.compose_project_name).toBe('agenthub-session-sess-1');
     expect(row!.port).toBe(result.port);
     expect(row!.url).toBe(`http://localhost:${result.port}`);
+  });
+
+  it('calls mergeProjectSecretsSpawnEnv with overwriteExisting on compose up', async () => {
+    vi.mocked(mergeProjectSecretsSpawnEnv).mockImplementation((base, opts) => {
+      if (opts.overwriteExisting) {
+        base.AWS_ACCESS_KEY_ID = 'AKIATEST';
+        base.AWS_SECRET_ACCESS_KEY = 'secret-value';
+        base.AWS_S3_BUCKET = 'my-bucket';
+      }
+    });
+
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+    });
+
+    await runtime.startPreview('sess-secrets', makeProject(), '/wt/secrets');
+
+    expect(mergeProjectSecretsSpawnEnv).toHaveBeenCalledWith(
+      expect.objectContaining({
+        AGENTHUB_SESSION_ID: 'sess-secrets',
+        AGENTHUB_PROJECT_ID: 'proj-1',
+      }),
+      { projectId: 'proj-1', sessionId: 'sess-secrets', overwriteExisting: true },
+    );
+    expect(harness.calls[0].env.AWS_ACCESS_KEY_ID).toBe('AKIATEST');
+    expect(harness.calls[0].env.AWS_SECRET_ACCESS_KEY).toBe('secret-value');
+    expect(harness.calls[0].env.AWS_S3_BUCKET).toBe('my-bucket');
   });
 
   it('respects a project-level hostPortRange override', async () => {

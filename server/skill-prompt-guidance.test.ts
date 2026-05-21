@@ -20,6 +20,7 @@ const tmpBase = path.join(os.tmpdir(), `skill-prompt-guidance-${Date.now()}`);
 
 // Mock db
 vi.mock('./db.js', () => ({
+  db: {},
   stmts: {
     getAgentSkillOverrides: { all: () => [] },
   },

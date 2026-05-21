@@ -330,12 +330,71 @@ Second:
     expect(strippedText).toBe(text);
   });
 
-  it('rejects questions with fewer than 2 options', () => {
+  it('accepts single-select questions with one option (UI supplies Other)', () => {
     const text = `\`\`\`agenthub:ask
 [{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"only","description":"one"}]}]
 \`\`\``;
     const { asks } = extractAskBlocks(text);
-    expect(asks).toEqual([]);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].options).toHaveLength(1);
+  });
+
+  it('extracts XML-tagged ask blocks (models sometimes copy skill/close-card syntax)', () => {
+    const text = `Confirm settings:\n\n<agenthub:ask>\n{"questions":[{"question":"Start?","header":"Script","multiSelect":false,"options":[{"label":"npm run dev","description":"vite"},{"label":"npm start","description":"prod"}]}]}\n</agenthub:ask>\n\nThanks.`;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].question).toBe('Start?');
+    expect(strippedText).not.toContain('<agenthub:ask>');
+    expect(strippedText).toContain('Confirm settings');
+  });
+
+  it('extracts inline agenthub:ask {json}</agenthub:ask> blocks', () => {
+    const text = `Confirm:\n\nagenthub:ask {"questions":[{"question":"Script?","header":"Script","multiSelect":false,"options":[{"label":"npm run dev","description":"vite"},{"label":"npm start","description":"prod"}]}]}</agenthub:ask>\n\nThanks.`;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(strippedText).not.toContain('agenthub:ask');
+  });
+
+  it('normalizes wizard-style id/label/value question objects', () => {
+    const text = `agenthub:ask {"questions":[{"id":"startScript","label":"Start script","multiSelect":false,"options":[{"value":"npm run dev","label":"npm run dev (vite)","default":true},{"value":"npm start","label":"npm start"}]}]}</agenthub:ask>`;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].question).toBe('Start script');
+    expect(asks[0].questions[0].options.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('extracts flat single-question envelope with explicit askId', () => {
+    const text = `\`\`\`agenthub:ask
+{"askId":"preview-bootstrap-approval","header":"Write docker-compose.yml?","question":"May I create docker-compose.yml?","multiSelect":false,"options":[{"label":"Yes","description":"Create"},{"label":"No","description":"Skip"}]}
+\`\`\``;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].askId).toBe('preview-bootstrap-approval');
+    expect(asks[0].questions[0].header).toBe('Write docker'); // header chips ≤12 chars
+    expect(strippedText).not.toContain('agenthub:ask');
+  });
+
+  it('normalizes prompt/id/type wizard questions in fenced blocks', () => {
+    const text = `\`\`\`agenthub:ask
+{"title":"Create docker-compose.yml?","questions":[{"id":"approve_bootstrap","prompt":"May I create docker-compose.yml?","type":"select","options":[{"value":"approve","label":"Yes"},{"value":"skip","label":"Skip"}],"default":"approve"}]}
+\`\`\``;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].question).toContain('docker-compose');
+    expect(strippedText).not.toContain('approve_bootstrap');
+  });
+
+  it('skips invalid questions but keeps siblings with enough options', () => {
+    const text = `\`\`\`agenthub:ask
+{"questions":[
+  {"question":"Env?","header":"Env","multiSelect":true,"options":[]},
+  {"question":"Script?","header":"Script","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}
+]}
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions).toHaveLength(1);
+    expect(asks[0].questions[0].question).toBe('Script?');
   });
 
   it('rejects more than 4 questions', () => {
@@ -388,12 +447,14 @@ Second:
     expect(b.asks[0].questions[0].header).toBe('Plain questi');
   });
 
-  it('still rejects options with missing label (label remains required)', () => {
+  it('skips options without label or value', () => {
     const text = `\`\`\`agenthub:ask
 [{"question":"Q?","header":"H","multiSelect":false,"options":[{"description":"no label"},{"label":"b","description":"B"}]}]
 \`\`\``;
     const { asks } = extractAskBlocks(text);
-    expect(asks).toEqual([]);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].options).toHaveLength(1);
+    expect(asks[0].questions[0].options[0].label).toBe('b');
   });
 
   it('does not strip agenthub:ask syntax shown inside another fenced block (doc example)', () => {

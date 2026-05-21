@@ -9,6 +9,14 @@ import type {
 
 type NormalizeFn = (raw: Record<string, unknown>) => StreamEvent[];
 
+function simpleHash(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
 /** True when Edit args carry line-level diff bodies (not just `path` or empty strategy shells). */
 function cursorEditArgsHaveSubstantiveDiff(input: Record<string, unknown>): boolean {
   const sr = input.strReplace as Record<string, unknown> | undefined;
@@ -137,7 +145,10 @@ function enrichCursorEditInputFromToolResult(
 // Answers come back as a normal user chat message containing a matching
 // `agenthub:ask:answer` fenced block (handled on the client side).
 
-const ASK_FENCE_RE = /```agenthub:ask\s*\n([\s\S]*?)\n?```/g;
+import {
+  extractAskBlocks as extractAskBlocksCore,
+  parseAskPayload,
+} from '../shared/utils/extractAskBlocks.js';
 
 /** Fence opener / closer line (CommonMark-style: ≤3 spaces indent, 3+ ` or ~). */
 function parseFenceLine(line: string): { fence: string; rest: string } | null {
@@ -229,17 +240,6 @@ export function computeLockedNonAskFenceBodyRanges(
   return ranges;
 }
 
-function askMatchOverlapsLockedBody(
-  start: number,
-  end: number,
-  locked: ReadonlyArray<{ start: number; end: number }>,
-): boolean {
-  for (const r of locked) {
-    if (start < r.end && end > r.start) return true;
-  }
-  return false;
-}
-
 export interface ExtractedAsk {
   askId: string;
   questions: AskUserQuestionItem[];
@@ -262,102 +262,11 @@ export function extractAskBlocks(text: string): AskExtractionResult {
   if (!text.includes('agenthub:ask')) {
     return { strippedText: text, asks: [] };
   }
-
   const lockedBodies = computeLockedNonAskFenceBodyRanges(text);
-  const asks: ExtractedAsk[] = [];
-  let strippedText = text;
-
-  // Reset regex state for each call (the /g flag is stateful across calls).
-  ASK_FENCE_RE.lastIndex = 0;
-  const replacements: Array<{ start: number; end: number }> = [];
-
-  let match: RegExpExecArray | null;
-  while ((match = ASK_FENCE_RE.exec(text)) !== null) {
-    const payload = match[1].trim();
-    const questions = parseAskPayload(payload);
-    if (!questions) continue; // malformed — leave in place
-
-    const start = match.index;
-    const end = start + match[0].length;
-    if (askMatchOverlapsLockedBody(start, end, lockedBodies)) {
-      continue;
-    }
-
-    // Stable-ish id: hash-lite of the payload. Not cryptographic — only used
-    // for React keys and dedup across re-parses of the same message.
-    const askId = 'ask-' + simpleHash(payload);
-    asks.push({ askId, questions });
-    replacements.push({ start, end });
-  }
-
-  if (replacements.length === 0) {
-    return { strippedText: text, asks: [] };
-  }
-
-  // Build stripped text by excluding the replaced ranges. Walk in reverse so
-  // indices stay valid.
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end } = replacements[i];
-    strippedText = strippedText.slice(0, start) + strippedText.slice(end);
-  }
-  // Collapse any blank-line runs left behind by block removal.
-  strippedText = strippedText.replace(/\n{3,}/g, '\n\n').trim();
-
-  return { strippedText, asks };
+  return extractAskBlocksCore(text, { lockedBodies }) as AskExtractionResult;
 }
 
-function parseAskPayload(raw: string): AskUserQuestionItem[] | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  // Accept either a bare array of questions or an object with a `questions`
-  // array (matches Claude's native AskUserQuestion tool input shape).
-  const list: unknown = Array.isArray(parsed)
-    ? parsed
-    : (parsed as Record<string, unknown>)?.questions;
-  if (!Array.isArray(list) || list.length === 0 || list.length > 4) return null;
-
-  const out: AskUserQuestionItem[] = [];
-  for (const item of list) {
-    if (!item || typeof item !== 'object') return null;
-    const q = item as Record<string, unknown>;
-
-    const question = typeof q.question === 'string' ? q.question : null;
-    if (!question) return null;
-    // `header` is a short chip in the UI (≤12 chars). Models sometimes omit it or
-    // send a blank string; default from the question so we still extract a picker.
-    const headerRaw = typeof q.header === 'string' ? q.header.trim() : '';
-    const header = (
-      headerRaw ? headerRaw : question.replace(/\s+/g, ' ').trim() || 'Question'
-    ).slice(0, 12);
-    const multiSelect = q.multiSelect === true;
-    const options = Array.isArray(q.options) ? q.options : null;
-
-    if (!options || options.length < 2 || options.length > 4) return null;
-
-    const validOptions: AskUserQuestionItem['options'] = [];
-    for (const opt of options) {
-      if (!opt || typeof opt !== 'object') return null;
-      const o = opt as Record<string, unknown>;
-      const label = typeof o.label === 'string' ? o.label : null;
-      if (!label) return null;
-      // `description` is recommended but not required — a single option with a
-      // missing description should not invalidate the whole picker. Default to
-      // empty string; the UI hides empty descriptions.
-      const description = typeof o.description === 'string' ? o.description : '';
-      const preview = typeof o.preview === 'string' ? o.preview : undefined;
-      validOptions.push(preview ? { label, description, preview } : { label, description });
-    }
-
-    out.push({ question, header, multiSelect, options: validOptions });
-  }
-
-  return out;
-}
+export { parseAskPayload };
 
 // ─── [[STEP:...]] progress-marker protocol ─────────────────────────────
 //
@@ -441,15 +350,6 @@ function stepEvent(extracted: ExtractedStep): ProgressStepEvent {
   };
   if (extracted.status !== 'started') base.finishedAt = now;
   return base;
-}
-
-function simpleHash(s: string): string {
-  // Tiny non-crypto hash; deterministic for a given payload.
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(36);
 }
 
 function askEvent(ask: ExtractedAsk): AskUserQuestionEvent {

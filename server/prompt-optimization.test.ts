@@ -14,6 +14,7 @@ import os from 'os';
 
 // Mock db before importing chat
 vi.mock('./db.js', () => ({
+  db: {},
   stmts: {
     getAgentSkillOverrides: { all: () => [] },
   },

@@ -51,7 +51,13 @@ import type {
   ProjectMode,
   StreamEvent,
   GithubWorkflowSettings,
+  PreviewProcess,
 } from '../types.js';
+import { formatGraphError, validateProcessGraph } from '../preview/preview-process-graph.js';
+import {
+  detectPreviewSuggestion,
+  previewDetectSuggestionToJson,
+} from '../preview-detect-suggestion.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
@@ -303,6 +309,7 @@ export interface ValidatedPrEnvPreviewConfig {
   idleTTL?: number;
   autoStart?: boolean;
   compose?: ValidatedPreviewComposeConfig;
+  processes?: PreviewProcess[];
 }
 
 /**
@@ -770,6 +777,36 @@ function validatePrEnvPreview(
     }
   }
 
+  let processesValue: PreviewProcess[] | undefined;
+  if (obj.processes !== undefined && obj.processes !== null) {
+    if (!Array.isArray(obj.processes)) {
+      return { ok: false, error: 'prEnv.preview.processes must be an array' };
+    }
+    if (obj.processes.length > 0) {
+      if (startScript) {
+        return {
+          ok: false,
+          error:
+            'prEnv.preview.processes[] and prEnv.preview.startScript are mutually exclusive ' +
+            '— multi-process mode spawns each entry in processes[] and ignores startScript',
+        };
+      }
+      if (composeResult.value) {
+        return {
+          ok: false,
+          error:
+            'prEnv.preview.compose and prEnv.preview.processes[] are mutually exclusive ' +
+            "— compose owns the full multi-service graph via the project's compose file",
+        };
+      }
+      const graph = validateProcessGraph(obj.processes as PreviewProcess[]);
+      if (!graph.ok) {
+        return { ok: false, error: `prEnv.preview.${formatGraphError(graph.error)}` };
+      }
+      processesValue = obj.processes as PreviewProcess[];
+    }
+  }
+
   let autoStart: boolean | undefined;
   if (obj.autoStart !== undefined && obj.autoStart !== null) {
     if (typeof obj.autoStart !== 'boolean') {
@@ -785,6 +822,7 @@ function validatePrEnvPreview(
   if (idleTTL !== undefined) value.idleTTL = idleTTL;
   if (autoStart !== undefined) value.autoStart = autoStart;
   if (composeResult.value) value.compose = composeResult.value;
+  if (processesValue) value.processes = processesValue;
   return { ok: true, value };
 }
 
@@ -1719,41 +1757,13 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // compose-when-present keeps the UI on the supported path. The
     // legacy JS-stack detector is still run when there's no compose
     // file so projects without one keep getting useful defaults.
-    let composeDetected: ReturnType<typeof detectComposePreview> = null;
+    let suggestion = null;
     try {
-      composeDetected = detectComposePreview(cwd);
+      suggestion = detectPreviewSuggestion(cwd);
     } catch {
-      composeDetected = null;
+      suggestion = null;
     }
-    if (composeDetected) {
-      return res.json({
-        detected: {
-          stack: composeDetected.stack,
-          compose: composeDetected.compose,
-          captureRoutes: composeDetected.captureRoutes,
-          idleTTL: composeDetected.idleTTL,
-        },
-      });
-    }
-    let detected: ReturnType<typeof detectPreviewDefaults> = null;
-    try {
-      detected = detectPreviewDefaults(cwd);
-    } catch {
-      // Treat any unexpected fs error as "no signal" — same contract
-      // as the clone path's wrapper.
-      detected = null;
-    }
-    res.json({
-      detected: detected
-        ? {
-            stack: detected.stack,
-            startScript: detected.startScript,
-            port: detected.port,
-            captureRoutes: detected.captureRoutes,
-            idleTTL: detected.idleTTL,
-          }
-        : null,
-    });
+    res.json(previewDetectSuggestionToJson(suggestion));
   });
 
   // ─── One-shot preview test ────────────────────────────────────────
