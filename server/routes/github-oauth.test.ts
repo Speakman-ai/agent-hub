@@ -111,12 +111,20 @@ describe('GET /api/auth/github/start', () => {
     expect(res.status).toBe(401);
   });
 
-  it('401s when the caller is apiKey-only (no personal user identity)', async () => {
-    // The break-glass apiKey is shared across machines/sub-agents, so the
-    // route refuses to bind a personal GitHub identity to it.
-    const app = makeApp(buildDeps(), { authViaApiKey: true });
+  it('200s for apiKey-only LAN-operator callers by binding to a synthetic local-org user', async () => {
+    // Historical contract was 401 — the break-glass apiKey was treated as
+    // shared across machines and refused to anchor a personal GitHub
+    // identity. The "Hub account in setup" rewrite (PR #1069) inverted
+    // that for single-tenant LAN deployments: an apiKey caller now maps
+    // to a deterministic `local-<orgId>` synthetic user so "Sign in with
+    // GitHub" works on Electron / dev hosts that bypass the JWT flow.
+    // The synthetic-user binding is also exercised end-to-end by the
+    // "works under global apiKey auth (LAN operator …)" connect-token
+    // test below.
+    const app = makeApp(buildDeps(), { authViaApiKey: true, authOrgId: 'default' });
     const res = await request(app).get('/api/auth/github/start');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(res.body.authorizeUrl).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize/);
   });
 
   it('503s when GitHub OAuth credentials are missing', async () => {

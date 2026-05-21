@@ -1,52 +1,41 @@
 /**
  * pr-detail-fetch.ts — Shared helper that fetches full PR detail from GitHub.
- * Auth chain: User OAuth (optional) → GitHub App → `gh` CLI fallback.
  *
- * Extracted from `routes/pr-list.ts` so the same App→CLI fallback ladder can
- * be reused by `routes/pr-resolve.ts` without duplicating ~140 lines of
- * orchestration. Normalizers live in `pr-list.ts` and are re-used here.
- *
- * Shape returned is identical to what `GET /api/projects/:id/pulls/:number`
- * returns (minus the `repo` envelope); callers can forward it verbatim or
- * pull out specific fields (e.g. the resolve endpoint looks at
- * `pr.mergeable`, `checks[].conclusion`, and `reviews[].state`).
+ * Auth policy:
+ *   - With `userAccessToken`: user identity only (no App/gh fallback on failure).
+ *   - With `reviewerAppRead: true` and no user token: GitHub App installation only.
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { AppConfig, GitHubAppConfig } from './types.js';
 import { githubApiRequest, resolveInstallationId } from './github-app.js';
 import { githubUserApiRequest } from './github-oauth.js';
 import {
-  mergeableFromCli,
+  CONNECT_GITHUB_HINT,
+  REVIEWER_APP_HINT,
+  hasReviewerGitHubApp,
+} from './github-auth-policy.js';
+import {
   normalizeCheckRuns,
   normalizeIssueComments,
   normalizePrSummary,
   normalizeReviews,
 } from './routes/pr-list.js';
 
-const execFileAsync = promisify(execFile);
-
 export interface PrDetailFetchOptions {
-  /** User OAuth access token (tier 0). When provided, tried before App/CLI. */
+  /** Per-user OAuth/PAT. When set, only this tier is used. */
   userAccessToken?: string | null;
+  /** Reviewer read proxies: App installation when no user token. */
+  reviewerAppRead?: boolean;
 }
 
 export interface PrDetailFetchResult {
-  source: 'user-oauth' | 'github-app' | 'gh-cli';
+  source: 'user-oauth' | 'github-app';
   pr: Record<string, unknown>;
   reviews: Array<Record<string, unknown>>;
   comments: Array<Record<string, unknown>>;
   checks: Array<Record<string, unknown>>;
 }
 
-/**
- * Thrown when every auth tier fails. Carries the first-line message from
- * the App tier's exception (if any) so the route handler can surface it
- * to the operator alongside the final gh-CLI failure. Without this,
- * silent App-tier failures are invisible without shell access to the
- * host (see PR review 501 debugging — `pr-actions.ts:/api/pr/review`).
- */
 export class PrFetchError extends Error {
   appTierError?: string;
   constructor(message: string, opts?: { appTierError?: string | null }) {
@@ -56,45 +45,12 @@ export class PrFetchError extends Error {
   }
 }
 
-function hasGitHubApp(config: AppConfig): boolean {
-  const app = config.githubApp;
-  if (!(app?.appId && app?.privateKey)) return false;
-  return !!(app.installationId || (app.installations && app.installations.length > 0));
-}
-
-function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
-  if (!config.botGithubToken) return undefined;
-  return { ...process.env, GH_TOKEN: config.botGithubToken };
-}
-
-async function callCli(config: AppConfig, args: string[]): Promise<string> {
-  const env = botGhEnv(config);
-  const { stdout } = await execFileAsync('gh', args, {
-    timeout: 20000,
-    maxBuffer: 10 * 1024 * 1024,
-    ...(env && { env }),
-  });
-  return stdout;
-}
-
-/**
- * Fetch PR detail via the User OAuth → GitHub App → `gh` CLI fallback ladder.
- *
- * Throws when all tiers fail; throws with a descriptive message (first line
- * of the underlying error) so callers can pass it through as 502 text.
- */
 export async function fetchPrDetail(
   config: AppConfig,
   repo: { owner: string; repo: string },
   num: number,
   opts?: PrDetailFetchOptions,
 ): Promise<PrDetailFetchResult> {
-  // Captures the App-tier failure so we can surface it when the gh-CLI
-  // fallback also fails. Stays null when the App tier never ran (no app
-  // configured / no matching installation) or succeeded.
-  let appTierError: string | null = null;
-
-  // Tier 0: User OAuth — respects the caller's repo visibility
   if (opts?.userAccessToken) {
     try {
       const uReq = <T>(path: string) =>
@@ -125,12 +81,11 @@ export async function fetchPrDetail(
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[PR Detail] User OAuth fetch failed, trying GitHub App: ${msg.split('\n')[0]}`);
+      throw new PrFetchError(msg.split('\n')[0]);
     }
   }
 
-  // Tier 1: GitHub App
-  if (hasGitHubApp(config)) {
+  if (opts?.reviewerAppRead && hasReviewerGitHubApp(config)) {
     const app = config.githubApp as GitHubAppConfig;
     const instId = resolveInstallationId(app, repo.owner);
     if (instId) {
@@ -168,96 +123,11 @@ export async function fetchPrDetail(
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Detail] GitHub App fetch failed, trying gh CLI: ${appTierError}`);
+        throw new PrFetchError(msg.split('\n')[0], { appTierError: msg.split('\n')[0] });
       }
     }
+    throw new PrFetchError(`No GitHub App installation for "${repo.owner}". ${REVIEWER_APP_HINT}`);
   }
 
-  // Tier 2: gh CLI — include mergedAt/closedAt so Activity / lifecycle matches OAuth+REST
-  // (`normalizePrSummary` already maps these on App/User tiers).
-  const viewJsonFields =
-    'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,mergedAt,closedAt,additions,deletions,changedFiles,body,mergeable,reviewDecision,reviewRequests,labels,reviews,comments,statusCheckRollup';
-  let stdout: string;
-  try {
-    stdout = await callCli(config, [
-      'pr',
-      'view',
-      String(num),
-      '--repo',
-      `${repo.owner}/${repo.repo}`,
-      '--json',
-      viewJsonFields,
-    ]);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new PrFetchError(msg.split('\n')[0], { appTierError });
-  }
-  const data = JSON.parse(stdout) as Record<string, unknown>;
-  const author = data.author as Record<string, unknown> | null | undefined;
-  const reviews = (data.reviews as Array<Record<string, unknown>> | undefined) || [];
-  const comments = (data.comments as Array<Record<string, unknown>> | undefined) || [];
-  const statusChecks = (data.statusCheckRollup as Array<Record<string, unknown>> | undefined) || [];
-  const labels = (data.labels as Array<Record<string, unknown>> | undefined) || [];
-
-  return {
-    source: 'gh-cli',
-    pr: {
-      number: data.number,
-      title: data.title,
-      state: typeof data.state === 'string' ? (data.state as string).toLowerCase() : data.state,
-      draft: data.isDraft ?? false,
-      html_url: data.url,
-      user: author?.login ?? null,
-      user_avatar: null,
-      head: data.headRefName,
-      base: data.baseRefName,
-      created_at: data.createdAt,
-      updated_at: data.updatedAt,
-      merged_at: data.mergedAt ?? null,
-      closed_at: data.closedAt ?? null,
-      body: data.body,
-      mergeable: mergeableFromCli(data.mergeable),
-      mergeable_state: data.mergeable,
-      review_decision: data.reviewDecision,
-      labels: labels.map((l) => ({ name: l.name as string, color: l.color as string })),
-      comments: comments.length,
-      additions: data.additions,
-      deletions: data.deletions,
-      changed_files: data.changedFiles,
-    },
-    reviews: reviews.map((r) => {
-      const rAuthor = r.author as Record<string, unknown> | null | undefined;
-      return {
-        id: r.id,
-        user: rAuthor?.login ?? null,
-        state: r.state,
-        body: r.body ?? '',
-        submitted_at: r.submittedAt ?? null,
-        html_url: null,
-      };
-    }),
-    comments: comments.map((c) => {
-      const cAuthor = c.author as Record<string, unknown> | null | undefined;
-      return {
-        id: c.id,
-        user: cAuthor?.login ?? null,
-        body: c.body ?? '',
-        created_at: c.createdAt ?? null,
-        html_url: null,
-      };
-    }),
-    checks: statusChecks.map((chk) => ({
-      id: chk.id ?? null,
-      name: chk.name ?? chk.context ?? null,
-      status: (chk.status as string | undefined)?.toLowerCase?.() ?? null,
-      conclusion:
-        (chk.conclusion as string | undefined)?.toLowerCase?.() ??
-        (chk.state as string | undefined)?.toLowerCase?.() ??
-        null,
-      html_url: chk.detailsUrl ?? chk.targetUrl ?? null,
-      started_at: chk.startedAt ?? null,
-      completed_at: chk.completedAt ?? null,
-    })),
-  };
+  throw new PrFetchError(CONNECT_GITHUB_HINT);
 }

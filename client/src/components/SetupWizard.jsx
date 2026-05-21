@@ -14,7 +14,7 @@ import {
   UserPlus,
   Lock,
 } from 'lucide-react';
-import { getApiBase, getAuthHeaders } from '../utils/connection.js';
+import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection.js';
 import { setup as setupHubAuth } from '../utils/auth.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { api } from '../utils/api.js';
@@ -556,7 +556,15 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     setSaving(true);
     setError(null);
     try {
-      await setupHubAuth({ baseUrl: getApiBase(), username, password });
+      // When the server still has a legacy global `X-API-Key` configured
+      // (the pre-JWT install), `/api/auth/setup` requires it as
+      // break-glass proof so the migration to Owner-tracked auth can
+      // run. Plain fresh installs (no key stored) pass `''` and the
+      // header is omitted — `client/src/utils/auth.js#setup` only
+      // attaches it when truthy.
+      const { apiKey = '' } = getConnectionConfig();
+      const sanitizedApiKey = apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
+      await setupHubAuth({ baseUrl: getApiBase(), username, password, apiKey: sanitizedApiKey });
       setHubPassword('');
       setStep(stepIndex('welcome'));
     } catch (err) {

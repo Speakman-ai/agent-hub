@@ -653,15 +653,18 @@ export async function postPrComment(captureId: string): Promise<string | null> {
     return null;
   }
 
-  const token = config.botGithubToken;
-  if (!token) {
-    console.warn('[Capture] postPrComment: no botGithubToken configured, skipping');
-    return null;
-  }
-
   const parsed = parseOwnerRepo(row.repo_url);
   if (!parsed) {
     console.error(`[Capture] postPrComment: could not parse owner/repo from ${row.repo_url}`);
+    return null;
+  }
+
+  const { mintReviewerInstallationToken } = await import('./github-auth-policy.js');
+  const token = await mintReviewerInstallationToken(config, parsed.owner);
+  if (!token) {
+    console.warn(
+      `[Capture] postPrComment: no GitHub App installation for ${parsed.owner}, skipping`,
+    );
     return null;
   }
 

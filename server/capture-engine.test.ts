@@ -13,7 +13,17 @@ vi.mock('./config.js', () => ({
   default: {
     botGithubToken: null as string | null,
     publicUrl: null as string | null,
+    githubApp: null as unknown,
   },
+}));
+
+// After the user-GitHub-tokens rewrite, `postPrComment` resolves its
+// upload credential via the Reviewer GitHub App installation token from
+// `github-auth-policy.js` instead of the deprecated `botGithubToken`.
+// Stub the helper so tests can drive the "App installed" / "no App
+// installed" branches independently of config state.
+vi.mock('./github-auth-policy.js', () => ({
+  mintReviewerInstallationToken: vi.fn(),
 }));
 
 // ─── Helpers ───────────────────────────────────────────────────
@@ -223,15 +233,32 @@ describe('capture-engine', () => {
   // ── postPrComment ──────────────────────────────────────────────
 
   describe('postPrComment', () => {
+    let mintReviewerInstallationToken: Mock;
+
+    beforeEach(async () => {
+      const policy = await import('./github-auth-policy.js');
+      mintReviewerInstallationToken = policy.mintReviewerInstallationToken as unknown as Mock;
+      mintReviewerInstallationToken.mockReset();
+      // Default: an App installation is configured and minting succeeds.
+      // Tests that need the missing-App branch override this with
+      // `.mockResolvedValue(null)`.
+      mintReviewerInstallationToken.mockResolvedValue('ghs_inst_token_test');
+    });
+
     it('returns null when capture row is not found', async () => {
       (mockStmts.getPrCapture.get as Mock).mockReturnValue(undefined);
       const engine = await loadEngine();
       expect(await engine.postPrComment('cap-missing')).toBeNull();
     });
 
-    it('returns null when botGithubToken is not configured', async () => {
-      const config = (await import('./config.js')).default;
-      config.botGithubToken = null;
+    it('returns null when no Reviewer GitHub App installation can mint a token', async () => {
+      // After dropping the deprecated `botGithubToken`, postPrComment now
+      // depends on `mintReviewerInstallationToken`. A null return from
+      // that helper means the Reviewer App is either not configured or
+      // not installed on the repo's org — postPrComment must skip
+      // (log + return null) so the capture status update never blocks
+      // on a missing PR comment.
+      mintReviewerInstallationToken.mockResolvedValue(null);
       (mockStmts.getPrCapture.get as Mock).mockReturnValue(makeCaptureRow());
 
       const engine = await loadEngine();
@@ -240,7 +267,6 @@ describe('capture-engine', () => {
 
     it('posts a comment and returns the URL on success', async () => {
       const config = (await import('./config.js')).default;
-      config.botGithubToken = 'ghp_test123';
       config.publicUrl = 'https://hub.example.com';
 
       const row = makeCaptureRow({ status: 'done', duration_ms: 15000 });
@@ -274,13 +300,14 @@ describe('capture-engine', () => {
 
       expect(result).toBe(commentUrl);
 
-      // Verify the fetch call
+      // Verify the fetch call — Authorization now carries the App
+      // installation token returned by `mintReviewerInstallationToken`.
       expect(fetchSpy).toHaveBeenCalledWith(
         'https://api.github.com/repos/owner/repo/issues/42/comments',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            Authorization: 'token ghp_test123',
+            Authorization: 'token ghs_inst_token_test',
           }),
         }),
       );
@@ -309,7 +336,6 @@ describe('capture-engine', () => {
 
     it('falls back to filename text when publicUrl is null', async () => {
       const config = (await import('./config.js')).default;
-      config.botGithubToken = 'ghp_test456';
       config.publicUrl = null; // reset from previous test
 
       (mockStmts.getPrCapture.get as Mock).mockReturnValue(makeCaptureRow({ status: 'done' }));
@@ -347,9 +373,6 @@ describe('capture-engine', () => {
     });
 
     it('returns null when GitHub API returns an error', async () => {
-      const config = (await import('./config.js')).default;
-      config.botGithubToken = 'ghp_test123';
-
       (mockStmts.getPrCapture.get as Mock).mockReturnValue(makeCaptureRow({ status: 'done' }));
       (mockStmts.getPrCaptureArtifacts.all as Mock).mockReturnValue([]);
 
@@ -367,9 +390,6 @@ describe('capture-engine', () => {
     });
 
     it('returns null when repo URL cannot be parsed', async () => {
-      const config = (await import('./config.js')).default;
-      config.botGithubToken = 'ghp_test123';
-
       (mockStmts.getPrCapture.get as Mock).mockReturnValue(
         makeCaptureRow({ repo_url: 'https://gitlab.com/owner/repo' }),
       );

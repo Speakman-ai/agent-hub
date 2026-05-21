@@ -1,60 +1,34 @@
 /**
- * pr-read-fetch.ts — Server-side helpers that fetch PR diff / changed-files
- * through the same auth ladder as `pr-detail-fetch.ts`.
+ * pr-read-fetch.ts — Server-side PR diff / changed-files for reviewer read proxies.
  *
- * Why these exist:
- * - Reviewer-role spawns are intentionally stripped of `GH_TOKEN` and pointed
- *   at an empty `GH_CONFIG_DIR` by `applyReviewerSpawnIsolation`. That is the
- *   isolation contract that prevents a reviewer from forging commits or
- *   opening PRs under the App identity.
- * - The cost of that contract is the reviewer has no way to *read* the PR.
- *   `POST /api/pr/review` is write-only; there were no GET equivalents until
- *   these helpers were introduced.
- *
- * Auth ladder mirrors `pr-detail-fetch.ts`:
- *   Tier 0: User OAuth — respects the caller's repo visibility
- *   Tier 1: GitHub App installation token — distinct identity, no host creds
- *   Tier 2: gh CLI fallback with `botGithubToken` env (legacy hosts)
- *
- * Used by:
- *   GET /api/pr/diff   → fetchPrDiff
- *   GET /api/pr/files  → fetchPrFiles
- *
- * Kept as plain functions (no Express coupling) so unit tests can drive the
- * three tiers directly without spinning up the router.
+ * Auth policy mirrors pr-detail-fetch.ts (user-only vs reviewer App-only).
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { AppConfig, GitHubAppConfig } from './types.js';
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
-
-const execFileAsync = promisify(execFile);
+import {
+  CONNECT_GITHUB_HINT,
+  REVIEWER_APP_HINT,
+  hasReviewerGitHubApp,
+} from './github-auth-policy.js';
 
 const GH_API_BASE = 'https://api.github.com';
 const USER_AGENT = 'agent-hub';
 const API_VERSION = '2022-11-28';
 
 export interface PrReadFetchOptions {
-  /** User OAuth access token (tier 0). When provided, tried before App/CLI. */
   userAccessToken?: string | null;
-  /** Override fetch — used by tests. */
+  reviewerAppRead?: boolean;
   fetchImpl?: typeof fetch;
 }
 
-export type PrReadSource = 'user-oauth' | 'github-app' | 'gh-cli';
+export type PrReadSource = 'user-oauth' | 'github-app';
 
 export interface PrDiffResult {
   source: PrReadSource;
   diff: string;
 }
 
-/**
- * GitHub `pulls/:n/files` response entry. Trimmed to the shape the reviewer
- * actually needs — we don't pass through every raw field GitHub returns
- * (avoids growing the response when GitHub adds new fields the reviewer
- * doesn't read yet).
- */
 export interface PrFilesEntry {
   filename: string;
   status: string;
@@ -71,17 +45,9 @@ export interface PrFilesEntry {
 export interface PrFilesResult {
   source: PrReadSource;
   files: PrFilesEntry[];
-  /** True when pagination hit `MAX_PAGES`; caller should warn. */
   truncated: boolean;
 }
 
-/**
- * Thrown when every auth tier fails. Carries the first-line message from
- * the App tier's exception (if any) so the route handler can surface it
- * to the operator alongside the final gh-CLI failure. Mirrors the same
- * shape used by `pr-detail-fetch.ts → PrFetchError`. See the App-tier
- * silent-fallback debugging note on `pr-actions.ts:/api/pr/review`.
- */
 export class PrReadFetchError extends Error {
   appTierError?: string;
   constructor(message: string, opts?: { appTierError?: string | null }) {
@@ -92,18 +58,7 @@ export class PrReadFetchError extends Error {
 }
 
 const PAGE_SIZE = 100;
-const MAX_PAGES = 30; // 3000-file cap. Larger PRs get truncated + flagged.
-
-function hasGitHubApp(config: AppConfig): boolean {
-  const app = config.githubApp;
-  if (!(app?.appId && app?.privateKey)) return false;
-  return !!(app.installationId || (app.installations && app.installations.length > 0));
-}
-
-function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
-  if (!config.botGithubToken) return undefined;
-  return { ...process.env, GH_TOKEN: config.botGithubToken };
-}
+const MAX_PAGES = 30;
 
 async function fetchText(
   url: string,
@@ -131,13 +86,20 @@ async function fetchJson<T = unknown>(
   return (await res.json()) as T;
 }
 
-/**
- * Fetch the unified diff for a PR. Returns plain text — the body is the
- * `application/vnd.github.v3.diff` media type from GitHub.
- *
- * Throws when every tier fails; the route handler converts that to a 502
- * with the first line of the underlying error.
- */
+async function fetchWithAppToken(
+  config: AppConfig,
+  owner: string,
+  fetchImpl: typeof fetch,
+): Promise<{ token: string; source: PrReadSource }> {
+  const app = config.githubApp as GitHubAppConfig;
+  const instId = resolveInstallationId(app, owner);
+  if (!instId) {
+    throw new PrReadFetchError(`No GitHub App installation for "${owner}". ${REVIEWER_APP_HINT}`);
+  }
+  const token = await getInstallationToken(app.appId, app.privateKey, instId);
+  return { token, source: 'github-app' };
+}
+
 export async function fetchPrDiff(
   config: AppConfig,
   repo: { owner: string; repo: string },
@@ -147,10 +109,6 @@ export async function fetchPrDiff(
   const f = opts?.fetchImpl ?? fetch;
   const path = `/repos/${repo.owner}/${repo.repo}/pulls/${num}`;
 
-  // Captured for the gh-CLI fallback to surface when it also fails.
-  let appTierError: string | null = null;
-
-  // Tier 0: User OAuth
   if (opts?.userAccessToken) {
     try {
       const diff = await fetchText(
@@ -166,60 +124,33 @@ export async function fetchPrDiff(
       return { source: 'user-oauth', diff };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[PR Diff] User OAuth failed, trying GitHub App: ${msg.split('\n')[0]}`);
+      throw new PrReadFetchError(msg.split('\n')[0]);
     }
   }
 
-  // Tier 1: GitHub App
-  if (hasGitHubApp(config)) {
-    const app = config.githubApp as GitHubAppConfig;
-    const instId = resolveInstallationId(app, repo.owner);
-    if (instId) {
-      try {
-        const token = await getInstallationToken(app.appId, app.privateKey, instId);
-        const diff = await fetchText(
-          `${GH_API_BASE}${path}`,
-          {
-            Authorization: `token ${token}`,
-            Accept: 'application/vnd.github.v3.diff',
-            'X-GitHub-Api-Version': API_VERSION,
-            'User-Agent': USER_AGENT,
-          },
-          f,
-        );
-        return { source: 'github-app', diff };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Diff] GitHub App failed, trying gh CLI: ${appTierError}`);
-      }
+  if (opts?.reviewerAppRead && hasReviewerGitHubApp(config)) {
+    try {
+      const { token } = await fetchWithAppToken(config, repo.owner, f);
+      const diff = await fetchText(
+        `${GH_API_BASE}${path}`,
+        {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3.diff',
+          'X-GitHub-Api-Version': API_VERSION,
+          'User-Agent': USER_AGENT,
+        },
+        f,
+      );
+      return { source: 'github-app', diff };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new PrReadFetchError(msg.split('\n')[0], { appTierError: msg.split('\n')[0] });
     }
   }
 
-  // Tier 2: gh CLI
-  const env = botGhEnv(config);
-  try {
-    const { stdout } = await execFileAsync(
-      'gh',
-      ['pr', 'diff', String(num), '--repo', `${repo.owner}/${repo.repo}`],
-      { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
-    );
-    return { source: 'gh-cli', diff: stdout };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new PrReadFetchError(msg.split('\n')[0], { appTierError });
-  }
+  throw new PrReadFetchError(CONNECT_GITHUB_HINT);
 }
 
-/**
- * Fetch the changed-files list for a PR. Paginates GitHub's
- * `GET /repos/{owner}/{repo}/pulls/{n}/files` (max 100/page, MAX_PAGES cap
- * to bound memory on accidentally-massive PRs).
- *
- * `truncated: true` means the file list hit `MAX_PAGES * PAGE_SIZE`; callers
- * should surface that to the reviewer prompt so it doesn't silently miss
- * files in a giant PR.
- */
 export async function fetchPrFiles(
   config: AppConfig,
   repo: { owner: string; repo: string },
@@ -228,10 +159,10 @@ export async function fetchPrFiles(
 ): Promise<PrFilesResult> {
   const f = opts?.fetchImpl ?? fetch;
 
-  // Captured for the gh-CLI fallback to surface when it also fails.
-  let appTierError: string | null = null;
-
-  async function paginate(headers: Record<string, string>): Promise<PrFilesResult> {
+  async function paginate(
+    headers: Record<string, string>,
+    source: PrReadSource,
+  ): Promise<PrFilesResult> {
     const all: PrFilesEntry[] = [];
     let truncated = false;
     for (let page = 1; page <= MAX_PAGES; page++) {
@@ -239,75 +170,46 @@ export async function fetchPrFiles(
       const batch = await fetchJson<PrFilesEntry[]>(url, headers, f);
       if (!Array.isArray(batch) || batch.length === 0) break;
       all.push(...batch);
-      if (batch.length < PAGE_SIZE) return { source: 'user-oauth', files: all, truncated };
+      if (batch.length < PAGE_SIZE) return { source, files: all, truncated };
       if (page === MAX_PAGES) truncated = true;
     }
-    return { source: 'user-oauth', files: all, truncated };
+    return { source, files: all, truncated };
   }
 
-  // Tier 0: User OAuth
   if (opts?.userAccessToken) {
     try {
-      const result = await paginate({
-        Authorization: `Bearer ${opts.userAccessToken}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': API_VERSION,
-        'User-Agent': USER_AGENT,
-      });
-      return { ...result, source: 'user-oauth' };
+      return await paginate(
+        {
+          Authorization: `Bearer ${opts.userAccessToken}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': API_VERSION,
+          'User-Agent': USER_AGENT,
+        },
+        'user-oauth',
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[PR Files] User OAuth failed, trying GitHub App: ${msg.split('\n')[0]}`);
+      throw new PrReadFetchError(msg.split('\n')[0]);
     }
   }
 
-  // Tier 1: GitHub App
-  if (hasGitHubApp(config)) {
-    const app = config.githubApp as GitHubAppConfig;
-    const instId = resolveInstallationId(app, repo.owner);
-    if (instId) {
-      try {
-        const token = await getInstallationToken(app.appId, app.privateKey, instId);
-        const result = await paginate({
+  if (opts?.reviewerAppRead && hasReviewerGitHubApp(config)) {
+    try {
+      const { token } = await fetchWithAppToken(config, repo.owner, f);
+      return await paginate(
+        {
           Authorization: `token ${token}`,
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': API_VERSION,
           'User-Agent': USER_AGENT,
-        });
-        return { ...result, source: 'github-app' };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Files] GitHub App failed, trying gh CLI: ${appTierError}`);
-      }
+        },
+        'github-app',
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new PrReadFetchError(msg.split('\n')[0], { appTierError: msg.split('\n')[0] });
     }
   }
 
-  // Tier 2: gh CLI
-  const env = botGhEnv(config);
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(
-      'gh',
-      [
-        'api',
-        '--paginate',
-        `repos/${repo.owner}/${repo.repo}/pulls/${num}/files?per_page=${PAGE_SIZE}`,
-      ],
-      { timeout: 30000, maxBuffer: 25 * 1024 * 1024, ...(env && { env }) },
-    ));
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new PrReadFetchError(msg.split('\n')[0], { appTierError });
-  }
-  // `gh api --paginate` concatenates JSON arrays into a single array when
-  // the response is an array, so a single `JSON.parse` works.
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    parsed = [];
-  }
-  const files: PrFilesEntry[] = Array.isArray(parsed) ? (parsed as PrFilesEntry[]) : [];
-  return { source: 'gh-cli', files, truncated: false };
+  throw new PrReadFetchError(CONNECT_GITHUB_HINT);
 }

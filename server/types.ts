@@ -2184,7 +2184,8 @@ export interface ChatMessage {
   /**
    * Set to true when this message was dispatched by the autonomous-mode
    * loop in `server/autonomous.ts`. Used in `chat.ts` to inform the
-   * GitHub spawn-credential policy (see `selectGithubSpawnToken`):
+   * GitHub spawn-credential policy (see `resolveGithubSpawnToken` in
+   * `server/github-spawn-token-resolver.ts`):
    * autonomous-dispatch sessions are created by the system (no human
    * caller in scope) and attributed to the org owner, so injecting the
    * org owner's per-user OAuth token would let the spawned agent post

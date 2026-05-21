@@ -13,14 +13,16 @@
  *      Agent Hub install had a perfectly good GitHub App installation
  *      on the org.
  *
- *   2. There was no fallback chain — `selectGithubSpawnToken` made a
- *      one-shot choice and any 401/403 from `git clone` ate a worker
- *      slot for 15 minutes (the wall timeout).
+ *   2. There was no fallback chain — the previous synchronous policy
+ *      function (since removed) made a one-shot choice and any 401/403
+ *      from `git clone` ate a worker slot for 15 minutes (the wall
+ *      timeout).
  *
  * This module wraps the existing `resolveInstallationId` /
  * `getInstallationToken` helpers from `github-app.ts` and the
- * historical `selectGithubSpawnToken` policy from
- * `spawn-github-credentials.ts` into a single async resolver that:
+ * historical role-aware policy from `spawn-github-credentials.ts`
+ * (`selectGithubSpawnToken`, removed in the PR #1069 autofix) into a
+ * single async resolver that:
  *
  *   - Prefers a GitHub-App installation token (`ghs_…`) scoped to the
  *     repo's org when the App is installed there.
@@ -269,7 +271,7 @@ export async function validateTokenForRepo(
 
 export interface ResolveGithubSpawnTokenOpts {
   role: string | undefined;
-  config: Pick<AppConfig, 'githubApp' | 'botGithubToken'>;
+  config: Pick<AppConfig, 'githubApp'>;
   userGhToken: string | null | undefined;
   /** Webhook payload's `repository.full_name` owner, or `git remote`-derived owner. */
   repoOwner?: string | null;
@@ -300,30 +302,13 @@ export interface ResolveGithubSpawnTokenOpts {
  *
  * Role-keyed chain:
  *
- *   **Reviewer**: App installation token → bot token → null.
- *     Never per-user OAuth — would mis-attribute formal reviews to the
- *     org owner's human GitHub account.
+ *   **Reviewer**: App installation token → null (no botGithubToken).
  *
- *   **Autonomous-dispatch (non-reviewer)**: App installation token →
- *     null. No per-user fallback — autonomous sessions have no human
- *     caller in scope and the org owner's OAuth would let the spawn
- *     forge formal reviews under their human identity (`gh-pr.sh`
- *     wrapper guard would be bypassed by direct `gh api`). The App
- *     identity is bound to the org, not a human, so it's the correct
- *     credential for system-attributed work.
+ *   **Autonomous-dispatch (non-reviewer)**: App installation token → null.
  *
- *   **Non-reviewer interactive**: per-user OAuth (preferred) →
- *     App installation token (fallback) → null.
- *     This is the human-identity path. The spawn acts AS the user that
- *     started the session — commits, PRs, reviews, gh queries all
- *     attribute correctly. The App installation token is reached ONLY
- *     when the user's stored OAuth is missing or fails pre-validation
- *     against the repo (typical case: the user's grant on the org was
- *     revoked or they left the org). The fallback prevents the spawn
- *     from barrelling into a 15-minute `git clone` timeout, but its
- *     activation is loud — every fall-through emits a TOOL_ERROR so
- *     the operator sees "your PRs are landing as the App, not as you,
- *     because your OAuth is broken" instead of silently mis-attributing.
+ *   **Non-reviewer interactive**: per-user OAuth/PAT only → null.
+ *     No App fallback — connect Settings → GitHub or the spawn runs
+ *     without GitHub credentials.
  *
  * History: prior to PR-against-this-comment the chain preferred the App
  * installation token for EVERY role, which made step (3) dead code on
@@ -385,24 +370,7 @@ export async function resolveGithubSpawnToken(
 
   // === Reviewer role ============================================
   if (role === 'reviewer') {
-    const appToken = await tryAppInstallationToken();
-    if (appToken) return appToken;
-
-    const bot = config.botGithubToken ? config.botGithubToken : null;
-    if (!bot) return null;
-    if (repoOwner && repoName) {
-      const ok = await validateTokenForRepo(bot, repoOwner, repoName, validateFetcher);
-      if (!ok) {
-        emitTokenError({
-          summary: `reviewer botGithubToken failed pre-validation for ${repoOwner}/${repoName}`,
-          owner: repoOwner,
-          repo: repoName,
-          tag: 'reviewer-bot-token',
-        });
-        return null;
-      }
-    }
-    return bot;
+    return await tryAppInstallationToken();
   }
 
   // === Autonomous-dispatch (non-reviewer) ========================
@@ -416,37 +384,26 @@ export async function resolveGithubSpawnToken(
   // user OAuth is missing or fails validation. This is the human-identity
   // path — spawn acts AS the human at the keyboard for `git push`,
   // `gh pr create`, `gh api`, etc.
-  if (userGhToken) {
-    if (!repoOwner || !repoName) {
-      // No repo info to validate against. Trust the stored token and
-      // return it without a pre-flight check — matches the pre-existing
-      // "missing repo info" path for non-reviewer spawns.
-      return userGhToken;
-    }
-    const ok = await validateTokenForRepo(userGhToken, repoOwner, repoName, validateFetcher);
-    if (ok) return userGhToken;
-    emitTokenError({
-      summary: `per-user OAuth token failed pre-validation for ${repoOwner}/${repoName} (grant likely revoked) — falling back to App installation token`,
-      owner: repoOwner,
-      repo: repoName,
-      tag: 'user-oauth-token',
-    });
-    // fall through to App-token fallback so `git clone` doesn't eat a
-    // 15-minute worker slot on a revoked grant.
+  if (!userGhToken) return null;
+  if (!repoOwner || !repoName) {
+    return userGhToken;
   }
-
-  // Last resort for non-reviewer interactive: App installation token.
-  // Reached only when user OAuth is missing or revoked. Note: the spawn
-  // will be attributed to the App identity for this case, which we
-  // surface via the TOOL_ERROR above so the operator sees the swap.
-  return await tryAppInstallationToken();
+  const ok = await validateTokenForRepo(userGhToken, repoOwner, repoName, validateFetcher);
+  if (ok) return userGhToken;
+  emitTokenError({
+    summary: `per-user GitHub token failed pre-validation for ${repoOwner}/${repoName} — connect Settings → GitHub`,
+    owner: repoOwner,
+    repo: repoName,
+    tag: 'user-oauth-token',
+  });
+  return null;
 }
 
 interface TokenErrorPayload {
   summary: string;
   owner?: string;
   repo?: string;
-  tag: 'app-installation-token' | 'reviewer-bot-token' | 'user-oauth-token';
+  tag: 'app-installation-token' | 'user-oauth-token';
 }
 
 /**

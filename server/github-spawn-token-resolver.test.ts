@@ -17,14 +17,8 @@ function makeApp(overrides: Partial<GitHubAppConfig> = {}): GitHubAppConfig {
   } as GitHubAppConfig;
 }
 
-function makeConfig(
-  app: GitHubAppConfig | null,
-  botToken: string | null = null,
-): Pick<AppConfig, 'githubApp' | 'botGithubToken'> {
-  return { githubApp: app, botGithubToken: botToken } as Pick<
-    AppConfig,
-    'githubApp' | 'botGithubToken'
-  >;
+function makeConfig(app: GitHubAppConfig | null): Pick<AppConfig, 'githubApp'> {
+  return { githubApp: app };
 }
 
 beforeEach(() => clearInstallationLookupCache());
@@ -348,7 +342,7 @@ describe('resolveGithubSpawnToken', () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const minter = vi.fn(async () => 'ghs_installation_token');
     const token = await resolveGithubSpawnToken({
       role: 'developer',
@@ -369,7 +363,7 @@ describe('resolveGithubSpawnToken', () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const validate = vi.fn(async () => ({ ok: true, status: 200 }));
     const token = await resolveGithubSpawnToken({
       role: 'developer',
@@ -383,13 +377,11 @@ describe('resolveGithubSpawnToken', () => {
     expect(validate).not.toHaveBeenCalled();
   });
 
-  it('non-reviewer interactive falls back to App installation token when no user OAuth is stored', async () => {
-    // Preserves the original org-aware credential chain's safety net
-    // for users who haven't signed in via the OAuth app yet.
+  it('non-reviewer interactive returns null when no user OAuth is stored', async () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,
@@ -399,19 +391,14 @@ describe('resolveGithubSpawnToken', () => {
       tokenMinter: async () => 'ghs_installation_token',
       validateFetcher: async () => ({ ok: true, status: 200 }),
     });
-    expect(token).toBe('ghs_installation_token');
+    expect(token).toBeNull();
   });
 
-  it('non-reviewer interactive falls back to App installation token AND logs TOOL_ERROR when user OAuth fails validation', async () => {
-    // "Grant likely revoked" path: user has an OAuth token stored but
-    // it 403s against the org. We fall back to the App's installation
-    // token so git/gh keep working, but emit a TOOL_ERROR so operators
-    // can see "your PRs land as the App, not as you" instead of
-    // silently mis-attributing.
+  it('non-reviewer interactive returns null when user OAuth fails validation', async () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,
@@ -419,24 +406,18 @@ describe('resolveGithubSpawnToken', () => {
       repoOwner: 'mcsteen',
       repoName: 'surveytracker',
       tokenMinter: async () => 'ghs_installation_token',
-      validateFetcher: async (_url, init) => {
-        const auth = init?.headers?.Authorization ?? '';
-        // User OAuth: revoked. App token: good.
-        if (auth.includes('gho_dead_token')) return { ok: false, status: 403 };
-        return { ok: true, status: 200 };
-      },
+      validateFetcher: async () => ({ ok: false, status: 403 }),
     });
-    expect(token).toBe('ghs_installation_token');
+    expect(token).toBeNull();
     const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
     expect(lines).toMatch(/user-oauth-token/);
-    expect(lines).toMatch(/falling back to App installation token/);
   });
 
   it('reviewer role still prefers the App installation token over the bot token', async () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const token = await resolveGithubSpawnToken({
       role: 'reviewer',
       config: cfg,
@@ -449,11 +430,11 @@ describe('resolveGithubSpawnToken', () => {
     expect(token).toBe('ghs_installation_token');
   });
 
-  it('reviewer role falls through to bot token when the App token fails pre-validation', async () => {
+  it('reviewer role returns null when App token fails pre-validation', async () => {
     const app = makeApp({
       installations: [{ id: 99, account: 'mcsteen', accountType: 'Organization' }],
     });
-    const cfg = makeConfig(app, 'bot-pat');
+    const cfg = makeConfig(app);
     const token = await resolveGithubSpawnToken({
       role: 'reviewer',
       config: cfg,
@@ -461,23 +442,19 @@ describe('resolveGithubSpawnToken', () => {
       repoOwner: 'mcsteen',
       repoName: 'surveytracker',
       tokenMinter: async () => 'ghs_dead',
-      validateFetcher: async (_url, init) => {
-        const auth = init?.headers?.Authorization ?? '';
-        if (auth.includes('ghs_dead')) return { ok: false, status: 401 };
-        return { ok: true, status: 200 };
-      },
+      validateFetcher: async () => ({ ok: false, status: 401 }),
     });
-    expect(token).toBe('bot-pat');
+    expect(token).toBeNull();
     const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
     expect(lines).toMatch(/app-installation-token/);
   });
 
-  it('reviewer role NEVER falls back to user OAuth even when both bot and App are missing', async () => {
+  it('reviewer role NEVER falls back to user OAuth even when App is missing', async () => {
     // Security invariant: reviewer spawns must never attribute formal
     // PR reviews to a human account, even when the bot/App identity is
     // unavailable. The correct behaviour is to return null and let the
     // server-side `/api/pr/review` path handle the review submission.
-    const cfg = makeConfig(null, null);
+    const cfg = makeConfig(null);
     const token = await resolveGithubSpawnToken({
       role: 'reviewer',
       config: cfg,
@@ -489,48 +466,8 @@ describe('resolveGithubSpawnToken', () => {
     expect(token).toBeNull();
   });
 
-  it('reviewer role uses botGithubToken when no App is configured', async () => {
-    const cfg = makeConfig(null, 'bot-pat');
-    const token = await resolveGithubSpawnToken({
-      role: 'reviewer',
-      config: cfg,
-      userGhToken: 'gho_user',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
-      validateFetcher: async () => ({ ok: true, status: 200 }),
-    });
-    expect(token).toBe('bot-pat');
-  });
-
-  it('reviewer role returns null when bot token fails pre-validation', async () => {
-    const cfg = makeConfig(null, 'bot-pat');
-    const token = await resolveGithubSpawnToken({
-      role: 'reviewer',
-      config: cfg,
-      userGhToken: 'gho_user',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
-      validateFetcher: async () => ({ ok: false, status: 403 }),
-    });
-    expect(token).toBeNull();
-    const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
-    expect(lines).toMatch(/reviewer-bot-token/);
-  });
-
-  it('reviewer role returns null when bot token is missing and no App match', async () => {
-    const cfg = makeConfig(null, null);
-    const token = await resolveGithubSpawnToken({
-      role: 'reviewer',
-      config: cfg,
-      userGhToken: 'gho_user',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
-    });
-    expect(token).toBeNull();
-  });
-
   it('autonomous-dispatch non-reviewer returns null instead of falling back to user OAuth', async () => {
-    const cfg = makeConfig(null, null);
+    const cfg = makeConfig(null);
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,
@@ -546,7 +483,7 @@ describe('resolveGithubSpawnToken', () => {
   });
 
   it('non-reviewer interactive falls back to user OAuth when the App is not installed on the org', async () => {
-    const cfg = makeConfig(makeApp({ installations: [] }), null);
+    const cfg = makeConfig(makeApp({ installations: [] }));
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,
@@ -560,7 +497,7 @@ describe('resolveGithubSpawnToken', () => {
   });
 
   it('non-reviewer interactive returns null and logs when user OAuth token is revoked', async () => {
-    const cfg = makeConfig(null, null);
+    const cfg = makeConfig(null);
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,
@@ -572,11 +509,11 @@ describe('resolveGithubSpawnToken', () => {
     expect(token).toBeNull();
     const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
     expect(lines).toMatch(/user-oauth-token/);
-    expect(lines).toMatch(/grant likely revoked/);
+    expect(lines).toMatch(/Settings/);
   });
 
   it('non-reviewer interactive returns user OAuth without validation when repo info is missing', async () => {
-    const cfg = makeConfig(null, null);
+    const cfg = makeConfig(null);
     const validate = vi.fn();
     const token = await resolveGithubSpawnToken({
       role: 'developer',
@@ -591,7 +528,7 @@ describe('resolveGithubSpawnToken', () => {
   });
 
   it('returns null when no candidate produces a token (no App, no bot, no user)', async () => {
-    const cfg = makeConfig(null, null);
+    const cfg = makeConfig(null);
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       config: cfg,

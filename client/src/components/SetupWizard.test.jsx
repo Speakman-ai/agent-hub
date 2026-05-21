@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 vi.mock('../utils/connection.js', () => ({
   getApiBase: vi.fn(() => '/api'),
   getAuthHeaders: vi.fn(() => ({})),
+  getConnectionConfig: vi.fn(() => ({ apiKey: '' })),
   saveConnectionConfig: vi.fn(),
   testConnection: vi.fn(),
 }));
@@ -54,6 +55,16 @@ beforeEach(() => {
   updateOrg.mockReset();
   getActiveOrg.mockReset();
   getActiveOrg.mockReturnValue(null);
+  // setupHubAuth (= auth.js#setup) is mocked at module level. Without a
+  // per-test reset, calls from the "fresh install" case bleed into the
+  // "Owner already exists" case below and break the `.not.toHaveBeenCalled()`
+  // assertion at the top of describe('SetupWizard — Hub account step').
+  setupHubAuth.mockReset();
+  setupHubAuth.mockResolvedValue({
+    token: 'jwt-test',
+    expiresAt: Date.now() + 3600000,
+    user: {},
+  });
   api.getConfig.mockReset().mockResolvedValue({ lanMode: false });
   api.updateConfig.mockReset().mockResolvedValue({ ok: true });
   delete window.electronAPI;

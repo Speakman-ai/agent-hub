@@ -554,7 +554,7 @@ export function notifyDispatchFailure(
 
 /**
  * Set a GitHub commit status. Used for PR captures and other CI-like checks.
- * Uses GitHub App if available, falls back to `gh` CLI with bot token.
+ * Uses the Reviewer GitHub App installation token only.
  */
 export async function setCommitStatus(
   repoUrl: string,
@@ -590,49 +590,24 @@ export async function setCommitStatus(
         console.log(`[Webhook/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)}`);
         return;
       } catch (err) {
+        // The bot-token fallback this branch used to drop into is gone —
+        // commit statuses are App-only now. Log loudly and return; the
+        // capture pipeline never blocks on the status post.
         console.warn(
-          `[Webhook/Status] GitHub App failed, trying gh CLI: ${(err as Error).message.split('\n')[0]}`,
+          `[Webhook/Status] GitHub App call failed; skipping commit status for ${owner}/${repo}@${sha.substring(0, 7)}: ${(err as Error).message.split('\n')[0]}`,
         );
+        return;
       }
     }
   }
 
-  // Fallback: gh CLI with bot token
-  try {
-    const ghEnv: Record<string, string | undefined> = { ...process.env };
-    if (config.botGithubToken) {
-      ghEnv.GH_TOKEN = config.botGithubToken;
-    }
-
-    const args = [
-      'api',
-      `repos/${owner}/${repo}/statuses/${sha}`,
-      '--method',
-      'POST',
-      '--field',
-      `state=${state}`,
-      '--field',
-      `description=${body.description as string}`,
-      '--field',
-      'context=agent-hub/capture',
-    ];
-    if (targetUrl) {
-      args.push('--field', `target_url=${targetUrl}`);
-    }
-
-    execFileSync('gh', args, {
-      encoding: 'utf-8',
-      timeout: 15000,
-      env: ghEnv as NodeJS.ProcessEnv,
-    });
-    console.log(
-      `[Webhook/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)} (gh CLI)`,
-    );
-  } catch (err) {
-    console.error(
-      `[Webhook/Status] Failed to set commit status: ${(err as Error).message.split('\n')[0]}`,
-    );
-  }
+  // Reachable when (a) no GitHub App is installed, or (b) the App is
+  // installed but `resolveInstallationId(app, owner)` returned null for
+  // this repo's owner. Either way, commit-status posting is unavailable
+  // on this org until the operator installs the Reviewer App there.
+  console.warn(
+    `[Webhook/Status] Skipped commit status for ${owner}/${repo}@${sha.substring(0, 7)} — Reviewer GitHub App not installed on this org`,
+  );
 }
 
 // Input validators — these must match capture-engine's guard. We refuse

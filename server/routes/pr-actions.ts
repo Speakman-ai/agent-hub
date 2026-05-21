@@ -18,8 +18,6 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import type {
   RouteDeps,
@@ -35,6 +33,7 @@ import { githubUserApiRequest } from '../github-oauth.js';
 import { resolveUserToken } from './pr-list.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { fetchPrDiff, fetchPrFiles } from '../pr-read-fetch.js';
+import { CONNECT_GITHUB_HINT, REVIEWER_APP_HINT } from '../github-auth-policy.js';
 import {
   DEFAULT_REVIEWER_PHASES,
   completeCheckRun,
@@ -52,8 +51,6 @@ import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup
 import { getOrCreateBoard } from './board.js';
 import { dispatchReviewFeedback } from './webhooks.js';
 import type { Project } from '../types.js';
-
-const execFileAsync = promisify(execFile);
 
 interface PrActionBody {
   prUrl: string;
@@ -92,11 +89,6 @@ function hasGitHubApp(config: AppConfig): boolean {
   const app = config.githubApp;
   if (!(app?.appId && app?.privateKey)) return false;
   return !!(app.installationId || (app.installations && app.installations.length > 0));
-}
-
-function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
-  if (!config.botGithubToken) return undefined;
-  return { ...process.env, GH_TOKEN: config.botGithubToken };
 }
 
 const ALLOWED_MERGE_METHODS = new Set(['squash', 'merge', 'rebase']);
@@ -346,119 +338,40 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
       return res.status(400).json({ error: 'Invalid merge method' });
     }
 
-    // Surfaced in the final error response so operators can see exactly
-    // what GitHub rejected when the App tier silently falls through.
-    let appTierError: string | null = null;
-
-    // Tier 0: the caller's user OAuth token — merge shows up as the
-    // human in the "merged by" attribution, which is the behavior we
-    // want by default. Only applies when the user has linked GitHub.
-    try {
-      const userToken = await resolveUserToken(req, config);
-      if (userToken) {
-        await githubUserApiRequest({
-          accessToken: userToken,
-          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`,
-          method: 'PUT',
-          body: { merge_method: mergeMethod },
-        });
-        // Best-effort branch deletion using the same user token.
-        try {
-          const prData = await githubUserApiRequest<{ head?: { ref?: string } }>({
-            accessToken: userToken,
-            endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
-          });
-          if (prData.head?.ref) {
-            await githubUserApiRequest({
-              accessToken: userToken,
-              endpoint: `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
-              method: 'DELETE',
-            });
-          }
-        } catch {
-          /* branch deletion is best-effort */
-        }
-        return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '';
-      if (/already.*merged/i.test(msg)) {
-        return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
-      }
-      console.warn(`[PR Action] User OAuth merge failed, trying GitHub App: ${msg.split('\n')[0]}`);
+    const userToken = await resolveUserToken(req, config);
+    if (!userToken) {
+      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
     }
 
-    // Tier 1: GitHub App
-    if (hasGitHubApp(config)) {
+    try {
+      await githubUserApiRequest({
+        accessToken: userToken,
+        endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`,
+        method: 'PUT',
+        body: { merge_method: mergeMethod },
+      });
       try {
-        const app = config.githubApp as GitHubAppConfig;
-        const instId = resolveInstallationId(app, pr.owner);
-        if (instId) {
-          await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`, {
-            method: 'PUT',
-            body: { merge_method: mergeMethod },
-            appId: app.appId,
-            privateKey: app.privateKey,
-            installationId: instId,
+        const prData = await githubUserApiRequest<{ head?: { ref?: string } }>({
+          accessToken: userToken,
+          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+        });
+        if (prData.head?.ref) {
+          await githubUserApiRequest({
+            accessToken: userToken,
+            endpoint: `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
+            method: 'DELETE',
           });
-          // Try to delete branch
-          try {
-            const prData = (await githubApiRequest(
-              `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
-              { appId: app.appId, privateKey: app.privateKey, installationId: instId },
-            )) as { head?: { ref?: string } };
-            if (prData.head?.ref) {
-              await githubApiRequest(
-                `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
-                {
-                  method: 'DELETE',
-                  appId: app.appId,
-                  privateKey: app.privateKey,
-                  installationId: instId,
-                },
-              );
-            }
-          } catch {
-            /* branch deletion is best-effort */
-          }
-          return res.json({ ok: true, method: 'github-app', pr: pr.number });
         }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : '';
-        if (/already.*merged/i.test(msg)) {
-          return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
-        }
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Action] GitHub App merge failed, trying gh CLI: ${appTierError}`);
+      } catch {
+        /* branch deletion is best-effort */
       }
-    }
-
-    // Fallback to gh CLI
-    const env = botGhEnv(config);
-    try {
-      await execFileAsync(
-        'gh',
-        [
-          'pr',
-          'merge',
-          pr.number,
-          '--repo',
-          `${pr.owner}/${pr.repo}`,
-          `--${mergeMethod}`,
-          '--delete-branch',
-        ],
-        { timeout: 30000, ...(env && { env }) },
-      );
-      return res.json({ ok: true, method: 'gh-cli', pr: pr.number });
+      return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/already.*merged/i.test(msg)) {
         return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
       }
-      return res.status(500).json({
-        error: `Merge failed: ${msg.split('\n')[0]}`,
-        ...(appTierError && { appTierError }),
-      });
+      return res.status(500).json({ error: `Merge failed: ${msg.split('\n')[0]}` });
     }
   });
 
@@ -471,73 +384,29 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
       return res.status(400).json({ error: 'Invalid PR URL' });
     }
 
-    // Surfaced in the final error response so operators can see exactly
-    // what GitHub rejected when the App tier silently falls through.
-    let appTierError: string | null = null;
-
-    // Tier 0: user OAuth — close attributes to the human.
-    try {
-      const userToken = await resolveUserToken(req, config);
-      if (userToken) {
-        await githubUserApiRequest({
-          accessToken: userToken,
-          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
-          method: 'PATCH',
-          body: { state: 'closed' },
-        });
-        return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '';
-      console.warn(`[PR Action] User OAuth close failed, trying GitHub App: ${msg.split('\n')[0]}`);
+    const userToken = await resolveUserToken(req, config);
+    if (!userToken) {
+      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
     }
 
-    // Tier 1: GitHub App
-    if (hasGitHubApp(config)) {
-      try {
-        const app = config.githubApp as GitHubAppConfig;
-        const instId = resolveInstallationId(app, pr.owner);
-        if (instId) {
-          await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`, {
-            method: 'PATCH',
-            body: { state: 'closed' },
-            appId: app.appId,
-            privateKey: app.privateKey,
-            installationId: instId,
-          });
-          return res.json({ ok: true, method: 'github-app', pr: pr.number });
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : '';
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Action] GitHub App close failed, trying gh CLI: ${appTierError}`);
-      }
-    }
-
-    // Fallback to gh CLI
-    const env = botGhEnv(config);
     try {
-      await execFileAsync('gh', ['pr', 'close', pr.number, '--repo', `${pr.owner}/${pr.repo}`], {
-        timeout: 30000,
-        ...(env && { env }),
+      await githubUserApiRequest({
+        accessToken: userToken,
+        endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+        method: 'PATCH',
+        body: { state: 'closed' },
       });
-      return res.json({ ok: true, method: 'gh-cli', pr: pr.number });
+      return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({
-        error: `Close failed: ${msg.split('\n')[0]}`,
-        ...(appTierError && { appTierError }),
-      });
+      return res.status(500).json({ error: `Close failed: ${msg.split('\n')[0]}` });
     }
   });
 
-  // ─── Submit a formal PR review (GitHub App → bot PAT → 501) ─────
+  // ─── Submit a formal PR review (GitHub App only) ───────────────
   //
-  // Exists because the lead/reviewer agent session runs `gh pr review` as the
-  // host's `gh` identity — which is the PR author, so GitHub rejects APPROVE
-  // with "pull request authors can't submit a review of their own changes".
-  // This endpoint routes the review through the GitHub App installation
-  // (a distinct identity), falling back to the bot PAT.
+  // Routes the review through the Reviewer GitHub App installation — never the
+  // signed-in human and never legacy botGithubToken.
 
   router.post('/api/pr/review', async (req: Request, res: Response) => {
     const { prUrl, event, body, commitId } = req.body as PrReviewBody;
@@ -629,91 +498,18 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
           });
         }
         appTierError = `GitHub App configured but no installation matched owner "${pr.owner}"`;
-        console.warn(`[PR Review] ${appTierError} — falling back to bot token`);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         appTierError = msg.split('\n')[0];
-        console.warn(`[PR Review] GitHub App review failed, trying bot token: ${appTierError}`);
       }
     }
 
-    // Tier 2: bot PAT via direct GitHub API call (distinct identity if configured separately)
-    if (config.botGithubToken) {
-      try {
-        const ghRes = await fetch(
-          `https://api.github.com/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `token ${config.botGithubToken}`,
-              Accept: 'application/vnd.github+json',
-              'Content-Type': 'application/json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              'User-Agent': 'agent-hub',
-            },
-            body: JSON.stringify(reviewPayload),
-          },
-        );
-        if (!ghRes.ok) {
-          const text = await ghRes.text().catch(() => '');
-          throw new Error(`GitHub API ${ghRes.status}: ${text.split('\n')[0]}`);
-        }
-        const data = (await ghRes.json()) as ReviewApiResponse;
-        completeReviewerCheckRun(pr, reviewEvent, reviewBody).catch(() => {
-          /* best-effort */
-        });
-        reclaimReviewerSession(pr);
-        persistReviewLog({
-          prUrl,
-          event: reviewEvent,
-          body: reviewBody,
-          reviewerLogin: data.user?.login,
-        });
-        if (reviewEvent === 'REQUEST_CHANGES') {
-          dispatchAuthorAutofixForChangesRequested({
-            prUrl,
-            prNumber: pr.number,
-            reviewBody,
-            reviewerLogin: data.user?.login,
-            reviewId: typeof data.id === 'number' ? data.id : undefined,
-          });
-        }
-        return res.json({
-          ok: true,
-          method: 'bot-token',
-          pr: pr.number,
-          event: reviewEvent,
-          reviewId: data.id,
-          reviewUrl: data.html_url,
-          reviewer: data.user?.login,
-          state: data.state,
-        });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return res.status(502).json({
-          error: `Bot token review failed: ${msg.split('\n')[0]}`,
-          hint: 'Configure a GitHub App installation for this repo owner so reviews submit as the App identity.',
-          ...(appTierError && { appTierError }),
-        });
-      }
-    }
-
-    // No viable auth — fallback chain exhausted. When the App tier actually
-    // ran and threw, the error message that historically said "No GitHub App
-    // installation" was misleading: the App was configured, GitHub just
-    // rejected the review (403 / 422 / 404 / etc.). Surface that distinction
-    // so operators don't chase phantom installation problems. Status stays
-    // 501 — the wire contract for "fallback chain exhausted" — and the
-    // diagnostic detail lives in `appTierError`.
     const fallbackError = appTierError
-      ? 'GitHub App review request failed and no bot token is configured to fall back to'
-      : 'No GitHub App installation for this repo owner and no bot token configured';
-    const fallbackHint = appTierError
-      ? "See appTierError for the upstream rejection; if that's a real install issue, fix the App installation. Otherwise configure botGithubToken as a fallback."
-      : 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.';
+      ? 'GitHub App review request failed'
+      : `No GitHub App installation for repo owner "${pr.owner}"`;
     return res.status(501).json({
       error: fallbackError,
-      hint: fallbackHint,
+      hint: REVIEWER_APP_HINT,
       ...(appTierError && { appTierError }),
     });
   });
@@ -727,77 +523,35 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
       return res.status(400).json({ error: 'Invalid PR URL (pass as ?prUrl=...)' });
     }
 
-    // Surfaced in the final error response so operators can see exactly
-    // what GitHub rejected when the App tier silently falls through.
-    let appTierError: string | null = null;
-
-    // Try GitHub App
-    if (hasGitHubApp(config)) {
-      try {
-        const app = config.githubApp as GitHubAppConfig;
-        const instId = resolveInstallationId(app, pr.owner);
-        if (instId) {
-          const data = (await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`, {
-            appId: app.appId,
-            privateKey: app.privateKey,
-            installationId: instId,
-          })) as Record<string, unknown>;
-          return res.json({
-            number: pr.number,
-            state: data.state,
-            mergeable: data.mergeable,
-            mergeable_state: data.mergeable_state,
-            title: data.title,
-            user: (data.user as Record<string, unknown>)?.login,
-            head: (data.head as Record<string, unknown>)?.ref,
-            base: (data.base as Record<string, unknown>)?.ref,
-            additions: data.additions,
-            deletions: data.deletions,
-            changed_files: data.changed_files,
-          });
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        appTierError = msg.split('\n')[0];
-        console.warn(`[PR Action] GitHub App status failed: ${appTierError}`);
-      }
+    const userToken = await resolveUserToken(req, config);
+    if (!userToken) {
+      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
     }
 
-    // Fallback to gh CLI
-    const env = botGhEnv(config);
     try {
-      const { stdout } = await execFileAsync(
-        'gh',
-        [
-          'pr',
-          'view',
-          pr.number,
-          '--repo',
-          `${pr.owner}/${pr.repo}`,
-          '--json',
-          'number,state,mergeable,title,headRefName,baseRefName,additions,deletions,changedFiles,author',
-        ],
-        { timeout: 15000, ...(env && { env }) },
-      );
-      const data = JSON.parse(stdout);
+      const data = await githubUserApiRequest<Record<string, unknown>>({
+        accessToken: userToken,
+        endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+      });
+      const head = data.head as Record<string, unknown> | undefined;
+      const base = data.base as Record<string, unknown> | undefined;
+      const user = data.user as Record<string, unknown> | undefined;
       return res.json({
-        number: data.number,
-        state: data.state?.toLowerCase(),
-        mergeable: data.mergeable === 'MERGEABLE',
+        number: pr.number,
+        state: data.state,
+        mergeable: data.mergeable,
+        mergeable_state: data.mergeable_state,
         title: data.title,
-        user: data.author?.login,
-        head: data.headRefName,
-        base: data.baseRefName,
+        user: user?.login,
+        head: head?.ref,
+        base: base?.ref,
         additions: data.additions,
         deletions: data.deletions,
-        changed_files: data.changedFiles,
+        changed_files: data.changed_files,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({
-        error: `Status check failed: ${msg.split('\n')[0]}`,
-        ...(appTierError && { appTierError }),
-      });
+      return res.status(500).json({ error: `Status check failed: ${msg.split('\n')[0]}` });
     }
   });
 
@@ -807,7 +561,7 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
   // `applyReviewerSpawnIsolation`). These endpoints let them fetch PR
   // contents using server-side App / user-OAuth credentials without ever
   // exposing a token to the spawned process. Auth chain mirrors
-  // `pr-detail-fetch.ts`: User OAuth → GitHub App → gh CLI.
+  // `pr-detail-fetch.ts`: user OAuth, or Reviewer GitHub App when no user token.
   //
   // Accepts either `?prUrl=https://github.com/owner/repo/pull/N` or the
   // explicit triple `?owner=…&repo=…&number=N`. The PR-URL form is what
@@ -842,7 +596,7 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
         config,
         { owner: parsed.owner, repo: parsed.repo },
         Number(parsed.number),
-        { userAccessToken },
+        { userAccessToken, reviewerAppRead: true },
       );
       return res.json({
         source: detail.source,
@@ -872,7 +626,7 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
         config,
         { owner: parsed.owner, repo: parsed.repo },
         Number(parsed.number),
-        { userAccessToken },
+        { userAccessToken, reviewerAppRead: true },
       );
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('X-PR-Source', result.source);
@@ -898,7 +652,7 @@ ${args.reviewBody || '(No body — check inline comments on the PR)'}
         config,
         { owner: parsed.owner, repo: parsed.repo },
         Number(parsed.number),
-        { userAccessToken },
+        { userAccessToken, reviewerAppRead: true },
       );
       return res.json({
         source: result.source,

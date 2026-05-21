@@ -1,14 +1,19 @@
 /**
- * Integration-level tests for the auth chain inversion in pr-list.ts.
- * Verifies user-OAuth tier is preferred over GitHub App tier.
+ * Integration-level tests for the auth contract of pr-list.ts.
+ *
+ * After the "drop App fallbacks" refactor (PR #1069), the route
+ * /api/projects/:id/pulls is user-OAuth ONLY:
+ *   - present + working → 200 source:'user-oauth'
+ *   - present + dead    → 502 (no App fallback)
+ *   - missing           → 401 CONNECT_GITHUB_HINT
  *
  * These tests mock:
  *   - `../github-app.js` — so the App tier doesn't reach out
  *   - `../github-oauth.js` — so the user tier returns a controlled value
  *   - child_process/util — so the CLI tier is a no-op
  *
- * What they assert is ordering, not API shape — the shape is covered by
- * the pure-helper tests in pr-list.test.ts.
+ * What they assert is the per-branch behaviour, not API shape — the
+ * shape is covered by the pure-helper tests in pr-list.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -101,7 +106,7 @@ function makeApp(deps: RouteDeps, authUserId?: string): express.Express {
   return app;
 }
 
-describe('pr-list auth chain — user OAuth preferred over GitHub App', () => {
+describe('pr-list auth contract — user OAuth required (no App fallback)', () => {
   beforeEach(() => freshEnv());
 
   const project = { id: 'proj-1', githubRepo: 'speakman-ai/agent-hub' };
@@ -126,20 +131,27 @@ describe('pr-list auth chain — user OAuth preferred over GitHub App', () => {
     expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
-  it('falls back to GitHub App when the caller has no user connection', async () => {
-    const user = createUser({ username: 'alice', passwordHash: 'x' });
+  it('returns 401 CONNECT_GITHUB_HINT when the caller has no user connection (no App fallback)', async () => {
+    // Pre-rewrite: this fell back to the GitHub App identity. The drop-
+    // App-fallbacks refactor removes that silent identity swap so PR
+    // attribution is always the human at the keyboard. A user without
+    // a stored connection now gets a 401 that the client surfaces as
+    // a "Connect GitHub" CTA.
+    createUser({ username: 'alice', passwordHash: 'x' });
     mockResolveInstallationId.mockReturnValue(99);
-    mockGithubApiRequest.mockResolvedValueOnce([{ number: 2, title: 'from app', state: 'open' }]);
 
-    const app = makeApp(buildDeps(project), user.id);
+    const app = makeApp(buildDeps(project), 'some-user-without-connection');
     const res = await request(app).get('/api/projects/proj-1/pulls');
-    expect(res.status).toBe(200);
-    expect(res.body.source).toBe('github-app');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
-    expect(mockGithubApiRequest).toHaveBeenCalledTimes(1);
+    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
-  it('falls through to App tier when user OAuth throws (e.g. token dead at GitHub)', async () => {
+  it('returns 502 when user OAuth throws at GitHub (no App fallback)', async () => {
+    // Pre-rewrite: a dead user token would fall through to the App tier.
+    // The new contract surfaces the upstream error as a 502 so the user
+    // can see it and re-connect their account. No silent identity swap.
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     upsertGithubConnection({
       userId: user.id,
@@ -150,29 +162,28 @@ describe('pr-list auth chain — user OAuth preferred over GitHub App', () => {
       refreshExpiresAt: new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString(),
     });
     mockGithubUserApiRequest.mockRejectedValueOnce(new Error('401 unauthorized'));
-    mockResolveInstallationId.mockReturnValue(99);
-    mockGithubApiRequest.mockResolvedValueOnce([
-      { number: 3, title: 'app fallback', state: 'open' },
-    ]);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const app = makeApp(buildDeps(project), user.id);
     const res = await request(app).get('/api/projects/proj-1/pulls');
-    expect(res.status).toBe(200);
-    expect(res.body.source).toBe('github-app');
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/Failed to list PRs/);
+    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
-  it('skips user-tier entirely on apiKey-path requests (no authUserId)', async () => {
+  it('returns 401 on apiKey-path requests (no authUserId, no user-token resolution possible)', async () => {
     mockResolveInstallationId.mockReturnValue(99);
-    mockGithubApiRequest.mockResolvedValueOnce([{ number: 4, state: 'open' }]);
 
-    // No authUserId passed — mimics the apiKey path in the real auth middleware.
+    // No authUserId passed — mimics the apiKey path in the real auth
+    // middleware. Pre-rewrite: this short-circuited into the App tier.
+    // After the rewrite: the apiKey path has no per-user identity to
+    // attribute the request to, so /pulls returns 401. Operators who
+    // want to enumerate PRs server-side must use the App-only endpoints
+    // (e.g. /api/pr/data with reviewerAppRead).
     const app = makeApp(buildDeps(project));
     const res = await request(app).get('/api/projects/proj-1/pulls');
-    expect(res.status).toBe(200);
-    expect(res.body.source).toBe('github-app');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
+    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 });

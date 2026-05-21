@@ -4,35 +4,21 @@
  * GET  /api/projects/:projectId/pulls             — list PRs for the project's GitHub repo
  * GET  /api/projects/:projectId/pulls/:number     — full detail: PR + reviews + check-runs + comments
  *
- * Auth chain mirrors routes/pr-actions.ts:
- *   1. User OAuth token (if the calling user has "Sign in with GitHub" configured)
- *   2. GitHub App installation (if configured for the repo's owner)
- *   3. `gh` CLI fallback (optionally with `GH_TOKEN` from `botGithubToken`)
- *
- * The user-token tier lets non-admins use the PR viewer without
- * requiring the GitHub App to be installed on their org — a hard
- * blocker for users whose org admin won't approve the install.
+ * Auth: per-user GitHub connection only (OAuth or PAT from Settings → GitHub).
+ * No GitHub App or host `gh` fallback — connect your account to list PRs.
  *
  * This is a read-only surface — no mutating actions live here. Merge/close/review
  * continue to live in pr-actions.ts so that write surfaces stay consolidated.
  */
 
 import { Router, Request, Response } from 'express';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import type { RouteDeps, AppConfig, GitHubAppConfig } from '../types.js';
-import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import type { RouteDeps, AppConfig } from '../types.js';
 import { githubUserApiRequest } from '../github-oauth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
+import { CONNECT_GITHUB_HINT } from '../github-auth-policy.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
-import {
-  enrichPullListRowsWithGraphql,
-  enrichPullListRowsWithInstallationGraphql,
-  normalizeCheckRollupItems,
-} from '../pr-pull-list-enrichment.js';
-
-const execFileAsync = promisify(execFile);
+import { enrichPullListRowsWithGraphql } from '../pr-pull-list-enrichment.js';
 
 const ALLOWED_STATES = new Set(['open', 'closed', 'all']);
 const DEFAULT_LIST_LIMIT = 30;
@@ -117,30 +103,6 @@ export function normalizePrSummary(raw: Record<string, unknown>): Record<string,
   };
 }
 
-function hasGitHubApp(config: AppConfig): boolean {
-  const app = config.githubApp;
-  if (!(app?.appId && app?.privateKey)) return false;
-  return !!(app.installationId || (app.installations && app.installations.length > 0));
-}
-
-function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
-  if (!config.botGithubToken) return undefined;
-  return { ...process.env, GH_TOKEN: config.botGithubToken };
-}
-
-async function callApp<T>(config: AppConfig, owner: string, path: string): Promise<T | null> {
-  if (!hasGitHubApp(config)) return null;
-  const app = config.githubApp as GitHubAppConfig;
-  const instId = resolveInstallationId(app, owner);
-  if (!instId) return null;
-  const data = await githubApiRequest(path, {
-    appId: app.appId,
-    privateKey: app.privateKey,
-    installationId: instId,
-  });
-  return data as unknown as T;
-}
-
 /**
  * Resolve a user access token for the caller (if any). Used by
  * pr-list and pr-detail read endpoints.
@@ -167,16 +129,6 @@ export async function resolveUserToken(req: Request, config: AppConfig): Promise
         ? { clientId: app.clientId, clientSecret: app.clientSecret }
         : null;
   return getActiveAccessToken(areq.authUserId, creds);
-}
-
-async function callCli(config: AppConfig, args: string[]): Promise<string> {
-  const env = botGhEnv(config);
-  const { stdout } = await execFileAsync('gh', args, {
-    timeout: 20000,
-    maxBuffer: 10 * 1024 * 1024,
-    ...(env && { env }),
-  });
-  return stdout;
 }
 
 export default function createPrListRoutes(deps: RouteDeps): Router {
@@ -207,136 +159,35 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
 
       const listPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&sort=updated&direction=desc`;
 
-      // Tier 0: User OAuth — prefer the caller's own identity so listings
-      // respect their repo visibility and "My PRs" can be filtered
-      // server-side without App install.
       const userToken = await resolveUserToken(req, config);
-      if (userToken) {
-        try {
-          const userData = await githubUserApiRequest<Array<Record<string, unknown>>>({
-            accessToken: userToken,
-            endpoint: listPath,
-          });
-          if (Array.isArray(userData)) {
-            const pulls = userData.map(normalizePrSummary);
-            try {
-              await enrichPullListRowsWithGraphql({
-                owner: repo.owner,
-                repo: repo.repo,
-                bearerToken: userToken,
-                pulls,
-              });
-            } catch (enrichErr: unknown) {
-              const em = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
-              console.warn(`[PR List] User OAuth GraphQL enrichment skipped: ${em.split('\n')[0]}`);
-            }
-            return res.json({
-              repo: `${repo.owner}/${repo.repo}`,
-              state,
-              source: 'user-oauth',
-              pulls,
-            });
-          }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[PR List] User OAuth list failed, trying GitHub App: ${msg.split('\n')[0]}`,
-          );
-        }
+      if (!userToken) {
+        return res.status(401).json({ error: CONNECT_GITHUB_HINT });
       }
 
-      // Tier 1: GitHub App
       try {
-        const appData = await callApp<Array<Record<string, unknown>>>(config, repo.owner, listPath);
-        if (Array.isArray(appData)) {
-          const pulls = appData.map(normalizePrSummary);
-          const ghApp = config.githubApp as GitHubAppConfig | undefined;
-          const instId = ghApp ? resolveInstallationId(ghApp, repo.owner) : null;
-          if (ghApp?.appId && ghApp.privateKey && instId) {
-            try {
-              await enrichPullListRowsWithInstallationGraphql({
-                appId: ghApp.appId,
-                privateKey: ghApp.privateKey,
-                installationId: instId,
-                owner: repo.owner,
-                repo: repo.repo,
-                pulls,
-              });
-            } catch (enrichErr: unknown) {
-              const em = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
-              console.warn(`[PR List] App GraphQL enrichment skipped: ${em.split('\n')[0]}`);
-            }
-          }
-          return res.json({
-            repo: `${repo.owner}/${repo.repo}`,
-            state,
-            source: 'github-app',
+        const userData = await githubUserApiRequest<Array<Record<string, unknown>>>({
+          accessToken: userToken,
+          endpoint: listPath,
+        });
+        if (!Array.isArray(userData)) {
+          return res.status(502).json({ error: 'Unexpected GitHub response when listing PRs' });
+        }
+        const pulls = userData.map(normalizePrSummary);
+        try {
+          await enrichPullListRowsWithGraphql({
+            owner: repo.owner,
+            repo: repo.repo,
+            bearerToken: userToken,
             pulls,
           });
+        } catch (enrichErr: unknown) {
+          const em = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
+          console.warn(`[PR List] User OAuth GraphQL enrichment skipped: ${em.split('\n')[0]}`);
         }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[PR List] GitHub App list failed, trying gh CLI: ${msg.split('\n')[0]}`);
-      }
-
-      // Tier 2: gh CLI
-      try {
-        const stateFlag = state === 'all' ? 'all' : state;
-        const stdout = await callCli(config, [
-          'pr',
-          'list',
-          '--repo',
-          `${repo.owner}/${repo.repo}`,
-          '--state',
-          stateFlag,
-          '--limit',
-          String(limit),
-          '--json',
-          'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,labels,additions,deletions,changedFiles,comments,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup',
-        ]);
-        const raw = JSON.parse(stdout) as Array<Record<string, unknown>>;
-        const pulls = raw.map((pr) => {
-          const author = pr.author as Record<string, unknown> | null | undefined;
-          const comments = pr.comments as Array<unknown> | undefined;
-          const labels = (pr.labels as Array<Record<string, unknown>> | undefined) || [];
-          const rollup = normalizeCheckRollupItems(pr.statusCheckRollup);
-          return {
-            number: pr.number,
-            title: pr.title,
-            state: typeof pr.state === 'string' ? pr.state.toLowerCase() : pr.state,
-            draft: pr.isDraft ?? false,
-            html_url: pr.url,
-            user: author?.login ?? null,
-            user_avatar: null,
-            head: pr.headRefName,
-            base: pr.baseRefName,
-            created_at: pr.createdAt,
-            updated_at: pr.updatedAt,
-            merged_at: null,
-            closed_at: null,
-            labels: labels.map((l) => ({ name: l.name as string, color: l.color as string })),
-            comments: Array.isArray(comments) ? comments.length : 0,
-            review_comments: 0,
-            additions: pr.additions,
-            deletions: pr.deletions,
-            changed_files: pr.changedFiles,
-            mergeable: mergeableFromCli(pr.mergeable),
-            mergeable_state: pr.mergeable ?? null,
-            merge_state_status:
-              pr.mergeStateStatus === null || pr.mergeStateStatus === undefined
-                ? null
-                : String(pr.mergeStateStatus),
-            review_decision:
-              pr.reviewDecision === null || pr.reviewDecision === undefined
-                ? null
-                : String(pr.reviewDecision),
-            check_rollup: rollup.length > 0 ? rollup : null,
-          };
-        });
         return res.json({
           repo: `${repo.owner}/${repo.repo}`,
           state,
-          source: 'gh-cli',
+          source: 'user-oauth',
           pulls,
         });
       } catch (err: unknown) {

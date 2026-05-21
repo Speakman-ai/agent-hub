@@ -36,8 +36,9 @@ export default function GithubConnectionSection({ embedded = false } = {}) {
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaving, setTokenSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts = {}) => {
+    const { silent = false } = opts;
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${getApiBase()}/auth/github/status`, {
@@ -48,7 +49,7 @@ export default function GithubConnectionSection({ embedded = false } = {}) {
     } catch (err) {
       setError(err.message || String(err));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -60,10 +61,14 @@ export default function GithubConnectionSection({ embedded = false } = {}) {
   // redirects back here), refetch status so the UI flips from
   // "Connect" to "Connected as @…" without a manual reload.
   useEffect(() => {
-    const onFocus = () => load();
+    const onFocus = () => {
+      // Refetch after OAuth return, but do not wipe an in-progress PAT paste
+      // (focus fires when switching to github.com to copy a token).
+      load({ silent: showTokenInput });
+    };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [load]);
+  }, [load, showTokenInput]);
 
   const handleConnect = async () => {
     setBusy(true);
@@ -108,7 +113,9 @@ export default function GithubConnectionSection({ embedded = false } = {}) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `POST /auth/github/connect-token → ${res.status}`);
+        const msg = body.error || `POST /auth/github/connect-token → ${res.status}`;
+        const hint = body.hint ? ` ${body.hint}` : '';
+        throw new Error(`${msg}${hint}`);
       }
       setTokenInput('');
       setShowTokenInput(false);

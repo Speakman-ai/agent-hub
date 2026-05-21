@@ -14,7 +14,9 @@ import {
   redactToken,
   SSH_NOT_SUPPORTED_MESSAGE,
 } from '../clone-url-auth.js';
-import { getActiveAccessToken } from '../github-connections-store.js';
+import { resolveUserGithubToken } from '../skill-credentials-github.js';
+import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
+import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
@@ -953,20 +955,7 @@ export function validatePrEnvProjectConfig(
  *      particular user identity.
  */
 function resolveCloneUserId(req: Request): string | null {
-  const areq = req as AuthenticatedRequest;
-  if (areq.authUserId) return areq.authUserId;
-  if (areq.authLocalOrgBypass && areq.authOrgId) {
-    const username = `local-${areq.authOrgId}`;
-    try {
-      const existing = getUserByUsername(username);
-      if (existing) return existing.id;
-      const created = createUser({ username, passwordHash: '' });
-      return created.id;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return resolveGithubConnectionUserId(req);
 }
 
 export default function createProjectRoutes(deps: RouteDeps): Router {
@@ -1073,15 +1062,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       try {
         const userId = resolveCloneUserId(req);
         if (userId) {
-          const personal = config.personalOAuth;
-          const app = config.githubApp;
-          const creds =
-            personal?.clientId && personal?.clientSecret
-              ? { clientId: personal.clientId, clientSecret: personal.clientSecret }
-              : app?.clientId && app?.clientSecret
-                ? { clientId: app.clientId, clientSecret: app.clientSecret }
-                : null;
-          const token = await getActiveAccessToken(userId, creds);
+          const oauthCreds = resolveOAuthAppCredentials(config);
+          const token = await resolveUserGithubToken(userId, { oauthCredentials: oauthCreds });
           if (token) {
             spawnUrl = buildAuthenticatedUrl(parsed, token);
             injectedToken = token;

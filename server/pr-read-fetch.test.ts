@@ -1,27 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppConfig } from './types.js';
 
-// Mock the GitHub App helpers — the helper under test calls
-// `getInstallationToken` + `resolveInstallationId` for tier 1.
+// Mock the GitHub App helpers — the App-tier path under test calls
+// `getInstallationToken` + `resolveInstallationId` when `reviewerAppRead`
+// is true and a Reviewer GitHub App installation is configured.
 vi.mock('./github-app.js', () => ({
   getInstallationToken: vi.fn(),
   resolveInstallationId: vi.fn(),
 }));
-
-// Mock the gh CLI tier the same way `pr-detail-fetch.test.ts` does, so a
-// stray CLI tier execution surfaces as a test-time failure (the global
-// fixture forbids real `gh` spawns anyway).
-const cliMock = vi.fn();
-vi.mock('child_process', () => ({
-  execFile: vi.fn(),
-}));
-vi.mock('util', async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    promisify: () => cliMock,
-  };
-});
 
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -57,17 +43,29 @@ const TEST_APP: NonNullable<AppConfig['githubApp']> = {
   appId: '12345',
   privateKey: '-----BEGIN RSA PRIVATE KEY-----\nMOCK\n-----END RSA PRIVATE KEY-----',
   installationId: 67890,
-  installations: [],
+  installations: [{ id: 67890, account: 'mcsteen', accountType: 'Organization' }],
   appSlug: 'agent-hub-reviewer-test',
 };
+
+// The fetchPrDiff/fetchPrFiles helpers used to layer a `gh` CLI fallback
+// onto the user-OAuth → App ladder. After the "drop App fallbacks" refactor
+// (PR #1069) the policy collapsed to two lanes:
+//
+//   1. `userAccessToken` present → user-OAuth (no fallback on failure).
+//   2. `reviewerAppRead: true` + App installed → App installation token
+//      (no fallback on failure).
+//   3. Anything else → throw `CONNECT_GITHUB_HINT`.
+//
+// The tests below pin those three branches. Mocks for `gh` CLI fallback are
+// gone — there is no longer a CLI path to exercise.
 
 describe('fetchPrDiff', () => {
   beforeEach(() => {
     vi.resetModules();
-    cliMock.mockReset();
+    vi.clearAllMocks();
   });
 
-  it('uses the user OAuth token when one is provided (tier 0)', async () => {
+  it('uses the user OAuth token when one is provided (lane 1)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response('diff --git a/foo b/foo\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new\n', {
         status: 200,
@@ -94,7 +92,7 @@ describe('fetchPrDiff', () => {
     );
   });
 
-  it('falls back to GitHub App when no user token is provided (tier 1)', async () => {
+  it('uses the Reviewer GitHub App installation token when reviewerAppRead is true and no user token is provided (lane 2)', async () => {
     const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
     (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token-xyz');
@@ -108,7 +106,7 @@ describe('fetchPrDiff', () => {
       baseConfig({ githubApp: TEST_APP }),
       { owner: 'mcsteen', repo: 'surveytracker' },
       621,
-      { fetchImpl },
+      { reviewerAppRead: true, fetchImpl },
     );
 
     expect(result.source).toBe('github-app');
@@ -119,45 +117,54 @@ describe('fetchPrDiff', () => {
     expect(headers.Accept).toBe('application/vnd.github.v3.diff');
   });
 
-  it('falls back from user-OAuth to GitHub App when tier 0 throws', async () => {
+  it('user-OAuth lane does NOT silently fall back to the App when the user request fails', async () => {
+    // The "drop App fallbacks" refactor explicitly removed the ladder:
+    // a failing user-OAuth read is now a hard error so the caller can
+    // surface the connect-GitHub hint instead of silently degrading to
+    // the App identity.
     const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
     (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token');
 
-    const fetchImpl = vi
-      .fn()
-      // Tier 0 returns 401 — should fall through, NOT propagate
-      .mockResolvedValueOnce(new Response('bad token', { status: 401 }))
-      .mockResolvedValueOnce(new Response('--- app diff ---', { status: 200 }));
+    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('bad token', { status: 401 }));
 
-    const { fetchPrDiff } = await import('./pr-read-fetch.js');
-    const result = await fetchPrDiff(
-      baseConfig({ githubApp: TEST_APP }),
-      { owner: 'o', repo: 'r' },
-      1,
-      { userAccessToken: 'stale', fetchImpl },
-    );
+    const { fetchPrDiff, PrReadFetchError } = await import('./pr-read-fetch.js');
+    await expect(
+      fetchPrDiff(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 1, {
+        userAccessToken: 'stale',
+        reviewerAppRead: true,
+        fetchImpl,
+      }),
+    ).rejects.toBeInstanceOf(PrReadFetchError);
 
-    expect(result.source).toBe('github-app');
-    expect(result.diff).toBe('--- app diff ---');
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Only one fetch attempt: the user-OAuth lane. No App-tier retry.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((getInstallationToken as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 
-  it('throws when every tier is unavailable', async () => {
+  it('throws CONNECT_GITHUB_HINT when neither user token nor reviewerAppRead is provided', async () => {
     const { fetchPrDiff } = await import('./pr-read-fetch.js');
-    cliMock.mockRejectedValue(new Error('gh: command not found'));
-
     await expect(
-      fetchPrDiff(baseConfig({ githubApp: null }), { owner: 'o', repo: 'r' }, 1, {
+      fetchPrDiff(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 1, {
         fetchImpl: vi.fn(),
       }),
-    ).rejects.toThrow(/gh: command not found/);
+    ).rejects.toThrow(/Connect your GitHub account/i);
   });
 
-  // Diagnostic surfacing — when both App and gh CLI fail, the route
-  // handler needs the App-tier error too. Same pattern as
-  // `pr-detail-fetch.test.ts → attaches appTierError`.
-  it('attaches appTierError to PrReadFetchError when App throws then CLI also fails', async () => {
+  it('throws CONNECT_GITHUB_HINT when reviewerAppRead is set but no App is installed', async () => {
+    const { fetchPrDiff } = await import('./pr-read-fetch.js');
+    await expect(
+      fetchPrDiff(baseConfig({ githubApp: null }), { owner: 'o', repo: 'r' }, 1, {
+        reviewerAppRead: true,
+        fetchImpl: vi.fn(),
+      }),
+    ).rejects.toThrow(/Connect your GitHub account/i);
+  });
+
+  it('attaches appTierError to PrReadFetchError when the App tier throws', async () => {
+    // Diagnostic surfacing — the route handler needs the App-tier error so the
+    // operator-facing 502 can name what GitHub rejected, even though the lane
+    // has no further fallback to try.
     const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
     (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token');
@@ -165,17 +172,17 @@ describe('fetchPrDiff', () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(new Response('Resource not accessible by integration', { status: 403 }));
-    cliMock.mockRejectedValue(new Error('gh: not authenticated'));
 
     const { fetchPrDiff, PrReadFetchError } = await import('./pr-read-fetch.js');
     try {
       await fetchPrDiff(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 1, {
+        reviewerAppRead: true,
         fetchImpl,
       });
       throw new Error('expected fetchPrDiff to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(PrReadFetchError);
-      expect((err as Error).message).toMatch(/gh: not authenticated/);
+      expect((err as Error).message).toMatch(/403/);
       expect((err as InstanceType<typeof PrReadFetchError>).appTierError).toMatch(/403/);
     }
   });
@@ -184,10 +191,10 @@ describe('fetchPrDiff', () => {
 describe('fetchPrFiles', () => {
   beforeEach(() => {
     vi.resetModules();
-    cliMock.mockReset();
+    vi.clearAllMocks();
   });
 
-  it('paginates the files endpoint until a short page is returned', async () => {
+  it('paginates the files endpoint until a short page is returned (App lane)', async () => {
     const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
     (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('tok');
@@ -216,7 +223,7 @@ describe('fetchPrFiles', () => {
       baseConfig({ githubApp: TEST_APP }),
       { owner: 'o', repo: 'r' },
       99,
-      { fetchImpl },
+      { reviewerAppRead: true, fetchImpl },
     );
 
     expect(result.source).toBe('github-app');
@@ -227,7 +234,45 @@ describe('fetchPrFiles', () => {
     expect(String(fetchImpl.mock.calls[1][0])).toContain('page=2');
   });
 
-  it('respects the user OAuth tier when a user token is supplied', async () => {
+  it('paginates the files endpoint under the user OAuth lane', async () => {
+    // Same pagination behaviour must hold for the user-OAuth lane —
+    // covers the case where a card with many changed files is opened
+    // from a session that has its own per-user token.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      filename: `u${i}.ts`,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      changes: 1,
+    }));
+    const page2 = [
+      { filename: 'tail.ts', status: 'added', additions: 1, deletions: 0, changes: 1 },
+    ];
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(page1), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(page2), { status: 200 }));
+
+    const { fetchPrFiles } = await import('./pr-read-fetch.js');
+    const result = await fetchPrFiles(
+      baseConfig({ githubApp: TEST_APP }),
+      { owner: 'o', repo: 'r' },
+      99,
+      { userAccessToken: 'user-tok', fetchImpl },
+    );
+
+    expect(result.source).toBe('user-oauth');
+    expect(result.files).toHaveLength(101);
+    expect(result.truncated).toBe(false);
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('page=1');
+    expect(String(fetchImpl.mock.calls[1][0])).toContain('page=2');
+    expect((fetchImpl.mock.calls[0][1]?.headers as Record<string, string>)?.Authorization).toBe(
+      'Bearer user-tok',
+    );
+  });
+
+  it('respects the user OAuth lane when a user token is supplied', async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(
@@ -255,32 +300,37 @@ describe('fetchPrFiles', () => {
     );
   });
 
-  // Diagnostic surfacing — same pattern as `fetchPrDiff`'s appTierError
-  // test, but for the `fetchPrFiles` gh-CLI fallback catch. The
-  // `gh api --paginate` execution sits behind its own try/catch; this
-  // verifies that an App-tier failure followed by a CLI failure
-  // propagates as a `PrReadFetchError` carrying both error messages.
-  it('attaches appTierError to PrReadFetchError when App throws then CLI also fails (files)', async () => {
+  it('throws CONNECT_GITHUB_HINT when neither user token nor reviewerAppRead is provided', async () => {
+    const { fetchPrFiles } = await import('./pr-read-fetch.js');
+    await expect(
+      fetchPrFiles(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 7, {
+        fetchImpl: vi.fn(),
+      }),
+    ).rejects.toThrow(/Connect your GitHub account/i);
+  });
+
+  it('attaches appTierError to PrReadFetchError when the App tier throws (files)', async () => {
+    // Diagnostic-surfacing parity with fetchPrDiff: the App-tier error must
+    // propagate as a `PrReadFetchError.appTierError` so the route handler
+    // can render a meaningful 502 instead of a generic message.
     const { getInstallationToken, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(67890);
     (getInstallationToken as ReturnType<typeof vi.fn>).mockResolvedValue('inst-token');
 
-    // App tier: 403 from GitHub on the first paginate page.
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(new Response('Resource not accessible by integration', { status: 403 }));
-    // gh CLI tier: also fails.
-    cliMock.mockRejectedValue(new Error('gh: command not found'));
 
     const { fetchPrFiles, PrReadFetchError } = await import('./pr-read-fetch.js');
     try {
       await fetchPrFiles(baseConfig({ githubApp: TEST_APP }), { owner: 'o', repo: 'r' }, 7, {
+        reviewerAppRead: true,
         fetchImpl,
       });
       throw new Error('expected fetchPrFiles to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(PrReadFetchError);
-      expect((err as Error).message).toMatch(/gh: command not found/);
+      expect((err as Error).message).toMatch(/403/);
       expect((err as InstanceType<typeof PrReadFetchError>).appTierError).toMatch(/403/);
     }
   });

@@ -149,17 +149,19 @@ export function reloadForOrgSwitch() {
   }
 }
 
-/** Get auth headers for API requests. Empty object if no credentials stored.
- *  JWT (Authorization: Bearer) is preferred over the legacy X-API-Key when
- *  both are available. The server accepts either, but the middleware tries
- *  JWT first so it records the subject on the request. */
+/** Get auth headers for browser UI requests.
+ *
+ * Prefer JWT (username/password login or setup wizard). The global
+ * `X-API-Key` on the connection record is a fallback for remote clients
+ * and legacy installs — scripts and automation should send the key
+ * directly rather than relying on this UI store. */
 export function getAuthHeaders() {
   const jwt = getJwtToken();
   if (jwt) {
     return { Authorization: `Bearer ${jwt}` };
   }
   const config = getConnectionConfig();
-  if (config.mode === 'remote' && config.apiKey) {
+  if (config.apiKey) {
     return { 'X-API-Key': config.apiKey };
   }
   return {};

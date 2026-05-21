@@ -175,7 +175,13 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   // No auth configured at all → let everything through (dev / fresh install).
   // Treat as Owner so role-gated routes work in single-user mode.
   if (!apiKey && !authRecord) {
-    (req as AuthenticatedRequest).authRole = 'Owner';
+    const openReq = req as AuthenticatedRequest;
+    openReq.authRole = 'Owner';
+    try {
+      openReq.authOrgId = getActiveOrgId();
+    } catch {
+      /* orgs.db not ready — github connect-token resolves org lazily */
+    }
     next();
     return;
   }

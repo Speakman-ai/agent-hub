@@ -195,7 +195,7 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  *      `process.env` wholesale, so any token the operator exported in
  *      the shell that started the Hub (or PM2/systemd ambient env)
  *      would otherwise survive into the spawn even when
- *      `selectGithubSpawnToken` correctly returns `null`. `gh` reads
+ *      `resolveGithubSpawnToken` correctly returns `null`. `gh` reads
  *      `GH_TOKEN` at the highest priority — ahead of `GH_CONFIG_DIR` —
  *      so the config-dir isolation alone is insufficient. Callers must
  *      invoke this function BEFORE `applyGithubSpawnCredentials` so
@@ -277,13 +277,14 @@ export function applyReviewerSpawnIsolation(
  *
  * Why this exists (defense-in-depth):
  *   The reviewer-spawn env is already scrubbed of GitHub tokens by
- *   `applyReviewerSpawnIsolation`, and `selectGithubSpawnToken`
- *   deliberately returns `null` for reviewer role when no bot token is
- *   configured. The role-lock assumes a *future* change accidentally
- *   reintroduces a token into the spawn env (e.g. someone adds a new
- *   fallback path in `selectGithubSpawnToken`, or a future helper
- *   forwards a user token to reviewers) and makes sure the spawn still
- *   cannot use it to forge commits or open PRs — the failure mode
+ *   `applyReviewerSpawnIsolation`, and `resolveGithubSpawnToken`
+ *   deliberately returns the App installation token (or `null` when no
+ *   App is installed) for reviewer role — it never forwards a per-user
+ *   OAuth. The role-lock assumes a *future* change accidentally
+ *   reintroduces a user token into the spawn env (e.g. someone adds a
+ *   new fallback branch to `resolveGithubSpawnToken`, or a future
+ *   helper forwards a user token to reviewers) and makes sure the spawn
+ *   still cannot use it to forge commits or open PRs — the failure mode
  *   documented in mcsteen/surveytracker PR #622 where
  *   `agent-hub-reviewer-main[bot]` opened a PR with bot-authored commits.
  *
@@ -319,61 +320,27 @@ function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string
   env[`GIT_CONFIG_VALUE_${idx}`] = value;
 }
 
-/**
- * Decide the GitHub credential to inject into a spawn env, given the
- * agent role and available tokens. Encapsulates the policy:
- *
- *   - **Reviewer role**: only the `botGithubToken` (server-side bot/App
- *     identity) is allowed. Falling back to the org owner's per-user
- *     OAuth token would mis-attribute reviews to a human account. When
- *     no bot token is configured the reviewer spawns with no GitHub
- *     credential at all — `POST /api/pr/review` (App-mediated, handled
- *     entirely server-side) is the correct submission path.
- *
- *   - **Non-reviewer role, interactive origin**: prefer the per-user
- *     OAuth/PAT token so `gh push` / `git push` authenticate as the
- *     human at the keyboard. Reviewer-specific isolation does not
- *     apply here.
- *
- *   - **Non-reviewer role, autonomous-dispatch origin
- *     (`autonomousOrigin: true`)**: return `null` regardless of the
- *     resolved per-user token. Autonomous-dispatch sessions are
- *     created by the system with no human caller in scope and are
- *     attributed to the org owner; injecting the owner's OAuth token
- *     would let the spawned agent post formal PR reviews via
- *     `gh api repos/.../pulls/<n>/reviews -X POST` under the human's
- *     identity — bypassing the `gh-pr.sh` wrapper guard
- *     (`AGENT_HUB_REVIEWER_LOCK`) that only catches `gh pr review`.
- *     Stripping the token entirely is the closure for that bypass.
- *     The server-side auto-PR push runs in `auto-git.ts` (in the Hub
- *     process), not in the spawned agent's env, so PR creation is
- *     unaffected.
- *
- * Returns the resolved token string (to feed into
- * `applyGithubSpawnCredentials`) or `null` if the spawn should remain
- * unauthenticated. Pure — caller wires the env mutation.
- */
-export function selectGithubSpawnToken(opts: {
-  role: string | undefined;
-  botGithubToken: string | null | undefined;
-  userGhToken: string | null | undefined;
-  /**
-   * True when the spawn was triggered by the autonomous-mode dispatcher
-   * (see `server/autonomous.ts` → `_fromAutonomousDispatch` sentinel on
-   * `ChatMessage`). Defaults to `false` for interactive callers. Has no
-   * effect on the reviewer branch — reviewer spawns are already gated
-   * to the bot token and never see the per-user fallback.
-   */
-  autonomousOrigin?: boolean;
-}): string | null {
-  if (opts.role === 'reviewer') {
-    return opts.botGithubToken ? opts.botGithubToken : null;
-  }
-  // Autonomous-dispatch sessions: strip the per-user fallback so the
-  // session-owning org-owner's OAuth token never lands in the spawn env.
-  // See doc comment above for the wrapper-bypass rationale.
-  if (opts.autonomousOrigin === true) {
-    return null;
-  }
-  return opts.userGhToken ? opts.userGhToken : null;
-}
+// NOTE — `selectGithubSpawnToken` was removed.
+//
+// It was the synchronous-precursor policy function for picking the
+// GitHub credential to inject into a spawned agent env. After the
+// "user GitHub tokens + Hub account in setup" rewrite, ALL production
+// spawn paths route through the async `resolveGithubSpawnToken` in
+// `github-spawn-token-resolver.ts`, which encapsulates the same
+// reviewer / non-reviewer / autonomous-dispatch rules plus the
+// repo-aware App-installation chain.
+//
+// The helper was kept exported during the transition (so existing
+// tests would still pass) but it had no production callers — `chat.ts`
+// only imports `applyReviewerSpawnIsolation`, `applyGithubSpawnCredentials`,
+// and `applyReviewerRoleLock` from this module. The reviewer (PR #1069
+// review) flagged it as a "dead-code trap": a future contributor adding
+// a new spawn path would be tempted to reach for the synchronous,
+// well-documented function and silently reintroduce the pre-fix
+// behaviour (no installation-token preference, no autonomous-dispatch
+// guard).
+//
+// Removed in autofix(review): drop selectGithubSpawnToken (commit
+// addressing the M1 finding). If you need to pick a token for a new
+// spawn site, call `resolveGithubSpawnToken` — it is the only correct
+// entry point.

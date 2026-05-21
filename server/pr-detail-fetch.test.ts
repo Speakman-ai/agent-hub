@@ -1,25 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppConfig } from './types.js';
+import { CONNECT_GITHUB_HINT } from './github-auth-policy.js';
 
-// Mocks: GitHub App client and gh CLI. These are the two tiers of the fallback
-// ladder — the helper should try the App first, then fall back to the CLI.
 vi.mock('./github-app.js', () => ({
   githubApiRequest: vi.fn(),
   resolveInstallationId: vi.fn(),
 }));
 
-// We replace promisify so the returned `execFileAsync` is a vi.fn we can drive.
-const cliMock = vi.fn();
-vi.mock('child_process', () => ({
-  execFile: vi.fn(),
+vi.mock('./github-oauth.js', () => ({
+  githubUserApiRequest: vi.fn(),
 }));
-vi.mock('util', async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    promisify: () => cliMock,
-  };
-});
 
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -54,10 +44,9 @@ function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 describe('fetchPrDetail', () => {
   beforeEach(() => {
     vi.resetModules();
-    cliMock.mockReset();
   });
 
-  it('uses the GitHub App when configured and merges reviews/checks/comments', async () => {
+  it('uses reviewer GitHub App when reviewerAppRead is set', async () => {
     const { githubApiRequest, resolveInstallationId } = await import('./github-app.js');
     (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(999);
 
@@ -77,25 +66,13 @@ describe('fetchPrDetail', () => {
         };
       }
       if (path.includes('/reviews')) {
-        return [
-          { id: 1, user: { login: 'bob' }, state: 'CHANGES_REQUESTED', body: 'nope' },
-          { id: 2, user: { login: 'eve' }, state: 'APPROVED', body: 'lgtm' },
-        ];
+        return [{ id: 1, user: { login: 'bob' }, state: 'APPROVED', body: 'lgtm' }];
       }
       if (path.includes('/issues/42/comments')) {
-        return [{ id: 10, user: { login: 'carol' }, body: 'ping' }];
+        return [];
       }
       if (path.includes('/check-runs')) {
-        return {
-          check_runs: [
-            {
-              id: 100,
-              name: 'ci',
-              status: 'completed',
-              conclusion: 'failure',
-            },
-          ],
-        };
+        return { check_runs: [] };
       }
       return null;
     });
@@ -106,172 +83,65 @@ describe('fetchPrDetail', () => {
         appId: '1',
         privateKey: 'k',
         installationId: 999,
+        installations: [{ id: 999, account: 'o', accountType: 'Organization' }],
       },
     });
-    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 42);
+    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 42, {
+      reviewerAppRead: true,
+    });
 
     expect(out.source).toBe('github-app');
     expect((out.pr as Record<string, unknown>).number).toBe(42);
-    expect((out.pr as Record<string, unknown>).mergeable).toBe(true);
-    expect(out.reviews).toHaveLength(2);
-    expect(out.reviews[0]).toMatchObject({ user: 'bob', state: 'CHANGES_REQUESTED' });
-    expect(out.checks).toHaveLength(1);
-    expect(out.checks[0]).toMatchObject({ name: 'ci', conclusion: 'failure' });
-    expect(out.comments).toHaveLength(1);
   });
 
-  it('falls back to `gh` CLI when no GitHub App is configured', async () => {
-    cliMock.mockResolvedValue({
-      stdout: JSON.stringify({
-        number: 7,
-        title: 'CLI fallback path',
-        state: 'OPEN',
-        isDraft: false,
-        url: 'https://github.com/o/r/pull/7',
-        author: { login: 'alice' },
-        headRefName: 'feature/y',
-        baseRefName: 'main',
-        createdAt: 't1',
-        updatedAt: 't2',
-        additions: 1,
-        deletions: 0,
-        changedFiles: 1,
-        body: 'body',
-        mergeable: 'CONFLICTING',
-        reviewDecision: 'CHANGES_REQUESTED',
-        labels: [],
-        reviews: [
-          {
-            id: 1,
-            author: { login: 'bob' },
-            state: 'CHANGES_REQUESTED',
-            body: 'fix',
-            submittedAt: 't',
-          },
-        ],
-        comments: [],
-        statusCheckRollup: [
-          { name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'u' },
-        ],
-      }),
+  it('uses user OAuth when userAccessToken is provided', async () => {
+    const { githubUserApiRequest } = await import('./github-oauth.js');
+    (githubUserApiRequest as ReturnType<typeof vi.fn>).mockImplementation(async ({ endpoint }) => {
+      if (endpoint.endsWith('/pulls/7')) {
+        return {
+          number: 7,
+          title: 'User path',
+          state: 'open',
+          user: { login: 'alice' },
+          head: { sha: 'abc' },
+        };
+      }
+      return [];
     });
 
     const { fetchPrDetail } = await import('./pr-detail-fetch.js');
-    const config = baseConfig();
-    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 7);
-
-    expect(out.source).toBe('gh-cli');
+    const out = await fetchPrDetail(baseConfig(), { owner: 'o', repo: 'r' }, 7, {
+      userAccessToken: 'gho_test',
+    });
+    expect(out.source).toBe('user-oauth');
     expect((out.pr as Record<string, unknown>).number).toBe(7);
-    // `CONFLICTING` → false (via mergeableFromCli) AND preserved in mergeable_state
-    expect((out.pr as Record<string, unknown>).mergeable).toBe(false);
-    expect((out.pr as Record<string, unknown>).mergeable_state).toBe('CONFLICTING');
-    expect(out.checks[0]).toMatchObject({ conclusion: 'failure', status: 'completed' });
-    expect(out.reviews[0]).toMatchObject({ user: 'bob', state: 'CHANGES_REQUESTED' });
   });
 
-  it('falls back to CLI when the App path throws', async () => {
-    const { githubApiRequest, resolveInstallationId } = await import('./github-app.js');
-    (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(1);
-    (githubApiRequest as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('App boom'));
-
-    cliMock.mockResolvedValue({
-      stdout: JSON.stringify({
-        number: 1,
-        title: 'cli rescue',
-        state: 'OPEN',
-        url: 'u',
-        author: { login: 'a' },
-        headRefName: 'h',
-        baseRefName: 'b',
-        labels: [],
-        reviews: [],
-        comments: [],
-        statusCheckRollup: [],
-        mergeable: 'MERGEABLE',
-      }),
-    });
-
-    const { fetchPrDetail } = await import('./pr-detail-fetch.js');
-    const config = baseConfig({
-      githubApp: { appId: '1', privateKey: 'k', installationId: 1 },
-    });
-    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 1);
-    expect(out.source).toBe('gh-cli');
-    expect((out.pr as Record<string, unknown>).mergeable).toBe(true);
-  });
-
-  it('maps mergedAt and closedAt from `gh pr view` JSON on the CLI tier', async () => {
-    cliMock.mockResolvedValue({
-      stdout: JSON.stringify({
-        number: 99,
-        title: 'Merged via CLI',
-        state: 'MERGED',
-        isDraft: false,
-        url: 'https://github.com/o/r/pull/99',
-        author: { login: 'alice' },
-        headRefName: 'feat',
-        baseRefName: 'main',
-        createdAt: '2026-01-01T00:00:00Z',
-        updatedAt: '2026-01-02T00:00:00Z',
-        mergedAt: '2026-01-02T12:00:00Z',
-        closedAt: '2026-01-02T12:00:00Z',
-        additions: 0,
-        deletions: 0,
-        changedFiles: 0,
-        body: '',
-        mergeable: 'UNKNOWN',
-        reviewDecision: null,
-        labels: [],
-        reviews: [],
-        comments: [],
-        statusCheckRollup: [],
-      }),
-    });
-
-    const { fetchPrDetail } = await import('./pr-detail-fetch.js');
-    const config = baseConfig();
-    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 99);
-
-    expect(out.source).toBe('gh-cli');
-    expect((out.pr as Record<string, unknown>).merged_at).toBe('2026-01-02T12:00:00Z');
-    expect((out.pr as Record<string, unknown>).closed_at).toBe('2026-01-02T12:00:00Z');
-  });
-
-  it('propagates CLI failure as an error when both tiers fail', async () => {
-    cliMock.mockRejectedValue(new Error('gh: command not found'));
-    const { fetchPrDetail } = await import('./pr-detail-fetch.js');
+  it('throws when no user token and reviewerAppRead is false', async () => {
+    const { fetchPrDetail, PrFetchError } = await import('./pr-detail-fetch.js');
     await expect(fetchPrDetail(baseConfig(), { owner: 'o', repo: 'r' }, 1)).rejects.toThrow(
-      /gh: command not found/,
+      PrFetchError,
+    );
+    await expect(fetchPrDetail(baseConfig(), { owner: 'o', repo: 'r' }, 1)).rejects.toThrow(
+      CONNECT_GITHUB_HINT,
     );
   });
 
-  // Diagnostic surfacing — when both App and gh CLI fail, the route
-  // handler needs the App-tier error too. Without it operators see a
-  // 502 saying only `gh pr view` failed, with no clue about what the
-  // App tier actually rejected upstream.
-  it('attaches appTierError to PrFetchError when App throws then CLI also fails', async () => {
-    const { githubApiRequest, resolveInstallationId } = await import('./github-app.js');
-    (resolveInstallationId as ReturnType<typeof vi.fn>).mockReturnValue(1);
-    (githubApiRequest as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('GitHub API 403: Resource not accessible by integration'),
-    );
-    cliMock.mockRejectedValue(new Error('gh: not authenticated'));
+  it('does not fall back to App when user token fails', async () => {
+    const { githubUserApiRequest } = await import('./github-oauth.js');
+    (githubUserApiRequest as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('401 bad'));
 
     const { fetchPrDetail, PrFetchError } = await import('./pr-detail-fetch.js');
-    const config = baseConfig({
-      githubApp: { appId: '1', privateKey: 'k', installationId: 1 },
-    });
-
-    try {
-      await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 1);
-      throw new Error('expected fetchPrDetail to throw');
-    } catch (err) {
-      expect(err).toBeInstanceOf(PrFetchError);
-      expect((err as Error).message).toMatch(/gh: not authenticated/);
-      expect((err as InstanceType<typeof PrFetchError>).appTierError).toMatch(/403/);
-      expect((err as InstanceType<typeof PrFetchError>).appTierError).toMatch(
-        /Resource not accessible/,
-      );
-    }
+    await expect(
+      fetchPrDetail(
+        baseConfig({ githubApp: { appId: '1', privateKey: 'k', installationId: 1 } }),
+        {
+          owner: 'o',
+          repo: 'r',
+        },
+        1,
+        { userAccessToken: 'gho_bad' },
+      ),
+    ).rejects.toThrow(PrFetchError);
   });
 });

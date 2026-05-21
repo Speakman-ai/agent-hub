@@ -430,7 +430,10 @@ describe('PR Actions route', () => {
       });
     });
 
-    it('falls back to 501 when the App path throws and no bot token is configured', async () => {
+    it('returns 501 with the App-tier rejection surfaced when the App path throws (no bot fallback)', async () => {
+      // After the "drop App fallbacks" rewrite, /api/pr/review is App-only.
+      // A failure on the App tier no longer falls through to a bot token —
+      // it returns 501 with the App-tier error surfaced for the operator.
       resolveInstallationId.mockReturnValue(42);
       githubApiRequest.mockRejectedValue(new Error('GitHub API POST failed (403): forbidden'));
 
@@ -441,7 +444,8 @@ describe('PR Actions route', () => {
       });
 
       expect(res.status).toBe(501);
-      expect(res.body.error).toMatch(/No GitHub App installation|bot token/);
+      expect(res.body.error).toMatch(/GitHub App review request failed/);
+      expect(res.body.appTierError).toMatch(/403/);
     });
 
     // Diagnostic surfacing — App tier was silently swallowing the GitHub
@@ -483,10 +487,14 @@ describe('PR Actions route', () => {
     });
   });
 
-  // Diagnostic-surfacing coverage for merge/close/status — same swallow
-  // pattern as /api/pr/review but with a gh-CLI tier 2 instead of a bot
-  // token tier. Verifies the App-tier error reaches the final 500.
-  describe('appTierError surfacing on /api/pr/{merge,close,status}', () => {
+  // Auth-contract coverage for merge/close/status — after the
+  // "drop App fallbacks" refactor, these endpoints require a per-user
+  // OAuth token. The App-tier + gh-CLI fallback ladder is gone. Without
+  // a user JWT (no `req.authUserId`) the routes return 401 with the
+  // CONNECT_GITHUB_HINT copy so the client can surface a "Connect
+  // GitHub" CTA. /api/pr/review keeps its App-tier diagnostic-surfacing
+  // contract because that endpoint is still App-only.
+  describe('user-OAuth requirement on /api/pr/{merge,close,status}', () => {
     let app: express.Express;
     let githubApiRequest: ReturnType<typeof vi.fn>;
     let resolveInstallationId: ReturnType<typeof vi.fn>;
@@ -542,49 +550,36 @@ describe('PR Actions route', () => {
       app.use(createPrActionRoutes(mockDeps));
     });
 
-    it('/api/pr/merge surfaces App-tier error in 500 when both tiers fail', async () => {
-      resolveInstallationId.mockReturnValue(42);
-      githubApiRequest.mockRejectedValue(new Error('GitHub API 403: permission denied'));
-      cliMock.mockRejectedValue(new Error('gh: not authenticated'));
-
+    it('/api/pr/merge returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
       const res = await request(app)
         .post('/api/pr/merge')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
 
-      expect(res.status).toBe(500);
-      expect(res.body.error).toMatch(/Merge failed/);
-      expect(res.body.appTierError).toMatch(/403/);
-      expect(res.body.appTierError).toMatch(/permission denied/);
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Connect your GitHub account/i);
+      // App-tier path must not be touched: the user-token gate is the
+      // first thing this route checks after URL parsing.
+      expect(githubApiRequest).not.toHaveBeenCalled();
     });
 
-    it('/api/pr/close surfaces App-tier error in 500 when both tiers fail', async () => {
-      resolveInstallationId.mockReturnValue(42);
-      githubApiRequest.mockRejectedValue(new Error('GitHub API 404: not found'));
-      cliMock.mockRejectedValue(new Error('gh: command not found'));
-
+    it('/api/pr/close returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
       const res = await request(app)
         .post('/api/pr/close')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
 
-      expect(res.status).toBe(500);
-      expect(res.body.error).toMatch(/Close failed/);
-      expect(res.body.appTierError).toMatch(/404/);
-      expect(res.body.appTierError).toMatch(/not found/);
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Connect your GitHub account/i);
+      expect(githubApiRequest).not.toHaveBeenCalled();
     });
 
-    it('/api/pr/status surfaces App-tier error in 500 when both tiers fail', async () => {
-      resolveInstallationId.mockReturnValue(42);
-      githubApiRequest.mockRejectedValue(new Error('GitHub API 403: forbidden'));
-      cliMock.mockRejectedValue(new Error('gh: command not found'));
-
+    it('/api/pr/status returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
       const res = await request(app).get(
         '/api/pr/status?prUrl=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F42',
       );
 
-      expect(res.status).toBe(500);
-      expect(res.body.error).toMatch(/Status check failed/);
-      expect(res.body.appTierError).toMatch(/403/);
-      expect(res.body.appTierError).toMatch(/forbidden/);
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Connect your GitHub account/i);
+      expect(githubApiRequest).not.toHaveBeenCalled();
     });
 
     // Confirms the 501 message we just rewrote correctly distinguishes

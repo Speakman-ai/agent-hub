@@ -1929,7 +1929,8 @@ describe('runAutonomousLoop — DEV_HUB_API_KEY label gate', () => {
 //  Card 395e044c-… (Identity leak: block direct `gh api /reviews` calls):
 //  every autonomous-dispatch chat message must carry
 //  `_fromAutonomousDispatch: true` so `chat.ts` can route through the
-//  token-stripping branch of `selectGithubSpawnToken`. Without the
+//  token-stripping branch of `resolveGithubSpawnToken`
+//  (`github-spawn-token-resolver.ts`). Without the
 //  sentinel, the org-owner OAuth token leaks into the spawn env and the
 //  agent can post formal PR reviews via `gh api repos/.../reviews -X POST`
 //  under the human's identity.

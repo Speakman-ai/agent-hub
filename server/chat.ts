@@ -2527,9 +2527,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
         // We always perform the lookup so non-reviewer spawns get the
         // human-identity path; the reviewer policy in
-        // `selectGithubSpawnToken` deliberately ignores this value to
-        // prevent identity leaks. Best-effort: failures are observable
-        // via TOOL_ERROR but never block the spawn.
+        // `resolveGithubSpawnToken` (github-spawn-token-resolver.ts)
+        // deliberately ignores this value to prevent identity leaks.
+        // Best-effort: failures are observable via TOOL_ERROR but never
+        // block the spawn.
         let userGhToken: string | null = null;
         try {
           if (ownerId) {

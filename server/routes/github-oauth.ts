@@ -34,7 +34,7 @@ import {
   deleteGithubConnection,
 } from '../github-connections-store.js';
 import { resetRepoAccessCache } from '../repo-aware-token.js';
-import { createUser, getUserByUsername } from '../users-store.js';
+import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 import { registerPath, z } from '../openapi/registry.js';
 import {
@@ -216,20 +216,7 @@ function getOAuthCredentials(config: AppConfig): { clientId: string; clientSecre
  *      keyboard. Personal GitHub sign-in requires real auth.
  */
 function resolveOAuthUserId(req: Request): string | null {
-  const areq = req as AuthenticatedRequest;
-  if (areq.authUserId) return areq.authUserId;
-  if (areq.authLocalOrgBypass && areq.authOrgId) {
-    const username = `local-${areq.authOrgId}`;
-    const existing = getUserByUsername(username);
-    if (existing) return existing.id;
-    // password_hash is NOT NULL in the schema; an empty string is fine
-    // here — this synthetic row has no login path. Auth for local-mode
-    // installs is gated by the org's `mode='local'` bypass, not by a
-    // password check against this row.
-    const created = createUser({ username, passwordHash: '' });
-    return created.id;
-  }
-  return null;
+  return resolveGithubConnectionUserId(req);
 }
 
 function getRedirectUri(config: AppConfig, req: Request): string {
@@ -491,7 +478,13 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
   // ── Status: for the Settings UI to render "Connected as @foo" ─
   router.get('/api/auth/github/status', (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    if (!uid) {
+      return res.status(401).json({
+        error: 'Hub authentication required before saving a GitHub token.',
+        hint: 'Sign in to Agent Hub (Account / login), or access this server as the local bundled app. The PAT itself was not checked yet.',
+        code: 'hub_auth_required',
+      });
+    }
     const status = getGithubConnectionStatus(uid);
     const creds = getOAuthCredentials(config);
     return res.json({
@@ -503,7 +496,13 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
   // ── Disconnect ──────────────────────────────────────────────────
   router.delete('/api/auth/github', (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    if (!uid) {
+      return res.status(401).json({
+        error: 'Hub authentication required before saving a GitHub token.',
+        hint: 'Sign in to Agent Hub (Account / login), or access this server as the local bundled app. The PAT itself was not checked yet.',
+        code: 'hub_auth_required',
+      });
+    }
     deleteGithubConnection(uid);
     // Same reasoning as the callback path — drop the per-repo cache
     // so disconnecting an Owner doesn't keep routing system spawns
@@ -524,7 +523,13 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
   // returns 401 to the consumer (PR list etc.) and the user reconnects.
   router.post('/api/auth/github/connect-token', async (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    if (!uid) {
+      return res.status(401).json({
+        error: 'Hub authentication required before saving a GitHub token.',
+        hint: 'Sign in to Agent Hub (Account / login), or access this server as the local bundled app. The PAT itself was not checked yet.',
+        code: 'hub_auth_required',
+      });
+    }
 
     const parsedConnect = GithubConnectTokenBody.safeParse(req.body ?? {});
     if (!parsedConnect.success) {

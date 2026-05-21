@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.30.0
+  version: 1.31.1
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -6777,6 +6777,63 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/start:
+    post:
+      tags:
+        - Sessions
+      summary: Start worktree preview for a chat session
+      description: Boots the project preview runtime for this session (same handler as `<agenthub:preview>`). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: string
+                  description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
+                reason:
+                  type: string
+              description: Optional preview task overrides.
+      responses:
+        "200":
+          description: Preview boot kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  started:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - started
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
           content:
             application/json:
               schema:

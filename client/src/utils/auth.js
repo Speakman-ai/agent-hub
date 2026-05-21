@@ -148,11 +148,20 @@ export async function login({ baseUrl, username, password }) {
   return data;
 }
 
-/** POST /api/auth/setup — first-run bootstrap of the single user. */
-export async function setup({ baseUrl, username, password }) {
+/**
+ * POST /api/auth/setup — first-run bootstrap of the Owner account.
+ *
+ * When the server already has a global API key (`needsMigration`), the
+ * same endpoint requires `X-API-Key` to prove break-glass ownership before
+ * creating the Owner — not the long-term UI auth mechanism.
+ */
+export async function setup({ baseUrl, username, password, apiKey = '' }) {
   const res = await fetch(`${baseUrl}/auth/setup`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+    },
     body: JSON.stringify({ username, password }),
   });
   if (!res.ok) {

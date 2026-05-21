@@ -242,7 +242,11 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     saveProjects,
     config,
     getGhBotUser,
-    setGhBotUser,
+    // `setGhBotUser` is intentionally not destructured here. The legacy
+    // `'botGithubToken' in updates` branch that wrote to it was removed
+    // along with the bot-token path; `getGhBotUser()` is kept only so
+    // the deprecated key still surfaces (always null) on
+    // /api/github/auth-status for clients that haven't migrated.
     getGhAppSlug,
     setGhAppSlug,
     serverDir,
@@ -286,9 +290,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             clientId: config.personalOAuth.clientId || null,
           }
         : { configured: false, clientId: null },
-      botGithubToken: config.botGithubToken ? '••••••••' : '',
-      botGithubTokenSet: !!config.botGithubToken,
-      botGithubUser: getGhBotUser() || null,
+      /** @deprecated Ignored at runtime — use Reviewer GitHub App + Settings → GitHub account. */
+      botGithubTokenDeprecated: !!config.botGithubToken,
       anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
       anthropicApiKeySet: !!config.anthropicApiKey,
       codexDangerBypass: !!config.codexDangerBypass,
@@ -348,7 +351,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'port',
       'apiKey',
       'publicUrl',
-      'botGithubToken',
       'codexDangerBypass',
       'lanMode',
     ] as const;
@@ -413,30 +415,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       deps.setCodexBin(updates.codexBin);
     }
 
-    if ('botGithubToken' in updates) {
-      const execAsync = promisify(exec);
-      const newToken = updates.botGithubToken as string | null;
-      if (newToken) {
-        execAsync('gh api user --jq ".login"', { env: { ...process.env, GH_TOKEN: newToken } })
-          .then(({ stdout }) => {
-            setGhBotUser(stdout.trim());
-            console.log(`[GitHub Bot] Bot account re-detected: ${stdout.trim()}`);
-          })
-          .catch((err: Error) => {
-            setGhBotUser(null);
-            console.warn(`[GitHub Bot] Token validation failed: ${err.message?.split('\n')[0]}`);
-          });
-      } else {
-        setGhBotUser(null);
-        console.log('[GitHub Bot] Bot token removed');
-      }
-    }
-
     res.json({
       ok: true,
-      updated: Object.fromEntries(
-        Object.entries(updates).map(([k, v]) => [k, k === 'botGithubToken' && v ? '••••••••' : v]),
-      ),
+      updated: Object.fromEntries(Object.entries(updates)),
     });
   });
 

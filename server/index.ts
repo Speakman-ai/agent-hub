@@ -45,6 +45,7 @@ import { startStalePrChecker } from './stale-pr-check.js';
 import { startPrRebasePoll, type TriggerResolveResult } from './pr-rebase-poll.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
+import { warnIfLegacyBotGithubToken } from './github-auth-policy.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import {
   getAppInfo,
@@ -237,20 +238,7 @@ if (config.githubApp?.appId && config.githubApp?.privateKey) {
     });
 }
 
-if (config.botGithubToken) {
-  execAsync(`gh api user --jq ".login"`, {
-    env: { ...process.env, GH_TOKEN: config.botGithubToken },
-  })
-    .then(({ stdout }) => {
-      ghBotUser = stdout.trim();
-      console.log(`[GitHub Bot] Bot account detected: ${ghBotUser}`);
-    })
-    .catch((err: Error) => {
-      console.warn(
-        `[GitHub Bot] Could not detect bot user — token may be invalid: ${err.message?.split('\n')[0]}`,
-      );
-    });
-}
+warnIfLegacyBotGithubToken(config);
 
 let _activeDataDir: string = config.dataDir;
 
