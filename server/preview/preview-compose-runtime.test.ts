@@ -32,6 +32,7 @@ import { EventEmitter } from 'events';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import {
+  DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
   PreviewComposeRuntime,
   buildComposeUpArgs,
   buildComposeDownArgs,
@@ -420,6 +421,19 @@ describe('resolveComposeConfig', () => {
 });
 
 // ─── Constructor / schema migration ─────────────────────────────────────
+
+describe('PreviewComposeRuntime — ready timeout default', () => {
+  it('uses a 10-minute default when config.readyTimeoutMs is unset', () => {
+    expect(DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS).toBe(600_000);
+    const db = freshDb();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: makeSpawn().spawn,
+      fetch: makeFetch().fetch,
+    });
+    expect((runtime as unknown as { readyTimeoutMs: number }).readyTimeoutMs).toBe(600_000);
+  });
+});
 
 describe('PreviewComposeRuntime — schema migration', () => {
   it('adds the compose_project_name column on a fresh DB', () => {

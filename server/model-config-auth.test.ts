@@ -52,6 +52,7 @@ function makeConfig(): AppConfig {
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,
     browserBlockAdsTrackers: true,
+    previewComposeReadyTimeoutMs: 600_000,
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },

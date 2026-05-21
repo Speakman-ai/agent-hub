@@ -325,6 +325,16 @@ const config: AppConfig = {
     // 20 min covers the median; the worker will still kill at this bound.
     'pull_request_review.submitted': 20 * 60 * 1000,
   },
+  // Compose preview health poll — how long `PreviewComposeRuntime` waits for
+  // 2xx on the entry service before marking the group failed. Override via
+  // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`
+  // in config.json. Per-project override: `prEnv.preview.compose.readyTimeoutMs`.
+  previewComposeReadyTimeoutMs: clampFiniteInt(
+    resolveInt('AGENT_HUB_PREVIEW_READY_TIMEOUT_MS', 'previewComposeReadyTimeoutMs', 600_000),
+    600_000,
+    5_000,
+    1_800_000,
+  ),
 
   // ── GitHub ─────────────────────────────────────────────────────
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),

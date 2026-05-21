@@ -657,6 +657,7 @@ const activeProcesses = new Map<string, ChildProcess>();
 const { previewRuntime, previewComposeRuntime } = createPreviewRuntimes({
   db: getDb(),
   dataDir: _activeDataDir,
+  composeConfig: { readyTimeoutMs: config.previewComposeReadyTimeoutMs },
   notifyLog: ({ sessionId, groupId, processName, line, stream }) => {
     try {
       broadcast({

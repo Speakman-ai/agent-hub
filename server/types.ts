@@ -1660,9 +1660,9 @@ export interface PreviewComposeConfig {
   hostPortRange?: { min: number; max: number };
   /**
    * Max ms the runtime waits for a 2xx from `healthPath` before flipping
-   * the group to `failed`. Defaults to 300_000 (5 min) — sized so a
-   * first-time `docker compose build` on a cold image cache has room.
-   * Bounded 5000..1800000 (5 s – 30 min) at config save time.
+   * the group to `failed`. Defaults to 600_000 (10 min) — sized so a
+   * first-time `docker compose build` + prod-dump restore on a cold cache
+   * has room. Bounded 5000..1800000 (5 s – 30 min) at config save time.
    */
   readyTimeoutMs?: number;
 }
@@ -1912,6 +1912,13 @@ export interface AppConfig {
    * key wins. See `resolveWebhookTimeoutMs` in `routes/webhooks.ts`.
    */
   webhookEventTimeoutMs: Record<string, number>;
+  /**
+   * Server-wide default for compose preview health polling (ms). Overridden
+   * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:
+   * `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`; config.json:
+   * `previewComposeReadyTimeoutMs`. Clamped 5000–1800000.
+   */
+  previewComposeReadyTimeoutMs: number;
   publicUrl: string | null;
   defaultReviewer: string | null;
   botGithubToken: string | null;

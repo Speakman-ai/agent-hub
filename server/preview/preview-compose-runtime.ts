@@ -232,7 +232,9 @@ export interface PreviewComposeRuntimeDeps {
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
-const DEFAULT_READY_TIMEOUT_MS = 300_000; // 5 min — cold-build budget.
+/** Default health-poll budget for compose previews (cold build + DB restore). */
+export const DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS = 600_000; // 10 min
+const DEFAULT_READY_TIMEOUT_MS = DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS;
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
 /**
  * Hard cap on how long `withSessionLock` will wait on a prior call. Two

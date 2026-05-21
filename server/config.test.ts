@@ -502,3 +502,53 @@ describe('normalizedHttpOriginForAgentHub + normalizedHttpSpawnBaseForAgentHub +
     }
   });
 });
+
+describe('config.ts — previewComposeReadyTimeoutMs', () => {
+  async function loadPreviewTimeoutConfig(
+    dataDir: string,
+    fileCfg?: Record<string, unknown>,
+  ): Promise<typeof import('./config.js')> {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    fs.mkdirSync(dataDir, { recursive: true });
+    if (fileCfg !== undefined) {
+      fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(fileCfg), 'utf8');
+    }
+    return import('./config.js');
+  }
+
+  it('defaults to 600_000 (10 min) when unset', async () => {
+    const dir = path.join(os.tmpdir(), `agent-hub-preview-timeout-${process.pid}`);
+    try {
+      delete process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS;
+      const mod = await loadPreviewTimeoutConfig(dir);
+      expect(mod.default.previewComposeReadyTimeoutMs).toBe(600_000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads AGENT_HUB_PREVIEW_READY_TIMEOUT_MS from the environment', async () => {
+    const dir = path.join(os.tmpdir(), `agent-hub-preview-timeout-env-${process.pid}`);
+    try {
+      process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS = '900000';
+      const mod = await loadPreviewTimeoutConfig(dir);
+      expect(mod.default.previewComposeReadyTimeoutMs).toBe(900_000);
+    } finally {
+      delete process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clamps out-of-range values to 1800000', async () => {
+    const dir = path.join(os.tmpdir(), `agent-hub-preview-timeout-clamp-${process.pid}`);
+    try {
+      delete process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS;
+      const mod = await loadPreviewTimeoutConfig(dir, { previewComposeReadyTimeoutMs: 9_999_999 });
+      expect(mod.default.previewComposeReadyTimeoutMs).toBe(1_800_000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
