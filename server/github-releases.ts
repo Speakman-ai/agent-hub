@@ -26,6 +26,19 @@ type GhReleaseRow = {
   prerelease?: boolean;
 };
 
+class ReleasesUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReleasesUnavailableError';
+  }
+}
+
+type GithubFetchResult = {
+  ok: boolean;
+  releases: GhReleaseRow[] | null;
+  status: number | null;
+};
+
 // Cache key includes `limit` so a small-limit request can't lock out a
 // later large-limit request for the cache TTL window.
 let cache: {
@@ -42,7 +55,7 @@ function resolveRepo(): string {
   return DEFAULT_REPO;
 }
 
-async function fetchGithubReleases(repo: string, limit: number): Promise<GhReleaseRow[] | null> {
+async function fetchGithubReleases(repo: string, limit: number): Promise<GithubFetchResult> {
   const url = `https://api.github.com/repos/${repo}/releases?per_page=${Math.min(limit, 100)}`;
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
@@ -56,11 +69,15 @@ async function fetchGithubReleases(repo: string, limit: number): Promise<GhRelea
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { headers, signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) return { ok: false, releases: null, status: res.status };
     const data = (await res.json()) as GhReleaseRow[];
-    return Array.isArray(data) ? data : null;
+    return {
+      ok: Array.isArray(data),
+      releases: Array.isArray(data) ? data : null,
+      status: res.status,
+    };
   } catch {
-    return null;
+    return { ok: false, releases: null, status: null };
   } finally {
     clearTimeout(timer);
   }
@@ -164,10 +181,23 @@ export async function listUserFacingReleases(opts?: {
   }
 
   const gh = await fetchGithubReleases(repo, limit);
-  const releases =
-    gh && gh.length > 0 ? mapGithubRows(gh, repo, limit) : releasesFromGitTags(repo, limit);
+  let releases: UserFacingRelease[] = [];
+  let source: 'github' | 'git' = 'github';
 
-  const source: 'github' | 'git' = gh && gh.length > 0 ? 'github' : 'git';
+  if (gh.ok && gh.releases) {
+    releases = mapGithubRows(gh.releases, repo, limit);
+    source = 'github';
+  } else {
+    releases = releasesFromGitTags(repo, limit);
+    source = 'git';
+    if (releases.length === 0) {
+      const suffix = gh.status ? ` (GitHub status ${gh.status})` : '';
+      throw new ReleasesUnavailableError(
+        `Failed to load releases from GitHub and no local tags were available${suffix}`,
+      );
+    }
+  }
+
   cache = { at: Date.now(), repo, limit, releases, source };
   return { repo, releases, source };
 }
@@ -181,4 +211,8 @@ export function findRelease(
   const tag = versionToTag(norm);
   const ver = tagToVersion(norm);
   return releases.find((r) => r.tag === tag || r.version === ver || r.tag === norm) ?? null;
+}
+
+export function resetReleaseCacheForTests(): void {
+  cache = null;
 }
