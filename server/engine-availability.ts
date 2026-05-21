@@ -26,6 +26,7 @@ import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached, invalidateCursorAuthCache } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
+import { ensureHostCliHome, hostCodexHomePath } from './host-cli-home.js';
 
 export type SupportedEngine = 'claude-code' | 'cursor-agent' | 'codex-cli' | 'gemini-cli';
 
@@ -102,13 +103,15 @@ export function probeClaudeOauth(claudeHome?: string): { state: 'valid' | 'expir
  * `isAuthenticated` flag. Same shape as `routes/config.ts::runCursorStatus`
  * — kept here so the resolver can share the cache.
  */
-function runCursorStatus(binPath: string): Promise<boolean> {
+function runCursorStatus(binPath: string, dataDir: string): Promise<boolean> {
+  const home = ensureHostCliHome(dataDir);
+  const env = { ...process.env, HOME: home };
   return new Promise((resolve) => {
     if (!existsSync(binPath)) return resolve(false);
     const proc = execFile(
       binPath,
       ['status', '--format', 'json'],
-      { cwd: os.homedir(), timeout: 12_000, env: process.env },
+      { cwd: home, timeout: 12_000, env },
       (err, stdout, stderr) => {
         const stdoutText = String(stdout ?? '');
         const stderrText = String(stderr ?? '');
@@ -185,7 +188,7 @@ export async function probeEngineAvailability(
         detail: `cursor-agent binary not found at "${bin || '(unset)'}". Install Cursor Agent or update cursorBin in Settings.`,
       };
     }
-    const probe = opts.cursorProbe ?? runCursorStatus;
+    const probe = opts.cursorProbe ?? ((b: string) => runCursorStatus(b, cfg.dataDir));
     const ok = await getCursorAuthenticatedCached(bin, probe);
     if (ok) return { engine, available: true };
     return {
@@ -208,7 +211,7 @@ export async function probeEngineAvailability(
     }
     const apiKeyConfigured = !!(cfg.codexApiKey || env.CODEX_API_KEY || env.OPENAI_API_KEY);
     if (apiKeyConfigured) return { engine, available: true };
-    const codexHome = env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexHome = env.CODEX_HOME ?? hostCodexHomePath(cfg.dataDir);
     const auth = detectCodexAuthMode(codexHome);
     if (auth.present && (auth.mode === 'chatgpt' || auth.mode === 'apikey')) {
       return { engine, available: true };

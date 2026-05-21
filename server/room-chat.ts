@@ -87,9 +87,20 @@ export function parseMentions(text: string, agentList: EnrichedAgent[]): Set<str
 
 // ─── Cursor chat creation (rooms are stateless, fresh chat per turn) ─
 
-function createRoomCursorChat(cursorBin: string, cwd: string): Promise<string> {
+// `create-chat` writes the new chat id under `$HOME/.cursor`. If we leave
+// env as bare `process.env`, a room owner who only has per-user browser
+// auth would have the chat id written to the operator's host HOME (or the
+// ephemeral container HOME) and the subsequent `--resume` spawn — which
+// uses the user-scoped `roomEnv` — would not find it. Threading the same
+// `env` through both spawns keeps the chat id and the resume lookup in
+// the same HOME tree.
+function createRoomCursorChat(
+  cursorBin: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(cursorBin, ['create-chat'], { cwd, env: process.env }, (err, stdout, stderr) => {
+    execFile(cursorBin, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
         return;
@@ -409,6 +420,7 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
               cursorChatId = await createRoomCursorChat(
                 CURSOR_BIN,
                 agent.cwd || process.env.HOME || '/',
+                roomEnv,
               );
             } catch (err: unknown) {
               reject(err instanceof Error ? err : new Error(String(err)));

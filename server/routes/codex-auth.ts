@@ -2,8 +2,8 @@ import { Router, Request, Response } from 'express';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
-import { homedir } from 'os';
 import type { RouteDeps, AppConfig } from '../types.js';
+import { ensureHostCliHome, hostCodexHomePath } from '../host-cli-home.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import {
@@ -167,8 +167,6 @@ registerPath({
   },
 });
 
-const HOME = homedir();
-
 /**
  * Codex CLI auth routes.
  *
@@ -186,12 +184,20 @@ interface CodexRunResult {
 function runCodex(
   bin: string,
   args: string[],
-  opts: { env?: Record<string, string>; timeout?: number; cwd?: string } = {},
+  opts: {
+    env?: Record<string, string>;
+    timeout?: number;
+    cwd?: string;
+    hostHome?: string;
+    codexHome?: string;
+  } = {},
 ): Promise<CodexRunResult> {
+  const home = opts.hostHome ?? opts.cwd ?? process.cwd();
+  const codexHome = opts.codexHome ?? path.join(home, '.codex');
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
-      cwd: opts.cwd ?? process.cwd(),
-      env: { ...process.env, ...opts.env },
+      cwd: opts.cwd ?? home,
+      env: { ...process.env, HOME: home, CODEX_HOME: codexHome, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -223,6 +229,8 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCodexBin } = deps;
   const router = Router();
 
+  const hostHome = (): string => ensureHostCliHome(config.dataDir);
+  const hostCodexHome = (): string => hostCodexHomePath(config.dataDir);
   const binPath = (): string => getCodexBin?.() ?? config.codexBin;
 
   const resetDeviceLogin = (): void => {
@@ -251,7 +259,13 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
       config.codexApiKey || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || null;
     const masked = rawKey ? `••••••••${rawKey.slice(-4)}` : null;
 
-    const codexHome = process.env.CODEX_HOME ?? path.join(HOME, '.codex');
+    // Trigger the one-shot operator-cache migration before probing auth.json
+    // so a legacy `~/.codex` (or `CODEX_HOME`) login is visible the first
+    // time the UI hits this endpoint after the upgrade. `ensureHostCliHome`
+    // is idempotent — subsequent calls short-circuit once the dest tree is
+    // populated.
+    hostHome();
+    const codexHome = hostCodexHome();
     const authModeInfo = detectCodexAuthMode(codexHome);
     const chatgptOAuthFromFile = authModeInfo.present && authModeInfo.mode === 'chatgpt';
     const cliApiKeyFromFile = authModeInfo.present && authModeInfo.mode === 'apikey';
@@ -312,9 +326,11 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     const loginId = Date.now().toString(36);
     activeDeviceLoginId = loginId;
 
+    const home = hostHome();
+    const codexHome = hostCodexHome();
     const proc = spawn(bin, ['login', '--device-auth'], {
-      cwd: HOME,
-      env: { ...process.env },
+      cwd: home,
+      env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -506,7 +522,8 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     const parts: string[] = ['Codex API key cleared from Agent Hub config'];
     if (existsSync(bin)) {
       const { stdout, stderr, code } = await runCodex(bin, ['logout'], {
-        cwd: HOME,
+        hostHome: hostHome(),
+        codexHome: hostCodexHome(),
         timeout: 60_000,
       });
       const msg = (stdout + stderr).trim();

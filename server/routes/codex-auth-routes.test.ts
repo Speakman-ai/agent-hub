@@ -49,11 +49,24 @@ describe('codex-auth routes', () => {
   let fakeBin: string;
   let app: express.Express;
   let prevCodexHome: string | undefined;
+  let prevHome: string | undefined;
+  let isolatedOperatorHome: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'codex-auth-rt-'));
     fakeBin = join(tmpDir, 'codex');
     writeFileSync(fakeBin, '');
+
+    // Pin process.env.HOME so the route's ensureHostCliHome() call doesn't
+    // try to recursively copy the developer's real ~/.cursor / ~/.codex
+    // (potentially hundreds of MB) into the test fixture. The empty
+    // isolatedOperatorHome makes the cursor-cache migration step a no-op
+    // while still letting the explicit CODEX_HOME seed below drive the
+    // codex migration. CI's clean /home/runner hides this on the runner;
+    // this guard keeps the test reproducible on dev machines too.
+    isolatedOperatorHome = mkdtempSync(join(tmpdir(), 'codex-auth-rt-home-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = isolatedOperatorHome;
 
     prevCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = join(tmpDir, 'codex-home');
@@ -86,8 +99,15 @@ describe('codex-auth routes', () => {
   afterEach(() => {
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
     try {
       rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+    try {
+      rmSync(isolatedOperatorHome, { recursive: true, force: true });
     } catch {
       /* ignore */
     }

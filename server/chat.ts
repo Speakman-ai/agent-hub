@@ -8,7 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { clampPayload } from './session-events-store.js';
 import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
-import { userHasPerUserCliIdentity } from './per-user-cli-spawn.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -21,12 +21,6 @@ import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
-import {
-  getUserClaudeAuth,
-  getUserCursorAuth,
-  getUserGeminiAuth,
-  getUserCodexAuth,
-} from './users-store.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -281,7 +275,7 @@ export interface ChatHandlerDeps {
   getCodexBin: () => string;
   uploadsDir: string;
   resolveSlashSkill: (agent: Agent, content: string, project: Project) => SlashSkillResult | null;
-  createCursorChat: ((cwd: string) => Promise<string>) | undefined;
+  createCursorChat: ((cwd: string, env: NodeJS.ProcessEnv) => Promise<string>) | undefined;
   ensureWorktree: (
     session: SessionRow,
     projectCwd: string,
@@ -348,7 +342,7 @@ export interface ChatHandlerResult {
     model: string,
     errorText: string,
   ) => string;
-  createCursorChat: (cwd: string) => Promise<string>;
+  createCursorChat: (cwd: string, env: NodeJS.ProcessEnv) => Promise<string>;
 }
 
 /** Minimal socket shape used by chat handlers (matches `ws` from the `ws` package). */
@@ -1352,10 +1346,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
   }
 
-  function createCursorChat(cwd: string): Promise<string> {
+  function createCursorChat(cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
     const CURSOR_BIN = getCursorBin();
-    // Same env shape as `spawn(..., { env: buildSpawnEnv(config) })` (merged PATH + keys).
-    const env = buildSpawnEnv(config);
     return new Promise((resolve, reject) => {
       execFile(CURSOR_BIN, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
         if (err) {
@@ -2075,9 +2067,37 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
+      // Resolve session owner + billing creds owner before any CLI spawn
+      // (cursor create-chat and the main agent child must share the same env).
+      let ownerId: string | null = null;
+      try {
+        ownerId = getSessionOwner(sessionId);
+      } catch (err) {
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['session-owner', 'spawn'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
+        );
+      }
+      const credsOwnerId: string | null = resolveSpawnCredsOwnerUserId(ownerId);
+      const sessionCliEnv = resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId,
+        credsOwnerId,
+      });
+
       if (engine === 'cursor-agent' && !engineSessionId) {
         try {
-          engineSessionId = await createCursorChat(effectiveCwd);
+          engineSessionId = await createCursorChat(effectiveCwd, sessionCliEnv);
           stmts.updateSessionEngineSessionId.run(engineSessionId, sessionId);
         } catch (err: unknown) {
           const errMessage = err instanceof Error ? err.message : String(err);
@@ -2163,57 +2183,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const GEMINI_BIN = getGeminiBin();
       const CODEX_BIN = getCodexBin();
 
-      // Resolve the session owner ONCE up front. Drives:
-      //   - Per-user MCP servers merged into the spawn config (just below)
-      //   - Per-session hooks (`writeHooksConfig` further down)
-      //   - Per-user Claude auth (spawnEnv block)
-      //   - Per-user GitHub auth (spawnEnv block)
-      // A single DB miss / lookup failure is reported once; a known-null
-      // owner skips all four branches cleanly.
-      let ownerId: string | null = null;
-      try {
-        ownerId = getSessionOwner(sessionId);
-      } catch (err) {
-        const summary = (err as Error).message
-          .replace(/[\r\n|]+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const meta = JSON.stringify({
-          v: 2,
-          sev: 'soft',
-          resolution: 'recovered',
-          session: sessionId,
-          tags: ['session-owner', 'spawn'],
-        });
-        console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
-        );
-      }
-
-      // Per-account CLI billing fallback. Sessions with no persisted owner
-      // (reviewer dispatches from the webhook, system spawns) historically
-      // skipped per-user Claude/Cursor/Gemini/Codex creds entirely and fell
-      // straight through to the host-wide `config.anthropicApiKey` /
-      // `~/.claude/.credentials.json`. That means a user can configure their
-      // own un-throttled per-account Anthropic OAuth token via Settings,
-      // chat sessions sail through, but the reviewer keeps hammering the
-      // shared host subscription until it 429s ("You've hit your limit").
-      //
-      // `resolveSpawnCredsOwnerUserId` returns the persisted owner when one
-      // exists and falls back to the org owner otherwise. The session row
-      // stays owner-NULL so shared visibility semantics for reviewer
-      // sessions are preserved — we only pick *which user's* per-account
-      // key is tried. Mirrors the `getSessionOwner() || getOrgOwnerUserId()`
-      // chain `auto-git.ts` already uses for GitHub PR-push tokens.
-      //
-      // GitHub token resolution below intentionally stays gated on the
-      // persisted `ownerId` — that's an identity decision (the reviewer
-      // must NOT impersonate the org owner's GitHub account), not a
-      // billing one. See `spawn-identity-isolation-universal-reviewer-lock`
-      // in the wiki for the rationale.
-      const credsOwnerId: string | null = resolveSpawnCredsOwnerUserId(ownerId);
-
-      // Per-user MCP servers (claude-code only — cursor/gemini/codex have
+      // `ownerId` / `credsOwnerId` / `sessionCliEnv` resolved above (before
+      // cursor create-chat). Per-user MCP servers (claude-code only — cursor/gemini/codex have
       // their own MCP loading rules and don't take --mcp-config). Resolved
       // BEFORE the engine arg branch so the Claude branch can append
       // `--mcp-config` / `--strict-mcp-config` flags. The actual file write
@@ -2551,80 +2522,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // but falls back to the org owner when the session has none —
         // see the rationale block above the resolver.
 
-        // Per-user CLI auth: when the session has a recorded owner with
-        // their own keys for Claude / Cursor / Gemini / Codex, those win
-        // over the host config. Each field is resolved independently;
-        // falsy / missing fields fall back to the host config so
-        // unconfigured users keep working transparently.
-        //
-        // For reviewer / system-spawn sessions (NULL `ownerId`),
-        // `credsOwnerId` resolves to the org owner so a host operator
-        // that configured their own per-account Anthropic OAuth token in
-        // Settings is billed to that quota instead of the shared host
-        // subscription. The reviewer session row itself stays owner-NULL
-        // — this is a CLI-billing fallback, not an identity rewrite.
-        let userOverride: {
-          anthropicApiKey?: string | null;
-          claudeCodeOAuthToken?: string | null;
-          cursorApiKey?: string | null;
-          geminiApiKey?: string | null;
-          codexApiKey?: string | null;
-        } | null = null;
-        try {
-          if (credsOwnerId) {
-            const userClaude = getUserClaudeAuth(credsOwnerId);
-            const userCursor = getUserCursorAuth(credsOwnerId);
-            const userGemini = getUserGeminiAuth(credsOwnerId);
-            const userCodex = getUserCodexAuth(credsOwnerId);
-            const hasAny =
-              !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
-              !!(userCursor && userCursor.apiKey) ||
-              !!(userGemini && userGemini.apiKey) ||
-              !!(userCodex && userCodex.apiKey);
-            if (hasAny) {
-              userOverride = {
-                anthropicApiKey: userClaude?.anthropicApiKey ?? null,
-                claudeCodeOAuthToken: userClaude?.claudeCodeOAuthToken ?? null,
-                cursorApiKey: userCursor?.apiKey ?? null,
-                geminiApiKey: userGemini?.apiKey ?? null,
-                codexApiKey: userCodex?.apiKey ?? null,
-              };
-            }
-          }
-        } catch (err) {
-          // Per-user auth is best-effort; the host config remains the
-          // safety net so a lookup failure can never block a spawn. Emit
-          // a TOOL_ERROR-shaped line so this failure mode is observable
-          // in server logs — a user who deliberately set their own key
-          // and then silently ran under the host's identity is exactly
-          // what we want to catch in production. See
-          // plugin/skills/agent-hub/references/errors.md for the format.
-          const summary = (err as Error).message
-            .replace(/[\r\n|]+/g, ' ')
-            .trim()
-            .slice(0, 200);
-          const meta = JSON.stringify({
-            v: 2,
-            sev: 'soft',
-            resolution: 'recovered',
-            session: sessionId,
-            tags: ['per-user-cli-auth', 'spawn'],
-          });
-          console.error(
-            `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
-          );
-        }
-        // HOME swap: use per-user HOME when the session has a persisted owner, or
-        // when the billing owner has their own CLI identity (API keys and/or
-        // browser OAuth caches). Reviewer sessions with no per-account
-        // material keep the host HOME so `~/.claude/.credentials.json` and
-        // other operator-wide fallbacks still work.
-        const homeUserId =
-          ownerId ??
-          (credsOwnerId && userHasPerUserCliIdentity(credsOwnerId, config.dataDir)
-            ? credsOwnerId
-            : null);
-        const base = buildSpawnEnv(config, { userOverride, userId: homeUserId });
+        const base = sessionCliEnv;
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
         // We always perform the lookup so non-reviewer spawns get the
         // human-identity path; the reviewer policy in

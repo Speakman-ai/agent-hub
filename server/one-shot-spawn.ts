@@ -36,9 +36,8 @@ import { existsSync } from 'fs';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { shouldPassModelFlag, detectCodexAuthMode } from './codex-auth.js';
-import os from 'os';
-import path from 'path';
 import type { AppConfig } from './types.js';
+import { resolveCodexHomeForProbe } from './host-cli-home.js';
 import type { SupportedEngine } from './engine-availability.js';
 
 export interface OneShotSpawnInput {
@@ -82,7 +81,7 @@ export interface RunOneShotOptions extends OneShotSpawnInput {
  * before spawning).
  */
 export function buildOneShotSpawnArgs(
-  input: Omit<OneShotSpawnInput, 'env' | 'cwd' | 'timeoutMs'>,
+  input: Omit<OneShotSpawnInput, 'env' | 'cwd' | 'timeoutMs'> & { env?: NodeJS.ProcessEnv },
   cfg: AppConfig,
 ): { bin: string; args: string[] } {
   const { engine, model, prompt, systemPrompt, claudePermissionMode } = input;
@@ -113,7 +112,7 @@ export function buildOneShotSpawnArgs(
     const args: string[] = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only'];
     // Codex ChatGPT-OAuth mode rejects most --model values; only pass
     // through models on the curated allowlist.
-    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexHome = resolveCodexHomeForProbe(input.env ?? process.env, cfg.dataDir);
     const auth = detectCodexAuthMode(codexHome);
     if (trimmedModel && shouldPassModelFlag(auth.mode, trimmedModel)) {
       args.push('--model', trimmedModel);

@@ -7,6 +7,7 @@ import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
 import { getActualPort } from './server-port.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import { ensureHostCliHome } from './host-cli-home.js';
 import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
@@ -573,9 +574,8 @@ export function buildSpawnEnv(
   // Hub user so each user's "Sign in with browser" / device-auth flow
   // writes tokens under their own subtree, and every downstream spawn
   // owned by that user reads the same cache. When `userId` is unset we
-  // intentionally leave HOME alone (the host operator's HOME) so the
-  // legacy global-apiKey path and Admin host-wide auth flows keep
-  // working untouched.
+  // pin HOME to `<dataDir>/host-creds/home` so operator OAuth survives
+  // container/instance restarts (Docker `/data` volume).
   if (ownerUserId) {
     try {
       env.HOME = ensurePerUserHome(ownerUserId, cfg.dataDir);
@@ -612,6 +612,16 @@ export function buildSpawnEnv(
       // who have not signed in per-user. Drop it so codex falls back
       // to `<HOME>/.codex` under the per-user HOME pin instead.
       delete env.CODEX_HOME;
+    }
+  } else {
+    try {
+      env.HOME = ensureHostCliHome(cfg.dataDir);
+      // Codex reads CODEX_HOME when set; drop a stale server-process value
+      // so host spawns use `<persistent HOME>/.codex` (same tree as
+      // `/api/config/codex-auth` device login).
+      delete env.CODEX_HOME;
+    } catch {
+      /* fall through to process.env.HOME */
     }
   }
 

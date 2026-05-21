@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, statSync, writeFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,6 +6,7 @@ import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } fr
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { perUserHomePath } from './per-user-home.js';
 import { perUserCliHomePath } from './per-user-cli-home.js';
+import { hostCliHomePath } from './host-cli-home.js';
 
 describe('buildSpawnEnv — PATH propagation', () => {
   beforeEach(() => {
@@ -385,14 +386,43 @@ describe('buildSpawnEnv — AGENT_HUB_API_KEY injection', () => {
 
 describe('buildSpawnEnv — per-user HOME pin', () => {
   let tmpDataDir: string;
+  let isolatedHostHome: string;
+  let prevHome: string | undefined;
+  let prevCodexHome: string | undefined;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-perusrhome-'));
+    // Pin process.env.HOME to a clean temp dir so the no-userId branch's
+    // one-shot `ensureHostCliHome` migration does NOT recursively copy the
+    // developer's real ~/.cursor / ~/.codex caches (potentially hundreds of
+    // megabytes) into the test fixture. Without this guard, runners with a
+    // populated home dir time out before the assertion executes. CI's clean
+    // /home/runner happens to make this invisible, but it's a real
+    // robustness issue worth fixing here.
+    isolatedHostHome = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-hosthome-'));
+    prevHome = process.env.HOME;
+    prevCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = isolatedHostHome;
+    delete process.env.CODEX_HOME;
   });
 
-  it('preserves the host HOME when no userId is supplied (legacy global-apiKey path)', () => {
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+  });
+
+  it('pins HOME to the persistent host-creds tree when no userId is supplied (legacy global-apiKey path)', () => {
+    // With no userId, the spawn no longer inherits the ephemeral host HOME.
+    // Instead it points at `<dataDir>/host-creds/home` so operator Cursor /
+    // Codex OAuth caches survive container restarts on Docker (where only
+    // `/data` is persistent). See server/host-cli-home.ts for the migration
+    // semantics.
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir });
-    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.HOME).toBe(hostCliHomePath(tmpDataDir));
+    expect(env.HOME).toMatch(/\/host-creds\/home$/);
+    expect(existsSync(env.HOME as string)).toBe(true);
   });
 
   it('redirects HOME to <dataDir>/per-user-creds/<userId>/home when userId is set', () => {
@@ -412,9 +442,13 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
     expect(mode).toBe(0o700);
   });
 
-  it('treats whitespace-only userId as "not provided" (falls back to host HOME)', () => {
+  it('treats whitespace-only userId as "not provided" (falls back to persistent host HOME)', () => {
+    // Whitespace-only userId follows the no-userId branch, so HOME pins to
+    // the persistent host-creds tree just like the legacy global-apiKey
+    // path. It must NOT leak the operator's ephemeral process.env.HOME.
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '   ' });
-    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.HOME).toBe(hostCliHomePath(tmpDataDir));
+    expect(env.HOME).toMatch(/\/host-creds\/home$/);
   });
 
   it('different userIds get different HOME paths', () => {
@@ -427,7 +461,11 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
 
   it('rejects userId containing path-traversal segments by falling back to host HOME', () => {
     // The per-user-home module throws on bad ids; buildSpawnEnv swallows the
-    // throw so a malformed id can never block a spawn.
+    // throw so a malformed id can never block a spawn. Path-traversal is
+    // non-empty after trim, so `presentString` treats it as a provided
+    // userId — execution enters the per-user `if` branch, the catch
+    // swallows the throw, and HOME is left at process.env.HOME (NOT the
+    // host-creds tree, which is only reached when no userId is provided).
     const env = buildSpawnEnv({ ...config, dataDir: tmpDataDir }, { userId: '../escape' });
     expect(env.HOME).toBe(process.env.HOME);
   });
@@ -444,9 +482,27 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
 
 describe('buildSpawnEnv — per-user CODEX_HOME injection (P4)', () => {
   let tmpDataDir: string;
+  let isolatedHostHome: string;
+  let prevHome: string | undefined;
+  let prevCodexHome: string | undefined;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-codex-home-'));
+    // Same HOME isolation as the per-user HOME pin block: a populated
+    // developer ~/.cursor / ~/.codex would otherwise be recursively copied
+    // into the test fixture during ensureHostCliHome's migration step.
+    isolatedHostHome = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-codex-hosthome-'));
+    prevHome = process.env.HOME;
+    prevCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = isolatedHostHome;
+    delete process.env.CODEX_HOME;
+  });
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
   });
 
   function seedCodexAuth(userId: string, mode: 'chatgpt' | 'apikey'): string {

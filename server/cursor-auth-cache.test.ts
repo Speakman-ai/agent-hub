@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   getCursorAuthenticatedCached,
   invalidateCursorAuthCache,
+  invalidateCursorAuthCacheForScope,
   _resetCursorAuthCacheForTests,
   _peekCursorAuthCacheForTests,
 } from './cursor-auth-cache.js';
@@ -53,6 +54,42 @@ describe('cursor-auth-cache', () => {
     invalidateCursorAuthCache();
     invalidateCursorAuthCache();
     expect(_peekCursorAuthCacheForTests('/usr/local/bin/cursor-agent')).toBeNull();
+  });
+
+  it('invalidateForScope() drops only the targeted (bin, scope) entry', async () => {
+    // Per-user login closing should re-probe ONLY the user whose HOME just
+    // changed — every other user's cached answer must survive. Without this
+    // guard a multi-tenant install would force every active user into a
+    // spurious `cursor-agent status` round-trip whenever any one user
+    // finished logging in.
+    const probe = vi.fn().mockResolvedValue(true);
+
+    // Seed three entries: host-level, user-a, user-b.
+    await getCursorAuthenticatedCached('/cursor', probe);
+    await getCursorAuthenticatedCached('/cursor', probe, { scope: 'uid:user-a' });
+    await getCursorAuthenticatedCached('/cursor', probe, { scope: 'uid:user-b' });
+    expect(probe).toHaveBeenCalledTimes(3);
+
+    // Invalidate ONLY user-a's entry.
+    invalidateCursorAuthCacheForScope('/cursor', 'uid:user-a');
+    expect(_peekCursorAuthCacheForTests('/cursor')).not.toBeNull(); // host kept
+    expect(_peekCursorAuthCacheForTests('/cursor', 'uid:user-a')).toBeNull(); // user-a dropped
+    expect(_peekCursorAuthCacheForTests('/cursor', 'uid:user-b')).not.toBeNull(); // user-b kept
+  });
+
+  it('invalidateForScope() is idempotent on a missing entry', () => {
+    invalidateCursorAuthCacheForScope('/cursor', 'uid:nobody');
+    expect(_peekCursorAuthCacheForTests('/cursor', 'uid:nobody')).toBeNull();
+  });
+
+  it('invalidateForScope() with no scope targets the host-level entry only', async () => {
+    const probe = vi.fn().mockResolvedValue(true);
+    await getCursorAuthenticatedCached('/cursor', probe);
+    await getCursorAuthenticatedCached('/cursor', probe, { scope: 'uid:user-a' });
+
+    invalidateCursorAuthCacheForScope('/cursor');
+    expect(_peekCursorAuthCacheForTests('/cursor')).toBeNull();
+    expect(_peekCursorAuthCacheForTests('/cursor', 'uid:user-a')).not.toBeNull();
   });
 
   it('scopes cache entries per uid so host + user probes do not collide', async () => {

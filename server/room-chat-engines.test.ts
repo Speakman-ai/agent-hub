@@ -245,9 +245,17 @@ describe('handleRoomChat — per-engine spawn', () => {
 
     // execFile was used to mint a fresh cursor chat id.
     expect(execFileMock).toHaveBeenCalled();
-    const [cursorBin, cursorArgs] = execFileMock.mock.calls[0];
+    const [cursorBin, cursorArgs, cursorOpts] = execFileMock.mock.calls[0];
     expect(cursorBin).toBe('/bin/cursor');
     expect(cursorArgs).toEqual(['create-chat']);
+    // `create-chat` must receive the same userId-aware env as the
+    // follow-up `--resume` spawn so the new chat id and the resume lookup
+    // share one HOME tree. Bare `process.env` here would mean a room
+    // owner with only per-user browser auth lands the chat id in the
+    // operator HOME while the resume looks under their per-user HOME.
+    const passedEnv = (cursorOpts as { env?: NodeJS.ProcessEnv }).env;
+    expect(passedEnv).toBeTruthy();
+    expect(passedEnv?.HOME).toBeTruthy();
 
     // The main spawn used cursorBin with the documented stream-json shape.
     expect(spawnMock).toHaveBeenCalledTimes(1);

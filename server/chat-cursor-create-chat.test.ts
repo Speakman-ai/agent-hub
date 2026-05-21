@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { buildSpawnEnv } from './config.js';
+
+vi.mock('./host-cli-home.js', () => ({
+  ensureHostCliHome: (dataDir: string) => path.join(dataDir, 'host-creds', 'home'),
+  hostCliHomePath: (dataDir: string) => path.join(dataDir, 'host-creds', 'home'),
+  hostCodexHomePath: (dataDir: string) => path.join(dataDir, 'host-creds', 'home', '.codex'),
+  resolveCodexHomeForProbe: (_env: NodeJS.ProcessEnv | undefined, dataDir: string) =>
+    path.join(dataDir, 'host-creds', 'home', '.codex'),
+}));
 
 const execFileMock = vi.hoisted(() =>
   vi.fn((...args: unknown[]) => {
@@ -48,20 +59,27 @@ function stubChatHandlerDeps(): ChatHandlerDeps {
 }
 
 describe('createCursorChat (chat handler)', () => {
+  let isolatedHome: string;
+
   beforeEach(() => {
     execFileMock.mockClear();
+    isolatedHome = mkdtempSync(path.join(os.tmpdir(), 'ah-chat-cursor-home-'));
+    process.env.HOME = isolatedHome;
+    delete process.env.CODEX_HOME;
   });
 
   it('passes cwd through and uses buildSpawnEnv (merged PATH) for execFile', async () => {
     const { createCursorChat } = createChatHandler(stubChatHandlerDeps());
     const cwd = '/tmp/agent-hub-worktree-xyz';
-    const id = await createCursorChat(cwd);
+    const spawnEnv = buildSpawnEnv();
+    const id = await createCursorChat(cwd, spawnEnv);
     expect(id).toBe('cursor-engine-session-abc');
 
     expect(execFileMock).toHaveBeenCalledTimes(1);
     const call = execFileMock.mock.calls[0];
     const opts = call[2] as { cwd: string; env: NodeJS.ProcessEnv };
     expect(opts.cwd).toBe(cwd);
-    expect(opts.env.PATH).toBe(buildSpawnEnv().PATH);
+    expect(opts.env).toBe(spawnEnv);
+    expect(opts.env.PATH).toBe(spawnEnv.PATH);
   });
 });

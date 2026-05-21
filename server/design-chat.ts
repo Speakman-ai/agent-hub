@@ -92,10 +92,16 @@ export function initDesignChat(d: DesignChatDeps): void {
   deps = d;
 }
 
-function createDesignCursorChat(cwd: string): Promise<string> {
+// `create-chat` writes the new chat id under `$HOME/.cursor`. If env is
+// bare `process.env`, a design owner who only has per-user browser auth
+// would land the chat id under the operator's HOME and the subsequent
+// `--resume` (with the user-scoped `spawnEnv`) would not find it. Pass
+// the same userId-aware env to both so the chat id + resume share the
+// same HOME tree.
+function createDesignCursorChat(cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
   const CURSOR_BIN = getDeps().getCursorBin();
   return new Promise((resolve, reject) => {
-    execFile(CURSOR_BIN, ['create-chat'], { cwd, env: process.env }, (err, stdout, stderr) => {
+    execFile(CURSOR_BIN, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
         return;
@@ -250,9 +256,33 @@ export async function handleDesignChat(
     const designDir = path.join(designsRoot, designId);
     const systemPrompt = buildDesignSystemPrompt(design, { designsRoot, defaultSkillsDir });
 
+    // Build the spawn env BEFORE `create-chat` so `cursor-agent create-chat`
+    // and the subsequent `--resume` see the same HOME tree. A design owner
+    // with only per-user browser auth needs `HOME=<dataDir>/per-user-creds/<uid>/home`
+    // (synthesised by `buildSpawnEnv({ userId })`) on both spawns — otherwise
+    // the new chat id lands in the operator HOME and the resume call can't
+    // find it. See review comment on PR #1072.
+    const spawnEnv = {
+      ...buildSpawnEnv(config, { userId: designOwnerId }),
+      AGENT_HUB_SESSION_ID: `design:${designId}`,
+    } as NodeJS.ProcessEnv;
+    const linkedProject = design.linkedProjects?.[0];
+    if (linkedProject && designOwnerId) {
+      mergeSkillCredentialSpawnEnv(spawnEnv, {
+        ownerId: designOwnerId,
+        agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
+        project: linkedProject,
+      });
+      mergeProjectSecretsSpawnEnv(spawnEnv, {
+        projectId: linkedProject.id,
+        sessionId: `design:${designId}`,
+      });
+      mergeProjectAwsSpawnEnv(spawnEnv, linkedProject);
+    }
+
     if (engine === 'cursor-agent' && !engineSessionId) {
       try {
-        engineSessionId = await createDesignCursorChat(designDir);
+        engineSessionId = await createDesignCursorChat(designDir, spawnEnv);
         stmts.updateDesignEngineSessionId.run(engineSessionId, designId);
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -308,24 +338,6 @@ export async function handleDesignChat(
     let errorOutput = '';
     let spawnErrored = false;
     let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
-
-    const spawnEnv = {
-      ...buildSpawnEnv(config, { userId: designOwnerId }),
-      AGENT_HUB_SESSION_ID: `design:${designId}`,
-    } as NodeJS.ProcessEnv;
-    const linkedProject = design.linkedProjects?.[0];
-    if (linkedProject && designOwnerId) {
-      mergeSkillCredentialSpawnEnv(spawnEnv, {
-        ownerId: designOwnerId,
-        agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
-        project: linkedProject,
-      });
-      mergeProjectSecretsSpawnEnv(spawnEnv, {
-        projectId: linkedProject.id,
-        sessionId: `design:${designId}`,
-      });
-      mergeProjectAwsSpawnEnv(spawnEnv, linkedProject);
-    }
 
     const finalTextOut = await new Promise<string>((resolve, reject) => {
       const timeout = config.defaultTimeoutMs;

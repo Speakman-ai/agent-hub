@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { existsSync } from 'fs';
 import { spawn, ChildProcess } from 'child_process';
-import os from 'os';
 import type { RouteDeps } from '../types.js';
+import { ensureHostCliHome } from '../host-cli-home.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
   extractCursorLoginUrl,
@@ -113,8 +113,6 @@ registerPath({
   },
 });
 
-const HOME = os.homedir();
-
 interface CursorRunResult {
   stdout: string;
   stderr: string;
@@ -124,12 +122,13 @@ interface CursorRunResult {
 function runCursor(
   bin: string,
   args: string[],
+  home: string,
   opts: { env?: Record<string, string>; timeout?: number } = {},
 ): Promise<CursorRunResult> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
-      cwd: HOME,
-      env: { ...process.env, ...opts.env },
+      cwd: home,
+      env: { ...process.env, HOME: home, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -169,6 +168,7 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin } = deps;
   const router = Router();
 
+  const hostHome = (): string => ensureHostCliHome(config.dataDir);
   const binPath = (): string => getCursorBin?.() ?? config.cursorBin;
 
   const resetActiveLogin = (): void => {
@@ -207,7 +207,11 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
       });
     }
 
-    const { stdout, stderr, code } = await runCursor(path, ['status', '--format', 'json']);
+    const { stdout, stderr, code } = await runCursor(
+      path,
+      ['status', '--format', 'json'],
+      hostHome(),
+    );
     const parsed = parseCursorStatusJson(stdout, stderr);
     const isAuthenticated = parsed.ok && parsed.isAuthenticated;
     const uiStatus = computeCursorUiStatus({
@@ -250,9 +254,10 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
     const loginId = Date.now().toString(36);
     activeLoginId = loginId;
 
+    const home = hostHome();
     const proc = spawn(path, ['login'], {
-      cwd: HOME,
-      env: { ...process.env, NO_OPEN_BROWSER: '1' },
+      cwd: home,
+      env: { ...process.env, HOME: home, NO_OPEN_BROWSER: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -372,7 +377,9 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
     if (!existsSync(path)) {
       return res.status(400).json({ error: `Cursor Agent binary not found at ${path}` });
     }
-    const { stdout, stderr, code } = await runCursor(path, ['logout'], { timeout: 30_000 });
+    const { stdout, stderr, code } = await runCursor(path, ['logout'], hostHome(), {
+      timeout: 30_000,
+    });
     const combined = (stdout + stderr).trim();
     if (code !== 0 && !/logout successful|not logged in/i.test(combined)) {
       return res.status(500).json({

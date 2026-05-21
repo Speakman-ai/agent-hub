@@ -43,6 +43,7 @@ import {
 } from '../codex-device-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { ensurePerUserHome, perUserHomePath, clearPerUserCliCache } from '../per-user-home.js';
+import { invalidateCursorAuthCacheForScope } from '../cursor-auth-cache.js';
 import { ensurePerUserCliHome } from '../per-user-cli-home.js';
 import {
   clearActiveCodexDeviceLogin,
@@ -514,6 +515,16 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       const key = loginKey('cursor', userId);
       const current = activeLogins.get(key);
       if (current?.loginId === loginId) activeLogins.delete(key);
+
+      // Drop ONLY this user's cached `cursor-agent status` entry so the
+      // next models-poll re-probes their HOME against the freshly-written
+      // cache. A full `invalidateCursorAuthCache()` would also wipe every
+      // other user's valid `authenticated=true` answer and force them
+      // through a spurious probe round-trip — bad neighbours behavior on
+      // multi-tenant installs. The host-level cursor-auth route still
+      // does a full clear because its bin path change can shadow every
+      // entry; here the scope is exactly one user.
+      invalidateCursorAuthCacheForScope(bin, `uid:${userId}`);
 
       if (!responded) {
         responded = true;

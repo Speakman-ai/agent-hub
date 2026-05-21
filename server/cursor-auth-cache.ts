@@ -79,9 +79,27 @@ export async function getCursorAuthenticatedCached(
  * Drop any cached cursor-auth result. Call this whenever the bin path may
  * have changed or the user's login state may have flipped (login complete,
  * logout, manual config edit, …). Idempotent and cheap.
+ *
+ * This is a blast-radius full clear — every cached scope (host + per-user)
+ * is dropped. Prefer `invalidateCursorAuthCacheForScope` from the per-user
+ * login handler so a single user finishing login doesn't force every other
+ * user's models-poll to re-probe `cursor-agent status`.
  */
 export function invalidateCursorAuthCache(): void {
   cacheEntries.clear();
+}
+
+/**
+ * Drop just the entry for one `(bin, scope?)` pair. Used after a per-user
+ * login/logout completes so we re-probe `cursor-agent status` for that
+ * user without dropping unrelated users' cached answers. `bin` is required
+ * because the cache key is `bin\x00scope`; omitting `scope` targets the
+ * host-level (un-scoped) entry.
+ *
+ * Idempotent — a no-op when no entry is keyed at that scope.
+ */
+export function invalidateCursorAuthCacheForScope(bin: string, scope?: string): void {
+  cacheEntries.delete(resolveCacheKey(bin, scope));
 }
 
 /** Test-only — reset module state between cases. */

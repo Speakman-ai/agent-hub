@@ -25,6 +25,7 @@ import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
 import { getUserClaudeAuth, getUserCursorAuth, getUserCodexAuth } from './users-store.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import { ensureHostCliHome, hostCodexHomePath } from './host-cli-home.js';
 import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
@@ -121,14 +122,7 @@ export interface EngineAuthInputs {
 }
 
 export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<EngineAuthStatus> {
-  const {
-    config,
-    cursorBin,
-    userId,
-    dataDir,
-    cursorProbe = probeCursorStatus,
-    cursorProbePerUserHome,
-  } = opts;
+  const { config, cursorBin, userId, dataDir, cursorProbe, cursorProbePerUserHome } = opts;
 
   // Per-user Claude credentials win over host fallback (see buildSpawnEnv).
   let userClaude = false;
@@ -194,7 +188,7 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
       process.env.CODEX_API_KEY ||
       process.env.OPENAI_API_KEY
     );
-    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexHome = dataDir ? hostCodexHomePath(dataDir) : path.join(os.homedir(), '.codex');
     const codexFs = detectCodexAuthMode(codexHome);
     codex =
       codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
@@ -233,7 +227,10 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
       cursor = false;
     }
   } else {
-    cursor = await getCursorAuthenticatedCached(cursorBin, cursorProbe);
+    const hostHome = dataDir ? ensureHostCliHome(dataDir) : os.homedir();
+    const runHostProbe =
+      cursorProbe ?? ((bin: string) => probeCursorStatus(bin, { env: { HOME: hostHome } }));
+    cursor = await getCursorAuthenticatedCached(cursorBin, runHostProbe);
   }
 
   return {
