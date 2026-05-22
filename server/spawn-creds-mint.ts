@@ -16,8 +16,16 @@ import {
 } from './spawn-creds-file.js';
 import type { AppConfig } from './types.js';
 
-/** 30-day TTL — matches setup-recovery; self-cleans if purge misses a row. */
-const SPAWN_KEY_TTL_DAYS = 30;
+/**
+ * 7-day TTL — covers normal "step away from a session for a week" idle.
+ * Spawn-creds are server-rotated (each new spawn revokes the prior key
+ * for the same session) and session-purge revokes on archive cleanup, so
+ * the TTL is purely a safety net for sessions that were abandoned
+ * mid-flight without going through purge. Was 30 days; dropped to 7 once
+ * we noticed long-idle stale rows accumulating server-side even though
+ * the UI no longer surfaces them (see `isHiddenSystemKeyName`).
+ */
+const SPAWN_KEY_TTL_DAYS = 7;
 
 /** Settings → API Keys label for operator visibility. */
 export function spawnCredsKeyName(sessionId: string): string {

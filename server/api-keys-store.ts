@@ -65,6 +65,26 @@ const LAST_USED_DEBOUNCE_MS = 60_000;
 // 32 bytes base64url-encoded → 43 chars (no padding). Total token length: 48.
 const TOKEN_REGEX = /^ahub_[A-Za-z0-9_-]{40,}$/;
 
+/**
+ * Name prefixes the server uses for internal, auto-minted credentials:
+ *   - `spawn:<sessionId>` — per-session spawn-creds (`spawn-creds-mint.ts`)
+ *   - `spawn-recovery (<shortId>)` — `/api/auth/setup` rescue path
+ *     (`spawn-creds-setup-recovery.ts`)
+ *
+ * These are revoked + rotated by the server itself, so we hide them from
+ * `listApiKeys()` (and therefore from `GET /api/auth/keys` + the per-user
+ * cap counter). Authentication and revocation-by-id still work — only the
+ * list is filtered. SQL fragment is reused so the filter rule lives in
+ * exactly one place.
+ */
+const HIDDEN_SYSTEM_KEY_SQL = `(name NOT LIKE 'spawn:%' AND name NOT LIKE 'spawn-recovery %')`;
+
+/** Returns true when `name` belongs to a server-minted internal credential. */
+export function isHiddenSystemKeyName(name: string): boolean {
+  if (typeof name !== 'string') return false;
+  return name.startsWith('spawn:') || name.startsWith('spawn-recovery ');
+}
+
 /** Crypto-grade random token, url-safe base64. */
 function generateRawToken(): string {
   const raw = randomBytes(TOKEN_RANDOM_BYTES)
@@ -151,14 +171,21 @@ export function createApiKey(
   };
 }
 
-/** Active (non-revoked) keys for a user, ordered by creation time. */
+/**
+ * Active (non-revoked) keys for a user, ordered by creation time.
+ *
+ * Server-minted internal credentials (see `HIDDEN_SYSTEM_KEY_SQL`) are
+ * filtered out: the user did not create them and the server already
+ * rotates / revokes them on its own. They remain valid for auth — only
+ * the list endpoint hides them.
+ */
 export function listApiKeys(userId: string): ApiKeyRecord[] {
   const db = getOrgsDb();
   const rows = db
     .prepare(
       `SELECT id, user_id, name, token_hash, prefix, created_at, last_used_at, revoked_at, expires_at
        FROM api_keys
-       WHERE user_id = ? AND revoked_at IS NULL
+       WHERE user_id = ? AND revoked_at IS NULL AND ${HIDDEN_SYSTEM_KEY_SQL}
        ORDER BY created_at DESC`,
     )
     .all(userId) as ApiKeyRow[];

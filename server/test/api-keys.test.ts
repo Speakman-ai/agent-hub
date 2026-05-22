@@ -209,6 +209,46 @@ describe('Auth via Authorization: Bearer ahub_*', () => {
   });
 });
 
+describe('GET /api/auth/keys hides server-minted spawn-creds', () => {
+  it('omits spawn:<sessionId> and spawn-recovery (<short>) rows', async () => {
+    const hiddenSpawn = createApiKey(userA.id, 'spawn:test-session-hidden-001', 7);
+    const hiddenRecovery = createApiKey(userA.id, 'spawn-recovery (abcdef12)', 7);
+    const visible = createApiKey(userA.id, 'my-real-token', 30);
+
+    const list = await request
+      .get('/api/auth/keys')
+      .set('Authorization', `Bearer ${userA.jwt}`)
+      .expect(200);
+
+    const ids = list.body.keys.map((k: { id: string }) => k.id);
+    expect(ids).toContain(visible.id);
+    expect(ids).not.toContain(hiddenSpawn.id);
+    expect(ids).not.toContain(hiddenRecovery.id);
+  });
+
+  it('still authenticates with a hidden spawn-creds token', async () => {
+    // Server-minted rows must keep working — only the list is filtered.
+    const hidden = createApiKey(userA.id, 'spawn:auth-still-works-001', 7);
+    const res = await request
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${hidden.token}`)
+      .expect(200);
+    expect(res.body.user.username).toBe(userA.username);
+  });
+
+  it('cap counter excludes hidden spawn-creds rows', async () => {
+    // Force the cap by stamping listApiKeys-visible count up to the cap
+    // and then asserting that a spawn:* row does not push us over.
+    // Implementation detail: the cap is enforced inside POST /api/auth/keys
+    // by `listApiKeys(authedReq.authUserId).length`. Since listApiKeys
+    // hides spawn:* rows, adding one must not consume a slot.
+    const beforeVisible = listApiKeys(userB.id).length;
+    createApiKey(userB.id, 'spawn:cap-counter-test', 7);
+    const afterVisible = listApiKeys(userB.id).length;
+    expect(afterVisible).toBe(beforeVisible);
+  });
+});
+
 describe('DELETE /api/auth/keys/:id', () => {
   it("404s when the key isn't owned by the caller", async () => {
     const created = createApiKey(userA.id, 'a-only');
