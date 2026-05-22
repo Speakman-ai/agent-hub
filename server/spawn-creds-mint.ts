@@ -8,12 +8,12 @@
  *
  * Best-effort everywhere — failures are logged and never block a spawn.
  */
+import { createApiKey, revokeApiKeysBySpawnSession, verifyApiKey } from './api-keys-store.js';
 import {
-  createApiKey,
-  revokeApiKeysBySpawnSession,
-  verifyApiKey,
-} from './api-keys-store.js';
-import { readSpawnCredsFile, removeSpawnCredsFile, writeSpawnCredsFile } from './spawn-creds-file.js';
+  readSpawnCredsFile,
+  removeSpawnCredsFile,
+  writeSpawnCredsFile,
+} from './spawn-creds-file.js';
 import type { AppConfig } from './types.js';
 
 /** 30-day TTL — matches setup-recovery; self-cleans if purge misses a row. */
@@ -47,11 +47,7 @@ export function ensureSpawnCredsForSession(opts: EnsureSpawnCredsOpts): void {
     }
 
     revokeApiKeysBySpawnSession(sessionId);
-    const minted = createApiKey(
-      ownerUserId,
-      spawnCredsKeyName(sessionId),
-      SPAWN_KEY_TTL_DAYS,
-    );
+    const minted = createApiKey(ownerUserId, spawnCredsKeyName(sessionId), SPAWN_KEY_TTL_DAYS);
     writeSpawnCredsFile(sessionId, minted.token, cfg.dataDir);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

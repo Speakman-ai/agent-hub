@@ -3821,64 +3821,6 @@ export default function App() {
                                       }}
                                     />
                                   )}
-                                {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
-                                {changesReady[activeSessionId] &&
-                                  !streamingMsgId &&
-                                  !chatProjectIsWorkflow &&
-                                  !activeResolvePrBannerInfo && (
-                                    <ChangesReadyBox
-                                      sessionId={activeSessionId}
-                                      changes={changesReady[activeSessionId]}
-                                      livePrLog={createPrLogBySession[activeSessionId] || ''}
-                                      onPublishStart={(sessionId) => {
-                                        setCreatePrLogBySession((prev) => {
-                                          if (!prev[sessionId]) return prev;
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                      }}
-                                      defaultAutoMerge={
-                                        projects.find((p) => p.id === activeAgent?.projectId)
-                                          ?.githubWorkflow?.autoMerge ?? false
-                                      }
-                                      onCreated={(sessionId, result) => {
-                                        setChangesReady((prev) => {
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                        setCreatePrLogBySession((prev) => {
-                                          if (!prev[sessionId]) return prev;
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                        setToasts((prev) => [
-                                          ...prev,
-                                          {
-                                            id: `pr-created-${Date.now()}`,
-                                            type: 'success',
-                                            message: `PR created: ${result.prUrl}`,
-                                            duration: 8000,
-                                          },
-                                        ]);
-                                      }}
-                                      onDismiss={(sessionId) => {
-                                        setChangesReady((prev) => {
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                        setCreatePrLogBySession((prev) => {
-                                          if (!prev[sessionId]) return prev;
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                      }}
-                                    />
-                                  )}
                                 {/* Queued messages always render at the very bottom */}
                                 {queued.map((msg) => (
                                   <ChatMessage
@@ -3959,6 +3901,65 @@ export default function App() {
                             onStart={handleStartSessionPreview}
                             onConfigure={handlePreviewConfigure}
                           />
+                          {/* Ad-hoc PR creation — shown when agent finishes
+                              work with uncommitted changes and no card */}
+                          {changesReady[activeSessionId] &&
+                            !streamingMsgId &&
+                            !chatProjectIsWorkflow &&
+                            !activeResolvePrBannerInfo && (
+                              <ChangesReadyBox
+                                sessionId={activeSessionId}
+                                changes={changesReady[activeSessionId]}
+                                livePrLog={createPrLogBySession[activeSessionId] || ''}
+                                onPublishStart={(sessionId) => {
+                                  setCreatePrLogBySession((prev) => {
+                                    if (!prev[sessionId]) return prev;
+                                    const next = { ...prev };
+                                    delete next[sessionId];
+                                    return next;
+                                  });
+                                }}
+                                defaultAutoMerge={
+                                  projects.find((p) => p.id === activeAgent?.projectId)
+                                    ?.githubWorkflow?.autoMerge ?? false
+                                }
+                                onCreated={(sessionId, result) => {
+                                  setChangesReady((prev) => {
+                                    const next = { ...prev };
+                                    delete next[sessionId];
+                                    return next;
+                                  });
+                                  setCreatePrLogBySession((prev) => {
+                                    if (!prev[sessionId]) return prev;
+                                    const next = { ...prev };
+                                    delete next[sessionId];
+                                    return next;
+                                  });
+                                  setToasts((prev) => [
+                                    ...prev,
+                                    {
+                                      id: `pr-created-${Date.now()}`,
+                                      type: 'success',
+                                      message: `PR created: ${result.prUrl}`,
+                                      duration: 8000,
+                                    },
+                                  ]);
+                                }}
+                                onDismiss={(sessionId) => {
+                                  setChangesReady((prev) => {
+                                    const next = { ...prev };
+                                    delete next[sessionId];
+                                    return next;
+                                  });
+                                  setCreatePrLogBySession((prev) => {
+                                    if (!prev[sessionId]) return prev;
+                                    const next = { ...prev };
+                                    delete next[sessionId];
+                                    return next;
+                                  });
+                                }}
+                              />
+                            )}
                         </div>
                       )}
 
