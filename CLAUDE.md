@@ -290,8 +290,8 @@ Wiki page with full context: `openapi-coverage-enforcement-zod-schema-lint`.
 
 ## Deployment
 
-### EC2 Server
-- **Host**: `3.22.232.193` (user: `agenthub`, SSH via `ubuntu`)
+### Production Server (generic single-host topology)
+- **Host**: configure per your environment (any Linux host with Node 22+; the original reference deployment was a single EC2 instance, but nothing in the app assumes EC2).
 - **Nginx** reverse proxy on port 80 → localhost:3051
 - **PM2** manages the Node.js process
 - **Port 3051** is localhost-only — all external traffic goes through Nginx
