@@ -22,6 +22,7 @@ import {
   Loader2,
   Lock,
   GripVertical,
+  MessageCircleQuestion,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -277,11 +278,14 @@ export default function Sidebar({
                     }`}
                   >
                     {isAwaitingInput ? (
-                      <span
+                      <MessageCircleQuestion
+                        size={12}
                         data-testid={`awaiting-input-indicator-${cs.id}`}
-                        className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
-                        title="Waiting for your input"
-                      />
+                        className="text-amber-400 animate-pulse flex-shrink-0"
+                        aria-label="Waiting for your input"
+                      >
+                        <title>Waiting for your input</title>
+                      </MessageCircleQuestion>
                     ) : isRunning ? (
                       <Loader2
                         size={10}
@@ -696,11 +700,14 @@ export default function Sidebar({
                                                 className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
                                               >
                                                 {isAwaitingInput ? (
-                                                  <span
+                                                  <MessageCircleQuestion
+                                                    size={12}
                                                     data-testid={`awaiting-input-indicator-${session.id}`}
-                                                    className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
-                                                    title="Waiting for your input"
-                                                  />
+                                                    className="text-amber-400 animate-pulse flex-shrink-0"
+                                                    aria-label="Waiting for your input"
+                                                  >
+                                                    <title>Waiting for your input</title>
+                                                  </MessageCircleQuestion>
                                                 ) : isRunning ? (
                                                   <Loader2
                                                     size={10}
@@ -1074,11 +1081,14 @@ export default function Sidebar({
                               title={session.name}
                             >
                               {isAwaitingInput ? (
-                                <span
+                                <MessageCircleQuestion
+                                  size={12}
                                   data-testid={`awaiting-input-indicator-${session.id}`}
-                                  className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
-                                  title="Waiting for your input"
-                                />
+                                  className="text-amber-400 animate-pulse flex-shrink-0"
+                                  aria-label="Waiting for your input"
+                                >
+                                  <title>Waiting for your input</title>
+                                </MessageCircleQuestion>
                               ) : isRunning ? (
                                 <Loader2
                                   size={10}

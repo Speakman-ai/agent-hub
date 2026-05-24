@@ -86,6 +86,12 @@ import {
 } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders, reloadForOrgSwitch } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
+import {
+  applyAwaitingInputEvent,
+  applyAwaitingInputSnapshot,
+  clearAwaitingInputForSession,
+  shouldNotifyForAwaitingInput,
+} from './utils/awaitingInputState.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
 import {
   firstEngineWithAuthenticatedModels,
@@ -673,72 +679,55 @@ export default function App() {
         case 'awaiting-input-snapshot': {
           // Replace the awaiting-input map from server snapshot (sent right
           // after `active-tasks-snapshot` on connect). Notification firing is
-          // suppressed for snapshot rows — they describe sessions that were
-          // already waiting before this socket connected, so flooding the
-          // user with toast/desktop notifications on reload would be noise.
-          const next = {};
-          for (const item of data.items || []) {
-            next[item.sessionId] = {
-              askIds: Array.isArray(item.askIds) ? item.askIds : [],
-              agentId: item.agentId || null,
-              sessionName: item.sessionName || null,
-            };
-          }
-          setAwaitingInputBySession(next);
+          // intentionally NOT done from this branch — snapshot rows describe
+          // sessions that were already waiting before this socket connected,
+          // so flooding the user with toast/desktop notifications on reload
+          // (or on a network reconnect mid-session) would be noise. The
+          // `wasWaiting` check in `awaiting_input` below guarantees a fresh
+          // session entering the waiting state notifies exactly once.
+          setAwaitingInputBySession(applyAwaitingInputSnapshot(data.items));
           break;
         }
         case 'awaiting_input': {
           // Live transition into / out of the awaiting-input state. Fires
           // from `broadcastAwaitingInputForSession` server-side after every
-          // chat turn completes.
+          // chat turn completes (waiting:true on a stop, waiting:false on a
+          // clean turn or a user answer that landed before the next ask).
           const sid = data.sessionId;
           if (!sid) break;
           const prev = awaitingInputBySessionRef.current;
           const wasWaiting = !!prev[sid];
-          if (data.waiting) {
-            setAwaitingInputBySession((current) => ({
-              ...current,
-              [sid]: {
-                askIds: Array.isArray(data.askIds) ? data.askIds : [],
-                agentId: data.agentId || null,
-                sessionName: data.sessionName || null,
-              },
-            }));
-            // Newly waiting AND the user isn't already looking at this
-            // session → fire a desktop notification + toast so they can
-            // switch back.
-            if (!wasWaiting && sid !== activeSessionIdRef.current) {
-              const session = sessionsRef.current.find((s) => s.id === sid);
-              const agent = agentsRef.current.find(
-                (a) => a.id === (data.agentId || session?.agent_id),
-              );
-              const askCount = Array.isArray(data.askIds) ? data.askIds.length : 1;
-              const { title, body } = awaitingInputNotification({
-                agentName: agent?.name,
-                sessionName: session?.name || data.sessionName,
-                askCount,
-              });
-              setToasts((toasts) => [
-                ...toasts,
-                {
-                  id: `awaiting-input-${sid}-${Date.now()}`,
-                  type: 'info',
-                  message: session?.name || data.sessionName || 'Agent waiting for input',
-                  duration: 10000,
-                  onClick: () =>
-                    focusAgentSessionRef.current?.(data.agentId || session?.agent_id, sid),
-                },
-              ]);
-              notify({ title, body, type: 'info' });
-            }
-          } else {
-            if (!wasWaiting) break;
-            setAwaitingInputBySession((current) => {
-              if (!current[sid]) return current;
-              const updated = { ...current };
-              delete updated[sid];
-              return updated;
+          setAwaitingInputBySession((current) => applyAwaitingInputEvent(current, data));
+          if (
+            data.waiting &&
+            shouldNotifyForAwaitingInput({
+              wasWaiting,
+              sessionId: sid,
+              activeSessionId: activeSessionIdRef.current,
+            })
+          ) {
+            const session = sessionsRef.current.find((s) => s.id === sid);
+            const agent = agentsRef.current.find(
+              (a) => a.id === (data.agentId || session?.agent_id),
+            );
+            const askCount = Array.isArray(data.askIds) ? data.askIds.length : 1;
+            const { title, body } = awaitingInputNotification({
+              agentName: agent?.name,
+              sessionName: session?.name || data.sessionName,
+              askCount,
             });
+            setToasts((toasts) => [
+              ...toasts,
+              {
+                id: `awaiting-input-${sid}-${Date.now()}`,
+                type: 'info',
+                message: session?.name || data.sessionName || 'Agent waiting for input',
+                duration: 10000,
+                onClick: () =>
+                  focusAgentSessionRef.current?.(data.agentId || session?.agent_id, sid),
+              },
+            ]);
+            notify({ title, body, type: 'info' });
           }
           break;
         }
@@ -1153,6 +1142,13 @@ export default function App() {
             setStreamingMsgId(null);
             setStreamingEngine(null);
           }
+          // Defensive cleanup: a cancelled turn may have persisted a partial
+          // assistant message containing an ask block. The user explicitly
+          // stopped the run, so don't dangle a stale "needs your input"
+          // indicator. If the partial really did contain an unanswered ask,
+          // the next chat turn's `done` will re-emit `awaiting_input` and
+          // the indicator returns naturally.
+          setAwaitingInputBySession((prev) => clearAwaitingInputForSession(prev, data.sessionId));
           break;
 
         // ─── Conference Room events ─────────────────────────────
@@ -1914,6 +1910,9 @@ export default function App() {
         case 'session_deleted':
           tearDownSessionPreviewRef.current?.(data.sessionId);
           setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+          // Drop any awaiting-input flag — the session is gone, so an
+          // indicator pointing at it would dangle.
+          setAwaitingInputBySession((prev) => clearAwaitingInputForSession(prev, data.sessionId));
           if (activeSessionIdRef.current === data.sessionId) {
             setActiveSessionId(null);
           }
@@ -3114,6 +3113,18 @@ export default function App() {
       next.add(askId);
       return next;
     });
+    // Optimistically drop the "waiting for your input" indicator the instant
+    // the picker is submitted. Without this clear, the sidebar would keep
+    // showing the prominent dot during the gap between message-send and the
+    // server's `thinking`/`active-tasks-snapshot` arrival, defeating the
+    // whole point of the indicator. The server's post-`done`
+    // `awaiting_input { waiting: false }` will reconfirm — and if this same
+    // session emits a fresh ask in its next turn, the server's
+    // `awaiting_input { waiting: true }` will re-light the dot. Multi-round
+    // ask flows are covered by this round-trip.
+    setAwaitingInputBySession((prev) =>
+      clearAwaitingInputForSession(prev, activeSessionIdRef.current),
+    );
     handleSend(messageText);
   };
 

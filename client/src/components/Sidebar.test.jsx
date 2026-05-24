@@ -276,8 +276,11 @@ describe('Sidebar — waiting-on-user indicator', () => {
 
     expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toBeInTheDocument();
     expect(screen.queryByTestId('awaiting-input-indicator-s-idle')).not.toBeInTheDocument();
+    // Icon carries both an aria-label (screen reader) and a <title> child
+    // (hover tooltip). Either accessor is sufficient — assert the aria-label
+    // which is the more reliable / colorblind-safe affordance.
     expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toHaveAttribute(
-      'title',
+      'aria-label',
       'Waiting for your input',
     );
   });
