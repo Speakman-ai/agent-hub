@@ -56,6 +56,13 @@ export default function Sidebar({
   onNavigate,
   currentView,
   activeTaskSessionIds = {},
+  /**
+   * Map of sessionId → { askIds, agentId, sessionName } for sessions that
+   * have paused on an `agenthub:ask` picker (or otherwise stopped waiting for
+   * user input). Drives the green "needs you" dot in the sidebar — distinct
+   * from `activeTaskSessionIds` (which is "working", rendered subdued).
+   */
+  awaitingInputBySession = {},
   rooms = [],
   activeRoomId,
   onSelectRoom,
@@ -194,9 +201,13 @@ export default function Sidebar({
   //   The misleading "create PR" purple glyph is suppressed for those titles separately
   //   (see `showCreatePrReadyGlyph`); an external-link affordance (`resolvePrHref`) carries
   //   the "existing PR" semantics instead.
-  // - (future) it's awaiting user input (requires backend `awaiting_input` flag; not yet wired)
+  // - it's blocked on an `agenthub:ask` picker awaiting user input
+  //   (tracked via awaitingInputBySession). Stays visible behind ▸ so users
+  //   never miss a session that needs their reply.
   const isSessionActionable = (session) =>
-    !!activeTaskSessionIds[session.id] || !!changesReadyBySession[session.id];
+    !!activeTaskSessionIds[session.id] ||
+    !!changesReadyBySession[session.id] ||
+    !!awaitingInputBySession[session.id];
 
   const orchestrationSession =
     currentView === 'chat' && activeSessionId
@@ -253,6 +264,7 @@ export default function Sidebar({
               </div>
               {cronSessions.map((cs) => {
                 const isRunning = !!activeTaskSessionIds[cs.id];
+                const isAwaitingInput = !isRunning && !!awaitingInputBySession[cs.id];
                 return (
                   <button
                     type="button"
@@ -264,12 +276,19 @@ export default function Sidebar({
                         : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
                     }`}
                   >
-                    {isRunning && (
+                    {isAwaitingInput ? (
                       <span
-                        className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                        title="Task running"
+                        data-testid={`awaiting-input-indicator-${cs.id}`}
+                        className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
+                        title="Waiting for your input"
                       />
-                    )}
+                    ) : isRunning ? (
+                      <Loader2
+                        size={10}
+                        className="text-gray-500 animate-spin flex-shrink-0"
+                        aria-label="Task running"
+                      />
+                    ) : null}
                     <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
                     <span className="text-xs text-gray-600 flex-shrink-0">
                       {humanCron(cs.cron_schedule)}
@@ -579,6 +598,8 @@ export default function Sidebar({
                                   <div className="ml-5 mb-2" data-testid="agent-sessions-list">
                                     {visibleSessions.map((session) => {
                                       const isRunning = !!activeTaskSessionIds[session.id];
+                                      const isAwaitingInput =
+                                        !isRunning && !!awaitingInputBySession[session.id];
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
                                       const resolvePrHref =
@@ -674,12 +695,20 @@ export default function Sidebar({
                                                 }}
                                                 className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
                                               >
-                                                {isRunning && (
+                                                {isAwaitingInput ? (
                                                   <span
-                                                    className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                                    title="Task running"
+                                                    data-testid={`awaiting-input-indicator-${session.id}`}
+                                                    className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
+                                                    title="Waiting for your input"
                                                   />
-                                                )}
+                                                ) : isRunning ? (
+                                                  <Loader2
+                                                    size={10}
+                                                    data-testid={`session-running-indicator-${session.id}`}
+                                                    className="text-gray-500 animate-spin flex-shrink-0"
+                                                    aria-label="Task running"
+                                                  />
+                                                ) : null}
                                                 {subagentsBySession[session.id]?.running > 0 && (
                                                   <span
                                                     className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
@@ -1023,6 +1052,8 @@ export default function Sidebar({
                       >
                         {actionableSessions.map((session) => {
                           const isRunning = !!activeTaskSessionIds[session.id];
+                          const isAwaitingInput =
+                            !isRunning && !!awaitingInputBySession[session.id];
                           const prReady = changesReadyBySession[session.id];
                           const resolvePrHref =
                             prReady && isResolvePrSessionTitle(session.name)
@@ -1042,12 +1073,19 @@ export default function Sidebar({
                               }`}
                               title={session.name}
                             >
-                              {isRunning && (
+                              {isAwaitingInput ? (
                                 <span
-                                  className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                  title="Task running"
+                                  data-testid={`awaiting-input-indicator-${session.id}`}
+                                  className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 ring-2 ring-emerald-400/30"
+                                  title="Waiting for your input"
                                 />
-                              )}
+                              ) : isRunning ? (
+                                <Loader2
+                                  size={10}
+                                  className="text-gray-500 animate-spin flex-shrink-0"
+                                  aria-label="Task running"
+                                />
+                              ) : null}
                               {showCreatePrReadyGlyph && (
                                 <span
                                   data-testid="pr-ready-indicator"

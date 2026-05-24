@@ -86,6 +86,28 @@ export function threadEntryNotification({ threadName, threadType, preview, isErr
   return { title, body };
 }
 
+/**
+ * Build notification content for a session that has just stopped to ask the
+ * user a multi-choice question (`agenthub:ask` picker) or is otherwise blocked
+ * on user input. Fires when the server broadcasts `awaiting_input` with
+ * `waiting: true` and the affected session is not the one the user is
+ * currently viewing.
+ *
+ * @param {{ agentName?: string, sessionName?: string, askCount?: number }} data
+ * @returns {{ title: string, body: string }}
+ */
+export function awaitingInputNotification({ agentName, sessionName, askCount }) {
+  const title = 'Agent Waiting for You';
+  const parts = [];
+  if (agentName) parts.push(agentName);
+  if (sessionName) parts.push(`"${sessionName}"`);
+  const who = parts.join(' — ');
+  const question =
+    askCount && askCount > 1 ? `${askCount} questions need answers` : 'is waiting on your input';
+  const body = who ? `${who} ${question}` : `An agent ${question}`;
+  return { title, body };
+}
+
 export function sessionCompleteNotification({ agentName, sessionName, preview }) {
   const title = `${agentName} — Done`;
   const parts = [];

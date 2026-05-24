@@ -261,6 +261,78 @@ describe('Sidebar — actionable session visibility', () => {
   });
 });
 
+describe('Sidebar — waiting-on-user indicator', () => {
+  it('renders a "Waiting for your input" dot only on sessions in awaitingInputBySession', () => {
+    const props = buildProps({
+      sessions: [
+        { id: 's-ask', name: 'Picker session' },
+        { id: 's-idle', name: 'Idle session' },
+      ],
+      activeTaskSessionIds: {},
+      changesReadyBySession: {},
+      awaitingInputBySession: { 's-ask': { askIds: ['ask-1'] } },
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toBeInTheDocument();
+    expect(screen.queryByTestId('awaiting-input-indicator-s-idle')).not.toBeInTheDocument();
+    expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toHaveAttribute(
+      'title',
+      'Waiting for your input',
+    );
+  });
+
+  it('renders a subdued spinner for running sessions instead of the green ask dot', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-running', name: 'Running session' }],
+      activeTaskSessionIds: { 's-running': true },
+      changesReadyBySession: {},
+      awaitingInputBySession: {},
+    });
+    render(<Sidebar {...props} />);
+
+    // The "task running" indicator is now the subdued spinner, not a green dot.
+    expect(screen.getByTestId('session-running-indicator-s-running')).toBeInTheDocument();
+    // It is NOT the prominent green-dot used for awaiting input.
+    expect(screen.queryByTestId('awaiting-input-indicator-s-running')).not.toBeInTheDocument();
+  });
+
+  it('prefers the running spinner over the waiting dot when both states briefly overlap', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-overlap', name: 'Resuming session' }],
+      activeTaskSessionIds: { 's-overlap': true },
+      changesReadyBySession: {},
+      awaitingInputBySession: { 's-overlap': { askIds: ['ask-stale'] } },
+    });
+    render(<Sidebar {...props} />);
+
+    // Active task suppresses the waiting indicator; the user can't both be
+    // "answering" and "waiting" at the same instant from the user's POV.
+    expect(screen.queryByTestId('awaiting-input-indicator-s-overlap')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-running-indicator-s-overlap')).toBeInTheDocument();
+  });
+
+  it('keeps awaiting-input sessions visible when the agent row is collapsed', () => {
+    const props = buildProps({
+      sessions: [
+        { id: 's-ask', name: 'Awaiting input' },
+        { id: 's-idle', name: 'Idle session' },
+      ],
+      activeTaskSessionIds: {},
+      changesReadyBySession: {},
+      awaitingInputBySession: { 's-ask': { askIds: ['ask-1'] } },
+    });
+    render(<Sidebar {...props} />);
+
+    // Collapse the active agent.
+    fireEvent.click(screen.getByRole('button', { name: '▾' }));
+
+    // The awaiting-input session must remain visible, idle one is hidden.
+    expect(screen.getByText('Awaiting input')).toBeInTheDocument();
+    expect(screen.queryByText('Idle session')).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — New Project + Import existing project CTAs', () => {
   it('renders only the primary "+ New Project" CTA when onImportProject is not provided', () => {
     const onOpenProject = vi.fn();

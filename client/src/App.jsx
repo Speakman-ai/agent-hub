@@ -59,6 +59,7 @@ import { isNearBottom } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
+  awaitingInputNotification,
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
@@ -151,6 +152,19 @@ export default function App() {
   // Used to (a) restore streaming state when switching sessions and (b) power the
   // "running" indicator in the sidebar.
   const [activeTasks, setActiveTasks] = useState({});
+  // Map of sessionId -> { askIds, agentId, sessionName } for sessions that
+  // have stopped on an unanswered `agenthub:ask` picker. Populated by the
+  // server's `awaiting-input-snapshot` (connect) and `awaiting_input` (live
+  // transitions) events. Used to power the "waiting for you" indicator in
+  // the sidebar — distinct from `activeTasks` (which is the "working" signal).
+  const [awaitingInputBySession, setAwaitingInputBySession] = useState({});
+  // Ref kept in sync so the WS handler can detect "newly waiting" transitions
+  // (for desktop notifications) without re-creating the callback on every
+  // state change.
+  const awaitingInputBySessionRef = useRef(awaitingInputBySession);
+  useEffect(() => {
+    awaitingInputBySessionRef.current = awaitingInputBySession;
+  }, [awaitingInputBySession]);
   // Map of messageId -> array of { seq, event } for the SessionTail timeline.
   // Populated by 'session-event' WS messages (live) or via api.getMessageEvents
   // (historical, lazy on first SessionTail render).
@@ -653,6 +667,78 @@ export default function App() {
             setStreamingContent(t.content);
             setStreamingEngine(t.engine);
             setThinking(!t.content);
+          }
+          break;
+        }
+        case 'awaiting-input-snapshot': {
+          // Replace the awaiting-input map from server snapshot (sent right
+          // after `active-tasks-snapshot` on connect). Notification firing is
+          // suppressed for snapshot rows — they describe sessions that were
+          // already waiting before this socket connected, so flooding the
+          // user with toast/desktop notifications on reload would be noise.
+          const next = {};
+          for (const item of data.items || []) {
+            next[item.sessionId] = {
+              askIds: Array.isArray(item.askIds) ? item.askIds : [],
+              agentId: item.agentId || null,
+              sessionName: item.sessionName || null,
+            };
+          }
+          setAwaitingInputBySession(next);
+          break;
+        }
+        case 'awaiting_input': {
+          // Live transition into / out of the awaiting-input state. Fires
+          // from `broadcastAwaitingInputForSession` server-side after every
+          // chat turn completes.
+          const sid = data.sessionId;
+          if (!sid) break;
+          const prev = awaitingInputBySessionRef.current;
+          const wasWaiting = !!prev[sid];
+          if (data.waiting) {
+            setAwaitingInputBySession((current) => ({
+              ...current,
+              [sid]: {
+                askIds: Array.isArray(data.askIds) ? data.askIds : [],
+                agentId: data.agentId || null,
+                sessionName: data.sessionName || null,
+              },
+            }));
+            // Newly waiting AND the user isn't already looking at this
+            // session → fire a desktop notification + toast so they can
+            // switch back.
+            if (!wasWaiting && sid !== activeSessionIdRef.current) {
+              const session = sessionsRef.current.find((s) => s.id === sid);
+              const agent = agentsRef.current.find(
+                (a) => a.id === (data.agentId || session?.agent_id),
+              );
+              const askCount = Array.isArray(data.askIds) ? data.askIds.length : 1;
+              const { title, body } = awaitingInputNotification({
+                agentName: agent?.name,
+                sessionName: session?.name || data.sessionName,
+                askCount,
+              });
+              setToasts((toasts) => [
+                ...toasts,
+                {
+                  id: `awaiting-input-${sid}-${Date.now()}`,
+                  type: 'info',
+                  message: session?.name || data.sessionName || 'Agent waiting for input',
+                  duration: 10000,
+                  onClick: () =>
+                    focusAgentSessionRef.current?.(data.agentId || session?.agent_id, sid),
+                },
+              ]);
+              notify({ title, body, type: 'info' });
+            }
+          } else {
+            if (!wasWaiting) break;
+            setAwaitingInputBySession((current) => {
+              if (!current[sid]) return current;
+              const updated = { ...current };
+              delete updated[sid];
+              return updated;
+            });
           }
           break;
         }
@@ -3469,6 +3555,7 @@ export default function App() {
             }}
             currentView={currentView}
             activeTaskSessionIds={activeTasks}
+            awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
             changesReadyBySession={changesReady}
             rooms={rooms}

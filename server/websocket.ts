@@ -23,6 +23,7 @@ import type {
   RoomMessageQueueRow,
 } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
+import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 
 /**
@@ -180,6 +181,21 @@ export default function createWebSocket(
         JSON.stringify({
           type: 'active-tasks-snapshot',
           tasks: buildActiveTasksSnapshotLenient(stmts!),
+        }),
+      );
+    } catch {
+      /* send failure — client may have disconnected */
+    }
+
+    // Sessions currently blocked on an unanswered `agenthub:ask` picker. The
+    // sidebar uses this to flag "needs user input" before the first live
+    // `awaiting_input` event arrives. Per-session events flow over the normal
+    // broadcast path after this initial snapshot.
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'awaiting-input-snapshot',
+          items: buildAwaitingInputSnapshotLenient(stmts!),
         }),
       );
     } catch {

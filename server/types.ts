@@ -786,6 +786,7 @@ export interface Stmts {
   createSession: Stmt;
   getSessions: Stmt;
   getSession: Stmt;
+  getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   deleteSession: Stmt;
   softDeleteSession: Stmt;

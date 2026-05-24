@@ -91,6 +91,7 @@ import {
   type AuthStampedWs,
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import {
   detectWikiRequestBlock,
   parseWikiRequestBlock,
@@ -3776,6 +3777,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             created_at: new Date().toISOString(),
           },
         });
+
+        // Sidebar "waiting on user input" signal. The assistant just landed
+        // its turn; if the final content carries an unanswered `agenthub:ask`
+        // picker (and no follow-up turn is queued), broadcast so sidebars can
+        // light the green dot. The detector also handles the inverse — if
+        // the previous waiting state has been cleared (e.g. a tool-only turn
+        // that doesn't repeat the ask), it broadcasts `waiting: false` so
+        // clients drop the indicator.
+        broadcastAwaitingInputForSession(sessionId, stmts, broadcast);
 
         const wouldBaseContinue =
           reactLoopEnabled && continuationContextAdded && !controlFlowPresent;

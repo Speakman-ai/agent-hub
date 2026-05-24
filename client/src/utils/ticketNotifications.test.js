@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  awaitingInputNotification,
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
@@ -8,6 +9,32 @@ import {
   threadCreatedNotification,
   threadEntryNotification,
 } from './ticketNotifications.js';
+
+describe('awaitingInputNotification', () => {
+  it('names the agent and session when both are known', () => {
+    const result = awaitingInputNotification({
+      agentName: 'Hub Lead Dev',
+      sessionName: 'Refactor sidebar',
+      askCount: 1,
+    });
+    expect(result.title).toBe('Agent Waiting for You');
+    expect(result.body).toBe('Hub Lead Dev — "Refactor sidebar" is waiting on your input');
+  });
+
+  it('pluralises when multiple questions are pending', () => {
+    const result = awaitingInputNotification({
+      agentName: 'Hub Lead Dev',
+      sessionName: 'Refactor sidebar',
+      askCount: 3,
+    });
+    expect(result.body).toBe('Hub Lead Dev — "Refactor sidebar" 3 questions need answers');
+  });
+
+  it('falls back to a generic body when agent/session are unknown', () => {
+    const result = awaitingInputNotification({});
+    expect(result.body).toBe('An agent is waiting on your input');
+  });
+});
 
 describe('cardStartedNotification', () => {
   it('formats with assignee', () => {

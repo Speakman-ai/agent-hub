@@ -1844,6 +1844,17 @@ function initDb(dataDir: string): void {
       'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
+    // Used by the awaiting-input snapshot to bound the scan: only sessions a
+    // user has plausibly touched in the last week can be "blocked waiting for
+    // a reply." The LIMIT keeps the worst-case bootstrap O(few hundred) row
+    // reads regardless of long-tail archive churn.
+    getRecentLiveSessions: db.prepare(
+      `SELECT * FROM sessions
+       WHERE deleted_at IS NULL
+         AND updated_at >= datetime('now', '-7 days')
+       ORDER BY updated_at DESC
+       LIMIT 200`,
+    ),
     updateSessionName: db.prepare(
       "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?",
     ),
