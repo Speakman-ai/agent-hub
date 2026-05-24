@@ -198,6 +198,52 @@ describe('agent-hub-user-data.tftpl', () => {
     });
   });
 
+  // Host-path-aliased bind mounts for compose build contexts.
+  //
+  // `--project-directory` (emitted by PreviewComposeRuntime via
+  // host-path-translation.ts) is the host-absolute path so the daemon
+  // can resolve bind-mount sources. But compose-go runs INSIDE the Hub
+  // container and stats `build.context` locally before tarring it to
+  // the daemon — so the host path also has to be visible at the same
+  // absolute path inside the container, otherwise any preview compose
+  // file with `build:` fails with "unable to prepare context: path
+  // \"…\" not found". The fix: alias each data dir at both the legacy
+  // /home/node/... mount and the host-absolute $DATA_ROOT/... mount.
+  // Same underlying inodes, two visible paths.
+  describe('host-path-aliased bind mounts for compose build contexts', () => {
+    it('aliases $DATA_ROOT/projects and $DATA_ROOT/workspaces at the host path (ECR-pull)', () => {
+      const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE });
+      // Escape pattern: in the heredoc-rendered runscript, $DATA_ROOT
+      // is kept literal as `\$DATA_ROOT` so bash expands it at run time.
+      expect(rendered).toMatch(/-v "\\\$DATA_ROOT\/projects:\\\$DATA_ROOT\/projects"/);
+      expect(rendered).toMatch(/-v "\\\$DATA_ROOT\/workspaces:\\\$DATA_ROOT\/workspaces"/);
+      // Original /home/node/... mounts must remain — agents still address
+      // these paths and the alias is additive, not a replacement.
+      expect(rendered).toMatch(/-v "\\\$DATA_ROOT\/projects:\/home\/node\/projects"/);
+      expect(rendered).toMatch(
+        /-v "\\\$DATA_ROOT\/workspaces:\/home\/node\/\.agent-hub\/workspaces"/,
+      );
+    });
+
+    it('aliases $DATA_ROOT/projects and $DATA_ROOT/workspaces at the host path (legacy docker-build)', () => {
+      const rendered = renderTemplate(tpl, {
+        ...RENDER_VARS_BASE,
+        use_ecr_pull: false,
+        use_docker_bootstrap: true,
+        use_pm2_bootstrap: false,
+      });
+      // In the inline (non-heredoc) docker run, $DATA_ROOT is expanded
+      // by cloud-init's shell at user-data run time — so the rendered
+      // template carries the literal `$DATA_ROOT` token (no backslash).
+      expect(rendered).toMatch(/-v "\$DATA_ROOT\/projects:\$DATA_ROOT\/projects"/);
+      expect(rendered).toMatch(/-v "\$DATA_ROOT\/workspaces:\$DATA_ROOT\/workspaces"/);
+      expect(rendered).toMatch(/-v "\$DATA_ROOT\/projects:\/home\/node\/projects"/);
+      expect(rendered).toMatch(
+        /-v "\$DATA_ROOT\/workspaces:\/home\/node\/\.agent-hub\/workspaces"/,
+      );
+    });
+  });
+
   // ── ECR-pull bootstrap renders the standard docker run invocation ────────
   describe('ECR-pull bootstrap', () => {
     const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE });

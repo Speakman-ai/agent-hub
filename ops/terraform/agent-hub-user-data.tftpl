@@ -238,11 +238,25 @@ DOCKER_GROUP_ARG=""
 if [ -n "\$DOCKER_GID" ]; then
   DOCKER_GROUP_ARG="--group-add \$DOCKER_GID"
 fi
+# Bind-mount layout: each host data dir is mounted TWICE — once at the
+# legacy in-container path (/home/node/projects, /home/node/.agent-hub/
+# workspaces) that agents read/write, and once at its host-absolute path
+# (\$DATA_ROOT/projects, \$DATA_ROOT/workspaces) so the in-container
+# docker CLI can `stat()` build contexts at the host path that
+# `--project-directory` emits. Without the host-path alias, compose-go
+# (running inside this container) fails with "unable to prepare context:
+# path \"\$DATA_ROOT/projects/<slug>/<svc>\" not found" the moment a
+# preview compose file declares `build:` — because that path exists on
+# the daemon (the host) but not in the container's filesystem namespace.
+# Two -v flags for the same source are aliases for one inode; agents
+# keep using /home/node/... unchanged.
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
   -v "\$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
+  -v "\$DATA_ROOT/projects:\$DATA_ROOT/projects" \
+  -v "\$DATA_ROOT/workspaces:\$DATA_ROOT/workspaces" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --add-host=host.docker.internal:host-gateway \
   \$DOCKER_GROUP_ARG \
@@ -377,11 +391,17 @@ DOCKER_GROUP_ARG=""
 if [ -n "$DOCKER_GID" ]; then
   DOCKER_GROUP_ARG="--group-add $DOCKER_GID"
 fi
+# See the ECR-pull branch above for the rationale on aliasing each data
+# dir at both /home/node/... AND the host-absolute path. Required so
+# compose-go inside this container can stat build contexts at the host
+# path that `--project-directory` emits.
 cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped \
   -p ${app_port}:3051 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
   -v "$DATA_ROOT/projects:/home/node/projects" \
   -v "$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
+  -v "$DATA_ROOT/projects:$DATA_ROOT/projects" \
+  -v "$DATA_ROOT/workspaces:$DATA_ROOT/workspaces" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --add-host=host.docker.internal:host-gateway \
   $DOCKER_GROUP_ARG \
