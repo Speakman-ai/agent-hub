@@ -659,44 +659,6 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_escalations_type ON escalations(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_escalations_ack ON escalations(acknowledged);
 
-    -- PR captures: screenshot/video capture jobs for PR branches
-    CREATE TABLE IF NOT EXISTS pr_captures (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,
-      pr_url TEXT,
-      branch TEXT NOT NULL,
-      commit_sha TEXT,
-      repo_url TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','building','capturing','done','error')),
-      error_message TEXT,
-      build_log TEXT,
-      screenshot_count INTEGER NOT NULL DEFAULT 0,
-      has_video INTEGER NOT NULL DEFAULT 0,
-      duration_ms INTEGER,
-      comment_url TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_pr_captures_project ON pr_captures(project_id);
-    CREATE INDEX IF NOT EXISTS idx_pr_captures_pr ON pr_captures(project_id, pr_number);
-
-    -- PR capture artifacts: individual screenshots/videos from a capture job
-    CREATE TABLE IF NOT EXISTS pr_capture_artifacts (
-      id TEXT PRIMARY KEY,
-      capture_id TEXT NOT NULL REFERENCES pr_captures(id) ON DELETE CASCADE,
-      type TEXT NOT NULL CHECK(type IN ('screenshot', 'video')),
-      route TEXT,
-      name TEXT NOT NULL,
-      label TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      file_size INTEGER NOT NULL DEFAULT 0,
-      console_errors TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_pr_capture_artifacts_capture ON pr_capture_artifacts(capture_id);
-
     -- iOS builds: Xcode builds on macOS VMs for PR preview
     CREATE TABLE IF NOT EXISTS ios_builds (
       id TEXT PRIMARY KEY,
@@ -3137,34 +3099,6 @@ function initDb(dataDir: string): void {
       'SELECT * FROM note_processings WHERE project_id = ? AND note_date = ? ORDER BY created_at DESC',
     ),
     getNoteProcessingBySession: db.prepare('SELECT * FROM note_processings WHERE session_id = ?'),
-
-    // PR captures
-    getPrCaptures: db.prepare('SELECT * FROM pr_captures ORDER BY created_at DESC'),
-    getPrCapturesByProject: db.prepare(
-      'SELECT * FROM pr_captures WHERE project_id = ? ORDER BY created_at DESC',
-    ),
-    getPrCapture: db.prepare('SELECT * FROM pr_captures WHERE id = ?'),
-    createPrCapture: db.prepare(
-      `INSERT INTO pr_captures (id, project_id, pr_number, pr_url, branch, commit_sha, repo_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ),
-    updatePrCapture: db.prepare(
-      `UPDATE pr_captures SET status = ?, error_message = ?, build_log = ?, screenshot_count = ?, has_video = ?, duration_ms = ?, comment_url = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    updatePrCaptureStatus: db.prepare(
-      `UPDATE pr_captures SET status = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    deletePrCapture: db.prepare('DELETE FROM pr_captures WHERE id = ?'),
-
-    // PR capture artifacts
-    getPrCaptureArtifacts: db.prepare(
-      'SELECT * FROM pr_capture_artifacts WHERE capture_id = ? ORDER BY type, name',
-    ),
-    createPrCaptureArtifact: db.prepare(
-      `INSERT INTO pr_capture_artifacts (id, capture_id, type, route, name, label, filename, file_path, file_size, console_errors)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ),
-    deletePrCaptureArtifacts: db.prepare('DELETE FROM pr_capture_artifacts WHERE capture_id = ?'),
 
     // iOS builds
     getIosBuilds: db.prepare('SELECT * FROM ios_builds ORDER BY created_at DESC'),

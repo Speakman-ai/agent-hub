@@ -114,10 +114,8 @@ import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './wo
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createInstanceBackupRoutes from './routes/instance-backup.js';
-import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
-import { initCaptureEngine } from './capture-engine.js';
 import { initWebhookWorker } from './webhook-worker.js';
 import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
@@ -593,7 +591,7 @@ app.use(
   }),
 );
 
-// (Preview proxy removed — replaced by lightweight Playwright captures)
+// (Preview proxy removed — session previews use preview-runtime instead)
 
 app.use(authMiddleware);
 
@@ -829,12 +827,6 @@ app.use(createThreadRoutes(routeDeps));
 app.use(createWorkflowRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 app.use(createInstanceBackupRoutes(routeDeps));
-// `/api/captures/status` is the only non-project-scoped endpoint — everything
-// else must know which project it belongs to. Keeping these on separate routers
-// prevents accidental matches like `POST /api/captures` (which would have no
-// projectId and fail the NOT NULL on pr_captures.project_id).
-app.use('/api/captures', createCaptureGlobalRoutes());
-app.use('/api/projects/:projectId/captures', createCaptureRoutes(routeDeps));
 app.use(createIosBuildRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
@@ -1306,7 +1298,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
-    initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
     initWebhookWorker({ stmts: stmts!, routeDeps: webhookHandlerDeps });
 
     resumeOrphanedSessions(sessionsToResume);

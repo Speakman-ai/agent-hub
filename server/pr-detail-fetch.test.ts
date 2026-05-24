@@ -35,7 +35,6 @@ function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     anthropicApiKey: null,
     openaiApiKey: null,
     slackWebhookUrl: null,
-    capturesEnabled: false,
     allValidModels: [],
     ...overrides,
   } as AppConfig;

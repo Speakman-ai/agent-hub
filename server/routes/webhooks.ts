@@ -8,7 +8,6 @@ import express, { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
-import { runCapture, postPrComment } from '../capture-engine.js';
 import {
   githubApiRequest,
   resolveInstallationId,
@@ -547,198 +546,6 @@ export function notifyDispatchFailure(
       const msg = slackErr instanceof Error ? slackErr.message : String(slackErr);
       console.error(`[${source}] Failed to send Slack notification:`, msg);
     });
-  }
-}
-
-// ─── GitHub Commit Status ───────────────────────────────────────
-
-/**
- * Set a GitHub commit status. Used for PR captures and other CI-like checks.
- * Uses the Reviewer GitHub App installation token only.
- */
-export async function setCommitStatus(
-  repoUrl: string,
-  sha: string,
-  state: 'pending' | 'success' | 'failure' | 'error',
-  description: string,
-  targetUrl: string | null,
-): Promise<void> {
-  const { owner, repo } = parseGitHubRepo(repoUrl);
-
-  const body: Record<string, unknown> = {
-    state,
-    description: description.substring(0, 140), // GitHub limit
-    context: 'agent-hub/capture',
-  };
-  if (targetUrl) {
-    body.target_url = targetUrl;
-  }
-
-  // Try GitHub App first
-  const app = config.githubApp;
-  if (app?.appId && app?.privateKey) {
-    const instId = resolveInstallationId(app, owner);
-    if (instId) {
-      try {
-        await githubApiRequest(`/repos/${owner}/${repo}/statuses/${sha}`, {
-          method: 'POST',
-          body,
-          appId: app.appId,
-          privateKey: app.privateKey,
-          installationId: instId,
-        });
-        console.log(`[Webhook/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)}`);
-        return;
-      } catch (err) {
-        // The bot-token fallback this branch used to drop into is gone —
-        // commit statuses are App-only now. Log loudly and return; the
-        // capture pipeline never blocks on the status post.
-        console.warn(
-          `[Webhook/Status] GitHub App call failed; skipping commit status for ${owner}/${repo}@${sha.substring(0, 7)}: ${(err as Error).message.split('\n')[0]}`,
-        );
-        return;
-      }
-    }
-  }
-
-  // Reachable when (a) no GitHub App is installed, or (b) the App is
-  // installed but `resolveInstallationId(app, owner)` returned null for
-  // this repo's owner. Either way, commit-status posting is unavailable
-  // on this org until the operator installs the Reviewer App there.
-  console.warn(
-    `[Webhook/Status] Skipped commit status for ${owner}/${repo}@${sha.substring(0, 7)} — Reviewer GitHub App not installed on this org`,
-  );
-}
-
-// Input validators — these must match capture-engine's guard. We refuse
-// anything git could interpret as a flag, absolute path, or shell metachar
-// before persisting to the DB.
-const WEBHOOK_BRANCH_RE = /^(?!-)[A-Za-z0-9._/-]{1,255}$/;
-const WEBHOOK_SHA_RE = /^[a-f0-9]{7,64}$/i;
-const WEBHOOK_REPO_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?$/;
-
-/**
- * Trigger a PR capture (screenshot/video) when a PR is opened or updated.
- *
- * Called from webhook handlers on PR open or synchronize. Gated by
- * config.capturesEnabled. The full pipeline runs fire-and-forget:
- *   1. Validate inputs (refuse argument-injection attempts on branch/sha/url)
- *   2. Set GitHub commit status to `pending` under `agent-hub/capture`
- *   3. Run the capture (clone → build → serve → Playwright → DB)
- *   4. On success: post the PR comment with embedded screenshots + video
- *      link so the agent and reviewer can see the result.
- *   5. Update commit status to `success` / `failure` with the comment URL as
- *      the target_url (so GitHub's "Details" link goes straight to the
- *      capture comment).
- */
-export async function triggerCaptureForPR(
-  deps: { stmts: Stmts; broadcast: BroadcastFn },
-  opts: {
-    projectId: string;
-    prNumber: number;
-    prUrl: string;
-    branch: string;
-    commitSha: string | null;
-    repoUrl: string;
-  },
-): Promise<void> {
-  if (!config.capturesEnabled) {
-    console.log(`[Webhook/Capture] Captures disabled — skipping PR #${opts.prNumber}`);
-    return;
-  }
-
-  // Input validation — untrusted fields from GitHub webhook payload
-  if (!WEBHOOK_BRANCH_RE.test(opts.branch)) {
-    console.warn(
-      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid branch name: ${opts.branch}`,
-    );
-    return;
-  }
-  if (opts.commitSha && !WEBHOOK_SHA_RE.test(opts.commitSha)) {
-    console.warn(
-      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid commit sha: ${opts.commitSha}`,
-    );
-    return;
-  }
-  if (!WEBHOOK_REPO_URL_RE.test(opts.repoUrl)) {
-    console.warn(
-      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid repo url: ${opts.repoUrl}`,
-    );
-    return;
-  }
-
-  const { stmts } = deps;
-  const id = uuidv4();
-
-  try {
-    stmts.createPrCapture.run(
-      id,
-      opts.projectId,
-      opts.prNumber,
-      opts.prUrl,
-      opts.branch,
-      opts.commitSha,
-      opts.repoUrl,
-    );
-
-    console.log(`[Webhook/Capture] Capture triggered for PR #${opts.prNumber} (${id})`);
-
-    // Mark commit status as pending so GitHub reflects that a capture is in flight.
-    if (opts.commitSha) {
-      setCommitStatus(opts.repoUrl, opts.commitSha, 'pending', 'Capturing PR…', null).catch(
-        (err) => {
-          console.warn(`[Webhook/Capture] setCommitStatus(pending) failed: ${err.message}`);
-        },
-      );
-    }
-
-    // Fire-and-forget — the capture runs in the background. On completion we
-    // post the PR comment and update the commit status.
-    runCapture(id)
-      .then(async (result) => {
-        let commentUrl: string | null = null;
-        if (result.status === 'done') {
-          commentUrl = await postPrComment(id);
-          if (!commentUrl) {
-            console.warn(
-              `[Webhook/Capture] PR #${opts.prNumber} capture done but postPrComment returned null`,
-            );
-          }
-        }
-
-        if (opts.commitSha) {
-          const state = result.status === 'done' ? 'success' : 'failure';
-          const description =
-            result.status === 'done'
-              ? `Captured ${result.screenshots.length} screenshot(s)`
-              : (result.error || 'Capture failed').slice(0, 140);
-          await setCommitStatus(opts.repoUrl, opts.commitSha, state, description, commentUrl).catch(
-            (err) => {
-              console.warn(`[Webhook/Capture] setCommitStatus(${state}) failed: ${err.message}`);
-            },
-          );
-        }
-      })
-      .catch((err) => {
-        console.error(
-          `[Webhook/Capture] Capture failed for PR #${opts.prNumber}:`,
-          (err as Error).message,
-        );
-        if (opts.commitSha) {
-          setCommitStatus(
-            opts.repoUrl,
-            opts.commitSha,
-            'error',
-            `Capture error: ${(err as Error).message}`.slice(0, 140),
-            null,
-          ).catch(() => {});
-        }
-      });
-  } catch (err) {
-    console.error(
-      `[Webhook/Capture] Failed to create capture for PR #${opts.prNumber}:`,
-      (err as Error).message,
-    );
   }
 }
 
@@ -1916,30 +1723,9 @@ async function handleKanbanWebhookEvent(
     return false;
   }
 
-  if (card && event === 'pull_request' && action === 'opened' && payload.pull_request?.head?.ref) {
-    const pr = payload.pull_request;
-    const headRef = pr.head?.ref;
-    const repoHtmlUrl = payload.repository?.html_url;
-    if (repoHtmlUrl && headRef) {
-      triggerCaptureForPR(
-        { stmts, broadcast },
-        {
-          projectId: project.id,
-          prNumber: pr.number,
-          prUrl: pr.html_url,
-          branch: headRef,
-          commitSha: pr.head?.sha || null,
-          repoUrl: repoHtmlUrl,
-        },
-      ).catch((err) => {
-        console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
-      });
-    }
-  }
-
   if (!card) return false;
 
-  // Opened is handled above (reviewer dispatch, title/session link, capture).
+  // Opened is handled above (reviewer dispatch, title/session link).
   if (event === 'pull_request' && action === 'opened') {
     return true;
   }
@@ -2470,26 +2256,6 @@ function handleWebhookPrSynchronize(
           source: 'webhook',
         },
       );
-    }
-  }
-
-  // Trigger capture on new commits
-  if (prNumber && payload.pull_request?.head?.ref) {
-    const repoHtmlUrl = payload.repository?.html_url;
-    if (repoHtmlUrl) {
-      triggerCaptureForPR(
-        { stmts, broadcast },
-        {
-          projectId: project.id,
-          prNumber,
-          prUrl: payload.pull_request.html_url,
-          branch: payload.pull_request.head.ref,
-          commitSha: payload.pull_request.head.sha || null,
-          repoUrl: repoHtmlUrl,
-        },
-      ).catch((err) => {
-        console.error(`[Webhook/Capture] trigger on synchronize failed:`, (err as Error).message);
-      });
     }
   }
 

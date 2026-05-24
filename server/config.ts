@@ -363,9 +363,6 @@ const config: AppConfig = {
   slackWebhookUrl:
     (process.env.SLACK_WEBHOOK_URL as string) || (fileConfig.slackWebhookUrl as string) || null,
 
-  // ── Captures ──────────────────────────────────────────────────
-  capturesEnabled: resolve('AGENT_HUB_CAPTURES_ENABLED', 'capturesEnabled', 'false') === 'true',
-
   // Default true: Codex's Linux bubblewrap sandbox fails in typical containers
   // (no unprivileged user namespaces). Opt out with AGENT_HUB_CODEX_DANGER_BYPASS=false
   // or `"codexDangerBypass": false` in config.json.

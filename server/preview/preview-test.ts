@@ -535,7 +535,7 @@ async function defaultHealthFetch(url: string): Promise<{ ok: boolean; status: n
 /**
  * Production screenshot — launches a headless Chromium via the
  * `playwright` package and snapshots the root URL. Mirrors the same
- * dynamic-import pattern used by `capture-engine.ts` so the module
+ * dynamic-import pattern used by `browser.ts` so the module
  * doesn't pay the import cost on cold boot.
  */
 async function defaultCaptureScreenshot(url: string, outPath: string): Promise<void> {

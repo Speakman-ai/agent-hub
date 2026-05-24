@@ -30,7 +30,6 @@ import {
   prListRowResolveDisabledHeuristic,
   buildPrActivityTimeline,
 } from '../utils/prFormatting';
-import PrCapturesSection from '../components/PrCapturesSection';
 import { resolveAgentIdFromProject, reviewerAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
 
@@ -499,11 +498,6 @@ function PrDetail({
             </TouchableOpacity>
           );
         })}
-
-      {/* PR Captures (screenshots + videos attached to this PR) */}
-      {projectId && pr.number ? (
-        <PrCapturesSection projectId={projectId} prNumber={pr.number} />
-      ) : null}
 
       <View style={{ height: 40 }} />
     </ScrollView>

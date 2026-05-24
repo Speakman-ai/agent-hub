@@ -366,12 +366,6 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
-  // PR Captures (read-only on mobile) — list project captures and fetch one
-  // with its screenshot/video artifacts. Mirrors the web CapturesPage endpoints.
-  getProjectCaptures: (projectId) => fetchJSON(`/projects/${projectId}/captures`),
-  getProjectCapture: (projectId, captureId) =>
-    fetchJSON(`/projects/${projectId}/captures/${captureId}`),
-
   // Notes (project-scoped quick-capture)
   getNotes: (projectId, query, limit) => fetchJSON(buildNotesListUrl(projectId, query, limit)),
   getNote: (projectId, noteId) => fetchJSON(buildNoteUrl(projectId, noteId)),

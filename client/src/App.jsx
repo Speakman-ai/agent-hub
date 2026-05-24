@@ -40,7 +40,6 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
-import CapturesPage from './components/CapturesPage.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
@@ -232,7 +231,6 @@ export default function App() {
   // Notes state
   const [notesProjectId, setNotesProjectId] = useState(null);
   // Previews state
-  const [capturesProjectId, setCapturesProjectId] = useState(null);
   // Pull Requests state
   const [pullsProjectId, setPullsProjectId] = useState(null);
   /** Deep-link into Pull Requests detail (e.g. session summary linked PR). Cleared when leaving pulls view. */
@@ -3054,7 +3052,6 @@ export default function App() {
     if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
-    if (currentView === 'captures' && capturesProjectId) return capturesProjectId;
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
     if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
     const byAgent = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
@@ -3064,7 +3061,6 @@ export default function App() {
     workflowEditRoute,
     wikiProjectId,
     notesProjectId,
-    capturesProjectId,
     pullsProjectId,
     threadsProjectId,
     projects,
@@ -3302,7 +3298,6 @@ export default function App() {
               setCurrentView(view);
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
-              if (view === 'captures' && extra) setCapturesProjectId(extra);
               if (view === 'pulls' && extra) setPullsProjectId(extra);
               if (view === 'design' && extra) setActiveDesignId(extra);
               if (view === 'designs') {
@@ -3345,7 +3340,6 @@ export default function App() {
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
             threadsProjectId={threadsProjectId}
-            capturesProjectId={capturesProjectId}
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
@@ -3508,8 +3502,6 @@ export default function App() {
                     }}
                   />
                 )
-              ) : currentView === 'captures' && capturesProjectId ? (
-                <CapturesPage projectId={capturesProjectId} />
               ) : currentView === 'pulls' && pullsProjectId ? (
                 <PullRequestsPage
                   projectId={pullsProjectId}

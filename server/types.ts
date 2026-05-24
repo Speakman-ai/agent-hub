@@ -712,48 +712,6 @@ export interface NoteRow {
   updated_at: string;
 }
 
-/**
- * A PR capture job — tracks an attempt to screenshot/record a PR branch.
- * Replaces the old Docker-based PreviewContainerRow.
- */
-export interface PrCaptureRow {
-  id: string;
-  project_id: string;
-  pr_number: number;
-  pr_url: string | null;
-  branch: string;
-  commit_sha: string | null;
-  repo_url: string;
-  status: 'queued' | 'building' | 'capturing' | 'done' | 'error';
-  error_message: string | null;
-  build_log: string | null;
-  /** Number of screenshots captured */
-  screenshot_count: number;
-  /** Whether a walkthrough video was captured */
-  has_video: boolean;
-  /** Duration of the capture process in ms */
-  duration_ms: number | null;
-  /** URL to the GitHub PR comment with screenshots (if posted) */
-  comment_url: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PrCaptureArtifactRow {
-  id: string;
-  capture_id: string;
-  type: 'screenshot' | 'video';
-  route: string | null;
-  name: string;
-  label: string;
-  filename: string;
-  file_path: string;
-  file_size: number;
-  /** Console errors captured from the page (for agent self-validation) */
-  console_errors: string | null;
-  created_at: string;
-}
-
 // ─── iOS Build Types ────────────────────────────────────────────
 
 export type IosBuildStatus =
@@ -1257,20 +1215,6 @@ export interface Stmts {
   getNoteProcessingsByProject: Stmt;
   getNoteProcessingsByDate: Stmt;
   getNoteProcessingBySession: Stmt;
-
-  // PR captures (screenshot/video for PRs)
-  getPrCaptures: Stmt;
-  getPrCapturesByProject: Stmt;
-  getPrCapture: Stmt;
-  createPrCapture: Stmt;
-  updatePrCapture: Stmt;
-  updatePrCaptureStatus: Stmt;
-  deletePrCapture: Stmt;
-
-  // PR capture artifacts
-  getPrCaptureArtifacts: Stmt;
-  createPrCaptureArtifact: Stmt;
-  deletePrCaptureArtifacts: Stmt;
 
   // iOS builds
   getIosBuilds: Stmt;
@@ -1971,7 +1915,6 @@ export interface AppConfig {
   /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
   cursorApiKey: string | null;
   slackWebhookUrl: string | null;
-  capturesEnabled: boolean;
   /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */
   browserMaxConcurrentContexts: number;
   /** Idle auto-close for host browser contexts (ms). */

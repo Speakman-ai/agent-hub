@@ -55,7 +55,6 @@ vi.mock('./github-app.js', () => ({
 
 vi.mock('./routes/board.js', () => ({ getOrCreateBoard: vi.fn() }));
 vi.mock('./routes/escalations.js', () => ({ createEscalation: vi.fn() }));
-vi.mock('./capture-engine.js', () => ({ runCapture: vi.fn(), postPrComment: vi.fn() }));
 vi.mock('./db.js', () => ({
   getDb: vi.fn(),
   stmts: {},

@@ -47,7 +47,6 @@ function makeConfig(): AppConfig {
     lanMode: false,
     cursorApiKey: null,
     slackWebhookUrl: null,
-    capturesEnabled: false,
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,

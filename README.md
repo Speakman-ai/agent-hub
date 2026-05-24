@@ -213,7 +213,7 @@ reads a `connConfig` and branches on its `mode`:
 `remote-orgs.json` under `app.getPath('userData')` lets you register
 multiple remote hubs and switch between them; the `setWindowOpenHandler`
 allowlist is built from the configured remote plus every entry there, so
-external link clicks and PR captures behave correctly.
+external link clicks behave correctly.
 
 Electron remote mode does **not** care about `ALLOWED_ORIGINS` because
 Electron does not send an `Origin` header.

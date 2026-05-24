@@ -5,7 +5,7 @@
 // unit test without rendering React.
 
 // Tailwind class tokens (kept terse so badges stay visually consistent with
-// the rest of the app — see CapturesPage for the color palette reference).
+// the rest of the app).
 const TOKEN = {
   gray: { text: 'text-gray-400', bg: 'bg-gray-500/10', border: 'border-gray-500/20' },
   emerald: { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' },

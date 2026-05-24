@@ -14,7 +14,6 @@ import {
   List,
   ListOrdered,
   AlertTriangle,
-  Container,
   BarChart3,
   Plus,
   Palette,
@@ -75,7 +74,6 @@ export default function Sidebar({
   wikiProjectId,
   notesProjectId,
   threadsProjectId,
-  capturesProjectId,
   pullsProjectId,
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
@@ -1003,21 +1001,6 @@ export default function Sidebar({
                       >
                         <GitPullRequest size={14} className="flex-shrink-0" />
                         <span className="truncate">Pulls</span>
-                      </button>
-                    )}
-
-                    {/* PR Captures */}
-                    {project.mode !== 'workflow' && (
-                      <button
-                        onClick={() => onNavigate('captures', project.id)}
-                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                          currentView === 'captures' && capturesProjectId === project.id
-                            ? 'bg-gray-800 text-white'
-                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                        }`}
-                      >
-                        <Container size={14} className="flex-shrink-0" />
-                        <span className="truncate">Captures</span>
                       </button>
                     )}
                   </div>
