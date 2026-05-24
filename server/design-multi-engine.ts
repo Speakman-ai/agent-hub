@@ -5,7 +5,7 @@
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
 export const DESIGN_CHAT_ENGINES = [
@@ -202,7 +202,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
   const args: string[] = [
     '--print',
     '--permission-mode',
-    'bypassPermissions',
+    claudePermissionModeForSpawn('bypassPermissions'),
     '--model',
     model,
     '--system-prompt',

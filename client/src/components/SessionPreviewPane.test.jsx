@@ -25,7 +25,7 @@ describe('SessionPreviewPane', () => {
     const url = screen.getByTestId('session-preview-pane-url');
     expect(url).toHaveValue('http://localhost:4101/board');
     const iframe = screen.getByTestId('session-preview-pane-iframe');
-    expect(iframe.getAttribute('src')).toBe('http://localhost:4101/board');
+    expect(iframe.getAttribute('src')).toBe('http://localhost:4101/board?_ah=0');
   });
 
   it('clicking refresh bumps the iframe key (forcing a reload)', () => {
@@ -41,6 +41,26 @@ describe('SessionPreviewPane', () => {
       screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'),
     );
     expect(after).toBe(before + 1);
+  });
+
+  it('reloads iframe when event.refreshAt changes', () => {
+    const { rerender } = render(
+      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
+    );
+    const before = Number(
+      screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'),
+    );
+    rerender(
+      <SessionPreviewPane
+        sessionId="s-1"
+        event={{ ...readyEvent, refreshAt: 1_700_000_000_000 }}
+        onClose={() => {}}
+      />,
+    );
+    const after = Number(
+      screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'),
+    );
+    expect(after).toBeGreaterThan(before);
   });
 
   it('renders idle placeholder when no event is supplied', () => {
@@ -77,6 +97,20 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByTestId('session-preview-pane-starting-log')).toHaveTextContent(
       /waiting for first log line/i,
     );
+  });
+
+  it('enables Stop while preview is still starting', () => {
+    const onStop = vi.fn();
+    const event = {
+      kind: 'preview_starting',
+      previewId: 'p-boot',
+      logTail: ['==> [preview] Waiting for postgres'],
+    };
+    render(<SessionPreviewPane sessionId="s-1" event={event} onClose={() => {}} onStop={onStop} />);
+    const stopBtn = screen.getByTestId('session-preview-pane-stop');
+    expect(stopBtn).not.toBeDisabled();
+    fireEvent.click(stopBtn);
+    expect(onStop).toHaveBeenCalledWith({ sessionId: 's-1', previewId: 'p-boot' });
   });
 
   it('renders failed state with the error message and log tail', () => {

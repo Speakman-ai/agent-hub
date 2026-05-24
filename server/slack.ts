@@ -11,7 +11,7 @@ import config, { buildSpawnEnv } from './config.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getOrgOwnerUserId } from './session-ownership.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
 import { decryptSecret } from './secret-crypto.js';
 
@@ -233,7 +233,7 @@ function runAgent(
       args = ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', combinedPrompt];
       bin = CODEX_BIN;
     } else {
-      args = ['--print', '--permission-mode', 'bypassPermissions'];
+      args = ['--print', '--permission-mode', claudePermissionModeForSpawn('bypassPermissions')];
       if (systemPrompt) {
         args.push('--system-prompt', systemPrompt);
       }

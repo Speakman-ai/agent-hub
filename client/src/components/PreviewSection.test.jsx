@@ -7,6 +7,9 @@ vi.mock('../utils/api.js', () => ({
   api: {
     getPreviewEnvironmentDraft: vi.fn(),
     getProjectSecrets: vi.fn(),
+    getProjectPreviews: vi.fn(),
+    purgeAllProjectPreviews: vi.fn(),
+    stopPreview: vi.fn(),
     startPreviewWizard: vi.fn(),
     buildPreviewEnvironment: vi.fn(),
   },
@@ -40,6 +43,24 @@ const monorepoDraft = {
   envVars: [{ key: 'API_KEY', sources: ['readme'], required: true }],
   readme: { readmePath: 'README.md', setupExcerpt: 'docker compose up', hasDockerHints: true },
   scriptHints: [],
+  composeChecklist: [
+    {
+      id: 'worktree-bind-mounts',
+      category: 'mount',
+      title: 'Bind mounts are relative to the session worktree',
+      description: 'Use ./ paths.',
+      kind: 'manual',
+      status: 'manual',
+    },
+    {
+      id: 'host-port-env-vars',
+      category: 'ports',
+      title: 'Host port uses AGENTHUB_HOST_PORT or FRONTEND_PORT',
+      description: 'Map allocated port.',
+      kind: 'auto',
+      status: 'pass',
+    },
+  ],
 };
 
 const projects = [
@@ -65,6 +86,7 @@ describe('PreviewSection', () => {
     vi.clearAllMocks();
     api.getPreviewEnvironmentDraft.mockResolvedValue({ draft: monorepoDraft });
     api.getProjectSecrets.mockResolvedValue({ secrets: [] });
+    api.getProjectPreviews.mockResolvedValue({ previews: [] });
   });
 
   it('shows Start setup before generating the form', async () => {
@@ -79,6 +101,36 @@ describe('PreviewSection', () => {
     expect(api.startPreviewWizard).not.toHaveBeenCalled();
   });
 
+  it('lists running previews and supports purge all', async () => {
+    api.getProjectPreviews.mockResolvedValue({
+      previews: [
+        {
+          id: 'prev-1',
+          sessionId: 'sess-1',
+          sessionName: 'Test session',
+          status: 'ready',
+          kind: 'compose',
+          composeProjectName: 'agenthub-session-sess-1',
+          port: 4100,
+          url: 'http://localhost:4100',
+          worktreePath: '/tmp/wt',
+          startedAt: '2026-05-22T00:00:00Z',
+          lastActiveAt: '2026-05-22T00:01:00Z',
+        },
+      ],
+    });
+    api.purgeAllProjectPreviews.mockResolvedValue({ ok: true, stopped: 1, failed: [] });
+    window.confirm = vi.fn(() => true);
+
+    render(<PreviewSection projects={configuredProjects} />);
+    await waitFor(() => expect(api.getProjectPreviews).toHaveBeenCalled());
+    expect(screen.getByTestId('preview-running-panel')).toBeInTheDocument();
+    expect(screen.getByText('Test session')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('preview-purge-all-button'));
+    await waitFor(() => expect(api.purgeAllProjectPreviews).toHaveBeenCalledWith('proj-1'));
+  });
+
   it('reveals editable form after Start setup', async () => {
     render(<PreviewSection projects={projects} />);
     await waitFor(() => expect(api.getPreviewEnvironmentDraft).toHaveBeenCalled());
@@ -90,6 +142,8 @@ describe('PreviewSection', () => {
     });
     expect(screen.queryByTestId('preview-setup-start-card')).not.toBeInTheDocument();
     expect(screen.getByText(/Monorepo/)).toBeInTheDocument();
+    expect(screen.getByTestId('preview-compose-checklist')).toBeInTheDocument();
+    expect(screen.getByTestId('preview-checklist-worktree-bind-mounts')).toBeInTheDocument();
   });
 
   it('shows validation error when entry service is missing', async () => {

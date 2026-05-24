@@ -9,7 +9,7 @@
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 
 export const ROOM_CHAT_ENGINES = [
   'claude-code',
@@ -163,7 +163,7 @@ export function buildRoomSpawnArgs(input: BuildRoomSpawnArgsInput): RoomSpawnPla
   const args: string[] = [
     '--print',
     '--permission-mode',
-    'bypassPermissions',
+    claudePermissionModeForSpawn('bypassPermissions'),
     '--model',
     model,
     '--system-prompt',

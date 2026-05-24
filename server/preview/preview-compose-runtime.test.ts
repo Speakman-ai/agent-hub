@@ -30,12 +30,21 @@
 import Database from 'better-sqlite3';
 import { EventEmitter } from 'events';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./worktree-compose-ready.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./worktree-compose-ready.js')>();
+  return {
+    ...mod,
+    waitForWorktreeComposeReady: vi.fn().mockResolvedValue(undefined),
+  };
+});
 import type { ChildProcess } from 'child_process';
 import {
   DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
   PreviewComposeRuntime,
   buildComposeUpArgs,
   buildComposeDownArgs,
+  buildComposeRestartArgs,
   composeProjectName,
   resolveComposeConfig,
   systemClock,
@@ -299,6 +308,23 @@ describe('buildComposeDownArgs', () => {
   });
 });
 
+describe('buildComposeRestartArgs', () => {
+  it('restarts a named service with the same -f chain as up', () => {
+    const args = buildComposeRestartArgs(
+      {
+        composeProjectName: 'agenthub-session-abc',
+        composeFile: 'compose.preview.yml',
+        overrideFile: '/data/preview-compose/g1.yml',
+        projectDirectory: '/host/proj',
+      },
+      'backend',
+    );
+    expect(args).toContain('restart');
+    expect(args[args.length - 1]).toBe('backend');
+    expect(args).toContain('compose.preview.yml');
+  });
+});
+
 describe('buildCompose*Args --project-directory injection', () => {
   // Local installs (CLI + daemon on same host) must NOT see the new
   // flag — compose-go's default WorkingDir (parent of -f) is what makes
@@ -512,6 +538,7 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
       buildComposeUpArgs({
         composeProjectName: 'agenthub-session-sess-1',
         composeFile: 'docker-compose.yml',
+        projectDirectory: '/wt/sess-1',
       }),
     );
     expect(harness.calls[0].cwd).toBe('/wt/sess-1');
@@ -519,6 +546,8 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
     // reference `${AGENTHUB_HOST_PORT}:${AGENTHUB_ENTRY_PORT}` on the
     // entry service's `ports:` mapping.
     expect(harness.calls[0].env.AGENTHUB_HOST_PORT).toBe(String(result.port));
+    expect(harness.calls[0].env.FRONTEND_PORT).toBe('8000');
+    expect(harness.calls[0].env.PORT).toBe(String(result.port));
     expect(harness.calls[0].env.AGENTHUB_ENTRY_PORT).toBe('8000');
     expect(harness.calls[0].env.AGENTHUB_SESSION_ID).toBe('sess-1');
     expect(harness.calls[0].env.AGENTHUB_PROJECT_ID).toBe('proj-1');
@@ -639,18 +668,14 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
     });
 
     await runtime.startPreview('sess-env', project, '/wt');
-    expect(harness.calls[0].args).toEqual([
-      'compose',
-      '-p',
-      'agenthub-session-sess-env',
-      '-f',
-      'compose.preview.yml',
-      '--env-file',
-      '.env.preview',
-      'up',
-      '-d',
-      '--build',
-    ]);
+    expect(harness.calls[0].args).toEqual(
+      buildComposeUpArgs({
+        composeProjectName: 'agenthub-session-sess-env',
+        composeFile: 'compose.preview.yml',
+        envFile: '.env.preview',
+        projectDirectory: '/wt',
+      }),
+    );
   });
 
   it('throws when prEnv.preview.compose is unset', async () => {
@@ -817,6 +842,38 @@ describe('PreviewComposeRuntime — port allocation', () => {
     );
   });
 
+  it('reclaims failed rows that still hold a port before starting', async () => {
+    const db = freshDb();
+    const harness = makeSpawn({ exitImmediately: true });
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: {
+        readyTimeoutMs: 1_000,
+        healthIntervalMs: 10_000,
+        portRange: { min: 4900, max: 4900 },
+      },
+    });
+
+    db.prepare(
+      `INSERT INTO worktree_preview_groups
+         (id, session_id, project_id, status, compose_project_name)
+       VALUES ('g-stale', 'other-session', 'proj-1', 'failed', 'agenthub-session-other')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status)
+       VALUES ('p-stale', 'g-stale', 'entry', NULL, 4900, 'http://localhost:4900', NULL, 'failed')`,
+    ).run();
+
+    const result = await runtime.startPreview('sess-reclaim', makeProject(), '/wt');
+    expect(result.port).toBe(4900);
+  });
+
   it('reuses ports freed when a prior compose group is stopped', async () => {
     const db = freshDb();
     const harness = makeSpawn({ exitImmediately: true });
@@ -867,9 +924,67 @@ describe('PreviewComposeRuntime — teardown', () => {
       buildComposeDownArgs({
         composeProjectName: 'agenthub-session-sess-down',
         composeFile: 'docker-compose.yml',
+        projectDirectory: '/wt',
       }),
     );
 
+    expect(runtime.getById(result.previewId)).toBeNull();
+  });
+
+  it('stopPreview always runs compose volume cleanup (even when down succeeds)', async () => {
+    const db = freshDb();
+    const harness = makeSpawn({ exitImmediately: true });
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const removeComposeProjectVolumes = vi.fn();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      removeComposeProjectVolumes,
+    });
+
+    const result = await runtime.startPreview('sess-vol', makeProject(), '/wt');
+    await runtime.stopPreview(result.previewId);
+
+    expect(removeComposeProjectVolumes).toHaveBeenCalledWith({
+      composeProjectName: 'agenthub-session-sess-vol',
+      logger: expect.anything(),
+    });
+  });
+
+  it('stopPreview runs volume cleanup when docker compose down fails', async () => {
+    const db = freshDb();
+    const base = makeSpawn({ exitImmediately: true });
+    let spawnCalls = 0;
+    const spawn: SpawnFn = (command, args, options) => {
+      spawnCalls++;
+      if (spawnCalls >= 2) {
+        throw new Error('compose down hung');
+      }
+      return base.spawn(command, args, options);
+    };
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const removeComposeProjectVolumes = vi.fn();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn,
+      fetch,
+      clock,
+      config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+      removeComposeProjectVolumes,
+    });
+
+    const result = await runtime.startPreview('sess-down-fail', makeProject(), '/wt');
+    await runtime.stopPreview(result.previewId);
+
+    expect(removeComposeProjectVolumes).toHaveBeenCalledWith({
+      composeProjectName: 'agenthub-session-sess-down-fail',
+      logger: expect.anything(),
+    });
     expect(runtime.getById(result.previewId)).toBeNull();
   });
 
@@ -1103,6 +1218,7 @@ describe('PreviewComposeRuntime — teardown', () => {
       buildComposeDownArgs({
         composeProjectName: 'agenthub-session-sess-override',
         composeFile: 'compose.preview.yml',
+        projectDirectory: worktreePath,
       }),
     );
     const upFileIdx = upCall.args.indexOf('-f');

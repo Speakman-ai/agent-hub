@@ -24,6 +24,43 @@ beforeAll(async () => {
   request = await getRequest();
 });
 
+describe('POST /api/sessions/:sessionId/preview/stop', () => {
+  it('fires stopBySessionId on both runtimes for the session owner', async () => {
+    const project = await createProject({
+      id: 'preview-stop-proj',
+      name: 'preview-stop',
+      cwd: '/tmp',
+    });
+    const agent = await createAgent({
+      projectId: project.id as string,
+      id: 'preview-stop-agent',
+      name: 'preview-stop agent',
+    });
+    const session = await createSession({ agentId: agent.id as string, name: 'booting' });
+
+    const { routeDeps } = await import('../index.js');
+    const stopByComposeSpy = vi.fn().mockResolvedValue(1);
+    const stopByLegacySpy = vi.fn().mockResolvedValue(0);
+    routeDeps.getPreviewComposeRuntime = () =>
+      ({ stopBySessionId: stopByComposeSpy }) as unknown as ReturnType<
+        NonNullable<typeof routeDeps.getPreviewComposeRuntime>
+      >;
+    routeDeps.getPreviewRuntime = () =>
+      ({ stopBySessionId: stopByLegacySpy }) as unknown as ReturnType<
+        NonNullable<typeof routeDeps.getPreviewRuntime>
+      >;
+
+    const res = await request.post(`/api/sessions/${session.id}/preview/stop`).expect(200);
+    expect(res.body).toEqual({ ok: true, stopped: true });
+    expect(stopByComposeSpy).toHaveBeenCalledWith(session.id);
+    expect(stopByLegacySpy).toHaveBeenCalledWith(session.id);
+  });
+
+  it('returns 404 for unknown session', async () => {
+    await request.post('/api/sessions/nonexistent-session-id/preview/stop').expect(404);
+  });
+});
+
 describe('Session archive/delete → preview stopBySessionId hook', () => {
   it('DELETE /api/sessions/:id fires stopBySessionId on both runtimes', async () => {
     const project = await createProject({

@@ -19,6 +19,7 @@ import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
+import { claudePermissionModeForSpawn } from '../claude-cli-args.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, getUserById, createUser } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
@@ -2500,7 +2501,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       const args = [
         '--print',
         '--permission-mode',
-        'bypassPermissions',
+        claudePermissionModeForSpawn('bypassPermissions'),
         '--model',
         resolved.model,
         '--system-prompt',

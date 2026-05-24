@@ -5,7 +5,7 @@ import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
 import type { StreamEvent } from './types.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -226,7 +226,7 @@ function buildDelegateCliSpec(
         args: [
           '--print',
           '--permission-mode',
-          'bypassPermissions',
+          claudePermissionModeForSpawn('bypassPermissions'),
           '--model',
           model,
           '--system-prompt',
@@ -1018,7 +1018,7 @@ export async function synthesizeResults(
         args = [
           '--print',
           '--permission-mode',
-          isAskMode ? 'plan' : 'bypassPermissions',
+          claudePermissionModeForSpawn(isAskMode ? 'plan' : 'bypassPermissions'),
           '--model',
           sessionModel,
           '--resume',

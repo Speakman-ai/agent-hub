@@ -19,6 +19,10 @@ import {
   type EnvVarSuggestion,
   type ReadmeScanResult,
 } from './preview-readme-scan.js';
+import {
+  buildComposePreviewChecklist,
+  type ComposePreviewChecklistItem,
+} from './preview-compose-checklist.js';
 
 export type PreviewEnvironmentPhase = 'confirm_compose' | 'bootstrap_compose';
 
@@ -47,6 +51,8 @@ export interface PreviewEnvironmentDraft {
   envVars: EnvVarSuggestion[];
   /** Dev script hints for compose command tuning (display only). */
   scriptHints: Array<{ label: string; cwd: string }>;
+  /** Compose preview contract — shown in Settings and embedded in the setup wizard prompt. */
+  composeChecklist: ComposePreviewChecklistItem[];
 }
 
 export function collectPreviewEnvironmentDraft(workspaceDir: string): PreviewEnvironmentDraft {
@@ -76,6 +82,14 @@ export function collectPreviewEnvironmentDraft(workspaceDir: string): PreviewEnv
     const entryService =
       composeDetected?.compose.entryService ?? primaryCandidate!.suggestedEntryService;
     const entryPort = composeDetected?.compose.entryPort ?? primaryCandidate!.suggestedEntryPort;
+    const healthPath = '/';
+    const composeChecklist = buildComposePreviewChecklist({
+      workspaceDir,
+      composeFile: file,
+      entryService,
+      entryPort,
+      healthPath,
+    });
     return {
       phase: 'confirm_compose',
       detected: {
@@ -85,7 +99,7 @@ export function collectPreviewEnvironmentDraft(workspaceDir: string): PreviewEnv
           entryPort,
           services,
           ...(composeDetected?.compose.envFile ? { envFile: composeDetected.compose.envFile } : {}),
-          healthPath: '/',
+          healthPath,
         },
         captureRoutes: composeDetected?.captureRoutes ?? ['/'],
         idleTTL: composeDetected?.idleTTL ?? 600,
@@ -97,10 +111,18 @@ export function collectPreviewEnvironmentDraft(workspaceDir: string): PreviewEnv
       envExamplePath: envExample.envExamplePath,
       envVars,
       scriptHints,
+      composeChecklist,
     };
   }
 
   const bootstrap = suggestComposeBootstrap(workspaceDir);
+  const composeChecklist = buildComposePreviewChecklist({
+    workspaceDir,
+    composeFile: bootstrap.file,
+    entryService: bootstrap.entryService,
+    entryPort: bootstrap.entryPort,
+    healthPath: '/',
+  });
   return {
     phase: 'bootstrap_compose',
     detected: null,
@@ -111,5 +133,6 @@ export function collectPreviewEnvironmentDraft(workspaceDir: string): PreviewEnv
     envExamplePath: envExample.envExamplePath,
     envVars,
     scriptHints,
+    composeChecklist,
   };
 }

@@ -17,6 +17,7 @@ import {
   clampPaneWidth,
   paneWidthStorageKey,
   DEFAULT_PANE_WIDTH,
+  previewIframeSrc,
 } from '../utils/sessionPreviewState.js';
 
 /**
@@ -58,10 +59,11 @@ export default function SessionPreviewPane({
   onPopOut,
   popOut, // optional injectable for tests — defaults to window.open
   electronApi, // optional injectable for tests — defaults to window.electronAPI
-  // The collapsed footer log-tail is shown on demand; default closed.
+  // Boot logs stay open by default when we have lines (user can collapse).
   defaultFooterOpen = false,
 }) {
   const state = useMemo(() => derivePaneState(event), [event]);
+  const bootLogRef = useRef(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [copied, setCopied] = useState(false);
   // 'browser' — window.open pop-out, tracked via poppedWindowRef.
@@ -69,7 +71,18 @@ export default function SessionPreviewPane({
   //              events, so the user reattaches manually or via the button.
   // null       — not popped out.
   const [popMode, setPopMode] = useState(null);
-  const [footerOpen, setFooterOpen] = useState(defaultFooterOpen);
+  const hasBootLog = Array.isArray(state.logTail) && state.logTail.length > 0;
+  const [footerOpen, setFooterOpen] = useState(defaultFooterOpen || hasBootLog);
+
+  useEffect(() => {
+    if (hasBootLog) setFooterOpen(true);
+  }, [hasBootLog, state.status]);
+
+  useEffect(() => {
+    const el = bootLogRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [state.logTail, state.status, footerOpen]);
   const [isResizing, setIsResizing] = useState(false);
   const poppedWindowRef = useRef(null);
 
@@ -153,6 +166,19 @@ export default function SessionPreviewPane({
     // detached window is keyed by sessionId and would now host a stale
     // URL. The poll-loop below picks up `window.closed` and clears.
   }, [previewId]);
+
+  // Worktree edits while preview is up — soft-reload iframe (ng serve HMR
+  // often updates without this; reload covers proxy/API staleness).
+  const refreshAt = event?.refreshAt;
+  const iframeSrc = useMemo(() => {
+    if (state.status !== 'ready' || !state.url) return '';
+    const bust = refreshAt ?? iframeKey;
+    return previewIframeSrc(state.url, bust);
+  }, [state.status, state.url, refreshAt, iframeKey]);
+  useEffect(() => {
+    if (state.status !== 'ready' || refreshAt == null) return;
+    setIframeKey((k) => k + 1);
+  }, [refreshAt, state.status]);
 
   // Poll the browser pop-out window for closure so we reattach automatically.
   // Only runs for the 'browser' path — the Electron path has no JS window
@@ -240,9 +266,15 @@ export default function SessionPreviewPane({
     setPopMode(null);
   }, []);
 
+  const canStop =
+    state.status === 'ready' || state.status === 'starting' || state.status === 'failed';
+
   const handleStop = useCallback(() => {
     if (typeof onStop === 'function') {
-      onStop({ sessionId, previewId: state.status === 'ready' ? state.previewId : '' });
+      onStop({
+        sessionId,
+        previewId: state.previewId || '',
+      });
     }
   }, [onStop, sessionId, state]);
 
@@ -348,7 +380,7 @@ export default function SessionPreviewPane({
         <button
           type="button"
           onClick={handleStop}
-          disabled={state.status !== 'ready' || !onStop}
+          disabled={!canStop || !onStop}
           title="Stop preview"
           aria-label="Stop preview"
           data-testid="session-preview-pane-stop"
@@ -373,7 +405,7 @@ export default function SessionPreviewPane({
         {state.status === 'ready' && popMode === null && (
           <iframe
             key={`${state.previewId}:${iframeKey}`}
-            src={state.url}
+            src={iframeSrc}
             title={`Preview ${state.route || '/'}`}
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
             className="w-full h-full bg-white"
@@ -411,13 +443,12 @@ export default function SessionPreviewPane({
             className="flex flex-col items-center justify-center h-full p-6 text-center text-gray-400"
             data-testid="session-preview-pane-empty"
           >
-            <p className="text-sm font-medium mb-1 text-gray-200">No preview yet</p>
-            <p className="text-xs text-gray-500">
-              Ask the agent to emit{' '}
-              <code className="rounded bg-gray-800 px-1 py-0.5 font-mono">
-                &lt;agenthub:preview&gt;
-              </code>{' '}
-              and this pane will boot the running app for you.
+            <p className="text-sm font-medium mb-1 text-gray-200">No app loaded here</p>
+            <p className="text-xs text-gray-500 max-w-xs">
+              The agent can edit files in your worktree without starting the preview server. Click{' '}
+              <span className="text-sky-300">Start preview</span> below the chat (first time takes a
+              few minutes). After it shows <span className="text-emerald-300">Ready</span>, agent
+              changes reload automatically and the refresh button reloads this page.
             </p>
           </div>
         )}
@@ -440,6 +471,7 @@ export default function SessionPreviewPane({
                 the user can see *where* the boot is stalling instead of
                 waiting for a terminal preview/preview_failed event. */}
             <pre
+              ref={bootLogRef}
               data-testid="session-preview-pane-starting-log"
               className="flex-1 min-h-0 overflow-auto bg-black/40 px-3 py-2 font-mono text-[11px] text-gray-300 whitespace-pre-wrap"
             >
@@ -460,7 +492,10 @@ export default function SessionPreviewPane({
             </div>
             <div className="text-xs font-mono text-red-200/80 mb-2 break-words">{state.error}</div>
             {state.logTail.length > 0 && (
-              <pre className="flex-1 min-h-0 overflow-auto rounded bg-black/40 p-2 font-mono text-[11px] text-red-200/80">
+              <pre
+                ref={bootLogRef}
+                className="flex-1 min-h-0 overflow-auto rounded bg-black/40 p-2 font-mono text-[11px] text-red-200/80 whitespace-pre-wrap"
+              >
                 {state.logTail.join('\n')}
               </pre>
             )}
@@ -492,9 +527,9 @@ export default function SessionPreviewPane({
         )}
       </div>
 
-      {/* Footer log tail — collapsible. Hidden until the user expands. */}
-      {state.status === 'ready' && (
-        <div className="border-t border-gray-800 bg-gray-900/40 text-xs">
+      {/* Boot log — collapsible; kept after Ready so long compose builds stay visible. */}
+      {state.status === 'ready' && hasBootLog && (
+        <div className="border-t border-gray-800 bg-gray-900/40 text-xs shrink-0">
           <button
             type="button"
             onClick={() => setFooterOpen((v) => !v)}
@@ -502,22 +537,18 @@ export default function SessionPreviewPane({
             data-testid="session-preview-pane-footer-toggle"
             aria-expanded={footerOpen}
           >
-            {footerOpen ? '\u25BC' : '\u25B6'} Log tail
-            {typeof state.port === 'number' && (
+            {footerOpen ? '\u25BC' : '\u25B6'} Boot log ({state.logTail.length} lines)
+            {typeof state.port === 'number' && state.status === 'ready' && (
               <span className="ml-2 text-gray-500 font-mono">:{state.port}</span>
             )}
           </button>
           {footerOpen && (
             <pre
+              ref={bootLogRef}
               data-testid="session-preview-pane-log"
-              className="max-h-32 overflow-auto bg-black/40 px-3 py-2 font-mono text-[10px] text-gray-300"
+              className="max-h-[min(50vh,28rem)] overflow-auto bg-black/40 px-3 py-2 font-mono text-[10px] text-gray-300 whitespace-pre-wrap"
             >
-              {/* The runtime log tail isn't fed through the broadcast on
-                  success — `preview` events carry only screenshotPath /
-                  port / url. We surface a placeholder so the user knows
-                  the toggle works; the failed-state log tail is shown
-                  inline in the body above. */}
-              {'(no tail captured for ready previews — see chat for boot logs)'}
+              {state.logTail.join('\n')}
             </pre>
           )}
         </div>

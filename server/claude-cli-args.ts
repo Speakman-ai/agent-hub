@@ -89,3 +89,23 @@ export function disableShadowedNativeToolsArgs(): string[] {
  * name better reflects that the helper disables more than just `Skill`.
  */
 export const disableNativeSkillToolArgs = disableShadowedNativeToolsArgs;
+
+export type ClaudePermissionMode = 'bypassPermissions' | 'plan' | 'default';
+
+/**
+ * Claude Code refuses `--permission-mode bypassPermissions` (and its
+ * `--dangerously-skip-permissions` alias) when the Hub process runs as
+ * root — common when docker-compose sets `user: root` for docker.sock access.
+ * Fall back to `default` so agents still start; operators should prefer
+ * running the server as a non-root uid with supplementary group `0` for the
+ * socket instead of running the whole container as root.
+ */
+export function claudePermissionModeForSpawn(
+  requested: ClaudePermissionMode = 'bypassPermissions',
+): ClaudePermissionMode {
+  if (requested !== 'bypassPermissions') return requested;
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return 'default';
+  }
+  return requested;
+}

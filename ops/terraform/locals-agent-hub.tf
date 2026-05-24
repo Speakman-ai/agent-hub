@@ -123,6 +123,12 @@ locals {
     local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
       "AGENT_HUB_DEFAULT_USERNAME=${replace(local.default_owner_username_trim, "\n", "")}",
     ] : [],
+    [
+      "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects",
+      "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces",
+      "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal",
+      "AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=600000",
+    ],
   ))
 
   agent_hub_image_uri_trim = trimspace(var.agent_hub_image_uri)

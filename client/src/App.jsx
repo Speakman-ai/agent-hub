@@ -90,7 +90,13 @@ import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
 } from './utils/authModelEngines.js';
-import { isSessionAskModeEnabled, prependSessionDeduped } from './utils/sessionDerivedState.js';
+import {
+  isSessionAskModeEnabled,
+  isSessionWorkspaceReady,
+  isSessionWorktreeEnabled,
+  prependSessionDeduped,
+} from './utils/sessionDerivedState.js';
+import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail.js';
 import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
 
 export default function App() {
@@ -205,8 +211,14 @@ export default function App() {
   const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState({});
   /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
   const [previewStartingBySession, setPreviewStartingBySession] = useState({});
+  /** While POST /sessions/:id/workspace/ensure is cloning the session worktree. */
+  const [workspaceEnsuringBySession, setWorkspaceEnsuringBySession] = useState({});
+  const workspaceEnsureInFlightRef = useRef(new Set());
+  const workspaceEnsureAttemptedRef = useRef(new Set());
   const previewEventBySessionRef = useRef(previewEventBySession);
   previewEventBySessionRef.current = previewEventBySession;
+  /** Sessions where the user clicked Stop — ignore late preview_failed WS noise. */
+  const previewUserStoppedBySessionRef = useRef({});
   const tearDownSessionPreviewRef = useRef(null);
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
@@ -1798,6 +1810,21 @@ export default function App() {
           break;
         }
 
+        case 'session_workspace_ready': {
+          const row = data.session;
+          const sid = data.sessionId || row?.id;
+          if (!sid || !row) break;
+          setSessions((prev) => prev.map((s) => (s.id === sid ? row : s)));
+          setWorkspaceEnsuringBySession((prev) => {
+            if (!prev[sid]) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+          workspaceEnsureInFlightRef.current.delete(sid);
+          break;
+        }
+
         case 'session_deleted':
           tearDownSessionPreviewRef.current?.(data.sessionId);
           setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
@@ -1863,6 +1890,21 @@ export default function App() {
           break;
         }
 
+        case 'code_changed': {
+          const sid = data.sessionId;
+          if (!sid || !sessionsRef.current.some((s) => s.id === sid)) break;
+          const previewKind = previewEventBySessionRef.current[sid]?.kind;
+          if (previewKind !== 'preview' && sid === activeSessionIdRef.current) {
+            setPreviewPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
+            showToast(
+              'Code updated. Use Start preview below when you want to load the app (only you can start the preview server).',
+              'info',
+              9000,
+            );
+          }
+          break;
+        }
+
         case 'agenthub_preview': {
           // Per-session preview lifecycle event. Persist the latest event
           // keyed by sessionId so the SessionPreviewPane can render the
@@ -1872,7 +1914,57 @@ export default function App() {
           const sid = data.sessionId;
           if (!sid) break;
           if (!sessionsRef.current.some((s) => s.id === sid)) break;
-          setPreviewEventBySession((prev) => ({ ...prev, [sid]: data }));
+          if (data.kind === 'preview_refresh') {
+            setPreviewEventBySession((prev) => {
+              const last = prev[sid];
+              if (!last || last.kind !== 'preview') return prev;
+              return {
+                ...prev,
+                [sid]: {
+                  ...last,
+                  refreshAt: data.refreshAt ?? Date.now(),
+                  refreshReason: data.reason ?? '',
+                },
+              };
+            });
+            break;
+          }
+          if (data.kind === 'preview_stopped') {
+            delete previewUserStoppedBySessionRef.current[sid];
+            setPreviewEventBySession((prev) => {
+              if (!prev[sid]) return prev;
+              const next = { ...prev };
+              delete next[sid];
+              return next;
+            });
+            setPreviewStartingBySession((prev) => {
+              if (!prev[sid]) return prev;
+              const next = { ...prev };
+              delete next[sid];
+              return next;
+            });
+            break;
+          }
+          if (
+            previewUserStoppedBySessionRef.current[sid] &&
+            (data.kind === 'preview_failed' || data.kind === 'preview_starting')
+          ) {
+            break;
+          }
+          if (data.kind === 'preview_log' && data.line) {
+            setPreviewEventBySession((prev) => {
+              const last = prev[sid];
+              if (!last || last.kind === 'preview_stopped') return prev;
+              const logTail = appendPreviewLogTail(last.logTail, data.line);
+              return { ...prev, [sid]: { ...last, logTail } };
+            });
+            break;
+          }
+          setPreviewEventBySession((prev) => {
+            const last = prev[sid];
+            const logTail = mergePreviewEventLogTail(data.logTail, last?.logTail);
+            return { ...prev, [sid]: { ...data, logTail } };
+          });
           setPreviewStartingBySession((prev) => {
             if (!prev[sid]) return prev;
             const next = { ...prev };
@@ -2541,46 +2633,59 @@ export default function App() {
     }
   }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
 
-  const handlePreviewStop = useCallback(async ({ previewId }) => {
-    if (!previewId) return;
+  const clearSessionPreviewUi = useCallback((sessionId) => {
+    if (!sessionId) return;
+    clearSessionPreviewStorage(sessionId);
+    setPreviewEventBySession((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    setPreviewPaneOpenBySession((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    setPreviewStartingBySession((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
+  const stopSessionPreviewRuntime = useCallback(async (sessionId) => {
+    if (!sessionId) return;
     try {
-      await fetch(`${getApiBase()}/preview/stop/${encodeURIComponent(previewId)}`, {
+      await fetch(`${getApiBase()}/api/sessions/${encodeURIComponent(sessionId)}/preview/stop`, {
         method: 'POST',
         headers: getAuthHeaders(),
       });
     } catch {
       /* ignore */
     }
-  }, []); // getApiBase / getAuthHeaders are module-level functions, no reactive deps.
+  }, []);
+
+  const handlePreviewStop = useCallback(
+    async ({ sessionId }) => {
+      if (!sessionId) return;
+      previewUserStoppedBySessionRef.current[sessionId] = true;
+      await stopSessionPreviewRuntime(sessionId);
+      clearSessionPreviewUi(sessionId);
+    },
+    [stopSessionPreviewRuntime, clearSessionPreviewUi],
+  );
 
   const tearDownSessionPreview = useCallback(
     (sessionId) => {
       if (!sessionId) return;
-      const previewId = previewIdFromEvent(previewEventBySessionRef.current[sessionId]);
-      if (previewId) {
-        void handlePreviewStop({ previewId });
-      }
-      clearSessionPreviewStorage(sessionId);
-      setPreviewEventBySession((prev) => {
-        if (!prev[sessionId]) return prev;
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setPreviewPaneOpenBySession((prev) => {
-        if (!prev[sessionId]) return prev;
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setPreviewStartingBySession((prev) => {
-        if (!prev[sessionId]) return prev;
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
+      previewUserStoppedBySessionRef.current[sessionId] = true;
+      void stopSessionPreviewRuntime(sessionId);
+      clearSessionPreviewUi(sessionId);
     },
-    [handlePreviewStop],
+    [stopSessionPreviewRuntime, clearSessionPreviewUi],
   );
 
   tearDownSessionPreviewRef.current = tearDownSessionPreview;
@@ -2602,13 +2707,15 @@ export default function App() {
       }
       try {
         await api.startSessionPreview(sessionId);
+        // Keep `previewStartingBySession` until a WS `agenthub_preview` event
+        // arrives — boot can take minutes (clone + compose build).
       } catch (err) {
         setPreviewStartingBySession((prev) => {
           const next = { ...prev };
           delete next[sessionId];
           return next;
         });
-        showToast(err?.message || 'Failed to start preview', 'error', 6000);
+        showToast(err?.message || 'Failed to start preview', 'error', 8000);
       }
     },
     [showToast],
@@ -2634,8 +2741,12 @@ export default function App() {
         }
       : null);
 
-  const showSessionPreviewPane =
-    activeSessionId && activePreviewEvent && previewPaneOpenBySession[activeSessionId] !== false;
+  const previewPaneEligible =
+    !!activeSessionId &&
+    !!activeChatProject?.prEnv?.preview?.compose?.entryService &&
+    previewPaneOpenBySession[activeSessionId] !== false;
+
+  const showSessionPreviewPane = previewPaneEligible;
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
@@ -2980,6 +3091,42 @@ export default function App() {
     () => sessions.find((s) => s.id === activeSessionId) || null,
     [sessions, activeSessionId],
   );
+
+  const activeSessionWorktreeReady =
+    !activeSession ||
+    !isSessionWorktreeEnabled(activeSession) ||
+    isSessionWorkspaceReady(activeSession);
+
+  // Provision the git worktree as soon as a session is opened so Start preview
+  // mounts the same checkout the agent will edit (not project.cwd).
+  useEffect(() => {
+    const sid = activeSessionId;
+    if (!sid || !connected || activeSessionWorktreeReady) return;
+    if (workspaceEnsureAttemptedRef.current.has(sid)) return;
+    if (workspaceEnsureInFlightRef.current.has(sid)) return;
+    workspaceEnsureInFlightRef.current.add(sid);
+    workspaceEnsureAttemptedRef.current.add(sid);
+    setWorkspaceEnsuringBySession((prev) => ({ ...prev, [sid]: true }));
+    void api
+      .ensureSessionWorkspace(sid)
+      .then((body) => {
+        if (body?.session) {
+          setSessions((prev) => prev.map((s) => (s.id === sid ? body.session : s)));
+        }
+      })
+      .catch((err) => {
+        showToast(err?.message || 'Failed to prepare session workspace', 'error', 8000);
+      })
+      .finally(() => {
+        workspaceEnsureInFlightRef.current.delete(sid);
+        setWorkspaceEnsuringBySession((prev) => {
+          if (!prev[sid]) return prev;
+          const next = { ...prev };
+          delete next[sid];
+          return next;
+        });
+      });
+  }, [activeSessionId, connected, activeSessionWorktreeReady, showToast]);
   const activeResolvePrBannerInfo = useMemo(() => {
     if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name)) return null;
     return {
@@ -3857,7 +4004,7 @@ export default function App() {
                         preview event for this session but the user has
                         closed the pane. One-click reopen. */}
                       {activeSessionId &&
-                        previewEventBySession[activeSessionId] &&
+                        activePreviewEvent &&
                         previewPaneOpenBySession[activeSessionId] === false && (
                           <div className="px-3 md:px-6 pb-1">
                             <button
@@ -3890,6 +4037,12 @@ export default function App() {
                             previewEvent={previewEventBySession[activeSessionId]}
                             disabled={!connected || !activeChatProject}
                             starting={!!previewStartingBySession[activeSessionId]}
+                            workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
+                            workspaceNotReady={
+                              !!activeSession &&
+                              isSessionWorktreeEnabled(activeSession) &&
+                              !isSessionWorkspaceReady(activeSession)
+                            }
                             onStart={handleStartSessionPreview}
                             onConfigure={handlePreviewConfigure}
                           />

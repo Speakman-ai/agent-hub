@@ -23,6 +23,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
+  claudePermissionModeForSpawn,
   disableShadowedNativeToolsArgs,
   disableNativeSkillToolArgs,
   SHADOWED_NATIVE_TOOLS,
@@ -30,6 +31,29 @@ import {
 import { buildDesignSpawnArgs } from './design-multi-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+describe('claudePermissionModeForSpawn', () => {
+  it('returns default when the Hub process is root (Claude refuses bypass as euid 0)', () => {
+    const getuid = process.getuid;
+    process.getuid = () => 0;
+    try {
+      expect(claudePermissionModeForSpawn('bypassPermissions')).toBe('default');
+      expect(claudePermissionModeForSpawn('plan')).toBe('plan');
+    } finally {
+      process.getuid = getuid;
+    }
+  });
+
+  it('passes bypassPermissions through for non-root spawns', () => {
+    const getuid = process.getuid;
+    process.getuid = () => 501;
+    try {
+      expect(claudePermissionModeForSpawn('bypassPermissions')).toBe('bypassPermissions');
+    } finally {
+      process.getuid = getuid;
+    }
+  });
+});
 
 describe('disableShadowedNativeToolsArgs', () => {
   it('returns the --disallowed-tools flag followed by every shadowed tool', () => {

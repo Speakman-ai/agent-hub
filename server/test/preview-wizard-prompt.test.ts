@@ -25,6 +25,16 @@ const bootstrapDraft: PreviewSetupDraft = {
   envExamplePath: null,
   envVars: [{ key: 'API_KEY', sources: ['source'], required: false }],
   scriptHints: [],
+  composeChecklist: [
+    {
+      id: 'worktree-bind-mounts',
+      category: 'mount',
+      title: 'Bind mounts are relative to the session worktree',
+      description: 'test',
+      kind: 'manual',
+      status: 'manual',
+    },
+  ],
 };
 
 describe('preview-wizard kickoff prompt', () => {
@@ -68,5 +78,13 @@ describe('preview-wizard kickoff prompt', () => {
     expect(prompt).toMatch(/<agenthub:skill>/);
     expect(prompt).toMatch(/"name":"preview-setup"/);
     expect(prompt).toMatch(/<\/agenthub:skill>/);
+  });
+
+  it('embeds the compose preview checklist and walkthrough step', () => {
+    expect(prompt).toMatch(/## Compose preview checklist/);
+    expect(prompt).toMatch(/composeChecklist/);
+    expect(prompt).toMatch(/Compose preview checklist.*walk `draft\.composeChecklist`/i);
+    expect(prompt).toMatch(/AGENTHUB_HOST_PORT/);
+    expect(prompt).toMatch(/FRONTEND_PORT/);
   });
 });

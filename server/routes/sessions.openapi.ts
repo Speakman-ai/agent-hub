@@ -448,11 +448,55 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/sessions/{sessionId}/preview/stop',
+  tags: ['Sessions'],
+  summary: 'Stop worktree preview for a chat session',
+  description:
+    'Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Preview teardown requested.',
+      content: jsonContent(z.object({ ok: z.literal(true), stopped: z.literal(true) })),
+    },
+    404: errorResponse('Session not found.'),
+    500: errorResponse('Unexpected server error.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/workspace/ensure',
+  tags: ['Sessions'],
+  summary: 'Provision session git worktree',
+  description:
+    'Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Worktree ready (or skipped for workflow / wizard sessions).',
+      content: jsonContent(
+        z.object({
+          ok: z.literal(true),
+          skipped: z.boolean(),
+          worktreePath: z.string(),
+          session: SessionComponent,
+        }),
+      ),
+    },
+    404: errorResponse('Session not found.'),
+    503: errorResponse('Provisioning not wired on this server.'),
+    500: errorResponse('Unexpected server error.'),
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/sessions/{sessionId}/preview/start',
   tags: ['Sessions'],
   summary: 'Start worktree preview for a chat session',
   description:
-    'Boots the project preview runtime for this session (same handler as `<agenthub:preview>`). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.',
+    'Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.',
   request: {
     params: sessionIdParams,
     body: {

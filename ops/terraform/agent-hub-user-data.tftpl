@@ -232,15 +232,24 @@ if [ "\$PULL_OK" != "1" ]; then
 fi
 
 docker rm -f agenthub-server 2>/dev/null || true
-# PR-env docker-socket-bind variant removed in PR-Env Removal #6. See alb.tf
-# for the teardown note.
+# Compose session previews: Hub shells out to the host Docker daemon.
+DOCKER_GID=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
+DOCKER_GROUP_ARG=""
+if [ -n "\$DOCKER_GID" ]; then
+  DOCKER_GROUP_ARG="--group-add \$DOCKER_GID"
+fi
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
   -v "\$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --add-host=host.docker.internal:host-gateway \
+  \$DOCKER_GROUP_ARG \
   -e "AGENT_HUB_HOST_PROJECTS_DIR=\$DATA_ROOT/projects" \
   -e "AGENT_HUB_HOST_WORKSPACES_DIR=\$DATA_ROOT/workspaces" \
+  -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
+  -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT
@@ -363,13 +372,23 @@ if [ -n "${docker_env_b64}" ]; then
 fi
 docker rm -f agenthub-server 2>/dev/null || true
 cd "$REPO_DIR" && DOCKER_BUILDKIT=1 docker build -t agenthub:local -f server/Dockerfile .
+DOCKER_GID=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
+DOCKER_GROUP_ARG=""
+if [ -n "$DOCKER_GID" ]; then
+  DOCKER_GROUP_ARG="--group-add $DOCKER_GID"
+fi
 cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped \
   -p ${app_port}:3051 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
   -v "$DATA_ROOT/projects:/home/node/projects" \
   -v "$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --add-host=host.docker.internal:host-gateway \
+  $DOCKER_GROUP_ARG \
   -e "AGENT_HUB_HOST_PROJECTS_DIR=$DATA_ROOT/projects" \
   -e "AGENT_HUB_HOST_WORKSPACES_DIR=$DATA_ROOT/workspaces" \
+  -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
+  -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
   --env-file "$REPO_DIR/.env" \
   agenthub:local
 %{ endif ~}

@@ -77,6 +77,11 @@
  *     `/home/node/.agent-hub/workspaces`, matching {@link WORKSPACES_ROOT}
  *     in `server/worktree.ts`.
  *
+ *   - `AGENT_HUB_HOST_MAC_PROJECTS_DIR` / `AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR`
+ *     (env, optional): second projects root for macOS dev layouts where
+ *     `projects.json` stores `cwd` as `~/projects/<repo>` bind-mounted at
+ *     the same absolute path inside the Hub container (local docker compose).
+ *
  *   - {@link translateContainerPathToHost} rewrites a container path that
  *     starts with EITHER the projects root OR the workspaces root so the
  *     equivalent host path is returned. Paths under neither bind-mounted
@@ -97,6 +102,8 @@
  *   launched from worktrees translate correctly through this helper's
  *   second root mapping below.
  */
+
+import { existsSync } from 'fs';
 
 const DEFAULT_CONTAINER_PROJECTS_DIR = '/home/node/projects';
 const DEFAULT_CONTAINER_WORKSPACES_DIR = '/home/node/.agent-hub/workspaces';
@@ -121,7 +128,7 @@ export interface HostPathTranslation {
    * can distinguish projects-root hits from workspaces-root hits without
    * re-running prefix checks.
    */
-  readonly matchedRoot?: 'projects' | 'workspaces';
+  readonly matchedRoot?: 'projects' | 'workspaces' | 'macProjects';
 }
 
 export interface TranslateContainerPathOptions {
@@ -149,6 +156,15 @@ export interface TranslateContainerPathOptions {
    * this nor the env var is set.
    */
   readonly containerWorkspacesDir?: string | null;
+  /**
+   * Optional macOS `~/projects` root — host path (e.g. `/Users/you/projects`).
+   */
+  readonly hostMacProjectsDir?: string | null;
+  /**
+   * Container mount for {@link hostMacProjectsDir}. Often the same absolute
+   * path on Docker Desktop so compose build contexts resolve in-container.
+   */
+  readonly containerMacProjectsDir?: string | null;
 }
 
 function trimTrailingSlash(p: string): string {
@@ -159,7 +175,7 @@ function trimTrailingSlash(p: string): string {
 interface RootPair {
   readonly containerRoot: string;
   readonly hostRoot: string;
-  readonly label: 'projects' | 'workspaces';
+  readonly label: 'projects' | 'workspaces' | 'macProjects';
 }
 
 /**
@@ -177,7 +193,7 @@ function tryTranslateWithRoot(input: string, pair: RootPair): string | null {
 }
 
 function resolveRootPair(
-  label: 'projects' | 'workspaces',
+  label: RootPair['label'],
   hostDirRaw: string | null | undefined,
   containerDirRaw: string | null | undefined,
   containerDefault: string,
@@ -243,12 +259,27 @@ export function translateContainerPathToHost(
     DEFAULT_CONTAINER_WORKSPACES_DIR,
   );
 
-  if (!projectsPair && !workspacesPair) {
+  const hostMacProjectsDirRaw =
+    options.hostMacProjectsDir !== undefined
+      ? options.hostMacProjectsDir
+      : (process.env.AGENT_HUB_HOST_MAC_PROJECTS_DIR ?? null);
+  const containerMacProjectsDirRaw =
+    options.containerMacProjectsDir !== undefined
+      ? options.containerMacProjectsDir
+      : (process.env.AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR ?? null);
+  const macProjectsPair = resolveRootPair(
+    'macProjects',
+    hostMacProjectsDirRaw,
+    containerMacProjectsDirRaw,
+    hostMacProjectsDirRaw?.trim() ?? '',
+  );
+
+  if (!projectsPair && !workspacesPair && !macProjectsPair) {
     return {
       containerPath,
       hostPath: null,
       skippedReason:
-        'no host root configured (set AGENT_HUB_HOST_PROJECTS_DIR or AGENT_HUB_HOST_WORKSPACES_DIR)',
+        'no host root configured (set AGENT_HUB_HOST_PROJECTS_DIR, AGENT_HUB_HOST_WORKSPACES_DIR, or AGENT_HUB_HOST_MAC_PROJECTS_DIR)',
     };
   }
 
@@ -256,6 +287,7 @@ export function translateContainerPathToHost(
   const candidates: RootPair[] = [];
   if (projectsPair) candidates.push(projectsPair);
   if (workspacesPair) candidates.push(workspacesPair);
+  if (macProjectsPair) candidates.push(macProjectsPair);
   // Longest-prefix wins on overlap. Stable across env-var swaps.
   candidates.sort((a, b) => b.containerRoot.length - a.containerRoot.length);
 
@@ -273,4 +305,47 @@ export function translateContainerPathToHost(
     hostPath: null,
     skippedReason: `path is outside the bind-mounted ${triedLabels} root (expected prefix one of: ${triedRoots})`,
   };
+}
+
+export interface ResolveComposeProjectDirectoryOptions {
+  /** Tests inject a stub; production uses {@link existsSync}. */
+  readonly pathExists?: (path: string) => boolean;
+}
+
+/**
+ * `--project-directory` for `docker compose` spawns from this Node process.
+ * Compose-go stats `build.context` locally before talking to the daemon. When
+ * Hub runs in Docker, translated macOS host paths (e.g. `/Users/...`) are not
+ * visible here — use the bind-mounted `worktreePath` instead. Docker Desktop
+ * forwards that path to the host via the socket mount mapping.
+ */
+function hostPreviewPathMappingConfigured(): boolean {
+  return Boolean(
+    process.env.AGENT_HUB_HOST_PROJECTS_DIR?.trim() ||
+    process.env.AGENT_HUB_HOST_WORKSPACES_DIR?.trim(),
+  );
+}
+
+export function resolveComposeProjectDirectory(
+  worktreePath: string,
+  translation: HostPathTranslation,
+  options: ResolveComposeProjectDirectoryOptions = {},
+): string {
+  const exists = options.pathExists ?? existsSync;
+  const trimmedWorktree = worktreePath.trim();
+  const hostPath = translation.hostPath?.trim();
+
+  if (hostPreviewPathMappingConfigured()) {
+    if (hostPath) return hostPath;
+    throw new Error(
+      translation.skippedReason
+        ? `worktree path is not under configured host roots: ${translation.skippedReason}`
+        : 'worktree path could not be translated to host filesystem',
+    );
+  }
+
+  if (hostPath && hostPath !== trimmedWorktree && exists(hostPath)) {
+    return hostPath;
+  }
+  return trimmedWorktree;
 }

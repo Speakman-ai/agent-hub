@@ -2163,6 +2163,56 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    ProjectPreviewInstance:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        sessionName:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - starting
+            - ready
+            - failed
+        kind:
+          type: string
+          enum:
+            - compose
+            - spawn
+        composeProjectName:
+          type: string
+          nullable: true
+        port:
+          type: number
+          nullable: true
+        url:
+          type: string
+          nullable: true
+        worktreePath:
+          type: string
+          nullable: true
+        startedAt:
+          type: string
+        lastActiveAt:
+          type: string
+      required:
+        - id
+        - sessionId
+        - sessionName
+        - status
+        - kind
+        - composeProjectName
+        - port
+        - url
+        - worktreePath
+        - startedAt
+        - lastActiveAt
+      description: Active worktree preview group for a chat session.
     PreviewSecretRow:
       type: object
       properties:
@@ -7730,6 +7780,122 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/projects/{projectId}/previews:
+    get:
+      summary: List active worktree previews for a project
+      tags:
+        - Preview
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Active preview groups (starting, ready, or failed).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectId:
+                    type: string
+                  previews:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectPreviewInstance"
+                required:
+                  - projectId
+                  - previews
+        "404":
+          description: Project not found
+  /api/projects/{projectId}/previews/purge:
+    post:
+      summary: Stop all active worktree previews for a project
+      tags:
+        - Preview
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Purge result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: integer
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        error:
+                          type: string
+                      required:
+                        - id
+                        - error
+                required:
+                  - ok
+                  - stopped
+                  - failed
+        "404":
+          description: Project not found
+  /api/projects/{projectId}/previews/{previewId}/stop:
+    post:
+      summary: Stop one worktree preview group
+      tags:
+        - Preview
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Worktree preview group id.
+          required: true
+          description: Worktree preview group id.
+          name: previewId
+          in: path
+      responses:
+        "200":
+          description: Preview stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: boolean
+                required:
+                  - ok
+                  - stopped
+        "404":
+          description: Project or preview not found
   /api/projects/{projectId}/secrets:
     get:
       tags:
@@ -8817,12 +8983,112 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/stop:
+    post:
+      tags:
+        - Sessions
+      summary: Stop worktree preview for a chat session
+      description: Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Preview teardown requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - stopped
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/workspace/ensure:
+    post:
+      tags:
+        - Sessions
+      summary: Provision session git worktree
+      description: Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Worktree ready (or skipped for workflow / wizard sessions).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  skipped:
+                    type: boolean
+                  worktreePath:
+                    type: string
+                  session:
+                    $ref: "#/components/schemas/Session"
+                required:
+                  - ok
+                  - skipped
+                  - worktreePath
+                  - session
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Provisioning not wired on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/preview/start:
     post:
       tags:
         - Sessions
       summary: Start worktree preview for a chat session
-      description: Boots the project preview runtime for this session (same handler as `<agenthub:preview>`). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
+      description: Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
       parameters:
         - schema:
             type: string

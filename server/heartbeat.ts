@@ -9,7 +9,7 @@ import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
@@ -202,7 +202,11 @@ export function runClaude(
       );
     }
 
-    const args: string[] = ['--print', '--permission-mode', 'bypassPermissions'];
+    const args: string[] = [
+      '--print',
+      '--permission-mode',
+      claudePermissionModeForSpawn('bypassPermissions'),
+    ];
     if (systemPrompt) {
       args.push('--system-prompt', systemPrompt);
     }

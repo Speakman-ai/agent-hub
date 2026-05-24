@@ -24,6 +24,22 @@
  * Callers should switch on `status` for rendering. Unknown / malformed
  * events collapse to `{ status: 'idle' }` so the pane never crashes.
  */
+/**
+ * Append a cache-buster query param so iframe reloads after agent edits
+ * fetch a fresh document even when ng serve HMR did not run yet.
+ */
+export function previewIframeSrc(url, bustToken) {
+  if (!url || bustToken == null) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('_ah', String(bustToken));
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}_ah=${encodeURIComponent(String(bustToken))}`;
+  }
+}
+
 export function derivePaneState(event) {
   if (!event || typeof event !== 'object') return { status: 'idle' };
   const { kind, target, route, agentReason, previewId } = event;
@@ -38,6 +54,7 @@ export function derivePaneState(event) {
       previewId: previewId || '',
       screenshotPath: event.screenshotPath || null,
       agentReason: agentReason || '',
+      logTail: Array.isArray(event.logTail) ? event.logTail : [],
     };
   }
   if (kind === 'preview_failed') {

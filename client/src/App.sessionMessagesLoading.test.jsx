@@ -125,6 +125,7 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       }),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),
+      ensureSessionWorkspace: vi.fn().mockResolvedValue({ ok: true, skipped: true }),
     },
   };
 });

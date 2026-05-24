@@ -4,7 +4,7 @@
  * `sessions.code_changed_at` is set on the first detected dirty
  * worktree during a chat turn (via mutating tool_use events). It drives:
  *   - `code_changed` WS broadcast (UI can surface a preview chip)
- *   - auto-preview boot when `prEnv.preview.autoStart` is enabled
+ *   - optional iframe refresh when a user-started preview is already `ready`
  *   - ad-hoc auto-git short-circuit when the flag is still NULL and
  *     `git status --porcelain` is clean (suppresses misfired PR toasts)
  *
@@ -16,10 +16,9 @@ import { promisify } from 'util';
 import type { BroadcastFn, Project, Stmts } from './types.js';
 import { checkWorktreeChanges } from './auto-git.js';
 import {
-  handlePreviewBlock,
-  type PreviewHandlerDeps,
-  type PreviewRuntimeLike,
-} from './preview/preview-block.js';
+  broadcastPreviewRefreshIfReady,
+  type PreviewWorktreeSyncDeps,
+} from './preview/preview-worktree-sync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +66,25 @@ export interface CodeChangeTrackerDeps {
   checkDirty?: (cwd: string) => Promise<boolean>;
 }
 
+export async function isWorktreeDirty(
+  worktreePath: string,
+  deps: CodeChangeTrackerDeps,
+): Promise<boolean> {
+  const checkDirty =
+    deps.checkDirty ??
+    (async (cwd: string) => {
+      const changes = await checkWorktreeChanges(cwd);
+      return changes.hasUncommitted || changes.hasUnpushed;
+    });
+  try {
+    return await checkDirty(worktreePath);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[code-change] git status failed: ${msg}`);
+    return false;
+  }
+}
+
 export async function markCodeChangedIfDirty(
   sessionId: string,
   worktreePath: string,
@@ -77,16 +95,9 @@ export async function markCodeChangedIfDirty(
     return { newlyMarked: false, codeChangedAt: row.code_changed_at };
   }
 
-  const checkDirty =
-    deps.checkDirty ??
-    (async (cwd: string) => {
-      const changes = await checkWorktreeChanges(cwd);
-      return changes.hasUncommitted || changes.hasUnpushed;
-    });
-
   let dirty = false;
   try {
-    dirty = await checkDirty(worktreePath);
+    dirty = await isWorktreeDirty(worktreePath, deps);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[code-change] git status failed for ${sessionId.slice(0, 8)}: ${msg}`);
@@ -120,49 +131,36 @@ export async function markCodeChangedIfDirty(
   return { newlyMarked: true, codeChangedAt: at };
 }
 
-export interface AutoPreviewDeps extends CodeChangeTrackerDeps {
-  runtime: PreviewRuntimeLike | null;
+export interface CodeChangePreviewSyncDeps extends CodeChangeTrackerDeps, PreviewWorktreeSyncDeps {
   project: Project;
   worktreePath: string;
-  /** Preview route; defaults to `/`. */
-  route?: string;
-  /** Preview target; defaults to `client`. */
-  target?: 'client' | 'server';
 }
 
 /**
- * When preview is enabled and `autoStart` is not explicitly false, boot
- * the worktree preview on the first code-change transition in a session.
+ * @deprecated Preview boot is user-only (toolbar / POST …/preview/start).
+ * Kept as a no-op so callers do not need a flag day; `autoStart` in project
+ * config is ignored.
  */
 export function maybeAutoStartPreviewOnCodeChange(
-  sessionId: string,
-  markResult: MarkCodeChangedResult,
-  deps: AutoPreviewDeps,
+  _sessionId: string,
+  _markResult: MarkCodeChangedResult,
+  _deps: CodeChangePreviewSyncDeps,
 ): void {
-  if (!markResult.newlyMarked) return;
+  /* intentionally empty */
+}
 
-  const previewCfg = deps.project.prEnv?.preview;
-  if (!previewCfg?.enabled) return;
-  if (previewCfg.autoStart === false) return;
-  if (!deps.runtime) return;
-
-  const route = deps.route ?? '/';
-  const target = deps.target ?? 'client';
-
-  const handlerDeps: PreviewHandlerDeps = {
-    runtime: deps.runtime,
-    broadcast: deps.broadcast,
-    project: deps.project,
-    worktreePath: deps.worktreePath,
-  };
-
-  void handlePreviewBlock(
-    sessionId,
-    { target, route, reason: 'Auto-started after code change' },
-    handlerDeps,
-  ).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[code-change] auto-preview failed:', msg);
+/**
+ * Turn-end hot reload: reload the preview iframe when this session recorded
+ * a code change during the turn (caller gates on `code_changed_at`).
+ */
+export async function syncPreviewAfterWorktreeTurnIfDirty(
+  sessionId: string,
+  worktreePath: string,
+  deps: CodeChangePreviewSyncDeps,
+): Promise<void> {
+  if (!(await isWorktreeDirty(worktreePath, deps))) return;
+  broadcastPreviewRefreshIfReady(sessionId, deps, {
+    reason: 'Turn finished — reloading preview',
   });
 }
 
@@ -173,12 +171,18 @@ export function handleMutatingToolUseForCodeChange(
   sessionId: string,
   tool: string,
   input: Record<string, unknown>,
-  deps: AutoPreviewDeps,
+  deps: CodeChangePreviewSyncDeps,
 ): void {
   if (!isMutatingToolUse(tool, input)) return;
   void (async () => {
-    const mark = await markCodeChangedIfDirty(sessionId, deps.worktreePath, deps);
-    maybeAutoStartPreviewOnCodeChange(sessionId, mark, deps);
+    const row = deps.stmts.getSession.get(sessionId) as { code_changed_at?: string | null };
+    if (!row?.code_changed_at) {
+      const mark = await markCodeChangedIfDirty(sessionId, deps.worktreePath, deps);
+      if (!mark.newlyMarked && !mark.codeChangedAt) return;
+    }
+    broadcastPreviewRefreshIfReady(sessionId, deps, {
+      reason: 'Files changed during turn',
+    });
   })();
 }
 

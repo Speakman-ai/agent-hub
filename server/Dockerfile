@@ -19,7 +19,10 @@ COPY server/package.json server/package-lock.json ./server/
 # Node resolves better-sqlite3 from /app/server/node_modules first.
 RUN cd server && npm ci --ignore-scripts && npm rebuild better-sqlite3
 
+# Copy application sources only — never host `server/node_modules` (macOS
+# better-sqlite3 .node files break Linux runtime with "invalid ELF header").
 COPY server/ ./server/
+RUN rm -rf ./server/node_modules && cd server && npm ci --ignore-scripts && npm rebuild better-sqlite3
 COPY shared/ ./shared/
 
 # ─── Client build stage ─────────────────────────────────────────────────────

@@ -10,6 +10,8 @@ export default function SessionPreviewStartButton({
   previewEvent,
   disabled,
   starting,
+  workspaceEnsuring,
+  workspaceNotReady,
   onStart,
   onConfigure,
 }) {
@@ -32,17 +34,26 @@ export default function SessionPreviewStartButton({
     );
   }
 
-  const label = busy
-    ? 'Starting preview…'
-    : kind === 'preview'
-      ? 'Restart preview'
-      : 'Start preview';
+  const label = workspaceEnsuring
+    ? 'Preparing workspace…'
+    : busy
+      ? 'Starting preview…'
+      : kind === 'preview'
+        ? 'Restart preview'
+        : 'Start preview';
 
   return (
     <button
       type="button"
       onClick={() => onStart?.(sessionId)}
-      disabled={disabled || busy || !sessionId}
+      disabled={disabled || busy || workspaceEnsuring || workspaceNotReady || !sessionId}
+      title={
+        workspaceEnsuring
+          ? 'Cloning the session worktree — preview will be available when this finishes'
+          : workspaceNotReady
+            ? 'Waiting for the session worktree'
+            : undefined
+      }
       className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-200 hover:text-white border border-sky-700/60 rounded-lg px-2.5 py-1.5 bg-sky-950/40 hover:bg-sky-900/50 disabled:opacity-50"
       data-testid="session-start-preview-button"
     >

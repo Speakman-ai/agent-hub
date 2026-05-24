@@ -202,18 +202,15 @@ describe('agent-hub-user-data.tftpl', () => {
   describe('ECR-pull bootstrap', () => {
     const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE });
 
-    it('renders the standard docker run (no socket bind, no host-gateway)', () => {
+    it('renders docker run with socket bind for session compose previews', () => {
       // `\$REPO_DIR` stays escaped in the unquoted runscript heredoc so bash
       // expands it at runtime, not at user-data render time.
       expect(rendered).toMatch(
         /exec docker run --rm --name agenthub-server[\s\S]*?--env-file "\\\$REPO_DIR\/\.env"/,
       );
-      // After PR-Env Removal #6 the docker socket bind, --pid=host, and
-      // --add-host host.docker.internal:host-gateway are gone.
-      expect(rendered).not.toContain('/var/run/docker.sock:/var/run/docker.sock');
+      expect(rendered).toContain('/var/run/docker.sock:/var/run/docker.sock');
       expect(rendered).not.toContain('--add-host host.docker.internal:host-gateway');
       expect(rendered).not.toMatch(/--pid=host\b/);
-      expect(rendered).not.toMatch(/DOCKER_SOCK_GID=/);
     });
 
     it('still picks up image updates on systemd-managed restart', () => {

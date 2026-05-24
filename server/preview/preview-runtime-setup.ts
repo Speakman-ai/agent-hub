@@ -40,6 +40,8 @@ import {
   type HealthFetchFn as ComposeHealthFetchFn,
 } from './preview-compose-runtime.js';
 import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
+import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
+import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 
 export interface CreatePreviewRuntimesDeps {
   db: Database;
@@ -218,8 +220,24 @@ export function createPreviewRuntimes(
     fetch: sharedFetch,
     writeOverrideFile,
     deleteOverrideFile,
+    notifyLog: deps.notifyLog,
     config: deps.composeConfig,
   });
+
+  const portMin =
+    deps.composeConfig?.portRange?.min ??
+    deps.legacyConfig?.portRange?.min ??
+    DEFAULT_PREVIEW_PORT_RANGE.min;
+  const portMax =
+    deps.composeConfig?.portRange?.max ??
+    deps.legacyConfig?.portRange?.max ??
+    DEFAULT_PREVIEW_PORT_RANGE.max;
+  const reclaimedOnBoot = reclaimFailedPortsInRange(deps.db, portMin, portMax);
+  if (reclaimedOnBoot > 0) {
+    console.log(
+      `[preview] startup: reclaimed ${reclaimedOnBoot} failed preview port(s) in [${portMin}, ${portMax}]`,
+    );
+  }
 
   return { previewRuntime, previewComposeRuntime, composeOverrideDir };
 }

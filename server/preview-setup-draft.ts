@@ -9,3 +9,4 @@ export {
   type PreviewEnvironmentPhase,
   type PreviewEnvironmentPhase as WizardPreviewPhase,
 } from './preview-environment-draft.js';
+export type { ComposePreviewChecklistItem } from './preview-compose-checklist.js';

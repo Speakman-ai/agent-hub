@@ -16,6 +16,13 @@ export function isSessionWorktreeEnabled(session) {
   return Number(session?.use_worktree ?? 1) !== 0;
 }
 
+/** True when the session row already has a provisioned worktree path (preview-safe). */
+export function isSessionWorkspaceReady(session) {
+  if (!isSessionWorktreeEnabled(session)) return true;
+  const p = session?.worktree_path;
+  return typeof p === 'string' && p.trim().length > 0;
+}
+
 /**
  * Prepend a session to the sidebar list unless it is already present.
  * POST /sessions broadcasts `session_created` before the HTTP body returns;

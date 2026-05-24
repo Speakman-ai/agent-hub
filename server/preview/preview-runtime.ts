@@ -65,8 +65,10 @@
 import type { Database } from 'better-sqlite3';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
+import { resolvePreviewUpstreamHost } from './preview-public-url.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
+import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
@@ -79,6 +81,7 @@ import {
   pickDefaultProcess,
 } from './preview-process-graph.js';
 import type { PrEnvPreviewConfig, PreviewProcess, Project } from '../types.js';
+import { DEFAULT_PREVIEW_LOG_TAIL_LINES, appendPreviewLogTailLine } from './preview-log-tail.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -197,7 +200,7 @@ export interface PreviewRuntimeConfig {
    * Hostname to use when constructing `url`. Defaults to `http://localhost:<port>`.
    * Override for nginx-fronted installs (`http://preview.<host>`).
    */
-  urlBase?: (port: number) => string;
+  urlBase?: (port: number, sessionId: string) => string;
 }
 
 export interface PreviewRuntimeDeps {
@@ -250,7 +253,7 @@ export interface PreviewRuntimeDeps {
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
-const DEFAULT_LOG_TAIL_LINES = 50;
+const DEFAULT_LOG_TAIL_LINES = DEFAULT_PREVIEW_LOG_TAIL_LINES;
 /**
  * Default cwd for the single-process fallback. `'.'` lands at the
  * worktree root via `resolveProcessCwd` (see end of file). Projects that
@@ -305,7 +308,7 @@ export class PreviewRuntime {
   private readonly healthTimeoutMs: number;
   private readonly healthIntervalMs: number;
   private readonly logTailLines: number;
-  private readonly urlBase: (port: number) => string;
+  private readonly urlBase: (port: number, sessionId: string) => string;
   private readonly logger: NonNullable<PreviewRuntimeDeps['logger']>;
   private readonly kill: (target: number, signal: NodeJS.Signals) => void;
   private readonly loadProjectEnv:
@@ -350,7 +353,7 @@ export class PreviewRuntime {
     this.healthTimeoutMs = deps.config?.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
     this.healthIntervalMs = deps.config?.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
     this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
-    this.urlBase = deps.config?.urlBase ?? ((p) => `http://localhost:${p}`);
+    this.urlBase = deps.config?.urlBase ?? ((p, _sid) => `http://localhost:${p}`);
     this.logger = deps.logger ?? {
       log: (m) => console.log(m),
       warn: (m) => console.warn(m),
@@ -399,6 +402,13 @@ export class PreviewRuntime {
     const existing = this.getActiveBySessionId(sessionId);
     if (existing) {
       await this.stopPreview(existing.id);
+    }
+
+    const reclaimed = reclaimFailedPortsInRange(this.db, this.portRange.min, this.portRange.max);
+    if (reclaimed > 0) {
+      this.logger.log(
+        `[preview] reclaimed ${reclaimed} failed preview port(s) in [${this.portRange.min}, ${this.portRange.max}]`,
+      );
     }
 
     const previewCfg: PrEnvPreviewConfig = project.prEnv?.preview ?? { enabled: false };
@@ -492,7 +502,7 @@ export class PreviewRuntime {
     // frontend) is what users want to iframe.
     const defaultHandle = handles.find((h) => h.name === defaultProc.name)!;
     return {
-      url: this.urlBase(defaultHandle.port),
+      url: this.urlBase(defaultHandle.port, sessionId),
       port: defaultHandle.port,
       previewId: groupId,
     };
@@ -725,7 +735,7 @@ export class PreviewRuntime {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const port = this.allocatePort();
       const rowId = randomUUID();
-      const url = this.urlBase(port);
+      const url = this.urlBase(port, sessionId);
       const sink = this.logSink.open(`${groupId}-${proc.name}`);
       try {
         this.db
@@ -749,29 +759,9 @@ export class PreviewRuntime {
           // orphaned group if that was its last process — otherwise
           // `getById(staleGroupId)` would keep returning a zombie row
           // with port=0/url=''.
-          const conflicting = this.db
-            .prepare(
-              `SELECT id, status, group_id
-                 FROM worktree_preview_processes
-                WHERE port = ?`,
-            )
-            .get(port) as { id: string; status: string; group_id: string } | undefined;
-          if (conflicting?.status === 'failed') {
-            this.db
-              .prepare(`DELETE FROM worktree_preview_processes WHERE id = ?`)
-              .run(conflicting.id);
-            const remaining = this.db
-              .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = ?`)
-              .get(conflicting.group_id) as { n: number };
-            if (remaining.n === 0) {
-              this.db
-                .prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`)
-                .run(conflicting.group_id);
-              this.db
-                .prepare(`DELETE FROM worktree_previews WHERE id = ?`)
-                .run(conflicting.group_id);
-              this.defaultProcessByGroup.delete(conflicting.group_id);
-            }
+          const reclaimed = reclaimFailedPortHolder(this.db, port);
+          if (reclaimed?.groupDeleted) {
+            this.defaultProcessByGroup.delete(reclaimed.groupId);
           }
           continue;
         }
@@ -810,9 +800,7 @@ export class PreviewRuntime {
       const append = (chunk: string, stream: 'stdout' | 'stderr'): void => {
         const lines = chunk.split('\n').filter((l) => l.length > 0);
         for (const line of lines) {
-          if (tail.length < this.logTailLines) {
-            tail.push(line);
-          }
+          appendPreviewLogTailLine(tail, line, this.logTailLines);
           if (notifyLog) {
             try {
               notifyLog({
@@ -992,7 +980,7 @@ export class PreviewRuntime {
    * `donePromise('ready')`; on timeout flips → `failed`.
    */
   private async runHealthCheck(handle: ProcessHandle): Promise<void> {
-    const healthUrl = this.urlBase(handle.port) + handle.healthPath;
+    const healthUrl = `http://${resolvePreviewUpstreamHost()}:${handle.port}${handle.healthPath}`;
     const deadline = this.clock.nowMs() + this.healthTimeoutMs;
     while (this.clock.nowMs() < deadline) {
       // Caller stopped the group while we were polling — bail.

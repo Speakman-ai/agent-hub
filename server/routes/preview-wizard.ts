@@ -25,6 +25,7 @@ import { requireRole } from '../roles.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectPreviewSetupDraft, type PreviewSetupDraft } from '../preview-setup-draft.js';
+import { formatComposeChecklistForPrompt } from '../preview-compose-checklist.js';
 import {
   buildPrEnvPatchFromWizardApply,
   type PreviewSetupApplyBody,
@@ -102,7 +103,9 @@ export function buildKickoffPrompt(
     draftJson,
     '```',
     '',
-    'Key fields: `composeCandidates[]` (every compose file + services/ports), `isMonorepo`, `readme`, `envVars`, `scriptHints`, `phase`.',
+    'Key fields: `composeCandidates[]` (every compose file + services/ports), `isMonorepo`, `readme`, `envVars`, `scriptHints`, `phase`, `composeChecklist`.',
+    '',
+    formatComposeChecklistForPrompt(draft.composeChecklist ?? []),
     '',
     '## Required walkthrough order',
     '',
@@ -112,11 +115,12 @@ export function buildKickoffPrompt(
     '   - Explain which service is the **browser entry** (UI) vs API/worker/DB — previews iframe the **entry** service only.',
     '   - Use a fenced `agenthub:ask` so the user picks **compose file** (if multiple in `composeCandidates`) and **entry service** (one option per service, with short descriptions).',
     '3. **Bootstrap** — If `draft.phase === "bootstrap_compose"`: propose `draft.bootstrap.composeYaml`, get approval, `POST .../preview/setup-compose-bootstrap`, then continue.',
-    '4. **Compose details** — `agenthub:ask` for entry port, health path, env file, idle TTL, capture routes (use draft defaults as option labels).',
-    '5. **Environment variables** — For each key in `draft.envVars` (especially `required: true`), ask in **plain prose** for values. Do not echo secrets back. Then include in `setup-apply` `secrets.env` as dotenv lines.',
-    '6. **Persist** — `POST .../preview/setup-apply` with `preview.compose` only (health on `preview.compose.healthPath`).',
-    '7. **Validate** — `POST .../preview/build` with the same compose + secrets (or `POST .../preview/test` if build unavailable) and report pass/fail.',
-    '8. **`POST .../preview/wizard-complete`** then `<agenthub:close-card>`.',
+    '4. **Compose preview checklist** — Walk `draft.composeChecklist` with the user (section above). Fix every **FAIL** in `compose.preview.yml` before build; explain **WARN** and **CHECK** items (bind mounts relative to worktree, `${AGENTHUB_HOST_PORT}` / `FRONTEND_PORT`, health on entry URL).',
+    '5. **Compose details** — `agenthub:ask` for entry port, health path, env file, idle TTL, capture routes (use draft defaults as option labels).',
+    '6. **Environment variables** — For each key in `draft.envVars` (especially `required: true`), ask in **plain prose** for values. Do not echo secrets back. Then include in `setup-apply` `secrets.env` as dotenv lines.',
+    '7. **Persist** — `POST .../preview/setup-apply` with `preview.compose` only (health on `preview.compose.healthPath`).',
+    '8. **Validate** — `POST .../preview/build` with the same compose + secrets (or `POST .../preview/test` if build unavailable) and report pass/fail.',
+    '9. **`POST .../preview/wizard-complete`** then `<agenthub:close-card>`.',
     '',
     'Use **multiple** `agenthub:ask` rounds if needed (monorepos need separate file vs service questions). Only **triple-backtick** fenced blocks render as pickers.',
     '',

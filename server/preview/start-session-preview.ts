@@ -1,10 +1,11 @@
 /**
- * Start a worktree preview for a chat session (same path as `<agenthub:preview>`).
+ * Start a worktree preview for a chat session (user toolbar / API only).
  */
+import config from '../config.js';
 import { effectiveCwdForSession } from '../routes/hooks.js';
 import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
-import { handlePreviewBlock } from './preview-block.js';
+import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
 
 export interface StartSessionPreviewBody {
@@ -79,6 +80,10 @@ export async function startSessionPreview(
     broadcast,
     project,
     worktreePath,
+    readyTimeoutMs: resolvePreviewHandlerReadyTimeoutMs(
+      project,
+      config.previewComposeReadyTimeoutMs,
+    ),
   }).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[preview] startSessionPreview handler error:', message);

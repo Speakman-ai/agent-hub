@@ -4,14 +4,9 @@ import {
   markCodeChangedIfDirty,
   maybeAutoStartPreviewOnCodeChange,
   sessionHasNoPublishableWork,
+  syncPreviewAfterWorktreeTurnIfDirty,
 } from './code-change-tracker.js';
 import type { Project } from './types.js';
-
-vi.mock('./preview/preview-block.js', () => ({
-  handlePreviewBlock: vi.fn().mockResolvedValue(undefined),
-}));
-
-import { handlePreviewBlock } from './preview/preview-block.js';
 
 describe('isMutatingToolUse', () => {
   it('treats Write/Edit as mutating', () => {
@@ -101,16 +96,7 @@ describe('markCodeChangedIfDirty', () => {
 });
 
 describe('maybeAutoStartPreviewOnCodeChange', () => {
-  const project = {
-    id: 'agent-hub',
-    prEnv: { preview: { enabled: true, startScript: 'npm run dev' } },
-  } as Project;
-
-  beforeEach(() => {
-    vi.mocked(handlePreviewBlock).mockClear();
-  });
-
-  it('calls handlePreviewBlock when newly marked and autoStart default on', () => {
+  it('is a no-op (preview boot is user-only)', () => {
     maybeAutoStartPreviewOnCodeChange(
       'sess-1',
       { newlyMarked: true, codeChangedAt: '2026-05-20T12:00:00.000Z' },
@@ -120,49 +106,10 @@ describe('maybeAutoStartPreviewOnCodeChange', () => {
           updateSessionCodeChangedAt: { run: vi.fn() },
         } as never,
         broadcast: vi.fn(),
-        project,
+        project: { id: 'p', prEnv: { preview: { enabled: true } } } as Project,
         worktreePath: '/wt',
-        runtime: {
-          startPreview: vi.fn(),
-          getById: vi.fn(),
-          getLogTail: vi.fn(),
-        },
       },
     );
-
-    expect(handlePreviewBlock).toHaveBeenCalledWith(
-      'sess-1',
-      expect.objectContaining({ target: 'client', route: '/' }),
-      expect.objectContaining({ project, worktreePath: '/wt' }),
-    );
-  });
-
-  it('skips when autoStart is false', () => {
-    const offProject = {
-      id: 'agent-hub',
-      prEnv: { preview: { enabled: true, autoStart: false } },
-    } as Project;
-
-    maybeAutoStartPreviewOnCodeChange(
-      'sess-1',
-      { newlyMarked: true, codeChangedAt: '2026-05-20T12:00:00.000Z' },
-      {
-        stmts: {
-          getSession: { get: vi.fn() },
-          updateSessionCodeChangedAt: { run: vi.fn() },
-        } as never,
-        broadcast: vi.fn(),
-        project: offProject,
-        worktreePath: '/wt',
-        runtime: {
-          startPreview: vi.fn(),
-          getById: vi.fn(),
-          getLogTail: vi.fn(),
-        },
-      },
-    );
-
-    expect(handlePreviewBlock).not.toHaveBeenCalled();
   });
 });
 
@@ -182,5 +129,61 @@ describe('sessionHasNoPublishableWork', () => {
       get: vi.fn().mockReturnValue({ code_changed_at: '2026-05-20T00:00:00Z' }),
     };
     expect(await sessionHasNoPublishableWork('s', '/wt', { getSession } as never)).toBe(false);
+  });
+});
+
+describe('syncPreviewAfterWorktreeTurnIfDirty', () => {
+  it('does not refresh when the worktree is clean', async () => {
+    const broadcast = vi.fn();
+    await syncPreviewAfterWorktreeTurnIfDirty('sess-1', '/wt', {
+      stmts: {
+        getSession: { get: vi.fn() },
+        updateSessionCodeChangedAt: { run: vi.fn() },
+      } as never,
+      broadcast,
+      checkDirty: async () => false,
+      project: { id: 'p' } as Project,
+      worktreePath: '/wt',
+      getPreviewComposeRuntime: () => ({
+        getActiveBySessionId: () => ({
+          id: 'g1',
+          status: 'ready',
+          port: 4100,
+        }),
+      }),
+      getPreviewRuntime: () => null,
+    });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('broadcasts preview_refresh when a ready compose preview exists', async () => {
+    const broadcast = vi.fn();
+    await syncPreviewAfterWorktreeTurnIfDirty('sess-1', '/wt', {
+      stmts: {
+        getSession: { get: vi.fn() },
+        updateSessionCodeChangedAt: { run: vi.fn() },
+      } as never,
+      broadcast,
+      checkDirty: async () => true,
+      project: { id: 'p' } as Project,
+      worktreePath: '/wt',
+      getPreviewComposeRuntime: () => ({
+        getActiveBySessionId: () => ({
+          id: 'g1',
+          status: 'ready',
+          port: 4100,
+          url: 'http://localhost:4100',
+          session_id: 'sess-1',
+          project_id: 'p',
+          compose_project_name: 'proj',
+          started_at: '',
+          last_active_at: '',
+        }),
+      }),
+      getPreviewRuntime: () => null,
+    });
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'preview_refresh', sessionId: 'sess-1' }),
+    );
   });
 });

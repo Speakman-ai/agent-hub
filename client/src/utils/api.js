@@ -118,12 +118,19 @@ export const api = {
       body: JSON.stringify(body),
       timeout: 200_000,
     }),
-  /** Boot worktree preview for a chat session (same as agenthub:preview block). */
+  /** Boot worktree preview for a chat session (user toolbar only). */
   startSessionPreview: (sessionId, body = {}) =>
     fetchJSON(`/sessions/${sessionId}/preview/start`, {
       method: 'POST',
       body: JSON.stringify(body),
-      timeout: 30_000,
+      timeout: 200_000,
+    }),
+  /** Clone or attach the session worktree before the first chat turn. */
+  ensureSessionWorkspace: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/workspace/ensure`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 300_000,
     }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {
@@ -878,6 +885,11 @@ export const api = {
   // Preview Containers
   getPreviewStatus: () => fetchJSON('/previews/status'),
   getProjectPreviews: (projectId) => fetchJSON(`/projects/${projectId}/previews`),
+  purgeAllProjectPreviews: (projectId) =>
+    fetchJSON(`/projects/${projectId}/previews/purge`, {
+      method: 'POST',
+      timeout: 120000,
+    }),
   createPreview: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/previews`, {
       method: 'POST',

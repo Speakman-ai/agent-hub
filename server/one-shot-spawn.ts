@@ -34,7 +34,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
 import { trackChild, killProcessGroup } from './process-groups.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { shouldPassModelFlag, detectCodexAuthMode } from './codex-auth.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
@@ -123,7 +123,10 @@ export function buildOneShotSpawnArgs(
 
   // claude-code (default).
   const args: string[] = ['--print'];
-  args.push('--permission-mode', claudePermissionMode ?? 'bypassPermissions');
+  args.push(
+    '--permission-mode',
+    claudePermissionModeForSpawn(claudePermissionMode ?? 'bypassPermissions'),
+  );
   if (trimmedModel) args.push('--model', trimmedModel);
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
   args.push(...disableNativeSkillToolArgs());

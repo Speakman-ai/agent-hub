@@ -22,6 +22,7 @@ import {
   parsePreviewBlock,
   describePreviewReason,
   handlePreviewBlock,
+  resolvePreviewHandlerReadyTimeoutMs,
   type PreviewBroadcastEvent,
   type PreviewHandlerDeps,
 } from './preview-block.js';
@@ -270,6 +271,60 @@ describe('detectPreviewBlock — malformed payloads produce reasons, not crashes
   });
 });
 
+describe('resolvePreviewHandlerReadyTimeoutMs', () => {
+  it('uses compose budget when entryService is set', () => {
+    const project = {
+      prEnv: { preview: { compose: { entryService: 'frontend', entryPort: 4200 } } },
+    } as Project;
+    expect(resolvePreviewHandlerReadyTimeoutMs(project, 900_000)).toBe(900_000);
+  });
+
+  it('prefers per-project compose.readyTimeoutMs', () => {
+    const project = {
+      prEnv: { preview: { compose: { entryService: 'web', readyTimeoutMs: 42_000 } } },
+    } as Project;
+    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(42_000);
+  });
+
+  it('uses spawn default when compose is not configured', () => {
+    const project = { prEnv: { preview: { enabled: true } } } as Project;
+    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(120_000);
+  });
+});
+
+describe('handlePreviewBlock — ready timeout default', () => {
+  it('waits on the compose budget when readyTimeoutMs is omitted', async () => {
+    const project = configuredProject({
+      prEnv: {
+        enabled: true,
+        startScript: 'npm run dev',
+        internalPort: 3000,
+        preview: {
+          enabled: true,
+          compose: { entryService: 'web', entryPort: 4200 },
+        },
+      },
+    });
+    const fake = makeRuntime({ flipAfterCalls: 999, initialStatus: 'starting' });
+    let nowMs = 0;
+    const deps = makeDeps({
+      project,
+      runtime: fake.runtime,
+      readyTimeoutMs: undefined,
+      readyPollIntervalMs: 1,
+      startingRebroadcastIntervalMs: 0,
+      sleep: async () => {
+        nowMs += 50_000;
+      },
+      now: () => nowMs,
+    });
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+    const failed = deps.events.find((e) => e.kind === 'preview_failed');
+    expect(failed?.error).toContain('600000ms');
+    expect(nowMs).toBeGreaterThanOrEqual(600_000);
+  });
+});
+
 // ─── Handler tests ─────────────────────────────────────────────────────
 
 describe('handlePreviewBlock — gating', () => {
@@ -434,8 +489,9 @@ describe('handlePreviewBlock — boot failure', () => {
 
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
 
-    expect(deps.events).toHaveLength(1);
-    const evt = deps.events[0];
+    expect(deps.events).toHaveLength(2);
+    expect(deps.events[0].kind).toBe('preview_starting');
+    const evt = deps.events[1];
     expect(evt.kind).toBe('preview_failed');
     expect(evt.error).toContain('ports exhausted');
   });
@@ -503,16 +559,18 @@ describe('handlePreviewBlock — preview_starting', () => {
 
     await handlePreviewBlock('sess-1', { target: 'client', route: '/board' }, deps);
 
-    // First event is preview_starting; carries previewId, URL, port, and the
-    // live logTail captured by the runtime at boot time.
-    const starting = deps.events[0];
-    expect(starting.kind).toBe('preview_starting');
-    expect(starting.previewId).toBe('prev-1');
-    expect(starting.previewUrl).toBe('http://localhost:4100');
-    expect(starting.port).toBe(4100);
-    expect(starting.logTail).toEqual(['vite v5.0.0 starting…']);
-    expect(starting.route).toBe('/board');
-    expect(starting.target).toBe('client');
+    const startings = deps.events.filter((e) => e.kind === 'preview_starting');
+    expect(startings.length).toBeGreaterThanOrEqual(2);
+    const early = startings[0];
+    expect(early.previewId).toBe('');
+    expect(early.logTail).toEqual(['[preview] Starting…']);
+    const starting = startings.find((e) => e.previewId === 'prev-1');
+    expect(starting).toBeDefined();
+    expect(starting!.previewUrl).toBe('http://localhost:4100');
+    expect(starting!.port).toBe(4100);
+    expect(starting!.logTail).toEqual(['vite v5.0.0 starting…']);
+    expect(starting!.route).toBe('/board');
+    expect(starting!.target).toBe('client');
   });
 
   it('re-broadcasts preview_starting during the ready poll, throttled by startingRebroadcastIntervalMs', async () => {

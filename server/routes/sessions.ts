@@ -47,7 +47,12 @@ import {
   parseOrchestrationMetaJson,
   parseOrchestrationPhase,
 } from '../orchestration.js';
-import { defaultSessionUseWorktreeFlag, getProjectMode } from '../project-mode.js';
+import {
+  defaultSessionUseWorktreeFlag,
+  getProjectMode,
+  sessionUsesWorktree,
+} from '../project-mode.js';
+import { isPreviewSetupWizardSession } from './preview-wizard.js';
 import {
   resolveOwnerUserId,
   setSessionOwner,
@@ -62,6 +67,12 @@ import {
   startSessionPreview,
   type StartSessionPreviewDeps,
 } from '../preview/start-session-preview.js';
+import { createPreviewProxyHandler } from '../preview/preview-proxy.js';
+import { getSessionPreviewPort } from '../preview/session-preview-port.js';
+import type {
+  PreviewComposeRuntimeSync,
+  PreviewRuntimeActiveLookup,
+} from '../preview/preview-runtime-lookup.js';
 import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
@@ -1043,6 +1054,86 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.post(
+    '/api/sessions/:sessionId/preview/stop',
+    requireRole('User'),
+    async (req: Request, res: Response) => {
+      try {
+        const sessionId = req.params.sessionId as string;
+        const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (!session) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        await stopPreviewsForSession(sessionId);
+        deps.broadcast({
+          type: 'agenthub_preview',
+          kind: 'preview_stopped',
+          sessionId,
+        } as Record<string, unknown>);
+        return res.json({ ok: true, stopped: true });
+      } catch (err) {
+        return res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  router.post(
+    '/api/sessions/:sessionId/workspace/ensure',
+    requireRole('User'),
+    async (req: Request, res: Response) => {
+      try {
+        const sessionId = req.params.sessionId as string;
+        const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (!session) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+        const found = findAgent(session.agent_id);
+        if (!found) {
+          return res.status(404).json({ error: 'Agent not found' });
+        }
+        const { project } = found;
+        if (
+          isPreviewSetupWizardSession(session) ||
+          !sessionUsesWorktree(session) ||
+          getProjectMode(project) === 'workflow'
+        ) {
+          return res.json({
+            ok: true,
+            skipped: true,
+            worktreePath: project.cwd,
+            session: enrichSessionForClient(session),
+          });
+        }
+        if (!deps.provisionSessionWorkspace) {
+          return res.status(503).json({ error: 'Workspace provisioning is not available' });
+        }
+        const worktreePath = await deps.provisionSessionWorkspace(sessionId);
+        const updated = stmts.getSession.get(sessionId) as SessionRow;
+        const sessionWire = enrichSessionForClient(updated);
+        deps.broadcast({
+          type: 'session_workspace_ready',
+          sessionId,
+          worktreePath,
+          session: sessionWire,
+        });
+        return res.json({
+          ok: true,
+          skipped: false,
+          worktreePath,
+          session: sessionWire,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  router.post(
     '/api/sessions/:sessionId/preview/start',
     requireRole('User'),
     async (req: Request, res: Response) => {
@@ -1075,6 +1166,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
     },
   );
+
+  const previewProxyHandler = createPreviewProxyHandler({
+    getSessionPreviewPort: (sessionId) =>
+      getSessionPreviewPort(sessionId, {
+        getPreviewComposeRuntime: deps.getPreviewComposeRuntime as
+          | (() => PreviewComposeRuntimeSync | null)
+          | undefined,
+        getPreviewRuntime: deps.getPreviewRuntime as
+          | (() => PreviewRuntimeActiveLookup | null)
+          | undefined,
+      }),
+    userOwnsSession,
+  });
+  router.all('/api/sessions/:sessionId/preview/proxy', requireRole('User'), previewProxyHandler);
+  router.all('/api/sessions/:sessionId/preview/proxy/*', requireRole('User'), previewProxyHandler);
 
   router.post('/api/sessions/:sessionId/summarize', async (req: Request, res: Response) => {
     try {

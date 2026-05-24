@@ -309,9 +309,8 @@ describe('PreviewRuntime — startPreview', () => {
   });
 
   it('still fires `notifyLog` for late lines after the in-memory tail cap is hit', async () => {
-    // logTailLines is intentionally small (3). Lines beyond the cap stop
-    // accumulating in `tail` (used for failure snapshots) but must still
-    // flow through `notifyLog` so a streaming UI consumer doesn't go dark.
+    // logTailLines is intentionally small (3). The tail keeps the *latest*
+    // lines (ring buffer) while every line still flows through `notifyLog`.
     const db = freshDb();
     const harness = makeSpawn();
     const { fetch } = makeFetch({ alwaysFail: true });
@@ -333,9 +332,8 @@ describe('PreviewRuntime — startPreview', () => {
     for (let i = 0; i < 6; i++) child.emitData('stdout', `line ${i}\n`);
     await flushMicrotasks();
 
-    // notifyLog saw every line; tail (capped) saw only the first three.
     expect(logged).toEqual(['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5']);
-    expect(runtime.getLogTail(previewId)).toEqual(['line 0', 'line 1', 'line 2']);
+    expect(runtime.getLogTail(previewId)).toEqual(['line 3', 'line 4', 'line 5']);
   });
 
   it('catches a throwing notifyLog so a broken broadcaster cannot crash the spawn', async () => {
@@ -401,7 +399,7 @@ describe('PreviewRuntime — startPreview', () => {
     expect(row!.status).toBe('failed');
     const tail = runtime.getLogTail(previewId);
     expect(tail.length).toBeLessThanOrEqual(50);
-    expect(tail[0]).toBe('boot line 0');
+    expect(tail[0]).toBe('boot line 10');
   });
 
   it('replaces an existing preview when `startPreview` is called twice for the same session', async () => {

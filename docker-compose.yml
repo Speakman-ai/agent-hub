@@ -5,14 +5,47 @@ services:
       dockerfile: server/Dockerfile
     container_name: agent-hub-server
     restart: unless-stopped
+    # Run as the host user so bind-mounted ~/.agent-hub/* stays writable and Claude
+    # Code can use bypassPermissions (it refuses that mode when euid is 0).
+    # Supplementary group 0 reaches docker.sock when it is root:root mode 660
+    # inside the Desktop VM. On Docker Desktop, also enable Settings →
+    # "Allow the default Docker socket to be used" if previews cannot spawn.
+    user: "${UID:-1000}:${GID:-1000}"
+    group_add:
+      - "0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - agent-hub-data:/data
-      - server-uploads:/app/uploads
+      # Bind-mount host data for local dev (override AGENT_HUB_HOST_DATA_DIR in .env).
+      - ${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}:/data
+      - server-uploads:/app/server/uploads
+      # Worktrees live under the data dir (`HOME=/data` → `/data/.agent-hub/workspaces`).
+      # Do not overlay that path with ~/.agent-hub/workspaces — it hides session clones.
+      - ${AGENT_HUB_HOST_ORGS_DIR:-${HOME}/.agent-hub/orgs}:/data/.agent-hub/orgs
+      - ${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}:/data/.agent-hub/projects
+      # macOS: projects.json often stores cwd as ~/projects/<repo> — bind at the same absolute
+      # path so the docker CLI and daemon both see source (PR #1074 translation can use identity).
+      - ${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}:${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}
+      # Talk to the host Docker daemon (preview stacks run as sibling containers).
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=production
       - AGENT_HUB_DATA_DIR=/data
       - AGENT_HUB_PORT=3051
       - AGENT_HUB_HOST=0.0.0.0
+      # Writable HOME for the host uid (image /home/node is owned by uid 1000).
+      - HOME=/data
+      # Host paths for translateContainerPathToHost (must match the bind mounts above).
+      - AGENT_HUB_HOST_WORKSPACES_DIR=${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}/.agent-hub/workspaces
+      - AGENT_HUB_HOST_PROJECTS_DIR=${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}
+      - AGENT_HUB_CONTAINER_PROJECTS_DIR=/data/.agent-hub/projects
+      - AGENT_HUB_CONTAINER_WORKSPACES_DIR=/data/.agent-hub/workspaces
+      # Optional second root for ~/projects/* checkouts (surveytracker uses this on macOS).
+      - AGENT_HUB_HOST_MAC_PROJECTS_DIR=${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}
+      - AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR=${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}
+      # Health polls reach host-published preview ports; iframe URLs stay localhost.
+      - AGENT_HUB_PREVIEW_HEALTH_HOST=${AGENT_HUB_PREVIEW_HEALTH_HOST:-host.docker.internal}
+      - AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=${AGENT_HUB_PREVIEW_READY_TIMEOUT_MS:-600000}
       # Pass through optional secrets from host .env
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - AGENT_HUB_API_KEY=${AGENT_HUB_API_KEY:-}
@@ -21,14 +54,7 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       # Codex: default on (--dangerously-bypass-approvals-and-sandbox); set false in .env to re-enable sandbox.
       - AGENT_HUB_CODEX_DANGER_BYPASS=${AGENT_HUB_CODEX_DANGER_BYPASS:-true}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3050}
-      # PR preview envs when the server container uses the host Docker socket:
-      # mount the same host dir at PR_ENV_CHECKOUT_BASE_DIR inside this container,
-      # then set PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR to the host-side path so
-      # `docker run -v` bind-mount sources resolve to cloned files (see server/container-pool/pr-env-builder.ts).
-      # Also mount `/var/run/docker.sock` and e.g. `/var/lib/agent-hub/pr-envs:/home/node/.agent-hub/pr-envs`.
-      # - PR_ENV_CHECKOUT_BASE_DIR=/home/node/.agent-hub/pr-envs
-      # - PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR=/var/lib/agent-hub/pr-envs
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://localhost:3050}
     expose:
       - "3051"
     healthcheck:
@@ -51,5 +77,4 @@ services:
         condition: service_healthy
 
 volumes:
-  agent-hub-data:
   server-uploads:

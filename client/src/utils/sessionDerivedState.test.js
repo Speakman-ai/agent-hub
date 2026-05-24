@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isSessionAskModeEnabled,
   isSessionWorktreeEnabled,
+  isSessionWorkspaceReady,
   prependSessionDeduped,
 } from './sessionDerivedState.js';
 
@@ -37,6 +38,31 @@ describe('sessionDerivedState', () => {
     it('returns true when use_worktree is 1 or missing on a row object', () => {
       expect(isSessionWorktreeEnabled({ id: 'x', use_worktree: 1 })).toBe(true);
       expect(isSessionWorktreeEnabled({ id: 'x' })).toBe(true);
+    });
+  });
+
+  describe('isSessionWorkspaceReady', () => {
+    it('is true when worktree is disabled', () => {
+      expect(isSessionWorkspaceReady({ id: 'x', use_worktree: 0, worktree_path: null })).toBe(true);
+    });
+
+    it('is false when worktree is enabled but path is empty', () => {
+      expect(isSessionWorkspaceReady({ id: 'x', use_worktree: 1, worktree_path: null })).toBe(
+        false,
+      );
+      expect(isSessionWorkspaceReady({ id: 'x', use_worktree: 1, worktree_path: '  ' })).toBe(
+        false,
+      );
+    });
+
+    it('is true when worktree_path is set', () => {
+      expect(
+        isSessionWorkspaceReady({
+          id: 'x',
+          use_worktree: 1,
+          worktree_path: '/wt/session-abc',
+        }),
+      ).toBe(true);
     });
   });
 

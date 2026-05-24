@@ -19,5 +19,7 @@ describe('collectPreviewEnvironmentDraft', () => {
     expect(draft.bootstrap?.composeYaml).toMatch(/services:/);
     expect(draft.envVars.some((v) => v.key === 'API_KEY')).toBe(true);
     expect(draft.scriptHints.length).toBeGreaterThan(0);
+    expect(draft.composeChecklist.length).toBeGreaterThan(0);
+    expect(draft.composeChecklist.some((i) => i.id === 'worktree-bind-mounts')).toBe(true);
   });
 });

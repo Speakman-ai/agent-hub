@@ -45,12 +45,10 @@ import {
   describeCloseCardReason,
   handleCardAutoClose,
 } from './card-auto-close.js';
-import {
-  detectPreviewBlock,
-  describePreviewReason,
-  handlePreviewBlock,
-} from './preview/preview-block.js';
+import { detectPreviewBlock, describePreviewReason } from './preview/preview-block.js';
 import { handleMutatingToolUseForCodeChange } from './code-change-tracker.js';
+import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js';
+import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
 import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
 import {
@@ -69,7 +67,7 @@ import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantContr
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
   writeSystemPromptFile,
   applyArgvPromptCap,
@@ -739,6 +737,11 @@ If you pick up a card and discover the work is redundant — either covered by a
 - \`note\`: one-line explanation shown in the auto-close comment (required)
 - \`duplicateOfCardId\`: optional, the canonical card id the work duplicates
 The server moves the session's linked card to Done and appends an explanatory comment referencing this session. Malformed payloads (missing/invalid fields) are rejected with a system message and the card is **not** moved.`;
+        }
+
+        if (project.prEnv?.preview?.enabled) {
+          prompt += `\n\n## Worktree preview (human-only)
+Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar. After they have a preview running, your file edits may reload automatically; if they need to see the app, tell them to use **Start preview** (first boot can take several minutes) or the refresh control in the preview pane once it shows **Ready**.`;
         }
       }
     }
@@ -2394,7 +2397,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         args = [
           '--print',
           '--permission-mode',
-          isAskMode ? 'plan' : 'bypassPermissions',
+          claudePermissionModeForSpawn(isAskMode ? 'plan' : 'bypassPermissions'),
           '--model',
           model,
           '--system-prompt-file',
@@ -2966,16 +2969,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         if (event.type === 'tool_use' && typeof event.tool === 'string') {
           const toolInput = (event.input as Record<string, unknown>) || {};
-          const composePreview = !!project.prEnv?.preview?.compose?.entryService;
-          const previewRuntimeForAuto = composePreview
-            ? (getPreviewComposeRuntime?.() ?? null)
-            : (getPreviewRuntime?.() ?? null);
           handleMutatingToolUseForCodeChange(sessionId, event.tool, toolInput, {
             stmts: S,
             broadcast,
             project,
             worktreePath: effectiveCwd,
-            runtime: previewRuntimeForAuto,
+            getPreviewComposeRuntime,
+            getPreviewRuntime,
           });
         }
 
@@ -3904,7 +3904,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // ── `<agenthub:preview>` dispatch ───────────────────────────────
         // Malformed blocks: surface a system message so the agent learns
         // why the request was dropped — same shape as the close-card gate.
-        if (previewDetection.present && !previewDetection.task && previewDetection.reason) {
+        const previewSyncDeps = {
+          broadcast,
+          getPreviewComposeRuntime,
+          getPreviewRuntime,
+          stmts,
+          project,
+          worktreePath: effectiveCwd,
+        };
+        const previewAlreadyRunning = sessionHasActiveUserPreview(sessionId, previewSyncDeps);
+
+        if (
+          previewDetection.present &&
+          !previewDetection.task &&
+          previewDetection.reason &&
+          !previewAlreadyRunning
+        ) {
           try {
             broadcast({
               type: 'agenthub_preview',
@@ -3918,35 +3933,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.error('[Preview] Failed to broadcast malformed-block notice:', err);
           }
         }
-        if (previewDetection.task) {
-          const previewTask = previewDetection.task;
-          // Compose-vs-legacy dispatch: a project with
-          // `prEnv.preview.compose.entryService` set routes through the
-          // docker-compose runtime; everything else stays on the legacy
-          // spawn runtime. Both runtimes expose the same
-          // `startPreview` / `getById` / `getLogTail` shape `handlePreviewBlock`
-          // depends on, so the handler itself doesn't need to know which
-          // one it got.
-          const composeConfigured = !!project.prEnv?.preview?.compose?.entryService;
-          const previewRuntime = composeConfigured
-            ? getPreviewComposeRuntime
-              ? getPreviewComposeRuntime()
-              : null
-            : getPreviewRuntime
-              ? getPreviewRuntime()
-              : null;
-          // Fire-and-forget — the chat flow must not block on preview boot.
-          // The handler funnels every outcome (success, unconfigured, failure)
-          // into a broadcast event so the UI gets a final state.
-          void handlePreviewBlock(sessionId, previewTask, {
-            runtime: previewRuntime,
-            broadcast,
-            project,
-            worktreePath: effectiveCwd,
-          }).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[Preview] Unexpected handler error:', message);
-          });
+        const sessionAfterTurn = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (sessionAfterTurn?.code_changed_at) {
+          void syncPreviewAfterWorktreeTurnIfDirty(sessionId, effectiveCwd, previewSyncDeps);
+        }
+
+        if (previewDetection.task && !previewAlreadyRunning) {
+          // Preview boot is user-initiated only (POST …/preview/start). Agent
+          // `<agenthub:preview>` blocks are ignored so sessions never spin
+          // docker/npm stacks on their own. Do not broadcast preview_failed when
+          // the user already has a running preview — that would clobber Ready UI.
+          try {
+            broadcast({
+              type: 'agenthub_preview',
+              kind: 'preview_failed',
+              sessionId,
+              previewId: '',
+              error:
+                '**Preview not started:** only the human can boot a preview via **Start preview** in the chat toolbar. Do not emit `<agenthub:preview>` — the host ignores agent-initiated preview requests.',
+              logTail: [],
+            });
+          } catch (err) {
+            console.error('[Preview] Failed to broadcast agent-preview rejection:', err);
+          }
         }
 
         const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {

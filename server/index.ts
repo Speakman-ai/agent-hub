@@ -91,6 +91,7 @@ import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
 import createPreviewWizardRoutes from './routes/preview-wizard.js';
 import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
+import createPreviewInstancesRoutes from './routes/preview-instances.js';
 import createProvisioningRoutes from './routes/provisioning.js';
 import createAuditRoutes from './routes/audit.js';
 import createAgentRoutes from './routes/agents.js';
@@ -159,6 +160,9 @@ import createChatHandler, {
 } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
+import { createPreviewUrlBase } from './preview/preview-public-url.js';
+import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
+import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
 import cron from 'node-cron';
 
@@ -652,10 +656,21 @@ const activeProcesses = new Map<string, ChildProcess>();
 // the same instance the chat handler + session archive hooks use; a
 // per-tick orphan check tears down rows whose project has been deleted
 // out from under them.
+const previewHealthHost = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim();
+const previewUrlBase = createPreviewUrlBase(config.publicUrl);
 const { previewRuntime, previewComposeRuntime } = createPreviewRuntimes({
   db: getDb(),
   dataDir: _activeDataDir,
-  composeConfig: { readyTimeoutMs: config.previewComposeReadyTimeoutMs },
+  legacyConfig: {
+    urlBase: previewUrlBase,
+  },
+  composeConfig: {
+    urlBase: previewUrlBase,
+    readyTimeoutMs: config.previewComposeReadyTimeoutMs,
+    ...(previewHealthHost
+      ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
+      : {}),
+  },
   notifyLog: ({ sessionId, groupId, processName, line, stream }) => {
     try {
       broadcast({
@@ -774,6 +789,30 @@ export const routeDeps: RouteDeps = {
   scheduleAll,
   getPreviewRuntime: () => previewRuntime,
   getPreviewComposeRuntime: () => previewComposeRuntime,
+  provisionSessionWorkspace: async (sessionId: string) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    const found = findAgent(session.agent_id);
+    if (!found) {
+      throw new Error('Agent not found');
+    }
+    const { project, agent } = found;
+    const installCommand =
+      (project as { commands?: { install?: string | null } }).commands?.install ?? null;
+    return ensureWorktree(
+      session,
+      project.cwd,
+      agent.id,
+      installCommand,
+      null,
+      project.repoUrl ?? null,
+      project.id,
+      undefined,
+      project.githubRepo ?? null,
+    );
+  },
 };
 
 // Visibility gate for every project-scoped route. Mounted ahead of all
@@ -806,6 +845,13 @@ app.use(
   createPreviewEnvironmentRoutes({
     ...routeDeps,
     getPreviewComposeRuntime: () => previewComposeRuntime,
+  }),
+);
+app.use(
+  createPreviewInstancesRoutes({
+    ...routeDeps,
+    getPreviewComposeRuntime: () => previewComposeRuntime,
+    getPreviewRuntime: () => previewRuntime,
   }),
 );
 app.use(createProvisioningRoutes(routeDeps));
@@ -877,6 +923,14 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
+
+attachDefaultPreviewProxyUpgrade(server, {
+  getSessionPreviewPort: (sessionId) =>
+    getSessionPreviewPort(sessionId, {
+      getPreviewComposeRuntime: () => previewComposeRuntime,
+      getPreviewRuntime: () => previewRuntime,
+    }),
+});
 
 const chatHandler = createChatHandler({
   broadcast,

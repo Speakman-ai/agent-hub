@@ -18,8 +18,10 @@
  *      `readyTimeoutMs` elapses.
  *
  *   2. `stopPreview(groupId)` spawns `docker compose -p <proj> down -v`
- *      (volumes scoped to the compose project) and removes the group
- *      row. Idempotent.
+ *      (volumes scoped to the compose project), then best-effort
+ *      `docker volume rm` for the project (so a failed `down` does not
+ *      leak postgres/node_modules volumes), and removes the group row.
+ *      Idempotent.
  *
  *   3. `stopBySessionId(sessionId)` tears every compose group owned by
  *      `sessionId` down — used by the session-delete hook (PR 2).
@@ -62,6 +64,7 @@
 import type { Database } from 'better-sqlite3';
 import { spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
+import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
@@ -70,7 +73,23 @@ import {
 } from './preview-schema.js';
 import type { PreviewComposeConfig, PrEnvPreviewConfig, Project } from '../types.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
-import { translateContainerPathToHost } from './host-path-translation.js';
+import {
+  resolveComposeProjectDirectory,
+  translateContainerPathToHost,
+} from './host-path-translation.js';
+import {
+  removeComposeProjectVolumes as removeComposeProjectVolumesDefault,
+  type RemoveComposeProjectVolumesDeps,
+} from './preview-compose-volumes.js';
+import { filterComposeLogLinesForUi, probePreviewHealth } from './preview-health-fetch.js';
+import {
+  DEFAULT_PREVIEW_LOG_TAIL_LINES,
+  appendPreviewLogTailLine,
+  trimPreviewLogTail,
+} from './preview-log-tail.js';
+import { waitForWorktreeComposeReady } from './worktree-compose-ready.js';
+
+export type RemoveComposeProjectVolumesFn = (deps: RemoveComposeProjectVolumesDeps) => void;
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -189,7 +208,18 @@ export interface PreviewComposeRuntimeConfig {
    * Hostname stem for the iframe URL. Defaults to `http://localhost:<port>`.
    * Override for nginx-fronted installs.
    */
-  urlBase?: (port: number) => string;
+  urlBase?: (port: number, sessionId: string) => string;
+  /**
+   * Host used only for readiness polling. Defaults to {@link urlBase}.
+   * When the server runs in Docker but preview stacks are started on the
+   * host daemon (bind-mounted `/var/run/docker.sock`), published ports
+   * listen on the host — not on the server container's loopback. Set
+   * `AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal` (plus
+   * `extra_hosts: host-gateway` in compose) so health checks reach the
+   * host-published port while the iframe URL stays `localhost` for the
+   * browser.
+   */
+  healthUrlBase?: (port: number) => string;
   /**
    * Default compose-file path when `prEnv.preview.compose.file` is unset.
    * Resolved relative to the worktree root.
@@ -200,7 +230,17 @@ export interface PreviewComposeRuntimeConfig {
    * Default `/`.
    */
   defaultHealthPath?: string;
+  /** Max lines retained in the in-memory boot log tail. Default 120. */
+  logTailLines?: number;
 }
+
+export type ComposePreviewNotifyLogFn = (info: {
+  sessionId: string;
+  groupId: string;
+  processName: string;
+  line: string;
+  stream: 'stdout' | 'stderr';
+}) => void;
 
 export interface PreviewComposeRuntimeDeps {
   db: Database;
@@ -208,6 +248,8 @@ export interface PreviewComposeRuntimeDeps {
   fetch: HealthFetchFn;
   clock?: Clock;
   config?: PreviewComposeRuntimeConfig;
+  /** Optional WS fan-out for live boot logs (mirrors PreviewRuntime.notifyLog). */
+  notifyLog?: ComposePreviewNotifyLogFn;
   logger?: {
     log: (m: string) => void;
     warn: (m: string) => void;
@@ -228,6 +270,11 @@ export interface PreviewComposeRuntimeDeps {
    * `preview-runtime-setup.ts`.
    */
   deleteOverrideFile?: DeleteOverrideFileFn;
+  /**
+   * Fallback volume cleanup after `docker compose down`. Production
+   * uses {@link removeComposeProjectVolumesDefault}; tests may stub.
+   */
+  removeComposeProjectVolumes?: RemoveComposeProjectVolumesFn;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -246,6 +293,7 @@ const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
 const DEFAULT_SESSION_LOCK_TIMEOUT_MS = 120_000;
 const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
 const DEFAULT_HEALTH_PATH = '/';
+const DEFAULT_LOG_TAIL_LINES = DEFAULT_PREVIEW_LOG_TAIL_LINES;
 const ENTRY_PROCESS_NAME = 'entry';
 const COMPOSE_PROJECT_PREFIX = 'agenthub-session-';
 
@@ -365,6 +413,28 @@ export function buildComposeDownArgs(opts: {
   return args;
 }
 
+/** `docker compose restart <service>` — same `-f` / `--project-directory` chain as `up`. */
+export function buildComposeRestartArgs(
+  opts: {
+    composeProjectName: string;
+    composeFile: string;
+    overrideFile?: string | null;
+    projectDirectory?: string | null;
+  },
+  service: string,
+): string[] {
+  const args: string[] = ['compose', '-p', opts.composeProjectName];
+  if (opts.projectDirectory) {
+    args.push('--project-directory', opts.projectDirectory);
+  }
+  args.push('-f', opts.composeFile);
+  if (opts.overrideFile) {
+    args.push('-f', opts.overrideFile);
+  }
+  args.push('restart', service);
+  return args;
+}
+
 /**
  * Build the YAML body for the disk-backed compose override file. Maps
  * the runtime-allocated `hostPort` to the service's internal
@@ -471,12 +541,20 @@ export class PreviewComposeRuntime {
   private readonly readyTimeoutMs: number;
   private readonly healthIntervalMs: number;
   private readonly sessionLockTimeoutMs: number;
-  private readonly urlBase: (port: number) => string;
+  private readonly urlBase: (port: number, sessionId: string) => string;
+  private readonly healthUrlBase: (port: number) => string;
   private readonly defaultComposeFile: string;
   private readonly defaultHealthPath: string;
   private readonly logger: NonNullable<PreviewComposeRuntimeDeps['logger']>;
   private readonly writeOverrideFile: WriteOverrideFileFn;
   private readonly deleteOverrideFile: DeleteOverrideFileFn;
+  private readonly removeComposeProjectVolumes: RemoveComposeProjectVolumesFn;
+  private readonly notifyLog?: ComposePreviewNotifyLogFn;
+  private readonly logTailLines: number;
+
+  /** In-memory boot log tail keyed by group id (compose up + daemon logs). */
+  private readonly logTails = new Map<string, string[]>();
+  private readonly sessionIdByGroup = new Map<string, string>();
 
   /** Per-session serialization lock — same shape as PreviewRuntime. */
   private readonly sessionLocks = new Map<string, Promise<unknown>>();
@@ -491,7 +569,8 @@ export class PreviewComposeRuntime {
     this.healthIntervalMs = deps.config?.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
     this.sessionLockTimeoutMs =
       deps.config?.sessionLockTimeoutMs ?? DEFAULT_SESSION_LOCK_TIMEOUT_MS;
-    this.urlBase = deps.config?.urlBase ?? ((p) => `http://localhost:${p}`);
+    this.urlBase = deps.config?.urlBase ?? ((p, _sid) => `http://localhost:${p}`);
+    this.healthUrlBase = deps.config?.healthUrlBase ?? ((p) => this.urlBase(p, ''));
     this.defaultComposeFile = deps.config?.defaultComposeFile ?? DEFAULT_COMPOSE_FILE;
     this.defaultHealthPath = deps.config?.defaultHealthPath ?? DEFAULT_HEALTH_PATH;
     this.logger = deps.logger ?? {
@@ -501,6 +580,10 @@ export class PreviewComposeRuntime {
     };
     this.writeOverrideFile = deps.writeOverrideFile ?? (() => null);
     this.deleteOverrideFile = deps.deleteOverrideFile ?? (() => undefined);
+    this.removeComposeProjectVolumes =
+      deps.removeComposeProjectVolumes ?? removeComposeProjectVolumesDefault;
+    this.notifyLog = deps.notifyLog;
+    this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
     if (this.portRange.min > this.portRange.max) {
       throw new Error(
         `Invalid compose preview port range: ${this.portRange.min}..${this.portRange.max}`,
@@ -569,8 +652,21 @@ export class PreviewComposeRuntime {
       await this.stopPreview(existing.id);
     }
 
+    const reclaimed = reclaimFailedPortsInRange(
+      this.db,
+      cfg.hostPortRange.min,
+      cfg.hostPortRange.max,
+    );
+    if (reclaimed > 0) {
+      this.logger.log(
+        `[preview-compose] reclaimed ${reclaimed} failed preview port(s) in [${cfg.hostPortRange.min}, ${cfg.hostPortRange.max}]`,
+      );
+    }
+
     const projectName = composeProjectName(sessionId);
     const groupId = randomUUID();
+    this.sessionIdByGroup.set(groupId, sessionId);
+    this.logTails.set(groupId, []);
 
     // Allocate a host port + insert the group row + the single `entry`
     // process row inside one DB transaction so a half-inserted group
@@ -594,7 +690,12 @@ export class PreviewComposeRuntime {
       entryPort: cfg.entryPort,
     });
 
-    const url = this.urlBase(port);
+    const url = this.urlBase(port, sessionId);
+    this.appendComposeLog(
+      groupId,
+      `[preview-compose] Starting docker compose project ${projectName} on host port ${port}…`,
+      'stdout',
+    );
 
     // Write the disk-backed override file (if a writer was injected).
     // The file path is persisted on the group row so the matching
@@ -632,15 +733,46 @@ export class PreviewComposeRuntime {
     // container `worktreePath` to its host equivalent and pass it
     // through as `--project-directory` so the daemon sees real source.
     const hostProjectDirectoryUp = translateContainerPathToHost(worktreePath);
+    const composeProjectDirectory = resolveComposeProjectDirectory(
+      worktreePath,
+      hostProjectDirectoryUp,
+    );
     if (
+      hostProjectDirectoryUp.hostPath &&
+      composeProjectDirectory !== hostProjectDirectoryUp.hostPath
+    ) {
+      this.logger.log(
+        `[preview-compose ${groupId}] using container worktree for --project-directory ` +
+          `(${worktreePath}); translated host path is not visible inside this process`,
+      );
+    } else if (
       hostProjectDirectoryUp.hostPath === null &&
       (process.env.AGENT_HUB_HOST_PROJECTS_DIR || process.env.AGENT_HUB_HOST_WORKSPACES_DIR)
     ) {
       this.logger.warn(
         `[preview-compose ${groupId}] could not translate worktreePath to host path ` +
           `(${hostProjectDirectoryUp.skippedReason ?? 'unknown'}); ` +
-          `relative bind-mounts in ${cfg.file} may resolve to empty dirs on the daemon side`,
+          `using ${composeProjectDirectory} for compose`,
       );
+    }
+    try {
+      await waitForWorktreeComposeReady({
+        worktreeDir: worktreePath,
+        composeFile: cfg.file,
+        composeFileDir: worktreePath,
+        sleep: (ms) => this.clock.sleep(ms),
+        onWaiting: (missing) => {
+          this.appendComposeLog(
+            groupId,
+            `[preview-compose] Waiting for worktree paths: ${missing.join(', ')}…`,
+            'stdout',
+          );
+        },
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await this.markGroupFailed(groupId, reason);
+      throw new Error(reason);
     }
     // Card c79c4bc0 — persist the resolved host path so stopPreview can
     // reproduce the up call's `--project-directory` even if the host env
@@ -651,11 +783,9 @@ export class PreviewComposeRuntime {
     // the named volumes that were created under the old mapping, the
     // `-v` flag fails to drop them, and the allocated port stays
     // claimed until manual cleanup.
-    if (hostProjectDirectoryUp.hostPath) {
-      this.db
-        .prepare(`UPDATE worktree_preview_groups SET host_project_directory = ? WHERE id = ?`)
-        .run(hostProjectDirectoryUp.hostPath, groupId);
-    }
+    this.db
+      .prepare(`UPDATE worktree_preview_groups SET host_project_directory = ? WHERE id = ?`)
+      .run(composeProjectDirectory, groupId);
 
     // Spawn `docker compose up -d --build`. The CLI returns immediately
     // once the containers are dispatched; the health check below is
@@ -667,7 +797,7 @@ export class PreviewComposeRuntime {
       composeFile: cfg.file,
       overrideFile: overrideFilePath,
       envFile: cfg.envFile,
-      projectDirectory: hostProjectDirectoryUp.hostPath,
+      projectDirectory: composeProjectDirectory,
     });
 
     // Compose's HOST_PORT override for the entry service is conveyed
@@ -680,6 +810,12 @@ export class PreviewComposeRuntime {
       ...process.env,
       AGENTHUB_HOST_PORT: String(port),
       AGENTHUB_ENTRY_PORT: String(cfg.entryPort),
+      // Survey Tracker (and similar stacks) bind ng serve with FRONTEND_PORT /
+      // PORT, not AGENTHUB_HOST_PORT. Without this, the override may map
+      // host:4100→4200 while the dev server never listens on the published
+      // socket and the health poll on :4100 never succeeds.
+      FRONTEND_PORT: String(cfg.entryPort),
+      PORT: String(port),
       AGENTHUB_SESSION_ID: sessionId,
       AGENTHUB_PROJECT_ID: project.id,
     };
@@ -720,11 +856,7 @@ export class PreviewComposeRuntime {
         );
         void this.markGroupFailed(groupId, `docker compose up errored: ${err.message}`);
       });
-      // Detach stdio — compose's progress output is large + uninteresting
-      // here. PR 2 wires a streaming consumer that fans these lines
-      // through the WS broadcaster (mirrors PreviewRuntime's notifyLog).
-      child.stdout?.resume();
-      child.stderr?.resume();
+      this.wireComposeChildStdio(groupId, child);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[preview-compose ${groupId}] failed to spawn docker: ${reason}`);
@@ -742,7 +874,7 @@ export class PreviewComposeRuntime {
     void this.runHealthCheck({
       groupId,
       entryRowId,
-      url,
+      url: this.healthUrlBase(port),
       healthPath: cfg.healthPath,
       timeoutMs: cfg.readyTimeoutMs,
     });
@@ -832,7 +964,10 @@ export class PreviewComposeRuntime {
     if (row.host_project_directory) {
       hostProjectDirectoryDown = row.host_project_directory;
     } else if (row.worktree_path) {
-      hostProjectDirectoryDown = translateContainerPathToHost(row.worktree_path).hostPath;
+      hostProjectDirectoryDown = resolveComposeProjectDirectory(
+        row.worktree_path,
+        translateContainerPathToHost(row.worktree_path),
+      );
     } else {
       hostProjectDirectoryDown = null;
     }
@@ -870,9 +1005,22 @@ export class PreviewComposeRuntime {
           `(continuing with row deletion so the port is reclaimed)`,
       );
     }
+    try {
+      this.removeComposeProjectVolumes({
+        composeProjectName: row.compose_project_name,
+        logger: this.logger,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[preview-compose ${groupId}] compose volume cleanup failed: ${reason} (ignoring)`,
+      );
+    }
     // FK ON DELETE CASCADE removes the entry process row + frees its port.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
     this.db.prepare(`DELETE FROM worktree_previews WHERE id = ?`).run(groupId);
+    this.logTails.delete(groupId);
+    this.sessionIdByGroup.delete(groupId);
 
     // Best-effort cleanup of the per-group override file. Compose
     // doesn't need it after `down` exits, and leaving it behind would
@@ -887,6 +1035,75 @@ export class PreviewComposeRuntime {
         );
       }
     }
+  }
+
+  /**
+   * `docker compose restart backend` for the active compose preview on
+   * `sessionId`. No-op when the group is not `ready`. Used after agent
+   * turns so Django reloads worktree Python without tearing down the stack.
+   */
+  async restartBackendForSession(sessionId: string, serviceName = 'backend'): Promise<void> {
+    const row = this.db
+      .prepare(
+        `SELECT id, session_id, project_id, status, compose_project_name,
+                worktree_path, compose_file, override_file_path, host_project_directory
+           FROM worktree_preview_groups
+          WHERE session_id = ?
+            AND compose_project_name IS NOT NULL
+            AND status = 'ready'
+          ORDER BY started_at DESC
+          LIMIT 1`,
+      )
+      .get(sessionId) as
+      | {
+          id: string;
+          session_id: string;
+          project_id: string;
+          status: ComposeStatus;
+          compose_project_name: string;
+          worktree_path: string | null;
+          compose_file: string | null;
+          override_file_path: string | null;
+          host_project_directory: string | null;
+        }
+      | undefined;
+    if (!row?.compose_project_name || !row.worktree_path) return;
+
+    const composeFile = row.compose_file ?? this.defaultComposeFile;
+    const hostProjectDirectory = row.host_project_directory
+      ? row.host_project_directory
+      : resolveComposeProjectDirectory(
+          row.worktree_path,
+          translateContainerPathToHost(row.worktree_path),
+        );
+
+    const restartArgs = buildComposeRestartArgs(
+      {
+        composeProjectName: row.compose_project_name,
+        composeFile,
+        overrideFile: row.override_file_path,
+        projectDirectory: hostProjectDirectory,
+      },
+      serviceName,
+    );
+    const restartEnv: NodeJS.ProcessEnv = { ...process.env };
+    mergeProjectSecretsSpawnEnv(restartEnv, {
+      projectId: row.project_id,
+      sessionId: row.session_id,
+      overwriteExisting: true,
+    });
+
+    this.logger.log(
+      `[preview-compose ${row.id}] restarting compose service ${serviceName} after worktree change`,
+    );
+    const child = this.spawn('docker', restartArgs, {
+      cwd: row.worktree_path,
+      env: restartEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.resume();
+    child.stderr?.resume();
+    await this.waitForExit(child);
   }
 
   /**
@@ -907,39 +1124,10 @@ export class PreviewComposeRuntime {
     return rows.length;
   }
 
-  /** Fetch recent `docker compose logs` for a compose-managed group. */
+  /** Fetch recent boot logs for a compose-managed group. */
   getLogTail(groupId: string): string[] {
-    const row = this.db
-      .prepare(
-        `SELECT compose_project_name, worktree_path, compose_file, override_file_path
-           FROM worktree_preview_groups WHERE id = ?`,
-      )
-      .get(groupId) as
-      | {
-          compose_project_name: string | null;
-          worktree_path: string | null;
-          compose_file: string | null;
-          override_file_path: string | null;
-        }
-      | undefined;
-    if (!row?.compose_project_name || !row.worktree_path) return [];
-    const composeFile = row.compose_file ?? this.defaultComposeFile;
-    const args = ['compose', '-p', row.compose_project_name, '-f', composeFile];
-    if (row.override_file_path) args.push('-f', row.override_file_path);
-    args.push('logs', '--tail', '120', '--no-color');
-    try {
-      const result = spawnSync('docker', args, {
-        cwd: row.worktree_path,
-        encoding: 'utf8',
-        maxBuffer: 2 * 1024 * 1024,
-        timeout: 15_000,
-      });
-      const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
-      if (!text) return [];
-      return text.split(/\r?\n/).filter((line) => line.length > 0);
-    } catch {
-      return [];
-    }
+    this.refreshComposeLogsFromDaemon(groupId);
+    return [...(this.logTails.get(groupId) ?? [])];
   }
 
   /** Bump `last_active_at` so the reaper's idle-TTL clock resets. */
@@ -1121,7 +1309,7 @@ export class PreviewComposeRuntime {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const port = this.allocatePort(args.hostPortRange);
-      const url = this.urlBase(port);
+      const url = this.urlBase(port, args.sessionId);
       const entryRowId = `${args.groupId}:${ENTRY_PROCESS_NAME}`;
       const tx = this.db.transaction(() => {
         this.db
@@ -1159,6 +1347,9 @@ export class PreviewComposeRuntime {
           );
           // `db.transaction(...)` rolls back on throw, so no partial group
           // row survives this catch — proceed straight to the next attempt.
+          if (reclaimFailedPortHolder(this.db, port) != null) {
+            this.logger.warn(`[preview-compose] freed failed holder for port ${port} before retry`);
+          }
           continue;
         }
         throw err;
@@ -1215,8 +1406,12 @@ export class PreviewComposeRuntime {
       const groupStatus = this.getGroupStatus(opts.groupId);
       if (!groupStatus || groupStatus !== 'starting') return;
       try {
-        const res = await this.fetch(healthUrl);
-        if (res.ok) {
+        const ok = this.fetch
+          ? await this.fetch(healthUrl)
+              .then((r) => r.ok)
+              .catch(() => false)
+          : (await probePreviewHealth(healthUrl)).ok;
+        if (ok) {
           this.db
             .prepare(
               `UPDATE worktree_preview_processes
@@ -1237,9 +1432,92 @@ export class PreviewComposeRuntime {
       } catch {
         // ignore — container may not have bound the entry port yet
       }
+      this.refreshComposeLogsFromDaemon(opts.groupId);
       await this.clock.sleep(this.healthIntervalMs);
     }
     await this.markGroupFailed(opts.groupId, `health check timed out after ${opts.timeoutMs}ms`);
+  }
+
+  private wireComposeChildStdio(groupId: string, child: ChildProcess): void {
+    const onChunk =
+      (stream: 'stdout' | 'stderr') =>
+      (chunk: Buffer | string): void => {
+        this.appendComposeLog(groupId, String(chunk), stream);
+      };
+    child.stdout?.on('data', onChunk('stdout'));
+    child.stderr?.on('data', onChunk('stderr'));
+  }
+
+  private appendComposeLog(groupId: string, chunk: string, stream: 'stdout' | 'stderr'): void {
+    const lines = chunk.split(/\r?\n/).filter((line) => line.length > 0);
+    if (lines.length === 0) return;
+    let tail = this.logTails.get(groupId);
+    if (!tail) {
+      tail = [];
+      this.logTails.set(groupId, tail);
+    }
+    const sessionId = this.sessionIdByGroup.get(groupId);
+    for (const line of lines) {
+      appendPreviewLogTailLine(tail, line, this.logTailLines);
+      if (this.notifyLog && sessionId) {
+        try {
+          this.notifyLog({
+            sessionId,
+            groupId,
+            processName: ENTRY_PROCESS_NAME,
+            line,
+            stream,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `[preview-compose ${groupId}] notifyLog threw: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    }
+  }
+
+  /** Best-effort pull of `docker compose logs` into the in-memory tail. */
+  private refreshComposeLogsFromDaemon(groupId: string): void {
+    const pulled = this.pullDaemonLogTail(groupId);
+    if (pulled.length === 0) return;
+    this.logTails.set(groupId, trimPreviewLogTail(pulled, this.logTailLines));
+  }
+
+  private pullDaemonLogTail(groupId: string): string[] {
+    const row = this.db
+      .prepare(
+        `SELECT compose_project_name, worktree_path, compose_file, override_file_path
+           FROM worktree_preview_groups WHERE id = ?`,
+      )
+      .get(groupId) as
+      | {
+          compose_project_name: string | null;
+          worktree_path: string | null;
+          compose_file: string | null;
+          override_file_path: string | null;
+        }
+      | undefined;
+    if (!row?.compose_project_name || !row.worktree_path) return [];
+    const composeFile = row.compose_file ?? this.defaultComposeFile;
+    const args = ['compose', '-p', row.compose_project_name, '-f', composeFile];
+    if (row.override_file_path) args.push('-f', row.override_file_path);
+    args.push('logs', '--tail', String(this.logTailLines), '--no-color');
+    try {
+      const result = spawnSync('docker', args, {
+        cwd: row.worktree_path,
+        encoding: 'utf8',
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: 15_000,
+      });
+      const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+      if (!text) return [];
+      return filterComposeLogLinesForUi(text.split(/\r?\n/).filter((line) => line.length > 0));
+    } catch {
+      return [];
+    }
   }
 
   /**

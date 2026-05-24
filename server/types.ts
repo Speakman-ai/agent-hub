@@ -1502,9 +1502,11 @@ export interface PrEnvPreviewConfig {
    */
   healthTimeoutMs?: number;
   /**
-   * When `enabled` is true, start a worktree preview automatically on the
-   * first detected code change in a session. Defaults to true (omit = on).
-   * Set `false` to require an explicit `<agenthub:preview>` block from the agent.
+   * @deprecated Ignored — preview boot is human-only via the chat toolbar
+   * (`POST /api/sessions/:id/preview/start`). Agents must not emit
+   * `<agenthub:preview>`; the host rejects those blocks. While a
+   * user-started preview is `ready`, file edits may trigger an iframe
+   * refresh / compose backend restart only.
    */
   autoStart?: boolean;
   /**
@@ -2307,6 +2309,13 @@ export interface RouteDeps {
   getPreviewComposeRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
+  /**
+   * Clone or attach the session git worktree before the first chat turn.
+   * Wired from `index.ts` (`ensureWorktree`). Used by
+   * `POST /api/sessions/:sessionId/workspace/ensure` so preview can start
+   * immediately after opening a session.
+   */
+  provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
 }
 
 // ─── Room with Agents ────────────────────────────────────────────

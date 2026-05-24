@@ -2,10 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { startSessionPreview } from './start-session-preview.js';
 import type { Project, SessionRow } from '../types.js';
 
-vi.mock('./preview-block.js', () => ({
-  handlePreviewBlock: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('./preview-block.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./preview-block.js')>();
+  return {
+    ...actual,
+    handlePreviewBlock: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
+import config from '../config.js';
 import { handlePreviewBlock } from './preview-block.js';
 
 const project: Project = {
@@ -76,6 +81,7 @@ describe('startSessionPreview', () => {
         broadcast,
         project,
         worktreePath: '/tmp/wt',
+        readyTimeoutMs: config.previewComposeReadyTimeoutMs,
       }),
     );
   });

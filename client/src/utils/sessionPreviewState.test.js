@@ -7,6 +7,7 @@ import {
   paneWidthStorageKey,
   previewIdFromEvent,
   clearSessionPreviewStorage,
+  previewIframeSrc,
 } from './sessionPreviewState.js';
 
 describe('derivePaneState', () => {
@@ -160,6 +161,18 @@ describe('paneOpenStorageKey / paneWidthStorageKey', () => {
     expect(paneOpenStorageKey(null)).toBe(null);
     expect(paneOpenStorageKey(undefined)).toBe(null);
     expect(paneWidthStorageKey('')).toBe(null);
+  });
+});
+
+describe('previewIframeSrc', () => {
+  it('appends a cache-buster query param', () => {
+    expect(previewIframeSrc('http://localhost:4100/', 42)).toBe('http://localhost:4100/?_ah=42');
+  });
+
+  it('preserves an existing query string', () => {
+    expect(previewIframeSrc('http://localhost:4100/?foo=1', 99)).toBe(
+      'http://localhost:4100/?foo=1&_ah=99',
+    );
   });
 });
 

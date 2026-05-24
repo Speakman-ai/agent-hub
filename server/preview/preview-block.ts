@@ -113,6 +113,7 @@ export type PreviewEventKind =
    * instead of waiting for `preview` / `preview_failed`.
    */
   | 'preview_starting'
+  | 'preview_stopped'
   /**
    * Per-line log forwarding for a still-running preview process. Emitted
    * by `PreviewRuntime` via its `notifyLog` seam when production wires it
@@ -224,9 +225,8 @@ export interface PreviewHandlerDeps {
   buildWizard?: (projectId: string) => { view: string; projectId: string };
   /**
    * How long to wait for the preview to flip to `ready` before giving
-   * up and surfacing `preview_failed`. Defaults to 120s — matches the
-   * runtime's bumped health-check budget for cold worktrees that
-   * `npm install` on first boot.
+   * up and surfacing `preview_failed`. When omitted, derived from
+   * {@link resolvePreviewHandlerReadyTimeoutMs} (compose → 10 min default).
    */
   readyTimeoutMs?: number;
   /** Polling cadence for the ready check. Defaults to 500ms. */
@@ -335,6 +335,29 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
 // ─── Handler ────────────────────────────────────────────────────────────
 
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
+
+/** Compose cold-boot budget (prod dump + npm ci + ng serve). Keep in sync with compose runtime default. */
+const COMPOSE_PREVIEW_READY_TIMEOUT_MS = 600_000;
+
+/**
+ * How long {@link handlePreviewBlock} waits for `runtime.getById` → `ready`.
+ * Compose previews use the longer budget; legacy spawn keeps 120s.
+ */
+export function resolvePreviewHandlerReadyTimeoutMs(
+  project: {
+    prEnv?: { preview?: { compose?: { entryService?: string; readyTimeoutMs?: number } } };
+  },
+  composeReadyTimeoutMs: number = COMPOSE_PREVIEW_READY_TIMEOUT_MS,
+): number {
+  const perProject = project.prEnv?.preview?.compose?.readyTimeoutMs;
+  if (typeof perProject === 'number' && Number.isFinite(perProject) && perProject > 0) {
+    return perProject;
+  }
+  if (project.prEnv?.preview?.compose?.entryService) {
+    return composeReadyTimeoutMs;
+  }
+  return DEFAULT_READY_TIMEOUT_MS;
+}
 const DEFAULT_READY_POLL_INTERVAL_MS = 500;
 const DEFAULT_STARTING_REBROADCAST_INTERVAL_MS = 2_000;
 
@@ -391,12 +414,14 @@ export async function handlePreviewBlock(
     takeScreenshot,
     buildWizardUrl = defaultBuildWizardUrl,
     buildWizard = defaultBuildWizard,
-    readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
     readyPollIntervalMs = DEFAULT_READY_POLL_INTERVAL_MS,
     startingRebroadcastIntervalMs = DEFAULT_STARTING_REBROADCAST_INTERVAL_MS,
     sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
     now = () => Date.now(),
   } = deps;
+  const readyTimeoutMs =
+    deps.readyTimeoutMs ??
+    resolvePreviewHandlerReadyTimeoutMs(project, COMPOSE_PREVIEW_READY_TIMEOUT_MS);
 
   // ── Gate 1: project has a preview config? ───────────────────────────
   const previewCfg = project.prEnv?.preview;
@@ -437,6 +462,18 @@ export async function handlePreviewBlock(
   let previewId = '';
   let port: number;
   let url: string;
+  // Immediate feedback — compose boot (clone wait, build) can take minutes
+  // before `startPreview` returns and the runtime emits its own starting event.
+  broadcast({
+    type: 'agenthub_preview',
+    kind: 'preview_starting',
+    sessionId,
+    previewId: '',
+    target: task.target,
+    route: task.route,
+    agentReason: task.reason,
+    logTail: ['[preview] Starting…'],
+  } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
   try {
     const result = await runtime.startPreview(sessionId, project, worktreePath);
     previewId = result.previewId;
@@ -551,5 +588,6 @@ export async function handlePreviewBlock(
     fullUrl,
     port,
     screenshotPath,
+    logTail: runtime.getLogTail(previewId),
   } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
 }

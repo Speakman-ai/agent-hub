@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { translateContainerPathToHost } from './host-path-translation.js';
+import {
+  resolveComposeProjectDirectory,
+  translateContainerPathToHost,
+} from './host-path-translation.js';
 
 describe('translateContainerPathToHost', () => {
   it('returns null and a reason when no host root is configured', () => {
@@ -185,6 +188,17 @@ describe('translateContainerPathToHost', () => {
     expect(r.skippedReason).toMatch(/\/home\/node\/\.agent-hub\/workspaces/);
   });
 
+  it('rewrites macOS ~/projects checkouts when mac projects roots are configured', () => {
+    const r = translateContainerPathToHost('/Users/dev/projects/surveytracker', {
+      hostProjectsDir: null,
+      hostWorkspacesDir: null,
+      hostMacProjectsDir: '/Users/dev/projects',
+      containerMacProjectsDir: '/Users/dev/projects',
+    });
+    expect(r.hostPath).toBe('/Users/dev/projects/surveytracker');
+    expect(r.matchedRoot).toBe('macProjects');
+  });
+
   it('picks the longest-matching prefix when one root is nested under the other', () => {
     // Defensive: production roots are disjoint, but a custom operator
     // setup could in principle nest one root under the other. Make sure
@@ -197,5 +211,66 @@ describe('translateContainerPathToHost', () => {
     });
     expect(r.hostPath).toBe('/host/workspaces/foo');
     expect(r.matchedRoot).toBe('workspaces');
+  });
+});
+
+describe('resolveComposeProjectDirectory', () => {
+  it('uses the translated host path when it is visible to this process', () => {
+    const worktree = '/data/.agent-hub/workspaces/p/session-abc';
+    const translation = {
+      containerPath: worktree,
+      hostPath: '/host/workspaces/p/session-abc',
+      matchedRoot: 'workspaces' as const,
+    };
+    expect(
+      resolveComposeProjectDirectory(worktree, translation, {
+        pathExists: (p) => p === translation.hostPath,
+      }),
+    ).toBe(translation.hostPath);
+  });
+
+  it('falls back to the container worktree when the host path is not visible and no mapping env', () => {
+    const savedProjects = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    const savedWorkspaces = process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    try {
+      const worktree = '/data/.agent-hub/workspaces/surveytracker/session-6445b988';
+      const translation = translateContainerPathToHost(worktree, {
+        hostWorkspacesDir: '/Users/dev/.agent-hub/data/.agent-hub/workspaces',
+        containerWorkspacesDir: '/data/.agent-hub/workspaces',
+      });
+      expect(
+        resolveComposeProjectDirectory(worktree, translation, {
+          pathExists: () => false,
+        }),
+      ).toBe(worktree);
+    } finally {
+      if (savedProjects === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = savedProjects;
+      if (savedWorkspaces === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+      else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = savedWorkspaces;
+    }
+  });
+
+  it('uses translated host path when mapping env is set even if invisible in container', () => {
+    const savedWorkspaces = process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    process.env.AGENT_HUB_HOST_WORKSPACES_DIR = '/host/workspaces';
+    try {
+      const worktree = '/data/.agent-hub/workspaces/p/session-abc';
+      const translation = {
+        containerPath: worktree,
+        hostPath: '/host/workspaces/p/session-abc',
+        matchedRoot: 'workspaces' as const,
+      };
+      expect(
+        resolveComposeProjectDirectory(worktree, translation, {
+          pathExists: () => false,
+        }),
+      ).toBe(translation.hostPath);
+    } finally {
+      if (savedWorkspaces === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+      else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = savedWorkspaces;
+    }
   });
 });
