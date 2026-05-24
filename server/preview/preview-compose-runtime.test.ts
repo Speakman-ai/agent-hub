@@ -1010,6 +1010,11 @@ describe('PreviewComposeRuntime — teardown', () => {
         fetch,
         clock,
         config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+        // Stub `existsSync` so requireVisibleComposeProjectDirectory
+        // accepts the synthetic /host/projects/* path this test pins
+        // — the path is never written to disk; the test only inspects
+        // the compose CLI argv.
+        pathExists: () => true,
       });
 
       // Container-side worktree path under the projects bind-mount root.
@@ -1051,6 +1056,7 @@ describe('PreviewComposeRuntime — teardown', () => {
         fetch,
         clock,
         config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+        pathExists: () => true,
       });
 
       const worktreePath = '/home/node/.agent-hub/workspaces/myproj/session-xyz';
@@ -1091,6 +1097,7 @@ describe('PreviewComposeRuntime — teardown', () => {
         fetch,
         clock,
         config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+        pathExists: () => true,
       });
 
       const worktreePath = '/home/node/projects/proj-x';
@@ -1137,6 +1144,7 @@ describe('PreviewComposeRuntime — teardown', () => {
         fetch,
         clock,
         config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+        pathExists: () => true,
       });
 
       const worktreePath = '/home/node/projects/legacy-proj';
@@ -1154,6 +1162,45 @@ describe('PreviewComposeRuntime — teardown', () => {
       // Re-translation against the env above must succeed and produce
       // the equivalent host path.
       expect(downPath).toBe('/host/projects/legacy-proj');
+    } finally {
+      if (prevHost === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = prevHost;
+    }
+  });
+
+  it('fails the group fast with an identity-mount hint when the translated host path is not visible inside this process', async () => {
+    // When the Hub container has AGENT_HUB_HOST_PROJECTS_DIR set but the
+    // operator forgot the identity-style bind mount (e.g. `docker run`
+    // launched before that mount-line landed in the user-data /
+    // docker-compose.yml), compose-go would fail ~minutes later with the
+    // opaque `unable to prepare context: path "<hostPath>" not found`.
+    // The runtime now preflights existsSync and throws with an actionable
+    // bind-mount hint, marks the group failed, and surfaces the hint in
+    // the preview log tail so the build-test UI shows the fix verbatim.
+    const prevHost = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    process.env.AGENT_HUB_HOST_PROJECTS_DIR = '/host/projects';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn({ exitImmediately: true });
+      const { fetch } = makeFetch({ alwaysFail: true });
+      const clock = makeClock();
+      const runtime = new PreviewComposeRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch,
+        clock,
+        config: { readyTimeoutMs: 1_000, healthIntervalMs: 10_000 },
+        pathExists: () => false,
+      });
+
+      const worktreePath = '/home/node/projects/no-identity-mount';
+      await expect(
+        runtime.startPreview('sess-no-mount', makeProject(), worktreePath),
+      ).rejects.toThrow(/not readable inside this process/);
+
+      // No compose spawn should have fired — the preflight blocks before
+      // we shell out to docker. If the count is > 0 we leaked work.
+      expect(harness.calls.length).toBe(0);
     } finally {
       if (prevHost === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
       else process.env.AGENT_HUB_HOST_PROJECTS_DIR = prevHost;

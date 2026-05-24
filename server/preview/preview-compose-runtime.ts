@@ -64,6 +64,7 @@
 import type { Database } from 'better-sqlite3';
 import { spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
@@ -74,6 +75,7 @@ import {
 import type { PreviewComposeConfig, PrEnvPreviewConfig, Project } from '../types.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import {
+  requireVisibleComposeProjectDirectory,
   resolveComposeProjectDirectory,
   translateContainerPathToHost,
 } from './host-path-translation.js';
@@ -275,6 +277,13 @@ export interface PreviewComposeRuntimeDeps {
    * uses {@link removeComposeProjectVolumesDefault}; tests may stub.
    */
   removeComposeProjectVolumes?: RemoveComposeProjectVolumesFn;
+  /**
+   * Predicate used by the strict {@link requireVisibleComposeProjectDirectory}
+   * preflight to check whether the resolved host path is readable inside
+   * this process. Defaults to {@link existsSync}. Tests stub this so they
+   * don't need to provision real host paths on disk.
+   */
+  pathExists?: (path: string) => boolean;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -549,6 +558,7 @@ export class PreviewComposeRuntime {
   private readonly writeOverrideFile: WriteOverrideFileFn;
   private readonly deleteOverrideFile: DeleteOverrideFileFn;
   private readonly removeComposeProjectVolumes: RemoveComposeProjectVolumesFn;
+  private readonly pathExists: (path: string) => boolean;
   private readonly notifyLog?: ComposePreviewNotifyLogFn;
   private readonly logTailLines: number;
 
@@ -582,6 +592,7 @@ export class PreviewComposeRuntime {
     this.deleteOverrideFile = deps.deleteOverrideFile ?? (() => undefined);
     this.removeComposeProjectVolumes =
       deps.removeComposeProjectVolumes ?? removeComposeProjectVolumesDefault;
+    this.pathExists = deps.pathExists ?? existsSync;
     this.notifyLog = deps.notifyLog;
     this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
     if (this.portRange.min > this.portRange.max) {
@@ -733,10 +744,22 @@ export class PreviewComposeRuntime {
     // container `worktreePath` to its host equivalent and pass it
     // through as `--project-directory` so the daemon sees real source.
     const hostProjectDirectoryUp = translateContainerPathToHost(worktreePath);
-    const composeProjectDirectory = resolveComposeProjectDirectory(
-      worktreePath,
-      hostProjectDirectoryUp,
-    );
+    let composeProjectDirectory: string;
+    try {
+      composeProjectDirectory = requireVisibleComposeProjectDirectory(
+        worktreePath,
+        hostProjectDirectoryUp,
+        { pathExists: this.pathExists },
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Surface in the preview log tail too — the build-test UI shows this
+      // verbatim, so operators get the identity-mount hint directly in the
+      // failure message instead of a 600s opaque timeout.
+      this.appendComposeLog(groupId, `[preview-compose] ${reason}`, 'stderr');
+      await this.markGroupFailed(groupId, reason);
+      throw new Error(reason);
+    }
     if (
       hostProjectDirectoryUp.hostPath &&
       composeProjectDirectory !== hostProjectDirectoryUp.hostPath

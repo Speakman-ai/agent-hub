@@ -23,6 +23,16 @@ services:
       # Do not overlay that path with ~/.agent-hub/workspaces — it hides session clones.
       - ${AGENT_HUB_HOST_ORGS_DIR:-${HOME}/.agent-hub/orgs}:/data/.agent-hub/orgs
       - ${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}:/data/.agent-hub/projects
+      # Identity-style bind mounts so compose-go inside this container can
+      # stat() build contexts at the host path that `--project-directory`
+      # emits. Without these, `docker compose ... up -d --build` for any
+      # preview that has a `build:` directive fails with
+      #   `unable to prepare context: path "<hostPath>" not found`
+      # after a long timeout. See server/preview/host-path-translation.ts
+      # and the matching mounts in
+      # ops/terraform/agent-hub-user-data.tftpl lines 256-259 / 401-404.
+      - ${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}:${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}
+      - ${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}/.agent-hub/workspaces:${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}/.agent-hub/workspaces
       # macOS: projects.json often stores cwd as ~/projects/<repo> — bind at the same absolute
       # path so the docker CLI and daemon both see source (PR #1074 translation can use identity).
       - ${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}:${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}

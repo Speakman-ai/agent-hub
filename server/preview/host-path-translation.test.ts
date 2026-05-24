@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  requireVisibleComposeProjectDirectory,
   resolveComposeProjectDirectory,
   translateContainerPathToHost,
 } from './host-path-translation.js';
@@ -269,6 +270,79 @@ describe('resolveComposeProjectDirectory', () => {
         }),
       ).toBe(translation.hostPath);
     } finally {
+      if (savedWorkspaces === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+      else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = savedWorkspaces;
+    }
+  });
+});
+
+describe('requireVisibleComposeProjectDirectory', () => {
+  it('returns the resolved directory when it is visible to this process', () => {
+    const worktree = '/data/.agent-hub/workspaces/p/session-abc';
+    const translation = {
+      containerPath: worktree,
+      hostPath: '/host/workspaces/p/session-abc',
+      matchedRoot: 'workspaces' as const,
+    };
+    expect(
+      requireVisibleComposeProjectDirectory(worktree, translation, {
+        pathExists: (p) => p === translation.hostPath,
+      }),
+    ).toBe(translation.hostPath);
+  });
+
+  it('throws an actionable error when the host path is configured but invisible inside the container', () => {
+    const savedWorkspaces = process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    process.env.AGENT_HUB_HOST_WORKSPACES_DIR = '/host/workspaces';
+    try {
+      const worktree = '/data/.agent-hub/workspaces/p/session-abc';
+      const translation = {
+        containerPath: worktree,
+        hostPath: '/host/workspaces/p/session-abc',
+        matchedRoot: 'workspaces' as const,
+      };
+      expect(() =>
+        requireVisibleComposeProjectDirectory(worktree, translation, {
+          pathExists: () => false,
+        }),
+      ).toThrow(/not readable inside this process/);
+      // The error should include the actionable bind-mount hint with the
+      // exact path. Operators paste this directly into their docker run /
+      // compose file.
+      expect(() =>
+        requireVisibleComposeProjectDirectory(worktree, translation, {
+          pathExists: () => false,
+        }),
+      ).toThrow(/-v \/host\/workspaces\/p\/session-abc:\/host\/workspaces\/p\/session-abc/);
+    } finally {
+      if (savedWorkspaces === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+      else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = savedWorkspaces;
+    }
+  });
+
+  it('does not throw when env mapping is unset and the lenient resolver returns the worktree', () => {
+    // No env mapping configured -> resolveComposeProjectDirectory falls
+    // back to the container worktree, which exists in the dev / Electron
+    // case. requireVisible only checks the resolved value, so this is the
+    // correct behaviour for non-containerized deployments.
+    const savedProjects = process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    const savedWorkspaces = process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+    delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
+    try {
+      const worktree = '/data/.agent-hub/workspaces/p/session-abc';
+      const translation = translateContainerPathToHost(worktree, {
+        hostProjectsDir: null,
+        hostWorkspacesDir: null,
+      });
+      expect(
+        requireVisibleComposeProjectDirectory(worktree, translation, {
+          pathExists: (p) => p === worktree,
+        }),
+      ).toBe(worktree);
+    } finally {
+      if (savedProjects === undefined) delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
+      else process.env.AGENT_HUB_HOST_PROJECTS_DIR = savedProjects;
       if (savedWorkspaces === undefined) delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
       else process.env.AGENT_HUB_HOST_WORKSPACES_DIR = savedWorkspaces;
     }

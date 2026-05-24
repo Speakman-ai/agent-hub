@@ -349,3 +349,58 @@ export function resolveComposeProjectDirectory(
   }
   return trimmedWorktree;
 }
+
+/**
+ * Strict variant of {@link resolveComposeProjectDirectory} used at the
+ * `docker compose ... up --build` spawn site.
+ *
+ * When the Hub server runs inside a container and we emit
+ * `--project-directory <hostPath>`, compose-go (running INSIDE this
+ * container) tars the build context locally before posting it to the
+ * docker daemon. If the host path is not visible at the same absolute
+ * path inside this container (i.e. no identity-style bind mount), the
+ * tar read fails with the opaque message:
+ *
+ *   `unable to prepare context: path "<hostPath>" not found`
+ *
+ * That manifests ~minutes later (after the compose CLI start-up
+ * overhead) instead of immediately, and the build-test surface returns
+ * a 600s timeout instead of an actionable hint. This helper preflights
+ * the visibility check and throws an actionable error pointing at the
+ * required identity-style bind mount.
+ *
+ * Tear-down / restart callers MUST continue to use the lenient
+ * {@link resolveComposeProjectDirectory} — throwing on stop would leak
+ * the compose project (no `down -v`, no volume removal, port stays
+ * claimed) when the mapping moves between start and stop. Only the
+ * up-build path needs this preflight.
+ */
+export function requireVisibleComposeProjectDirectory(
+  worktreePath: string,
+  translation: HostPathTranslation,
+  options: ResolveComposeProjectDirectoryOptions = {},
+): string {
+  const exists = options.pathExists ?? existsSync;
+  const directory = resolveComposeProjectDirectory(worktreePath, translation, options);
+  // Only fire the preflight when we're about to emit the TRANSLATED host
+  // path (env mapping configured and translation succeeded). When the
+  // resolver falls back to the container worktree, that path is already
+  // a container-local path the CLI can stat — a missing worktree is a
+  // different failure mode and not the identity-mount bug this check
+  // exists to catch. Skipping this guard for the worktree case also
+  // means dev / Electron / test deployments that don't configure the
+  // env mapping keep working without injecting a pathExists stub.
+  const emittingHostPath = translation.hostPath !== null && directory === translation.hostPath;
+  if (!emittingHostPath) return directory;
+  if (exists(directory)) return directory;
+  throw new Error(
+    `Compose project directory ${directory} is not readable inside this process. ` +
+      `When the Hub server runs in a container with /var/run/docker.sock mounted in, ` +
+      `compose-go (inside this container) must be able to stat the build context at ` +
+      `the same absolute path the docker daemon sees on the host. Add an identity-style ` +
+      `bind mount to the Hub container, e.g. \`-v ${directory}:${directory}\`. ` +
+      `The terraform user-data template (ops/terraform/agent-hub-user-data.tftpl) ships ` +
+      `these mounts by default; see lines 240-269 there or docker-compose.yml at the ` +
+      `repo root for the local-dev equivalent.`,
+  );
+}
