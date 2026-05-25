@@ -37,6 +37,14 @@ export interface PreviewEnvironmentBuildBody {
     entryPort: number;
     envFile?: string;
     healthPath?: string;
+    /**
+     * Per-project override for the compose preview "ready" health budget.
+     * Optional; when omitted the server default (10 min, configurable via
+     * `previewComposeReadyTimeoutMs` / `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`)
+     * is used. Final bounds (5,000–1,800,000 ms) are enforced downstream in
+     * `validatePrEnvPreviewCompose`.
+     */
+    readyTimeoutMs?: number;
   };
   /** When bootstrapping, YAML to write before apply. */
   composeYaml?: string;
@@ -127,6 +135,12 @@ export async function runPreviewEnvironmentBuild(deps: {
     healthPath,
   };
   if (envFile) composeBlock.envFile = envFile;
+  // Forward optional readyTimeoutMs as-is — bounds are enforced by
+  // validatePrEnvPreviewCompose downstream, so invalid values surface as
+  // a 400 from buildPrEnvPatchFromWizardApply with the exact message.
+  if (body.compose?.readyTimeoutMs !== undefined && body.compose?.readyTimeoutMs !== null) {
+    composeBlock.readyTimeoutMs = body.compose.readyTimeoutMs;
+  }
 
   const preview: Record<string, unknown> = {
     enabled: true,

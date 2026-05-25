@@ -26,6 +26,11 @@ const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
 const DEFAULT_COMPOSE_ENTRY_PORT = 3000;
 const COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 const COMPOSE_PATH_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
+// Mirror the server's bounds in `server/routes/projects.ts`
+// (PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS / _MAX_MS). Kept in sync with the
+// note in `formFromProject` — empty = use server default (10 min today).
+const PREVIEW_READY_TIMEOUT_MIN_MS = 5_000;
+const PREVIEW_READY_TIMEOUT_MAX_MS = 1_800_000;
 
 const DEFAULT_FORM = Object.freeze({
   composeFile: DEFAULT_COMPOSE_FILE,
@@ -37,6 +42,10 @@ const DEFAULT_FORM = Object.freeze({
   idleTTL: 600,
   captureRoutes: ['/'],
   composeYaml: '',
+  // Empty string = leave the server default in place. We only persist the
+  // field when the user types a value, so the form does not silently
+  // overwrite a previously saved override.
+  composeReadyTimeoutMs: '',
 });
 
 export function isPreviewConfigured(project) {
@@ -49,7 +58,7 @@ export function isPreviewConfigured(project) {
   );
 }
 
-function formFromProject(project) {
+export function formFromProject(project) {
   if (!project) return { ...DEFAULT_FORM };
   const preview = project.prEnv?.preview || {};
   const compose = preview.compose || {};
@@ -72,6 +81,12 @@ function formFromProject(project) {
         ? [...preview.captureRoutes]
         : [...DEFAULT_FORM.captureRoutes],
     composeYaml: '',
+    // Stored as a string for the controlled <input type="number">; empty
+    // string means "no override, use the server default".
+    composeReadyTimeoutMs:
+      typeof compose.readyTimeoutMs === 'number' && Number.isFinite(compose.readyTimeoutMs)
+        ? String(compose.readyTimeoutMs)
+        : '',
   };
 }
 
@@ -185,6 +200,19 @@ export function buildBuildPayload(form, envRows, { needsBootstrap }) {
   };
   const envFile = (form.composeEnvFile || '').trim();
   if (envFile) payload.compose.envFile = envFile;
+  // Only forward readyTimeoutMs when the user actually typed a value. An
+  // empty input means "use the server default" — sending a zero / NaN
+  // would trip the 5,000–1,800,000 ms bound check downstream.
+  const readyTimeoutRaw =
+    typeof form.composeReadyTimeoutMs === 'string'
+      ? form.composeReadyTimeoutMs.trim()
+      : form.composeReadyTimeoutMs;
+  if (readyTimeoutRaw !== '' && readyTimeoutRaw !== undefined && readyTimeoutRaw !== null) {
+    const parsed = Number(readyTimeoutRaw);
+    if (Number.isFinite(parsed)) {
+      payload.compose.readyTimeoutMs = Math.trunc(parsed);
+    }
+  }
   if (needsBootstrap && form.composeYaml?.trim()) {
     payload.composeYaml = form.composeYaml.trim();
   }
@@ -884,6 +912,32 @@ export default function PreviewSection({
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm"
                   data-testid="preview-idle-ttl"
                 />
+              </div>
+              <div className="md:col-span-2">
+                <label htmlFor="preview-ready-timeout" className="block text-xs text-gray-400 mb-1">
+                  Ready timeout (ms){' '}
+                  <span className="text-gray-500">
+                    — leave blank for the server default (10 min)
+                  </span>
+                </label>
+                <input
+                  id="preview-ready-timeout"
+                  type="number"
+                  min={PREVIEW_READY_TIMEOUT_MIN_MS}
+                  max={PREVIEW_READY_TIMEOUT_MAX_MS}
+                  step={1000}
+                  placeholder="e.g. 1800000 for 30 min"
+                  value={form.composeReadyTimeoutMs}
+                  onChange={(e) => setField('composeReadyTimeoutMs', e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  data-testid="preview-ready-timeout"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  How long Agent Hub waits for the entry service to report healthy after compose
+                  starts. Raise this when your boot sequence (DB restore, asset build, framework
+                  compile) needs more than 10 minutes. Bounds: {PREVIEW_READY_TIMEOUT_MIN_MS}–
+                  {PREVIEW_READY_TIMEOUT_MAX_MS} ms (5 s – 30 min).
+                </p>
               </div>
             </div>
           </section>

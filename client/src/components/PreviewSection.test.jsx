@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import PreviewSection, { isPreviewConfigured, mergeDraftIntoForm } from './PreviewSection.jsx';
+import PreviewSection, {
+  isPreviewConfigured,
+  mergeDraftIntoForm,
+  formFromProject,
+  buildBuildPayload,
+} from './PreviewSection.jsx';
 import { api } from '../utils/api.js';
 
 vi.mock('../utils/api.js', () => ({
@@ -189,5 +194,111 @@ describe('PreviewSection', () => {
       expect(api.startPreviewWizard).toHaveBeenCalledWith('proj-1');
       expect(onOpen).toHaveBeenCalled();
     });
+  });
+
+  it('renders the per-project Ready timeout input alongside Idle TTL', async () => {
+    render(<PreviewSection projects={configuredProjects} />);
+    await waitFor(() => expect(api.getPreviewEnvironmentDraft).toHaveBeenCalled());
+    const input = screen.getByTestId('preview-ready-timeout');
+    expect(input).toBeInTheDocument();
+    // Empty by default for a project with no override saved — the helper
+    // text must point operators at the 10-minute server default rather
+    // than silently changing behavior.
+    expect(input.value).toBe('');
+    expect(input.min).toBe('5000');
+    expect(input.max).toBe('1800000');
+  });
+
+  it('forwards readyTimeoutMs from the form to buildPreviewEnvironment when set', async () => {
+    api.buildPreviewEnvironment.mockResolvedValue({ ok: true, steps: {} });
+    render(<PreviewSection projects={configuredProjects} />);
+    await waitFor(() => expect(api.getPreviewEnvironmentDraft).toHaveBeenCalled());
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('preview-ready-timeout'), {
+        target: { value: '1500000' },
+      });
+      fireEvent.click(screen.getByTestId('preview-build-button'));
+    });
+    await waitFor(() => expect(api.buildPreviewEnvironment).toHaveBeenCalled());
+    const [, payload] = api.buildPreviewEnvironment.mock.calls[0];
+    expect(payload.compose.readyTimeoutMs).toBe(1_500_000);
+  });
+});
+
+describe('formFromProject — readyTimeoutMs', () => {
+  it('reads a saved per-project override back into the form as a string', () => {
+    const form = formFromProject({
+      prEnv: {
+        preview: {
+          enabled: true,
+          compose: { entryService: 'web', entryPort: 4200, readyTimeoutMs: 1_500_000 },
+        },
+      },
+    });
+    expect(form.composeReadyTimeoutMs).toBe('1500000');
+  });
+
+  it('returns empty string when the project has no override (server default applies)', () => {
+    const form = formFromProject({
+      prEnv: {
+        preview: {
+          enabled: true,
+          compose: { entryService: 'web', entryPort: 4200 },
+        },
+      },
+    });
+    expect(form.composeReadyTimeoutMs).toBe('');
+  });
+
+  it('ignores non-numeric readyTimeoutMs and falls back to empty', () => {
+    const form = formFromProject({
+      prEnv: {
+        preview: {
+          enabled: true,
+          compose: { entryService: 'web', entryPort: 4200, readyTimeoutMs: 'thirty minutes' },
+        },
+      },
+    });
+    expect(form.composeReadyTimeoutMs).toBe('');
+  });
+});
+
+describe('buildBuildPayload — readyTimeoutMs', () => {
+  const baseForm = {
+    composeFile: 'docker-compose.yml',
+    composeEntryService: 'web',
+    composeEntryPort: 4200,
+    composeEnvFile: '',
+    healthPath: '/',
+    idleTTL: 600,
+    captureRoutes: ['/'],
+    composeYaml: '',
+    composeReadyTimeoutMs: '',
+  };
+
+  it('omits readyTimeoutMs when the input is blank', () => {
+    const payload = buildBuildPayload(baseForm, [], { needsBootstrap: false });
+    expect(payload.compose.readyTimeoutMs).toBeUndefined();
+  });
+
+  it('includes a parsed integer when the user typed a numeric value', () => {
+    const payload = buildBuildPayload({ ...baseForm, composeReadyTimeoutMs: '1500000' }, [], {
+      needsBootstrap: false,
+    });
+    expect(payload.compose.readyTimeoutMs).toBe(1_500_000);
+  });
+
+  it('trims surrounding whitespace before parsing', () => {
+    const payload = buildBuildPayload({ ...baseForm, composeReadyTimeoutMs: '  900000  ' }, [], {
+      needsBootstrap: false,
+    });
+    expect(payload.compose.readyTimeoutMs).toBe(900_000);
+  });
+
+  it('drops the field rather than sending NaN when the user types junk', () => {
+    const payload = buildBuildPayload({ ...baseForm, composeReadyTimeoutMs: 'not-a-number' }, [], {
+      needsBootstrap: false,
+    });
+    expect(payload.compose.readyTimeoutMs).toBeUndefined();
   });
 });
