@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inferPrUrlFromSessionTitle } from './session-title-pr.js';
+import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from './session-title-pr.js';
 
 describe('inferPrUrlFromSessionTitle', () => {
   it('returns null for empty / non-string names', () => {
@@ -48,5 +48,34 @@ describe('inferPrUrlFromSessionTitle', () => {
 
   it('does not match Resolve pattern mid-string', () => {
     expect(inferPrUrlFromSessionTitle('prefix [Resolve PR #1] x', 'a/b')).toBeNull();
+  });
+});
+
+describe('isResolvePrSessionTitle', () => {
+  it('returns false for null / undefined / non-string names', () => {
+    expect(isResolvePrSessionTitle(null)).toBe(false);
+    expect(isResolvePrSessionTitle(undefined)).toBe(false);
+    expect(isResolvePrSessionTitle('')).toBe(false);
+    expect(isResolvePrSessionTitle('   ')).toBe(false);
+  });
+
+  it('recognises [Resolve PR #N] at the start of the title', () => {
+    expect(isResolvePrSessionTitle('[Resolve PR #42] Fix thing')).toBe(true);
+    expect(isResolvePrSessionTitle('[resolve pr #3] x')).toBe(true);
+  });
+
+  it('tolerates leading whitespace (matches after trim)', () => {
+    expect(isResolvePrSessionTitle('   [Resolve PR #7] anything')).toBe(true);
+  });
+
+  it('does NOT match Review:, ad-hoc titles, or mid-string markers', () => {
+    expect(isResolvePrSessionTitle('Review: PR #42 thing')).toBe(false);
+    expect(isResolvePrSessionTitle('Fix bug in module')).toBe(false);
+    expect(isResolvePrSessionTitle('prefix [Resolve PR #1] x')).toBe(false);
+  });
+
+  it('requires a numeric PR id after #', () => {
+    expect(isResolvePrSessionTitle('[Resolve PR #] missing number')).toBe(false);
+    expect(isResolvePrSessionTitle('[Resolve PR #abc] not numeric')).toBe(false);
   });
 });

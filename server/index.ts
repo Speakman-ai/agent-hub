@@ -642,7 +642,11 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
   app.use(express.static(CLIENT_DIST));
 }
 
-const activeProcesses = new Map<string, ChildProcess>();
+// Exported so server tests can inject a fake entry to exercise the
+// "session is still streaming" guard on `POST /api/sessions/:id/create-pr`
+// without spinning up a real CLI. Production code should keep using the
+// existing call sites (`activeProcesses.set` / `.get` / `.delete`) below.
+export const activeProcesses = new Map<string, ChildProcess>();
 
 // ─── Preview runtimes ───────────────────────────────────────────────────
 //

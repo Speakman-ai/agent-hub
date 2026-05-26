@@ -40,7 +40,7 @@ import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
-import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '../session-title-pr.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -1626,6 +1626,32 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (getProjectMode(project) === 'workflow') {
         return res.status(403).json({
           error: 'Session PR creation is disabled while this project is in workflow mode',
+        });
+      }
+
+      // Refuse to commit while the agent process is still streaming output —
+      // a `git commit -a` mid-stream captures a partially-written file and
+      // produces a meaningless PR. The client previously gated this via
+      // `!streamingMsgId`, but moving the gate server-side keeps the
+      // "show the button, server validates" contract honest. Caller surfaces
+      // `error` in the inline panel (ChangesReadyBox.setError).
+      if (activeProcesses.has(sessionId)) {
+        return res.status(409).json({
+          error: 'Session is still streaming — wait for the agent to finish before creating a PR',
+          code: 'session_streaming',
+        });
+      }
+
+      // Sessions spawned from Pull Requests → Resolve PR push fixes to the
+      // existing PR rather than opening a new one. The `[Resolve PR #N]`
+      // title marker is the contract; honour it server-side so the resolve
+      // flow never silently forks a second PR if the client renders both
+      // banners simultaneously.
+      if (isResolvePrSessionTitle(session.name)) {
+        return res.status(409).json({
+          error:
+            'This session is a Resolve PR session — push fixes to the existing PR rather than opening a new one.',
+          code: 'resolve_pr_session',
         });
       }
 

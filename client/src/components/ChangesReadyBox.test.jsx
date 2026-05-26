@@ -266,4 +266,33 @@ describe('ChangesReadyBox tolerates missing changes prop', () => {
       expect(screen.getByText(/workflow mode/)).toBeInTheDocument();
     });
   });
+
+  it('surfaces a server 409 "session streaming" rejection inline', async () => {
+    api.createPrFromSession.mockRejectedValueOnce(
+      new Error(
+        '409: Session is still streaming — wait for the agent to finish before creating a PR',
+      ),
+    );
+    render(<ChangesReadyBox sessionId="s1" />);
+    fireEvent.click(screen.getByTestId('create-ticket-pr-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-ticket-pr-popover')).toBeInTheDocument();
+      expect(screen.getByText(/still streaming/)).toBeInTheDocument();
+    });
+  });
+
+  it('surfaces a server 409 resolve-PR rejection inline', async () => {
+    api.createPrFromSession.mockRejectedValueOnce(
+      new Error(
+        '409: This session is a Resolve PR session — push fixes to the existing PR rather than opening a new one.',
+      ),
+    );
+    render(<ChangesReadyBox sessionId="s1" />);
+    fireEvent.click(screen.getByTestId('create-ticket-pr-button'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Resolve PR session/)).toBeInTheDocument();
+    });
+  });
 });

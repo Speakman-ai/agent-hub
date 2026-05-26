@@ -31,3 +31,17 @@ export function inferPrUrlFromSessionTitle(
 
   return `https://github.com/${repoStr}/pull/${n}`;
 }
+
+/**
+ * Sessions spawned from Pull Requests → Resolve PR push fixes to an
+ * existing PR rather than opening a new one. Used to gate
+ * `POST /api/sessions/:id/create-pr` so the action does not silently
+ * fork a second PR when the user clicks "Create ticket & PR" inside a
+ * resolve-PR chat.
+ *
+ * Mirror of `shared/utils/sessionTitlePr.js#isResolvePrSessionTitle`.
+ */
+export function isResolvePrSessionTitle(sessionName: string | null | undefined): boolean {
+  if (sessionName == null || typeof sessionName !== 'string') return false;
+  return /^\[Resolve PR #\d+\]/i.test(sessionName.trim());
+}

@@ -18,7 +18,14 @@ import { api } from '../utils/api.js';
  *
  * Props:
  *   sessionId         — the session that has pending changes
- *   changes           — { agentId, branch, hasUncommitted, hasUnpushed }
+ *   changes           — Optional. { agentId, branch, hasUncommitted, hasUnpushed }.
+ *                       The parent always renders this component while a
+ *                       session is open, so `changes` may be `undefined` /
+ *                       sparse before the server reports a `changes_ready`
+ *                       event. Every read inside this component goes through
+ *                       `changes?.…` or `branchLabel` — DO NOT add new
+ *                       `changes.foo` reads without a guard, or the chat
+ *                       toolbar will crash on a fresh worktree-less session.
  *   defaultAutoMerge  — initial value for the per-PR auto-merge toggle.
  *                       Comes from `project.githubWorkflow.autoMerge`
  *                       (Layer 1). User can flip locally before creating
