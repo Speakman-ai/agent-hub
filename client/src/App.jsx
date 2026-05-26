@@ -56,7 +56,7 @@ import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck.js';
 import { api } from './utils/api.js';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
-import { isNearBottom } from './utils/chatScroll.js';
+import { isNearBottom, forcePinChatTailScroll } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
@@ -141,6 +141,8 @@ export default function App() {
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
+  const streamingMsgIdRef = useRef(null);
+  const [composerPrefill, setComposerPrefill] = useState(null);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
@@ -517,6 +519,29 @@ export default function App() {
       isNearBottomRef.current = true;
       setShowScrollBtn(false);
     });
+  }, []);
+
+  useEffect(() => {
+    streamingMsgIdRef.current = streamingMsgId;
+  }, [streamingMsgId]);
+
+  const pinChatTail = useCallback((messageId) => {
+    isNearBottomRef.current = true;
+    setShowScrollBtn(false);
+    const el = scrollContainerRef.current;
+    forcePinChatTailScroll(el, (container) => {
+      programmaticScrollRef.current = true;
+      container.scrollTop = container.scrollHeight;
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+    if (messageId && el) {
+      const anchor = el.querySelector(
+        `[data-message-id="${messageId}"] [data-testid="session-tail-bottom"]`,
+      );
+      anchor?.scrollIntoView?.({ block: 'end' });
+    }
   }, []);
 
   // Reset follow state when switching sessions (must run before the scroll layout effect below).
@@ -1187,6 +1212,7 @@ export default function App() {
           break;
         case 'interrupted':
           if (forActiveSession) {
+            pinChatTail(streamingMsgIdRef.current);
             setThinking(false);
             setStreamingContent('');
             setStreamingMsgId(null);
@@ -2163,19 +2189,22 @@ export default function App() {
         }
       }
     },
-    [notify, refreshAgents, showToast],
+    [notify, refreshAgents, showToast, pinChatTail],
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
+      const tailId = streamingMsgIdRef.current;
       send({ type: 'cancel', sessionId: activeSessionId });
       setThinking(false);
       setStreamingContent('');
       setStreamingMsgId(null);
+      setStreamingEngine(null);
+      pinChatTail(tailId);
     }
-  }, [activeSessionId, send]);
+  }, [activeSessionId, send, pinChatTail]);
 
   // Called by SessionTail after it lazy-fetches historical events for a
   // legacy message. Hoists them into the shared map so subsequent renders
@@ -3166,13 +3195,19 @@ export default function App() {
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
   };
 
-  const handleDequeue = (messageId) => {
+  const handleDequeue = (messageId, { cancelStream = false } = {}) => {
     if (activeSessionId) {
       send({ type: 'dequeue', sessionId: activeSessionId, messageId });
-      // Optimistically remove from local messages
       setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      if (cancelStream && (thinking || streamingContent)) {
+        handleCancel();
+      }
     }
   };
+
+  const handleEditInComposer = useCallback((messageId, content) => {
+    setComposerPrefill({ messageId, content });
+  }, []);
 
   const handleEditQueuedMessage = (messageId, content) => {
     if (activeSessionId) {
@@ -4090,6 +4125,7 @@ export default function App() {
                                     events={eventsByMessage[streamingMsgId]}
                                     agentColor={chatAccentColor}
                                     streaming
+                                    onInterrupt={handleCancel}
                                     onAskSubmit={handleAskSubmit}
                                     askSubmittedIds={askSubmitted}
                                     fromAgent={activeAgent}
@@ -4168,6 +4204,9 @@ export default function App() {
                                     agentColor={chatAccentColor}
                                     onDequeue={handleDequeue}
                                     onEditQueued={handleEditQueuedMessage}
+                                    onEditInComposer={handleEditInComposer}
+                                    onInterrupt={handleCancel}
+                                    inFlightWhileStreaming={isProcessing}
                                   />
                                 ))}
                               </>
@@ -4329,6 +4368,9 @@ export default function App() {
                         readOnly={activeAgent?.role === 'reviewer'}
                         draftKey={activeSessionId || activeAgentId || 'none'}
                         onFileError={(msg) => showToast(msg, 'error', 6000)}
+                        composerPrefill={composerPrefill}
+                        onComposerPrefillClear={() => setComposerPrefill(null)}
+                        onReplaceQueuedMessage={handleEditQueuedMessage}
                       />
                     </div>
                     {showSessionPreviewPane && (

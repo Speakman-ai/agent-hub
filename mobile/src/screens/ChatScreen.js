@@ -45,6 +45,7 @@ export default function ChatScreen() {
     isProcessing,
     handleSend,
     handleCancel,
+    chatScrollNonce,
     skills,
     delegations,
     messageQueues,
@@ -87,14 +88,14 @@ export default function ChatScreen() {
     }, [activeSessionId, reloadMessages]),
   );
 
-  // Auto-scroll when messages change
+  // Auto-scroll when messages change or the user interrupts a stream.
   useEffect(() => {
-    if (messages.length > 0 || thinking || streamingContent) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+    if (messages.length > 0 || thinking || streamingContent || chatScrollNonce > 0) {
+      const scroll = () => flatListRef.current?.scrollToEnd({ animated: chatScrollNonce === 0 });
+      setTimeout(scroll, 50);
+      setTimeout(scroll, 150);
     }
-  }, [messages, thinking, streamingContent, activeSessionId]);
+  }, [messages, thinking, streamingContent, activeSessionId, chatScrollNonce]);
 
   const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
   const activeDelegation = delegations[activeSessionId];
@@ -166,6 +167,8 @@ export default function ChatScreen() {
               agentColor={activeAgent?.color}
               onDequeue={isQueued ? handleDequeue : undefined}
               onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
+              onInterrupt={isQueued && isProcessing ? handleCancel : undefined}
+              inFlightWhileStreaming={isQueued && isProcessing}
               fromAgent={activeAgent}
               agents={agents}
               sessionHandoffs={sessionHandoffs}
@@ -196,6 +199,7 @@ export default function ChatScreen() {
               content={item.data.content}
               agentColor={activeAgent?.color}
               engine={item.data.engine}
+              onInterrupt={handleCancel}
             />
             {/* Parity with web (client/src/App.jsx): render a SessionTail for
                 the live-streaming message so stream events like

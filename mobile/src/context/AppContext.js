@@ -45,6 +45,8 @@ export function AppProvider({ children }) {
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
+  const streamingMsgIdRef = useRef(null);
+  const [chatScrollNonce, setChatScrollNonce] = useState(0);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
@@ -257,6 +259,15 @@ export function AppProvider({ children }) {
           setThinking(false);
           setStreamingContent(data.content);
           setStreamingEngine(data.engine || null);
+        }
+        break;
+      case 'interrupted':
+        if (forActiveSession) {
+          setThinking(false);
+          setStreamingContent('');
+          setStreamingMsgId(null);
+          setStreamingEngine(null);
+          setChatScrollNonce((n) => n + 1);
         }
         break;
       case 'done':
@@ -1346,6 +1357,10 @@ export function AppProvider({ children }) {
     }
   }, []);
 
+  useEffect(() => {
+    streamingMsgIdRef.current = streamingMsgId;
+  }, [streamingMsgId]);
+
   const handleCancel = useCallback(() => {
     const sid = activeSessionIdRef.current;
     if (sid) {
@@ -1353,6 +1368,8 @@ export function AppProvider({ children }) {
       setThinking(false);
       setStreamingContent('');
       setStreamingMsgId(null);
+      setStreamingEngine(null);
+      setChatScrollNonce((n) => n + 1);
     }
   }, [send]);
 
@@ -1473,13 +1490,19 @@ export function AppProvider({ children }) {
     api.getRooms().then(setRooms).catch(() => setRooms([]));
   }, []);
 
-  const handleDequeue = useCallback((messageId) => {
-    const sid = activeSessionIdRef.current;
-    if (sid) {
-      send({ type: 'dequeue', sessionId: sid, messageId });
-      setMessages((prev) => prev.filter((m) => m.id !== messageId));
-    }
-  }, [send]);
+  const handleDequeue = useCallback(
+    (messageId, { cancelStream = false } = {}) => {
+      const sid = activeSessionIdRef.current;
+      if (sid) {
+        send({ type: 'dequeue', sessionId: sid, messageId });
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+        if (cancelStream && (thinking || streamingContent)) {
+          handleCancel();
+        }
+      }
+    },
+    [send, thinking, streamingContent, handleCancel],
+  );
 
   const handleEditQueuedMessage = useCallback((messageId, content) => {
     const sid = activeSessionIdRef.current;
@@ -1594,6 +1617,7 @@ export function AppProvider({ children }) {
     handleRestoreSession,
     restoringSessionIds,
     handleCancel,
+    chatScrollNonce,
     handleSend,
     handleSwitchOrg,
     refreshAgents,

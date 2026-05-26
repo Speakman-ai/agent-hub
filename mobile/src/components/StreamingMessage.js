@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 
@@ -51,7 +51,7 @@ const markdownStyles = {
   em: { color: colors.gray300, fontStyle: 'italic' },
 };
 
-function StreamingMessage({ content, agentColor, engine }) {
+function StreamingMessage({ content, agentColor, engine, onInterrupt }) {
   const engineBadge = engine ? ENGINE_BADGES[engine] : null;
 
   return (
@@ -70,6 +70,17 @@ function StreamingMessage({ content, agentColor, engine }) {
             <View style={styles.streamingDot} />
             <Text style={styles.streamingText}>streaming</Text>
           </View>
+          {typeof onInterrupt === 'function' && (
+            <TouchableOpacity
+              onPress={onInterrupt}
+              style={styles.interruptBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Interrupt streaming response"
+              testID="streaming-interrupt"
+            >
+              <Text style={styles.interruptBtnText}>Interrupt</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <Markdown style={markdownStyles}>{content}</Markdown>
       </View>
@@ -137,6 +148,18 @@ const styles = StyleSheet.create({
   streamingText: {
     fontSize: 11,
     color: colors.emerald500,
+  },
+  interruptBtn: {
+    marginLeft: 6,
+    backgroundColor: '#d97706',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  interruptBtnText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.white,
   },
 });
 

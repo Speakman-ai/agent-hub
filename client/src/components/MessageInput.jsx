@@ -62,6 +62,9 @@ export default function MessageInput({
   readOnly,
   draftKey,
   onFileError,
+  composerPrefill,
+  onComposerPrefillClear,
+  onReplaceQueuedMessage,
 }) {
   // Per-session (per-draftKey) draft store. Lives for the component's lifetime
   // so switching agents/sessions preserves each composer's unsent text.
@@ -595,9 +598,28 @@ export default function MessageInput({
     }
   };
 
+  useEffect(() => {
+    if (!composerPrefill?.content) return;
+    setValue(composerPrefill.content);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const len = composerPrefill.content.length;
+      textareaRef.current?.setSelectionRange?.(len, len);
+    });
+  }, [composerPrefill?.messageId, composerPrefill?.content]);
+
   const handleSubmit = ({ interrupt = false } = {}) => {
     const trimmed = value.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
+
+    if (composerPrefill?.messageId && onReplaceQueuedMessage) {
+      onReplaceQueuedMessage(composerPrefill.messageId, trimmed);
+      setValue('');
+      onComposerPrefillClear?.();
+      closeSlash();
+      return;
+    }
+
     // Mid-stream: queue by default; interrupt only when explicitly requested
     // (e.g. the amber Interrupt button). Enter never interrupts on its own.
     const shouldInterrupt = isProcessing && interrupt;

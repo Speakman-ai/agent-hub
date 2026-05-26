@@ -443,6 +443,8 @@ function ChatMessage({
   agentColor,
   onDequeue,
   onEditQueued,
+  onInterrupt,
+  inFlightWhileStreaming = false,
   fromAgent,
   agents,
   sessionHandoffs,
@@ -452,6 +454,8 @@ function ChatMessage({
     return <SystemPrCreatedMessage message={message} />;
   }
   const isQueued = message.queued;
+  const isInterrupted = message.interrupted;
+  const showInFlightActions = inFlightWhileStreaming && isUser && (isQueued || isInterrupted);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
   const isUser = message.role === 'user';
@@ -586,7 +590,16 @@ function ChatMessage({
                 <TouchableOpacity onPress={() => setEditing(true)}>
                   <Text style={styles.queuedActionText}>Edit</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => onDequeue?.(message.id)}>
+                {showInFlightActions && onInterrupt && (
+                  <TouchableOpacity onPress={() => onInterrupt()}>
+                    <Text style={[styles.queuedActionText, { color: '#fbbf24' }]}>Interrupt</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={() =>
+                    onDequeue?.(message.id, showInFlightActions ? { cancelStream: true } : undefined)
+                  }
+                >
                   <Text style={[styles.queuedActionText, { color: colors.red400 }]}>Remove</Text>
                 </TouchableOpacity>
               </View>

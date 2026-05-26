@@ -323,11 +323,20 @@ function SystemPrFailedMessage({ message }) {
   );
 }
 
-function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
+function ChatMessage({
+  message,
+  agentColor,
+  onDequeue,
+  onEditQueued,
+  onEditInComposer,
+  onInterrupt,
+  inFlightWhileStreaming = false,
+}) {
   const isSystem = message.role === 'system';
   const isUser = message.role === 'user';
   const isQueued = message.queued;
   const isInterrupted = message.interrupted;
+  const showInFlightActions = inFlightWhileStreaming && isUser && (isQueued || isInterrupted);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
@@ -407,50 +416,85 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
           </div>
         )}
 
-        {/* Queued indicator */}
-        {isQueued && (
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-xs text-blue-300/70 font-medium flex items-center gap-1">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/50 animate-pulse" />
-              Queued
-            </span>
-            {onEditQueued && !editing && (
-              <button
-                onClick={() => {
-                  setEditValue(message.content);
-                  setEditing(true);
-                  requestAnimationFrame(() => editRef.current?.focus());
-                }}
-                className="text-xs text-blue-400/50 hover:text-blue-300 transition-colors"
-              >
-                Edit
-              </button>
+        {/* Queued / in-flight indicator */}
+        {(isQueued || isInterrupted) && (
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            {isQueued && !isInterrupted && (
+              <span className="text-xs text-blue-300/70 font-medium flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/50 animate-pulse" />
+                Queued
+              </span>
             )}
-            {onDequeue && (
-              <button
-                onClick={() => onDequeue(message.id)}
-                className="text-xs text-blue-400/50 hover:text-red-400 transition-colors"
-              >
-                ✕ Remove
-              </button>
+            {isInterrupted && (
+              <span className="text-xs text-amber-300/70 font-medium flex items-center gap-1">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-3 w-3"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden
+                >
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Interrupted
+              </span>
             )}
-          </div>
-        )}
-
-        {/* Interrupted indicator */}
-        {isInterrupted && (
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-xs text-amber-300/70 font-medium flex items-center gap-1">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-3 w-3"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Interrupted
-            </span>
+            {showInFlightActions ? (
+              <>
+                {onEditInComposer && (
+                  <button
+                    type="button"
+                    onClick={() => onEditInComposer(message.id, message.content)}
+                    className="text-xs text-blue-400/70 hover:text-blue-300 transition-colors"
+                  >
+                    Edit
+                  </button>
+                )}
+                {onInterrupt && (
+                  <button
+                    type="button"
+                    onClick={() => onInterrupt()}
+                    className="text-xs text-amber-300/80 hover:text-amber-200 transition-colors"
+                  >
+                    Interrupt
+                  </button>
+                )}
+                {onDequeue && (
+                  <button
+                    type="button"
+                    onClick={() => onDequeue(message.id, { cancelStream: true })}
+                    className="text-xs text-blue-400/50 hover:text-red-400 transition-colors"
+                  >
+                    Remove
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                {isQueued && onEditQueued && !editing && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditValue(message.content);
+                      setEditing(true);
+                      requestAnimationFrame(() => editRef.current?.focus());
+                    }}
+                    className="text-xs text-blue-400/50 hover:text-blue-300 transition-colors"
+                  >
+                    Edit
+                  </button>
+                )}
+                {isQueued && onDequeue && (
+                  <button
+                    type="button"
+                    onClick={() => onDequeue(message.id)}
+                    className="text-xs text-blue-400/50 hover:text-red-400 transition-colors"
+                  >
+                    ✕ Remove
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -458,7 +502,7 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
         <MessageAttachments attachments={message.attachments} />
 
         {/* Editable queued message */}
-        {isQueued && editing ? (
+        {isQueued && editing && !showInFlightActions ? (
           <div className="space-y-2">
             <textarea
               ref={editRef}
