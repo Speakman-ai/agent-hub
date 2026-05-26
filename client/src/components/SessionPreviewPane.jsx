@@ -19,6 +19,7 @@ import {
   DEFAULT_PANE_WIDTH,
   previewIframeSrc,
   previewProxySessionIdFromUrl,
+  resolvePreviewBrowserUrl,
   withPreviewTicket,
 } from '../utils/sessionPreviewState.js';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
@@ -173,11 +174,16 @@ export default function SessionPreviewPane({
   // Worktree edits while preview is up — soft-reload iframe (ng serve HMR
   // often updates without this; reload covers proxy/API staleness).
   const refreshAt = event?.refreshAt;
-  const baseIframeSrc = useMemo(() => {
+  const browserPreviewUrl = useMemo(() => {
     if (state.status !== 'ready' || !state.url) return '';
+    return resolvePreviewBrowserUrl(state.url);
+  }, [state.status, state.url]);
+
+  const baseIframeSrc = useMemo(() => {
+    if (!browserPreviewUrl) return '';
     const bust = refreshAt ?? iframeKey;
-    return previewIframeSrc(state.url, bust);
-  }, [state.status, state.url, refreshAt, iframeKey]);
+    return previewIframeSrc(browserPreviewUrl, bust);
+  }, [browserPreviewUrl, refreshAt, iframeKey]);
 
   // Hub-proxied preview URLs (remote browser deployments) cannot load
   // in an iframe with just localStorage-stored JWTs — the browser
@@ -293,24 +299,24 @@ export default function SessionPreviewPane({
   }, []);
 
   const handleCopyUrl = useCallback(async () => {
-    if (state.status !== 'ready' || !state.url) return;
+    if (state.status !== 'ready' || !browserPreviewUrl) return;
     try {
-      await navigator.clipboard.writeText(state.url);
+      await navigator.clipboard.writeText(browserPreviewUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
       // Permission denied — silently ignore; the link is still visible.
     }
-  }, [state]);
+  }, [state.status, browserPreviewUrl]);
 
   const handlePopOut = useCallback(() => {
-    if (state.status !== 'ready' || !state.url) return;
+    if (state.status !== 'ready' || !browserPreviewUrl) return;
     if (typeof onPopOut === 'function') {
-      onPopOut({ sessionId, previewId: state.previewId, url: state.url });
+      onPopOut({ sessionId, previewId: state.previewId, url: browserPreviewUrl });
     }
     const api = electronApi ?? (typeof window !== 'undefined' ? window.electronAPI : null);
     if (api && typeof api.popOutPreview === 'function') {
-      api.popOutPreview({ sessionId, url: state.url });
+      api.popOutPreview({ sessionId, url: browserPreviewUrl });
       // The Electron main process owns the BrowserWindow lifecycle; there is
       // no JS window handle to poll. Set popMode to 'electron' so the poll
       // loop (which would immediately see poppedWindowRef.current === null
@@ -322,12 +328,12 @@ export default function SessionPreviewPane({
     const open = popOut ?? ((u, n, f) => window.open(u, n, f));
     const features = 'width=1280,height=800,resizable=yes,scrollbars=yes';
     const name = `agent-hub-preview-${sessionId || 'session'}`;
-    const win = open(state.url, name, features);
+    const win = open(browserPreviewUrl, name, features);
     if (win) {
       poppedWindowRef.current = win;
       setPopMode('browser');
     }
-  }, [state, sessionId, popOut, electronApi, onPopOut]);
+  }, [state.status, browserPreviewUrl, sessionId, popOut, electronApi, onPopOut]);
 
   const handleReattach = useCallback(() => {
     const w = poppedWindowRef.current;
@@ -416,7 +422,7 @@ export default function SessionPreviewPane({
         <input
           type="text"
           readOnly
-          value={state.status === 'ready' ? state.url : ''}
+          value={state.status === 'ready' ? browserPreviewUrl : ''}
           placeholder={state.status === 'ready' ? '' : 'No preview running'}
           className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-200 disabled:opacity-50"
           aria-label="Preview URL"

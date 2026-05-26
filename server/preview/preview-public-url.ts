@@ -15,8 +15,10 @@ export function resolvePreviewClientUrl(
   if (!trimmed) {
     return `http://localhost:${port}`;
   }
-  const base = trimmed.replace(/\/$/, '');
-  return `${base}/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy`;
+  // Path-only: the browser resolves against whatever origin loaded the Hub SPA.
+  // Baking in `publicUrl` breaks when that host is wrong or unreachable from the
+  // user's machine (e.g. hub.test in config but browsing via ALB IP / another name).
+  return previewProxyMountPath(sessionId);
 }
 
 /** Host the Hub container uses to reach host-published preview ports. */

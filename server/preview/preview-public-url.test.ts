@@ -10,9 +10,9 @@ describe('resolvePreviewClientUrl', () => {
     expect(resolvePreviewClientUrl(null, 'sess-1', 4100)).toBe('http://localhost:4100');
   });
 
-  it('uses same-origin proxy when publicUrl is set', () => {
+  it('uses same-origin proxy path when publicUrl is set', () => {
     expect(resolvePreviewClientUrl('https://hub.example.com', 'sess-1', 4100)).toBe(
-      'https://hub.example.com/api/sessions/sess-1/preview/proxy',
+      '/api/sessions/sess-1/preview/proxy',
     );
   });
 });

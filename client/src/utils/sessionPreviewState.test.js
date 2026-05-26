@@ -9,6 +9,7 @@ import {
   clearSessionPreviewStorage,
   previewIframeSrc,
   previewProxySessionIdFromUrl,
+  resolvePreviewBrowserUrl,
   withPreviewTicket,
   shouldShowSessionPreviewPane,
 } from './sessionPreviewState.js';
@@ -213,6 +214,36 @@ describe('previewProxySessionIdFromUrl', () => {
   it('returns null for malformed URLs', () => {
     expect(previewProxySessionIdFromUrl('not a url')).toBeNull();
   });
+
+  it('extracts session id from a path-only proxy URL', () => {
+    expect(previewProxySessionIdFromUrl('/api/sessions/sess-1/preview/proxy/')).toBe('sess-1');
+  });
+});
+
+describe('resolvePreviewBrowserUrl', () => {
+  it('rewrites a mismatched absolute proxy host to the browsing origin', () => {
+    expect(
+      resolvePreviewBrowserUrl('https://hub.test/api/sessions/sess-1/preview/proxy/', {
+        origin: 'https://prod.example.com',
+      }),
+    ).toBe('https://prod.example.com/api/sessions/sess-1/preview/proxy/');
+  });
+
+  it('resolves a path-only proxy URL against the browsing origin', () => {
+    expect(
+      resolvePreviewBrowserUrl('/api/sessions/sess-1/preview/proxy/', {
+        origin: 'https://prod.example.com',
+      }),
+    ).toBe('https://prod.example.com/api/sessions/sess-1/preview/proxy/');
+  });
+
+  it('leaves local-dev localhost URLs unchanged', () => {
+    expect(
+      resolvePreviewBrowserUrl('http://localhost:4101/board', {
+        origin: 'https://prod.example.com',
+      }),
+    ).toBe('http://localhost:4101/board');
+  });
 });
 
 describe('withPreviewTicket', () => {
@@ -235,6 +266,14 @@ describe('withPreviewTicket', () => {
         'fresh',
       ),
     ).toBe('https://hub.example.com/api/sessions/s1/preview/proxy/?ticket=fresh');
+  });
+
+  it('appends ticket to a path-only proxy URL when an origin is available', () => {
+    expect(
+      withPreviewTicket('/api/sessions/s1/preview/proxy/?_ah=42', 'tk', {
+        origin: 'https://prod.example.com',
+      }),
+    ).toBe('https://prod.example.com/api/sessions/s1/preview/proxy/?_ah=42&ticket=tk');
   });
 
   it('returns the input unchanged when ticket or url is missing', () => {

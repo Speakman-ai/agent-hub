@@ -11,6 +11,8 @@
  * unit-tested without React.
  */
 
+import { getServerBase } from './connection.js';
+
 /**
  * Discriminated-union state shape consumed by SessionPreviewPane.
  *
@@ -56,7 +58,7 @@ export function previewProxySessionIdFromUrl(url) {
   if (!url || typeof url !== 'string') return null;
   let pathname;
   try {
-    pathname = new URL(url).pathname;
+    pathname = url.startsWith('/') ? url.split('?')[0] : new URL(url).pathname;
   } catch {
     return null;
   }
@@ -75,15 +77,59 @@ export function previewProxySessionIdFromUrl(url) {
  * returns. Preserves any existing query string (e.g. the cache-buster
  * appended by `previewIframeSrc`).
  */
-export function withPreviewTicket(url, ticket) {
+export function withPreviewTicket(url, ticket, { origin } = {}) {
   if (!url || !ticket) return url;
   try {
-    const u = new URL(url);
+    const browsingOrigin = resolvePreviewBrowsingOrigin(origin);
+    const u = new URL(url, browsingOrigin ?? undefined);
     u.searchParams.set('ticket', ticket);
     return u.toString();
   } catch {
     const sep = url.includes('?') ? '&' : '?';
     return `${url}${sep}ticket=${encodeURIComponent(ticket)}`;
+  }
+}
+
+/**
+ * Origin the Hub SPA is using for API calls (same-origin local mode, or
+ * configured remote URL). Returns `null` in non-browser test environments
+ * when no `origin` override is passed.
+ */
+export function resolvePreviewBrowsingOrigin(originOverride) {
+  if (originOverride) return originOverride;
+  if (typeof window === 'undefined') return null;
+  const base = getServerBase();
+  if (base) {
+    try {
+      return new URL(base).origin;
+    } catch {
+      return null;
+    }
+  }
+  return window.location.origin;
+}
+
+/**
+ * Turn a Hub preview-proxy URL (relative or absolute) into an absolute URL
+ * on the origin the user actually loaded the app from. Fixes iframe DNS errors
+ * when `publicUrl` in server config does not match the browsing host.
+ */
+export function resolvePreviewBrowserUrl(url, { origin } = {}) {
+  if (!url || typeof url !== 'string') return url;
+  const sessionId = previewProxySessionIdFromUrl(url);
+  if (!sessionId) return url;
+
+  const browsingOrigin = resolvePreviewBrowsingOrigin(origin);
+  if (!browsingOrigin) return url;
+
+  try {
+    const u = new URL(url, browsingOrigin);
+    if (u.origin !== browsingOrigin) {
+      return `${browsingOrigin}${u.pathname}${u.search}${u.hash}`;
+    }
+    return u.toString();
+  } catch {
+    return url;
   }
 }
 
