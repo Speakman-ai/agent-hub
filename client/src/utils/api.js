@@ -1,6 +1,40 @@
 import { getApiBase, getAuthHeaders } from './connection.js';
 import { getToken as getJwt, clearToken } from './auth.js';
 
+// Session-scoped flag we set right before a 401-triggered reload so that the
+// first request after reload (e.g. the bootstrap `getAuthStatus` probe in
+// AuthGate, or the user hitting Login) can't trigger a second reload before
+// the UI has a chance to render LoginScreen. Cleared as soon as any request
+// succeeds.
+const RECENT_401_RELOAD_KEY = 'agent-hub-401-reload';
+
+function recentlyReloadedFor401() {
+  if (typeof sessionStorage === 'undefined') return false;
+  try {
+    return !!sessionStorage.getItem(RECENT_401_RELOAD_KEY);
+  } catch {
+    return false;
+  }
+}
+
+function markReloadedFor401() {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(RECENT_401_RELOAD_KEY, String(Date.now()));
+  } catch {
+    /* storage full or disabled — proceed without the guard */
+  }
+}
+
+function clearRecentReloadMarker() {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(RECENT_401_RELOAD_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 async function fetchJSON(url, options = {}) {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -17,12 +51,22 @@ async function fetchJSON(url, options = {}) {
     signal: fetchOpts.signal || (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
   });
   if (!res.ok) {
-    // If a JWT-authenticated request is rejected, the token is stale — drop
-    // it and reload so <AuthGate /> can send the user back to the login
-    // screen. We deliberately don't do this for apiKey-only setups.
-    if (res.status === 401 && getJwt()) {
-      clearToken();
-      if (typeof window !== 'undefined') window.location.reload();
+    // 401 handling — the SPA's only client-held credential is the JWT in
+    // localStorage, so a 401 means either:
+    //   (a) the token is stale → clear it and reload so <AuthGate /> sees
+    //       `isAuthenticated() === false` and renders <LoginScreen />.
+    //   (b) the token was never written (cleared, evicted, missing) but the
+    //       server expects one → reload so AuthGate's getAuthStatus check
+    //       can route the user to <LoginScreen />.
+    //
+    // Both paths need the reload to escape the "empty UI with no nav" trap.
+    // The previous gate (`&& getJwt()`) only handled (a) and left users
+    // stranded on (b). We use a sessionStorage marker to avoid a reload
+    // loop on edge cases (e.g. an install that 401s even after auth bootstrap).
+    if (res.status === 401 && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
+      markReloadedFor401();
+      if (getJwt()) clearToken();
+      window.location.reload();
     }
     let detail = '';
     try {
@@ -33,6 +77,9 @@ async function fetchJSON(url, options = {}) {
     }
     throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
   }
+  // Any successful request after a 401-triggered reload clears the marker so
+  // a future 401 in the same browser tab will trigger a fresh reload.
+  clearRecentReloadMarker();
   return res.json();
 }
 
