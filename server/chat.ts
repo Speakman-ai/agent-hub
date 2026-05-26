@@ -2109,6 +2109,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         ownerId,
         credsOwnerId,
         sessionId,
+        engine,
       });
 
       if (engine === 'cursor-agent' && !engineSessionId) {
