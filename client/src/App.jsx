@@ -20,6 +20,7 @@ import {
   paneOpenStorageKey,
   clearSessionPreviewStorage,
   previewIdFromEvent,
+  shouldShowSessionPreviewPane,
 } from './utils/sessionPreviewState.js';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
@@ -2826,12 +2827,19 @@ export default function App() {
         }
       : null);
 
-  const previewPaneEligible =
-    !!activeSessionId &&
-    !!activeChatProject?.prEnv?.preview?.compose?.entryService &&
-    previewPaneOpenBySession[activeSessionId] !== false;
-
-  const showSessionPreviewPane = previewPaneEligible;
+  // The pane is hidden by default and only appears once a preview is
+  // actually building (`preview_starting`) or available (`preview` /
+  // `preview_failed` / `preview_unavailable`). A bare session in a
+  // preview-capable project no longer pops the pane open with an empty
+  // "no app loaded here" placeholder — the user opens it via the
+  // Start preview button below the chat, which seeds a synthetic
+  // `preview_starting` event into `activePreviewEvent`.
+  const showSessionPreviewPane = shouldShowSessionPreviewPane({
+    activeSessionId,
+    project: activeChatProject,
+    activePreviewEvent,
+    paneOpenBySession: previewPaneOpenBySession,
+  });
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {

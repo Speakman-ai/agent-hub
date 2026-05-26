@@ -218,6 +218,45 @@ export function clearSessionPreviewStorage(sessionId) {
 export const DEFAULT_PANE_WIDTH = 560;
 
 /**
+ * Decide whether the SessionPreviewPane should be visible for the active
+ * session.
+ *
+ * Policy (UX rule): the pane is **hidden by default** and only appears
+ * once a preview is actually building (status `starting`) or available
+ * (status `ready` / `failed` / `unavailable`). A bare session in a
+ * preview-capable project no longer pops the pane open with an empty
+ * "no app loaded here" placeholder — the user opens it by clicking the
+ * Start preview button below the chat, which seeds a synthetic
+ * `preview_starting` event into `activePreviewEvent`.
+ *
+ * Inputs are intentionally primitive so this helper stays unit-testable
+ * without touching React:
+ *
+ *   - `activeSessionId`     — current session id (falsy → hidden).
+ *   - `project`             — `activeChatProject` row; we look at
+ *                             `project.prEnv.preview.compose.entryService`
+ *                             to decide whether the project supports
+ *                             previews at all.
+ *   - `activePreviewEvent`  — the latest `agenthub_preview` WS payload
+ *                             for this session (falsy → hidden).
+ *   - `paneOpenBySession`   — the `previewPaneOpenBySession` map; an
+ *                             explicit `false` keeps the pane hidden so
+ *                             the user's close gesture is honored.
+ */
+export function shouldShowSessionPreviewPane({
+  activeSessionId,
+  project,
+  activePreviewEvent,
+  paneOpenBySession,
+} = {}) {
+  if (!activeSessionId) return false;
+  if (!project?.prEnv?.preview?.compose?.entryService) return false;
+  if (!activePreviewEvent) return false;
+  if (paneOpenBySession && paneOpenBySession[activeSessionId] === false) return false;
+  return true;
+}
+
+/**
  * Validate a pane width pulled from localStorage. Returns the clamped
  * number on success, or `null` if the input is unusable.
  */

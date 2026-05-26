@@ -10,6 +10,7 @@ import {
   previewIframeSrc,
   previewProxySessionIdFromUrl,
   withPreviewTicket,
+  shouldShowSessionPreviewPane,
 } from './sessionPreviewState.js';
 
 describe('derivePaneState', () => {
@@ -256,5 +257,118 @@ describe('previewIdFromEvent / clearSessionPreviewStorage', () => {
     clearSessionPreviewStorage('s-x');
     expect(window.localStorage.getItem('previewPaneOpen:s-x')).toBeNull();
     expect(window.localStorage.getItem('previewPaneWidth:s-x')).toBeNull();
+  });
+});
+
+describe('shouldShowSessionPreviewPane', () => {
+  const project = { prEnv: { preview: { compose: { entryService: 'web' } } } };
+  const startingEvent = {
+    type: 'agenthub_preview',
+    kind: 'preview_starting',
+    sessionId: 's-1',
+    previewId: 'p-1',
+  };
+  const readyEvent = {
+    type: 'agenthub_preview',
+    kind: 'preview',
+    sessionId: 's-1',
+    previewUrl: 'http://localhost:4101',
+    previewId: 'p-1',
+  };
+
+  it('returns false when no session is active', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: null,
+        project,
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: {},
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when the project has no preview compose entry service', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project: { prEnv: { preview: {} } },
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: {},
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when there is no active preview event (bare session)', () => {
+    // Regression: previously the pane auto-opened for any session in a
+    // preview-capable project, showing an empty "no app loaded" placeholder.
+    // Policy is now hidden-by-default until a preview is actually
+    // building or available.
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: null,
+        paneOpenBySession: {},
+      }),
+    ).toBe(false);
+  });
+
+  it('returns true while the preview is building (preview_starting)', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: startingEvent,
+        paneOpenBySession: {},
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true once the preview is available (preview ready)', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: {},
+      }),
+    ).toBe(true);
+  });
+
+  it('honors an explicit user-close (false) even when a preview event exists', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: { 's-1': false },
+      }),
+    ).toBe(false);
+  });
+
+  it('treats an absent paneOpenBySession entry as "not closed" (default open)', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: { 'other-session': false },
+      }),
+    ).toBe(true);
+  });
+
+  it('tolerates missing paneOpenBySession argument', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project,
+        activePreviewEvent: readyEvent,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false on a completely empty input', () => {
+    expect(shouldShowSessionPreviewPane()).toBe(false);
+    expect(shouldShowSessionPreviewPane({})).toBe(false);
   });
 });
