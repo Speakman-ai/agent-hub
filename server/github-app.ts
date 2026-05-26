@@ -43,6 +43,19 @@ interface InstallationTokenResponse {
   expires_at: string;
 }
 
+function normalizePemPrivateKey(privateKey: string): string {
+  let key = privateKey.trim();
+  // Accept JSON-style quoted values accidentally pasted into config fields.
+  if (key.startsWith('"') && key.endsWith('"')) {
+    key = key.slice(1, -1);
+  }
+  // Convert escaped newlines from env/config transport into literal newlines.
+  key = key.replace(/\\n/g, '\n');
+  // Normalize Windows line endings and strip BOM.
+  key = key.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  return key;
+}
+
 export function generateJWT(appId: string | number, privateKey: string): string {
   const now = Math.floor(Date.now() / 1000);
   const header: JWTHeader = { alg: 'RS256', typ: 'JWT' };
@@ -58,7 +71,7 @@ export function generateJWT(appId: string | number, privateKey: string): string 
 
   const sign = createSign('RSA-SHA256');
   sign.update(unsigned);
-  const signature = sign.sign(privateKey, 'base64url');
+  const signature = sign.sign(normalizePemPrivateKey(privateKey), 'base64url');
 
   return `${unsigned}.${signature}`;
 }

@@ -79,6 +79,18 @@ describe('patchAppWebhookSecret', () => {
     expect(body).toEqual({ secret: 'fresh-secret-xyz' });
   });
 
+  it('accepts a JSON-escaped private key (literal \\n) when signing JWT', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response('', { status: 200 }));
+    const escapedKey = privateKey.replace(/\n/g, '\\n');
+
+    await patchAppWebhookSecret('123', escapedKey, 'fresh-secret-xyz');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, opts] = fetchSpy.mock.calls[0];
+    const headers = (opts as RequestInit)?.headers as Record<string, string>;
+    expect(headers.Authorization).toMatch(/^Bearer /);
+  });
+
   it('refuses to push an empty secret', async () => {
     await expect(patchAppWebhookSecret('123', privateKey, '')).rejects.toThrow(
       /refusing to set an empty/,
