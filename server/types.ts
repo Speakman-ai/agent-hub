@@ -1034,6 +1034,7 @@ export interface Stmts {
   getCardAutofixDispatchCount: Stmt;
   reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
+  getSessionIdsByWorktreeBranch: Stmt;
   getKanbanCardByPrUrl: Stmt;
   /**
    * Cards in the `Review` column with a non-null `pr_url` whose last update

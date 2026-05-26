@@ -20,6 +20,7 @@ import {
 } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
+import { linkKanbanCardPrUrl } from './kanban-pr-link.js';
 import { CI_FAIL_CONCLUSIONS } from './ci-conclusions.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import type {
@@ -1321,11 +1322,18 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
                   merged?: boolean;
                 };
                 if (pr.url) {
-                  d.stmts.setCardPrUrl.run(pr.url, card.id);
-                  (card as { pr_url: string | null }).pr_url = pr.url;
-                  console.log(
-                    `[Reconcile] Auto-linked PR URL on card "${card.title}" via session branch "${branch}"`,
-                  );
+                  if (
+                    linkKanbanCardPrUrl(
+                      d.stmts,
+                      d.broadcast,
+                      project.id,
+                      card,
+                      pr.url,
+                      'branch_worktree',
+                    )
+                  ) {
+                    (card as { pr_url: string | null }).pr_url = pr.url;
+                  }
                 }
               }
             }

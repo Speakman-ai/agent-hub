@@ -1943,6 +1943,7 @@ function initDb(dataDir: string): void {
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    getSessionIdsByWorktreeBranch: db.prepare('SELECT id FROM sessions WHERE worktree_branch = ?'),
     updateSessionGitWorktreeDetected: db.prepare(
       "UPDATE sessions SET git_worktree_detected = ?, updated_at = datetime('now') WHERE id = ?",
     ),

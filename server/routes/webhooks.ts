@@ -43,6 +43,13 @@ import { resolveOrgOwnerGithubToken, autoGitChildEnv } from '../auto-git.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
 import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
+import {
+  findKanbanCardForIncomingPr,
+  linkKanbanCardPrUrl,
+  tryLinkKanbanCardByPrTitle,
+} from '../kanban-pr-link.js';
+
+export { tryLinkKanbanCardByPrTitle };
 import type {
   AppConfig,
   RouteDeps,
@@ -1515,52 +1522,6 @@ function isTerminalKanbanColumnName(name: string): boolean {
   return n === 'done' || n === 'cancelled' || n === 'canceled' || n === 'closed';
 }
 
-/**
- * When a PR exists on GitHub but the kanban card was never linked (`pr_url`
- * still null), match by exact title and backfill the URL. Used for review,
- * CI, and sync events — not only `pull_request.opened` — so a missed agent
- * `PUT /cards/:id { pr_url }` does not strand the card when feedback arrives.
- *
- * Only matches cards with no `pr_url` or the same URL, and skips terminal
- * columns (Done, etc.) so a new PR with a recycled title cannot hijack a
- * closed card's session.
- */
-export function tryLinkKanbanCardByPrTitle(
-  stmts: Stmts,
-  boardId: string,
-  prUrl: string,
-  prTitle: string,
-  cols: KanbanColumnRow[],
-  prNumber?: number,
-): KanbanCardRow | undefined {
-  const terminalColIds = new Set(
-    cols.filter((c) => isTerminalKanbanColumnName(c.name)).map((c) => c.id),
-  );
-  const allCards = stmts.getKanbanCards.all(boardId) as KanbanCardRow[];
-  const titleLower = prTitle.toLowerCase().trim();
-  // First title match wins — duplicate card titles on a board are rare but possible;
-  // prefer explicit pr_url / branch session linking when available.
-  const existing = allCards.find(
-    (c) =>
-      !terminalColIds.has(c.column_id) &&
-      c.title.toLowerCase().trim() === titleLower &&
-      (!c.pr_url || c.pr_url === prUrl),
-  );
-  if (!existing) return undefined;
-
-  if (!existing.pr_url) {
-    try {
-      stmts.setCardPrUrl.run(prUrl, existing.id);
-    } catch {
-      /* non-critical */
-    }
-  }
-  console.log(
-    `[Webhook/Kanban] Linked PR #${prNumber ?? '?'} to existing card "${existing.title}" by title match`,
-  );
-  return existing;
-}
-
 async function handleKanbanWebhookEvent(
   deps: RouteDeps,
   event: string,
@@ -1584,43 +1545,41 @@ async function handleKanbanWebhookEvent(
 
   if (!prUrl) return false;
 
-  let card = stmts.getKanbanCardByPrUrl?.get(prUrl) as KanbanCardRow | undefined;
-
   const project = projects.find((p) => p.id === webhookConfig.project_id);
   const boardData = project ? (getOrCreateBoard(stmts, project.id) as BoardData | null) : null;
-
-  if (!card && boardData?.board && payload.pull_request?.head?.ref) {
-    const branchSessionMatch = payload.pull_request.head.ref.match(/session-([a-f0-9]{8})/);
-    if (branchSessionMatch) {
-      const shortId = branchSessionMatch[1];
-      const allCards = stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[];
-      card = allCards.find((c) => c.session_id && c.session_id.startsWith(shortId));
-      if (card && !card.pr_url) {
-        try {
-          stmts.setCardPrUrl.run(prUrl, card.id);
-          console.log(
-            `[Webhook/Kanban] Auto-linked PR URL on card "${card.title}" via branch session ID`,
-          );
-        } catch (_e) {
-          /* non-critical */
-        }
-      }
-    }
-  }
 
   const boardCols = boardData?.board
     ? (stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[])
     : [];
 
-  if (!card && boardData?.board && payload.pull_request?.title) {
-    card = tryLinkKanbanCardByPrTitle(
-      stmts,
-      boardData.board.id,
+  let card: KanbanCardRow | undefined;
+  let linkPath: import('../kanban-pr-link.js').KanbanPrLinkPath = 'none';
+
+  if (boardData?.board) {
+    const found = findKanbanCardForIncomingPr(stmts, boardData.board.id, {
       prUrl,
-      payload.pull_request.title,
-      boardCols,
-      payload.pull_request.number,
-    );
+      headRef: payload.pull_request?.head?.ref ?? null,
+      prTitle: payload.pull_request?.title ?? null,
+      cols: boardCols,
+      prNumber: payload.pull_request?.number,
+    });
+    card = found.card;
+    linkPath = found.path;
+    if (card && linkPath !== 'already_linked' && linkPath !== 'none' && project) {
+      if (
+        linkKanbanCardPrUrl(
+          stmts,
+          broadcast,
+          project.id,
+          card,
+          prUrl,
+          linkPath,
+          payload.pull_request?.number,
+        )
+      ) {
+        card = { ...card, pr_url: prUrl };
+      }
+    }
   }
 
   // ─── Check Run / Check Suite "Re-run" ───────────────────────────
