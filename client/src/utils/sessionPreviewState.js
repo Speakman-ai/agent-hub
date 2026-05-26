@@ -40,6 +40,53 @@ export function previewIframeSrc(url, bustToken) {
   }
 }
 
+/**
+ * The preview URL is routed through the Hub `/api/sessions/:id/preview/proxy/`
+ * mount whenever the server has `publicUrl` set (remote browser
+ * deployments). Local dev iframes still load `http://localhost:<port>`
+ * directly and don't need an auth ticket.
+ *
+ * Returns the sessionId encoded in the URL on a hit, or `null` for any
+ * non-proxy URL (including local-dev URLs and malformed inputs).
+ *
+ * Pure helper so the React component can decide whether to mint a
+ * ticket without re-implementing the regex.
+ */
+export function previewProxySessionIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  let pathname;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const m = pathname.match(/^\/api\/sessions\/([^/]+)\/preview\/proxy(?:\/|$)/);
+  if (!m?.[1]) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add `?ticket=<ticket>` to a preview-proxy iframe URL. Used by
+ * `SessionPreviewPane` after `POST /api/sessions/:id/preview/ticket`
+ * returns. Preserves any existing query string (e.g. the cache-buster
+ * appended by `previewIframeSrc`).
+ */
+export function withPreviewTicket(url, ticket) {
+  if (!url || !ticket) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('ticket', ticket);
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}ticket=${encodeURIComponent(ticket)}`;
+  }
+}
+
 export function derivePaneState(event) {
   if (!event || typeof event !== 'object') return { status: 'idle' };
   const { kind, target, route, agentReason, previewId } = event;

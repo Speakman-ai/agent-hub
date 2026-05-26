@@ -18,7 +18,10 @@ import {
   paneWidthStorageKey,
   DEFAULT_PANE_WIDTH,
   previewIframeSrc,
+  previewProxySessionIdFromUrl,
+  withPreviewTicket,
 } from '../utils/sessionPreviewState.js';
+import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 
 /**
  * SessionPreviewPane
@@ -170,11 +173,86 @@ export default function SessionPreviewPane({
   // Worktree edits while preview is up — soft-reload iframe (ng serve HMR
   // often updates without this; reload covers proxy/API staleness).
   const refreshAt = event?.refreshAt;
-  const iframeSrc = useMemo(() => {
+  const baseIframeSrc = useMemo(() => {
     if (state.status !== 'ready' || !state.url) return '';
     const bust = refreshAt ?? iframeKey;
     return previewIframeSrc(state.url, bust);
   }, [state.status, state.url, refreshAt, iframeKey]);
+
+  // Hub-proxied preview URLs (remote browser deployments) cannot load
+  // in an iframe with just localStorage-stored JWTs — the browser
+  // can't attach Authorization headers to a top-level iframe nav. We
+  // mint a single-use ticket (POST /api/sessions/:id/preview/ticket
+  // with our JWT), append it to the iframe `src`, and the server's
+  // auth middleware consumes the ticket and writes a path-scoped
+  // HttpOnly cookie so sub-resources authenticate automatically. See
+  // server/preview-auth.ts for the full rationale.
+  //
+  // Local-dev URLs (`http://localhost:<port>`) skip this entirely —
+  // the iframe hits the dev server directly, bypassing Hub auth.
+  const proxySessionId = useMemo(
+    () => previewProxySessionIdFromUrl(baseIframeSrc),
+    [baseIframeSrc],
+  );
+  // Local-dev URLs (`http://localhost:<port>`) can be rendered
+  // synchronously on the first render — no ticket is needed. Hub-
+  // proxy URLs render with `''` first and the effect below swaps in
+  // the ticketed URL when the mint resolves. Keep these distinct so
+  // existing tests that assert on local-dev iframe src still see the
+  // value on the initial render.
+  const [ticketedSrc, setTicketedSrc] = useState(() =>
+    baseIframeSrc && !proxySessionId ? baseIframeSrc : '',
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!baseIframeSrc) {
+      setTicketedSrc('');
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (!proxySessionId) {
+      // Local-dev path — no ticket needed.
+      setTicketedSrc(baseIframeSrc);
+      return () => {
+        cancelled = true;
+      };
+    }
+    // Hub-proxied — mint a fresh ticket per top-level nav. Sub-
+    // resources will ride along on the path-scoped cookie the proxy
+    // writes back on the response.
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/sessions/${proxySessionId}/preview/ticket`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: '{}',
+        });
+        if (!res.ok) {
+          throw new Error(`Ticket mint failed: ${res.status}`);
+        }
+        const body = await res.json();
+        if (cancelled) return;
+        setTicketedSrc(withPreviewTicket(baseIframeSrc, body.ticket));
+      } catch (err) {
+        if (cancelled) return;
+        // Fall back to the base URL anyway — the browser will hit the
+        // proxy and get 401, which the SPA's 401 handler will surface
+        // via the standard auth-trap reload. Better than a blank pane.
+        console.warn('[preview] ticket mint failed; loading iframe without it', err);
+        setTicketedSrc(baseIframeSrc);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseIframeSrc, proxySessionId]);
+
+  const iframeSrc = ticketedSrc;
   useEffect(() => {
     if (state.status !== 'ready' || refreshAt == null) return;
     setIframeKey((k) => k + 1);

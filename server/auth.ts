@@ -8,6 +8,14 @@ import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import { verifyApiKey as verifyUserApiKey } from './api-keys-store.js';
 import type { Role } from './roles.js';
+import {
+  buildPreviewSetCookie,
+  consumePreviewCookie,
+  consumePreviewTicket,
+  issuePreviewCookieToken,
+  matchPreviewProxyPath,
+  readPreviewCookie,
+} from './preview-auth.js';
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
@@ -195,6 +203,69 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   if (isPublicPath(req.path)) {
     next();
     return;
+  }
+
+  // ── Preview proxy iframe auth (ticket + path-scoped cookie) ────
+  // Browsers cannot attach Authorization headers to an iframe top-level
+  // navigation, so the preview proxy at
+  // `/api/sessions/:sid/preview/proxy/*` accepts either a single-use
+  // `?ticket=…` query param (minted via POST /preview/ticket with the
+  // SPA's JWT) or a path-scoped HttpOnly cookie issued on the first
+  // hit. Both populate the same `authedReq.*` fields normal JWT auth
+  // would, so downstream `requireRole('User')` and ownership checks
+  // see a fully-authenticated request.
+  //
+  // The block sits AFTER `isLocalBundledServer()`-related public paths
+  // and BEFORE the standard JWT/apiKey machinery so a remote browser
+  // request never reaches the "no token at all → 401" tail. Callers
+  // that still send a Bearer (Electron, server-to-server) fall through
+  // to the normal paths below and get the richer membership/role
+  // resolution.
+  const previewSessionId = matchPreviewProxyPath(req.path);
+  if (previewSessionId) {
+    const authedReq = req as AuthenticatedRequest;
+    const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : null;
+    if (ticket) {
+      const ctx = consumePreviewTicket(ticket, previewSessionId);
+      if (ctx) {
+        // Issue a path-scoped cookie so sub-resources (.js, .css, …)
+        // can authenticate without each one needing a fresh ticket.
+        const cookieToken = issuePreviewCookieToken(previewSessionId, ctx);
+        const setCookie = buildPreviewSetCookie(previewSessionId, cookieToken, {
+          secure: req.secure,
+        });
+        // append rather than set — handlers downstream may add their
+        // own cookies, and Express' `res.append('Set-Cookie', …)` is
+        // multi-value-safe.
+        res.append('Set-Cookie', setCookie);
+        authedReq.authUser = ctx.username ?? undefined;
+        authedReq.authUserId = ctx.userId ?? undefined;
+        authedReq.authOrgId = ctx.orgId ?? undefined;
+        authedReq.authRole = ctx.role;
+        next();
+        return;
+      }
+      // Invalid / expired / replayed ticket → fall through to the
+      // standard auth chain. If the caller also has a Bearer header
+      // (e.g. Electron), that will still authenticate; otherwise the
+      // tail of the middleware returns 401 so the SPA can re-mint.
+    } else {
+      const cookieValue = readPreviewCookie(req, previewSessionId);
+      if (cookieValue) {
+        const ctx = consumePreviewCookie(cookieValue, previewSessionId);
+        if (ctx) {
+          authedReq.authUser = ctx.username ?? undefined;
+          authedReq.authUserId = ctx.userId ?? undefined;
+          authedReq.authOrgId = ctx.orgId ?? undefined;
+          authedReq.authRole = ctx.role;
+          next();
+          return;
+        }
+        // Stale or session-mismatched cookie → fall through. The
+        // browser will keep sending it until Max-Age expires, which is
+        // fine: the standard auth chain runs next.
+      }
+    }
   }
 
   // Local bundled server (Electron / dev box) intentionally runs without

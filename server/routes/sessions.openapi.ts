@@ -448,6 +448,32 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/sessions/{sessionId}/preview/ticket',
+  tags: ['Sessions'],
+  summary: 'Mint a single-use preview iframe ticket',
+  description:
+    "Returns a short-lived single-use ticket the SPA appends to the preview iframe `src` as `?ticket=…`. Browsers cannot attach `Authorization: Bearer …` to an iframe top-level navigation, so this endpoint is the bridge between the SPA's JWT session and the preview proxy. The ticket is bound to (sessionId, caller) and ~60 s TTL; on first hit the proxy consumes the ticket and writes a path-scoped HttpOnly cookie so sub-resources (.js/.css/images) authenticate automatically.",
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Ticket minted.',
+      content: jsonContent(
+        z.object({
+          ticket: z.string().openapi({
+            description: 'Single-use opaque token (prefixed `ahpt_`). Append as `?ticket=…`.',
+          }),
+          ttlSeconds: z.number().int().openapi({
+            description: 'Seconds the ticket remains valid before it must be re-minted.',
+          }),
+        }),
+      ),
+    },
+    404: errorResponse('Session not found or not owned by the caller.'),
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/sessions/{sessionId}/preview/stop',
   tags: ['Sessions'],
   summary: 'Stop worktree preview for a chat session',

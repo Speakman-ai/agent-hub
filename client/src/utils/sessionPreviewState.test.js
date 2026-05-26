@@ -8,6 +8,8 @@ import {
   previewIdFromEvent,
   clearSessionPreviewStorage,
   previewIframeSrc,
+  previewProxySessionIdFromUrl,
+  withPreviewTicket,
 } from './sessionPreviewState.js';
 
 describe('derivePaneState', () => {
@@ -173,6 +175,72 @@ describe('previewIframeSrc', () => {
     expect(previewIframeSrc('http://localhost:4100/?foo=1', 99)).toBe(
       'http://localhost:4100/?foo=1&_ah=99',
     );
+  });
+});
+
+describe('previewProxySessionIdFromUrl', () => {
+  it('extracts the session id from a hub-proxied URL', () => {
+    expect(
+      previewProxySessionIdFromUrl('https://hub.example.com/api/sessions/sess-1/preview/proxy/'),
+    ).toBe('sess-1');
+    expect(
+      previewProxySessionIdFromUrl(
+        'https://hub.example.com/api/sessions/abc/preview/proxy/main.js',
+      ),
+    ).toBe('abc');
+    expect(
+      previewProxySessionIdFromUrl(
+        'https://hub.example.com/api/sessions/abc/preview/proxy?ticket=x',
+      ),
+    ).toBe('abc');
+    expect(
+      previewProxySessionIdFromUrl('https://hub.example.com/api/sessions/sess%2D2/preview/proxy/'),
+    ).toBe('sess-2');
+  });
+
+  it('returns null for local-dev URLs and non-matching paths', () => {
+    expect(previewProxySessionIdFromUrl('http://localhost:4101/')).toBeNull();
+    expect(previewProxySessionIdFromUrl('http://localhost:4101/main.js')).toBeNull();
+    expect(
+      previewProxySessionIdFromUrl('https://hub.example.com/api/sessions/abc/preview/start'),
+    ).toBeNull();
+    expect(previewProxySessionIdFromUrl('')).toBeNull();
+    expect(previewProxySessionIdFromUrl(null)).toBeNull();
+    expect(previewProxySessionIdFromUrl(undefined)).toBeNull();
+  });
+
+  it('returns null for malformed URLs', () => {
+    expect(previewProxySessionIdFromUrl('not a url')).toBeNull();
+  });
+});
+
+describe('withPreviewTicket', () => {
+  it('appends ticket query param', () => {
+    expect(withPreviewTicket('https://hub.example.com/api/sessions/s1/preview/proxy/', 'tk')).toBe(
+      'https://hub.example.com/api/sessions/s1/preview/proxy/?ticket=tk',
+    );
+  });
+
+  it('preserves existing query params (e.g. the cache buster)', () => {
+    expect(
+      withPreviewTicket('https://hub.example.com/api/sessions/s1/preview/proxy/?_ah=42', 'tk'),
+    ).toBe('https://hub.example.com/api/sessions/s1/preview/proxy/?_ah=42&ticket=tk');
+  });
+
+  it('overrides an existing ticket param (re-mint case)', () => {
+    expect(
+      withPreviewTicket(
+        'https://hub.example.com/api/sessions/s1/preview/proxy/?ticket=stale',
+        'fresh',
+      ),
+    ).toBe('https://hub.example.com/api/sessions/s1/preview/proxy/?ticket=fresh');
+  });
+
+  it('returns the input unchanged when ticket or url is missing', () => {
+    expect(withPreviewTicket('', 'tk')).toBe('');
+    expect(withPreviewTicket('https://x/y', '')).toBe('https://x/y');
+    expect(withPreviewTicket(null, 'tk')).toBe(null);
+    expect(withPreviewTicket('https://x/y', null)).toBe('https://x/y');
   });
 });
 

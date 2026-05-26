@@ -69,6 +69,7 @@ import {
 } from '../preview/start-session-preview.js';
 import { createPreviewProxyHandler } from '../preview/preview-proxy.js';
 import { getSessionPreviewPort } from '../preview/session-preview-port.js';
+import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
 import type {
   PreviewComposeRuntimeSync,
   PreviewRuntimeActiveLookup,
@@ -1164,6 +1165,36 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       } catch (err) {
         return res.status(500).json({ error: (err as Error).message });
       }
+    },
+  );
+
+  // ── Preview iframe ticket mint ────────────────────────────────────
+  // The SPA calls this with its JWT (or per-user API key, or the global
+  // x-api-key in dev) before pointing the iframe at the preview proxy.
+  // The minted ticket is single-use and bound to (sessionId, caller).
+  // See `server/preview-auth.ts` for the full mechanism rationale.
+  router.post(
+    '/api/sessions/:sessionId/preview/ticket',
+    requireRole('User'),
+    (req: Request, res: Response) => {
+      const sessionId = req.params.sessionId as string;
+      const ar = req as AuthenticatedRequest;
+      if (!userOwnsSession(ar, sessionId)) {
+        // Match the proxy handler's 404 shape so probing for valid
+        // session ids returns the same response as a non-owned session.
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const ctx = {
+        userId: ar.authUserId ?? null,
+        username: ar.authUser ?? null,
+        role: ar.authRole ?? 'User',
+        orgId: ar.authOrgId ?? null,
+      };
+      const ticket = mintPreviewTicket(sessionId, ctx);
+      return res.json({
+        ticket,
+        ttlSeconds: Math.floor(PREVIEW_TICKET_TTL_MS / 1000),
+      });
     },
   );
 
