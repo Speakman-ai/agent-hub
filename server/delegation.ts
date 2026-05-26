@@ -4,7 +4,8 @@ import { buildSpawnEnv } from './config.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
 import type { StreamEvent } from './types.js';
@@ -181,6 +182,8 @@ function buildDelegateCliSpec(
   leadAskMode: boolean,
   /** Host `codexDangerBypass` — mirrors chat Codex sandbox selection. */
   codexDangerBypass: boolean,
+  awsSsoEnabled: boolean,
+  awsAccessEnv: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'> | null,
 ): DelegateCliSpec {
   const engine = subAgent.engine || 'claude-code';
   const model = resolveEffectiveModel(cfg, engine, {
@@ -213,7 +216,11 @@ function buildDelegateCliSpec(
       appendCodexExecSandboxFlags(args, {
         askMode: leadAskMode,
         dangerBypass: codexDangerBypass,
+        awsSsoEnabled,
       });
+      if (awsSsoEnabled && awsAccessEnv) {
+        appendCodexAwsAccessDirs(args, awsAccessEnv);
+      }
       if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
       }
@@ -554,6 +561,17 @@ export async function handleDelegation(
         new Promise<string>((resolve, reject) => {
           const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
           const subPrompt = buildEnrichedPrompt(subAgent, undefined, { useWorktree: true });
+          const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
+
+          const timeout = cfg.conferenceTimeoutMs || 600000;
+          const spawnEnv = buildSpawnEnv(cfg, { userId: credOwnerId });
+          mergeSkillCredentialSpawnEnv(spawnEnv, {
+            ownerId: credOwnerId,
+            agentId: subAgent.id,
+            project,
+          });
+          mergeProjectAwsSpawnEnv(spawnEnv, project);
+          const delegateAwsSso = projectHasAwsSsoProfiles(project);
           const spec = buildDelegateCliSpec(
             subAgent,
             subPrompt,
@@ -563,8 +581,11 @@ export async function handleDelegation(
             credOwnerId,
             leadAskMode,
             !!cfg.codexDangerBypass,
+            delegateAwsSso,
+            delegateAwsSso
+              ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
+              : null,
           );
-          const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
 
           console.warn(
             `[Delegation] spawn sub=${subAgent.id} engine=${spec.engine} bin=${spec.bin} cwd=${spawnCwd}`,
@@ -574,14 +595,6 @@ export async function handleDelegation(
           let stderr = '';
           const parser = spec.parseStream ? createStreamParser(spec.engine) : null;
           const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
-
-          const timeout = cfg.conferenceTimeoutMs || 600000;
-          const spawnEnv = buildSpawnEnv(cfg, { userId: credOwnerId });
-          mergeSkillCredentialSpawnEnv(spawnEnv, {
-            ownerId: credOwnerId,
-            agentId: subAgent.id,
-            project,
-          });
 
           const proc = spawn(spec.bin, spec.args, {
             cwd: spawnCwd,
@@ -948,6 +961,8 @@ export async function synthesizeResults(
         agentId: enrichedAgent.id,
         project,
       });
+      mergeProjectAwsSpawnEnv(synthEnv, project);
+      const synthAwsSso = projectHasAwsSsoProfiles(project);
 
       let bin = getClaudeBin();
       let args: string[] = [];
@@ -1009,7 +1024,14 @@ export async function synthesizeResults(
         appendCodexExecSandboxFlags(args, {
           askMode: isAskMode,
           dangerBypass: !!cfg.codexDangerBypass,
+          awsSsoEnabled: synthAwsSso,
         });
+        if (synthAwsSso) {
+          appendCodexAwsAccessDirs(args, {
+            HOME: synthEnv.HOME,
+            AWS_CONFIG_FILE: synthEnv.AWS_CONFIG_FILE,
+          });
+        }
         if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
           args.push('--model', sessionModel);
         }

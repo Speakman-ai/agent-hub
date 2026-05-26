@@ -66,7 +66,8 @@ import {
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
-import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -165,7 +166,11 @@ import {
 } from './browser-activity-emits.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
-import { mergeProjectAwsSpawnEnv, getProjectAwsSsoProfiles } from './project-aws-spawn.js';
+import {
+  mergeProjectAwsSpawnEnv,
+  getProjectAwsSsoProfiles,
+  projectHasAwsSsoProfiles,
+} from './project-aws-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -2363,10 +2368,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('resume', engineSessionId);
         }
         args.push('--json', '--skip-git-repo-check');
+        const awsSsoEnabled = projectHasAwsSsoProfiles(project);
         appendCodexExecSandboxFlags(args, {
           askMode: isAskMode,
           dangerBypass: !!config.codexDangerBypass,
+          awsSsoEnabled,
         });
+        if (awsSsoEnabled) {
+          let awsConfigForDirs: string | undefined;
+          try {
+            awsConfigForDirs = writeProjectAwsConfigFile(
+              project.id,
+              getProjectAwsSsoProfiles(project),
+            );
+          } catch {
+            /* mergeProjectAwsSpawnEnv logs and recovers when building spawn env */
+          }
+          appendCodexAwsAccessDirs(args, {
+            HOME: sessionCliEnv.HOME,
+            AWS_CONFIG_FILE: awsConfigForDirs,
+          });
+        }
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
         // rejects most explicit `--model` IDs (HTTP 400 "not supported when
         // using Codex with a ChatGPT account"). shouldPassModelFlag() filters

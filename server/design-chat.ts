@@ -19,7 +19,7 @@ import path from 'path';
 import { buildSpawnEnv } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
-import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
+import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
@@ -267,7 +267,9 @@ export async function handleDesignChat(
       AGENT_HUB_SESSION_ID: `design:${designId}`,
     } as NodeJS.ProcessEnv;
     const linkedProject = design.linkedProjects?.[0];
+    let designAwsSsoEnabled = false;
     if (linkedProject && designOwnerId) {
+      designAwsSsoEnabled = projectHasAwsSsoProfiles(linkedProject);
       mergeSkillCredentialSpawnEnv(spawnEnv, {
         ownerId: designOwnerId,
         agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
@@ -316,6 +318,10 @@ export async function handleDesignChat(
           codex: d.getCodexBin(),
         },
         codexDangerBypass: !!config.codexDangerBypass,
+        awsSsoEnabled: designAwsSsoEnabled,
+        awsAccessEnv: designAwsSsoEnabled
+          ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
+          : undefined,
       }));
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);

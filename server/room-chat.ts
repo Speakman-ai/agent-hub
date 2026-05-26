@@ -6,7 +6,7 @@ import { resolveEffectiveModel } from './effective-model.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
-import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
+import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import { buildRoomSpawnArgs, normalizeRoomEngine } from './room-multi-engine.js';
@@ -392,9 +392,11 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
         const timeout = config.conferenceTimeoutMs;
 
         const roomEnv = { ...buildSpawnEnv(config, { userId: roomOwnerId }) };
+        let roomAwsSsoEnabled = false;
         if (room.project_id && roomOwnerId) {
           const proj = getProjects().find((p) => p.id === room.project_id);
           if (proj) {
+            roomAwsSsoEnabled = projectHasAwsSsoProfiles(proj);
             mergeSkillCredentialSpawnEnv(roomEnv, {
               ownerId: roomOwnerId,
               agentId: agent.id,
@@ -450,6 +452,10 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
               },
               logTag: `room ${roomId} agent ${agent.id}`,
               codexDangerBypass: !!config.codexDangerBypass,
+              awsSsoEnabled: roomAwsSsoEnabled,
+              awsAccessEnv: roomAwsSsoEnabled
+                ? { HOME: roomEnv.HOME, AWS_CONFIG_FILE: roomEnv.AWS_CONFIG_FILE }
+                : undefined,
             });
             bin = plan.bin;
             args = plan.args;

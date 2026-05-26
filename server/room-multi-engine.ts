@@ -8,7 +8,7 @@
  * See `room-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 
 export const ROOM_CHAT_ENGINES = [
@@ -60,6 +60,10 @@ export interface BuildRoomSpawnArgsInput {
    * instead of `--full-auto` for room turns (parity with chat.ts).
    */
   codexDangerBypass?: boolean;
+  /** When set, widen Codex sandbox / add dirs for Hub AWS SSO (parity with chat.ts). */
+  awsSsoEnabled?: boolean;
+  /** Spawn env fragment for `appendCodexAwsAccessDirs` (HOME + AWS_CONFIG_FILE). */
+  awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;
 }
 
 export interface RoomSpawnPlan {
@@ -88,8 +92,18 @@ export interface RoomSpawnPlan {
  * + the multi-agent / @mention scaffold, not the full chat enrichment.
  */
 export function buildRoomSpawnArgs(input: BuildRoomSpawnArgsInput): RoomSpawnPlan {
-  const { engine, model, systemPrompt, userPrompt, cursorChatId, bins, logTag, codexDangerBypass } =
-    input;
+  const {
+    engine,
+    model,
+    systemPrompt,
+    userPrompt,
+    cursorChatId,
+    bins,
+    logTag,
+    codexDangerBypass,
+    awsSsoEnabled,
+    awsAccessEnv,
+  } = input;
 
   if (engine === 'cursor-agent') {
     if (!cursorChatId) {
@@ -139,7 +153,11 @@ export function buildRoomSpawnArgs(input: BuildRoomSpawnArgsInput): RoomSpawnPla
     appendCodexExecSandboxFlags(args, {
       askMode: false,
       dangerBypass: !!codexDangerBypass,
+      awsSsoEnabled: !!awsSsoEnabled,
     });
+    if (awsSsoEnabled && awsAccessEnv) {
+      appendCodexAwsAccessDirs(args, awsAccessEnv);
+    }
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);

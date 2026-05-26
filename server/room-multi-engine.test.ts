@@ -1,3 +1,4 @@
+import path from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { buildRoomSpawnArgs, normalizeRoomEngine, isRoomChatEngine } from './room-multi-engine.js';
 
@@ -146,7 +147,7 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args.includes('resume')).toBe(false);
   });
 
-  it('codex-cli: uses --full-auto when codexDangerBypass is explicitly false', () => {
+  it('codex-cli: uses --full-auto when codexDangerBypass is false and no AWS SSO', () => {
     const plan = buildRoomSpawnArgs({
       ...baseInput,
       engine: 'codex-cli',
@@ -155,6 +156,25 @@ describe('buildRoomSpawnArgs', () => {
     });
     expect(plan.args).toContain('--full-auto');
     expect(plan.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+  });
+
+  it('codex-cli: uses danger-full-access + add-dir when AWS SSO and codexDangerBypass is false', () => {
+    const home = '/data/per-user/home';
+    const awsConfig = '/data/project-aws-config/p1/config';
+    const plan = buildRoomSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      codexDangerBypass: false,
+      awsSsoEnabled: true,
+      awsAccessEnv: { HOME: home, AWS_CONFIG_FILE: awsConfig },
+    });
+    expect(plan.args).toContain('--sandbox');
+    expect(plan.args).toContain('danger-full-access');
+    expect(plan.args).not.toContain('--full-auto');
+    expect(plan.args).toContain('--add-dir');
+    expect(plan.args).toContain(path.dirname(awsConfig));
+    expect(plan.args).toContain(`${home}/.aws`);
   });
 
   it('codex-cli: uses danger bypass flag when codexDangerBypass is true', () => {

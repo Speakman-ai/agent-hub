@@ -242,6 +242,25 @@ describe('buildDesignSpawnArgs', () => {
     expect(args).not.toContain('--full-auto');
   });
 
+  it('codex-cli: AWS SSO widens sandbox when codexDangerBypass is false', () => {
+    const { args } = buildDesignSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      engineSessionId: null,
+      isNewEngineSession: true,
+      codexDangerBypass: false,
+      awsSsoEnabled: true,
+      awsAccessEnv: {
+        HOME: '/data/u1/home',
+        AWS_CONFIG_FILE: '/data/project-aws-config/p1/config',
+      },
+    });
+    expect(args).toContain('danger-full-access');
+    expect(args).not.toContain('--full-auto');
+    expect(args).toContain('--add-dir');
+  });
+
   it('codex-cli: resume inserts thread id', () => {
     const { args } = buildDesignSpawnArgs({
       ...baseInput,

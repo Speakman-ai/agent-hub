@@ -3,7 +3,7 @@
  * for `design-chat.ts`. See `design-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
@@ -100,6 +100,8 @@ export interface BuildDesignSpawnArgsInput {
    * Host setting: Codex full bypass instead of `--full-auto` (matches chat).
    */
   codexDangerBypass?: boolean;
+  awsSsoEnabled?: boolean;
+  awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;
 }
 
 /**
@@ -121,6 +123,8 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     isNewEngineSession,
     bins,
     codexDangerBypass,
+    awsSsoEnabled,
+    awsAccessEnv,
   } = input;
 
   const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
@@ -179,7 +183,11 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     appendCodexExecSandboxFlags(args, {
       askMode: false,
       dangerBypass: !!codexDangerBypass,
+      awsSsoEnabled: !!awsSsoEnabled,
     });
+    if (awsSsoEnabled && awsAccessEnv) {
+      appendCodexAwsAccessDirs(args, awsAccessEnv);
+    }
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);
