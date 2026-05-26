@@ -24,12 +24,18 @@ describe('isNearBottom', () => {
 
 describe('forcePinChatTailScroll', () => {
   it('invokes pin at least once immediately', () => {
-    const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100 };
+    const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100, isConnected: true };
     const pin = vi.fn((target) => {
       target.scrollTop = target.scrollHeight;
     });
     forcePinChatTailScroll(el, pin);
     expect(pin).toHaveBeenCalledWith(el);
     expect(el.scrollTop).toBe(500);
+  });
+
+  it('returns a cleanup function', () => {
+    const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100, isConnected: true };
+    const cancel = forcePinChatTailScroll(el, vi.fn());
+    expect(typeof cancel).toBe('function');
   });
 });

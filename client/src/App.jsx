@@ -537,9 +537,10 @@ export default function App() {
       });
     });
     if (messageId && el) {
-      const anchor = el.querySelector(
-        `[data-message-id="${messageId}"] [data-testid="session-tail-bottom"]`,
+      const root = [...el.querySelectorAll('[data-message-id]')].find(
+        (node) => node.getAttribute('data-message-id') === messageId,
       );
+      const anchor = root?.querySelector('[data-testid="session-tail-bottom"]');
       anchor?.scrollIntoView?.({ block: 'end' });
     }
   }, []);

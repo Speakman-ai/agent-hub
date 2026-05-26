@@ -18,20 +18,27 @@ export function isNearBottom(el, thresholdPx = CHAT_STICK_TO_BOTTOM_THRESHOLD_PX
  *
  * @param {HTMLElement | null} scrollEl
  * @param {(el: HTMLElement) => void} [pinOnce] — defaults to `el.scrollTop = el.scrollHeight`
+ * @param {{ delayMs?: number }} [opts]
+ * @returns {() => void} cancel pending delayed pin (e.g. on unmount / session switch)
  */
-export function forcePinChatTailScroll(scrollEl, pinOnce) {
-  if (!scrollEl) return;
+export function forcePinChatTailScroll(scrollEl, pinOnce, { delayMs = 100 } = {}) {
+  if (!scrollEl) return () => {};
   const pin =
     pinOnce ||
     ((el) => {
+      if (!el.isConnected) return;
       el.scrollTop = el.scrollHeight;
     });
-  pin(scrollEl);
+  const safePin = (el) => {
+    if (el?.isConnected) pin(el);
+  };
+  safePin(scrollEl);
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => {
-      pin(scrollEl);
-      requestAnimationFrame(() => pin(scrollEl));
+      safePin(scrollEl);
+      requestAnimationFrame(() => safePin(scrollEl));
     });
   }
-  setTimeout(() => pin(scrollEl), 100);
+  const timer = setTimeout(() => safePin(scrollEl), delayMs);
+  return () => clearTimeout(timer);
 }

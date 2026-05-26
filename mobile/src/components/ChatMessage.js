@@ -25,6 +25,7 @@ import { attachmentKind } from '../utils/attachmentKind';
 import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
+import { getUserMessageFlags } from '../utils/chatMessageUserFlags.js';
 import HandoffCard from './HandoffCard';
 
 // Built once — overrides the Markdown library's default text/code rules so
@@ -453,12 +454,12 @@ function ChatMessage({
   if (message.role === 'system') {
     return <SystemPrCreatedMessage message={message} />;
   }
-  const isQueued = message.queued;
-  const isInterrupted = message.interrupted;
-  const showInFlightActions = inFlightWhileStreaming && isUser && (isQueued || isInterrupted);
+  const { isUser, isQueued, isInterrupted, showInFlightActions } = getUserMessageFlags(
+    message,
+    inFlightWhileStreaming,
+  );
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
-  const isUser = message.role === 'user';
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
   const modelLabel = !isUser && message.model
     ? message.model.replace('claude-', '').replace('-', ' ')

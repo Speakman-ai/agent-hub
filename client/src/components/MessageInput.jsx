@@ -598,9 +598,19 @@ export default function MessageInput({
     }
   };
 
+  const editingQueuedMessage = Boolean(composerPrefill?.messageId);
+
   useEffect(() => {
     if (!composerPrefill?.content) return;
     setValue(composerPrefill.content);
+    if (images.length > 0) {
+      images.forEach((img) => {
+        if ((img.type === 'video' || img.type === 'file') && img.dataUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(img.dataUrl);
+        }
+      });
+      setImages([]);
+    }
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       const len = composerPrefill.content.length;
@@ -613,6 +623,12 @@ export default function MessageInput({
     if ((!trimmed && images.length === 0) || disabled) return;
 
     if (composerPrefill?.messageId && onReplaceQueuedMessage) {
+      if (images.length > 0) {
+        onFileError?.(
+          'Editing a queued message only updates the text. Remove attachments and try again, or cancel edit first.',
+        );
+        return;
+      }
       onReplaceQueuedMessage(composerPrefill.messageId, trimmed);
       setValue('');
       onComposerPrefillClear?.();
@@ -774,6 +790,24 @@ export default function MessageInput({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {editingQueuedMessage && (
+        <div
+          className="flex items-center justify-between gap-2 mb-2 px-2 py-1.5 bg-amber-900/20 border border-amber-800/40 rounded-lg text-xs text-amber-200/90"
+          data-testid="composer-edit-queued-banner"
+        >
+          <span>Editing queued message (text only — attachments disabled)</span>
+          <button
+            type="button"
+            onClick={() => {
+              onComposerPrefillClear?.();
+              setValue('');
+            }}
+            className="text-amber-300/80 hover:text-amber-100 shrink-0"
+          >
+            Cancel edit
+          </button>
+        </div>
+      )}
       {/* Ask mode indicator */}
       {askMode && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-blue-900/20 border border-blue-800/40 rounded-lg text-xs text-blue-400">
@@ -909,9 +943,13 @@ export default function MessageInput({
         {/* Image attach button */}
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={disabled && !isProcessing}
+          disabled={(disabled && !isProcessing) || editingQueuedMessage}
           className="px-2 py-3 text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30"
-          title="Attach file, image, or video (or paste/drop)"
+          title={
+            editingQueuedMessage
+              ? 'Attachments are not supported when editing a queued message'
+              : 'Attach file, image, or video (or paste/drop)'
+          }
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
