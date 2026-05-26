@@ -98,7 +98,7 @@ describe('POST /board/cards session auto-link', () => {
     expect((sessRes.body as { name: string }).name).toBe('Rename me in sidebar');
   });
 
-  it('returns existing card when header reuses an already-linked session_id', async () => {
+  it('dedups via header only when body omits sessionId (no body session_id key)', async () => {
     const project = await createProject();
     const projectId = project.id as string;
     const agent = await createAgent({ projectId, name: 'Header Dedup Worker' });
@@ -122,7 +122,7 @@ describe('POST /board/cards session auto-link', () => {
     expect((second.body as { id: string }).id).toBe(firstId);
   });
 
-  it('returns existing card when body sessionId reuses a link (no header)', async () => {
+  it('dedups via body sessionId only (no session header)', async () => {
     const project = await createProject();
     const projectId = project.id as string;
     const agent = await createAgent({ projectId, name: 'Body Dedup Worker' });

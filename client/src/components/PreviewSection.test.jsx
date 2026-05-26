@@ -126,9 +126,10 @@ describe('PreviewSection', () => {
     window.confirm = vi.fn(() => true);
 
     render(<PreviewSection projects={configuredProjects} />);
-    await waitFor(() => expect(api.getProjectPreviews).toHaveBeenCalled());
     expect(screen.getByTestId('preview-running-panel')).toBeInTheDocument();
-    expect(screen.getByText('Test session')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Test session')).toBeInTheDocument();
+    });
 
     fireEvent.click(screen.getByTestId('preview-purge-all-button'));
     await waitFor(() => expect(api.purgeAllProjectPreviews).toHaveBeenCalledWith('proj-1'));

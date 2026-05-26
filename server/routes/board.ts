@@ -309,6 +309,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // 2026-05 repro). Return the originally-linked card instead of
     // creating a duplicate. Title-dedup above already runs first so
     // legitimate "rename a card" flows aren't affected.
+    // sessionId above is already merged (body !== undefined ? body : header/spawn key)
+    // via resolveCardSessionId() immediately after parseBody().
     if (sessionId && sessionId.trim()) {
       const linked = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
       if (linked && linked.board_id === board.id) {
