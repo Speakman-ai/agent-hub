@@ -2799,6 +2799,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const handleEvent = (event: StreamEvent): void => {
+        // Legacy-only: skip persisting historical-pattern benign `unknown` rows.
+        // New Claude control_* frames never reach here (parser returns []).
         if (!shouldPersistStreamEvent(event)) {
           return;
         }

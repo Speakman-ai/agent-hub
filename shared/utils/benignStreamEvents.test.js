@@ -33,6 +33,7 @@ describe('benignStreamEvents', () => {
   });
 
   it('shouldSuppressStreamEvent only filters benign unknown rows', () => {
+    expect(shouldSuppressStreamEvent(null)).toBe(false);
     expect(shouldSuppressStreamEvent({ type: 'assistant_text', text: 'hi' })).toBe(false);
     expect(
       shouldSuppressStreamEvent({
@@ -40,5 +41,11 @@ describe('benignStreamEvents', () => {
         text: 'unhandled claude event: control_request',
       }),
     ).toBe(true);
+    expect(
+      shouldSuppressStreamEvent({
+        type: 'unknown',
+        text: 'unhandled claude event: tool_progress',
+      }),
+    ).toBe(false);
   });
 });

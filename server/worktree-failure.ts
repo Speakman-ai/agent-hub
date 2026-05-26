@@ -93,6 +93,9 @@ export function handleWorktreeFailure(
     if (inserted) {
       try {
         broadcast({ type: 'message', sessionId, message: inserted });
+        // `message_added` is what the web client appends to the live timeline
+        // (see App.jsx); reload replays the same row from REST.
+        broadcast({ type: 'message_added', sessionId, message: inserted });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[worktree-failed] message broadcast failed for ${sessionId}: ${message}`);

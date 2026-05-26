@@ -212,7 +212,7 @@ describe('createStreamParser — Claude Code', () => {
     expect((events[0] as { message: string | null }).message).toBeNull();
   });
 
-  it('ignores Claude control-plane frames in headless mode (no unknown tail noise)', () => {
+  it('drops control_request and control_response silently', () => {
     const events = parse([
       JSON.stringify({
         type: 'control_request',
@@ -225,7 +225,7 @@ describe('createStreamParser — Claude Code', () => {
         response: { subtype: 'success', response: { behavior: 'allow' } },
       }),
     ]);
-    expect(events).toHaveLength(0);
+    expect(events).toEqual([]);
   });
 
   it('returns unknown for unhandled types', () => {
@@ -649,7 +649,7 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(events).toHaveLength(0);
   });
 
-  it('ignores interaction_query frames (headless Cursor; no unknown tail noise)', () => {
+  it('drops interaction_query silently (headless Cursor)', () => {
     const events = parse([
       JSON.stringify({
         type: 'interaction_query',
@@ -657,7 +657,7 @@ describe('createStreamParser — Cursor Agent', () => {
         query: 'Allow this MCP server to run?',
       }),
     ]);
-    expect(events).toHaveLength(0);
+    expect(events).toEqual([]);
   });
 
   it('parses streaming assistant events (with timestamp_ms)', () => {

@@ -83,9 +83,10 @@ describe('handleWorktreeFailure', () => {
     expect(bodyArg).toContain('Worktree creation failed');
     expect(bodyArg).toContain('boom');
 
-    // broadcasts include both the live message and the worktree_failed event
+    // broadcasts include the persisted system message (live + reload) and worktree_failed
     const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
     expect(types).toContain('message');
+    expect(types).toContain('message_added');
     expect(types).toContain('worktree_failed');
 
     const wtCall = broadcast.mock.calls.find(

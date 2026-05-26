@@ -60,6 +60,10 @@ import { isNearBottom } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
+  roomStreamingStateFromSnapshotTask,
+  shouldApplyRoomTaskSnapshot,
+} from './utils/roomTaskSnapshot.js';
+import {
   awaitingInputNotification,
   cardStartedNotification,
   cardReviewNotification,
@@ -315,6 +319,10 @@ export default function App() {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
+  /** Set when the socket (re)connects; used to gate active-room-tasks-snapshot. */
+  const wsReconnectAtRef = useRef(0);
+  /** Updated on live room_* WS events so snapshot cannot clobber newer stream output. */
+  const lastLiveRoomEventAtRef = useRef(0);
   const activeDesignIdRef = useRef(activeDesignId);
   activeDesignIdRef.current = activeDesignId;
 
@@ -733,8 +741,15 @@ export default function App() {
           break;
         }
         case 'message':
-          if (data.message.role === 'user' && msgForActiveSession) {
-            setMessages((prev) => [...prev, data.message]);
+          if (
+            msgForActiveSession &&
+            data.message?.id &&
+            (data.message.role === 'user' || data.message.role === 'system')
+          ) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
           }
           break;
         case 'thinking':
@@ -1113,6 +1128,8 @@ export default function App() {
         case 'worktree_failed': {
           const sid = data.sessionId;
           if (!sid) break;
+          // Ephemeral: toast + use_worktree flag. The persisted role=system message
+          // (message_added + REST reload) is the durable in-chat explanation.
           setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, use_worktree: 0 } : s)));
           if (sid === activeSessionIdRef.current && data.error) {
             showToast(`Worktree creation failed: ${data.error}`, 'warning', 8000);
@@ -1122,29 +1139,17 @@ export default function App() {
         case 'active-room-tasks-snapshot': {
           const rid = activeRoomIdRef.current;
           if (!rid) break;
-          const task = (data.tasks || []).find(
-            (t) => (t.room_id || t.roomId) === rid && (t.status || 'running') === 'running',
-          );
+          const task = (data.tasks || []).find((t) => (t.room_id || t.roomId) === rid);
           if (!task) break;
-          setRoomProcessing(true);
-          const agentId = task.agent_id ?? task.agentId;
-          const agentName = task.agent_name ?? task.agentName;
-          const agentColor = task.agent_color ?? task.agentColor;
-          const messageId = task.message_id ?? task.messageId;
-          const output = task.streamed_output ?? task.streamedOutput ?? '';
-          if (output) {
-            setRoomThinking(null);
-            setRoomStreaming({
-              agentId,
-              agentName,
-              agentColor,
-              messageId,
-              content: output,
-            });
-          } else {
-            setRoomStreaming(null);
-            setRoomThinking({ agentId, agentName, agentColor });
+          if (
+            !shouldApplyRoomTaskSnapshot(lastLiveRoomEventAtRef.current, wsReconnectAtRef.current)
+          ) {
+            break;
           }
+          const next = roomStreamingStateFromSnapshotTask(task);
+          setRoomProcessing(next.roomProcessing);
+          setRoomThinking(next.roomThinking);
+          setRoomStreaming(next.roomStreaming);
           break;
         }
         case 'error':
@@ -1197,11 +1202,13 @@ export default function App() {
           break;
         case 'room_round_start':
           if (data.roomId === activeRoomIdRef.current) {
+            lastLiveRoomEventAtRef.current = Date.now();
             setRoomProcessing(true);
           }
           break;
         case 'room_thinking':
           if (data.roomId === activeRoomIdRef.current) {
+            lastLiveRoomEventAtRef.current = Date.now();
             setRoomStreaming(null);
             setRoomThinking({
               agentId: data.agentId,
@@ -1212,6 +1219,7 @@ export default function App() {
           break;
         case 'room_stream':
           if (data.roomId === activeRoomIdRef.current) {
+            lastLiveRoomEventAtRef.current = Date.now();
             setRoomThinking(null);
             setRoomStreaming({
               agentId: data.agentId,
@@ -2151,6 +2159,12 @@ export default function App() {
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    if (connected) {
+      wsReconnectAtRef.current = Date.now();
+    }
+  }, [connected]);
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
