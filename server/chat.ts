@@ -110,6 +110,7 @@ import {
   applyAssistantTextChunkForDelegationKickoff,
   planDelegationRoundOnProcClose,
 } from './delegation-kickoff-buffer.js';
+import { isSessionChatBusy } from './session-chat-busy.js';
 import { clearDelegationUiMeta } from './delegation-state.js';
 import { isDelegationDisabledForAgent } from './delegation-gate.js';
 import type {
@@ -1560,9 +1561,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
-      const isDelegating = activeDelegationSessions.has(sessionId);
+      const sessionBusy = isSessionChatBusy(
+        sessionId,
+        activeProcesses,
+        activeDelegationSessions,
+        existingTask,
+      );
 
-      if ((existingTask || isDelegating) && !msg._fromQueue) {
+      if (sessionBusy && !msg._fromQueue) {
         if (isAutoContinuation) {
           const retries = msg._continuationRetry ?? 0;
           const plan = planAutoContinuationRetry({ retries });
@@ -1655,12 +1661,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (proc) {
             killProcessGroup(proc, 'SIGTERM');
           }
-          if (isDelegating) {
+          if (activeDelegationSessions.has(sessionId)) {
             handleDelegationCancel(sessionId);
             setTimeout(() => drainQueue(sessionId), 500);
           }
           broadcast({ type: 'interrupted', sessionId });
         }
+
+        // Session may look busy only because of a stale `active_tasks` row; try
+        // draining now and again when the in-flight turn completes.
+        setImmediate(() => drainQueue(sessionId));
 
         return;
       }
@@ -3053,6 +3063,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             chainElapsedMs: Date.now() - chainStartedAtMs,
             detail: 'spawn_errored',
           });
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
+          drainQueue(sessionId);
           return;
         }
 
@@ -4216,6 +4231,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   broadcastActiveTasksSnapshot(stmts, broadcast);
                   drainQueue(sessionId);
                 });
+            } else {
+              drainQueue(sessionId);
             }
             return;
           }

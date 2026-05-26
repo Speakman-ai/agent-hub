@@ -137,6 +137,7 @@ import {
   handleDelegation,
   synthesizeResults,
 } from './delegation.js';
+import { drainIdleQueuedSessions } from './session-chat-busy.js';
 
 import { initHandoff } from './handoff.js';
 
@@ -584,6 +585,13 @@ initAutonomous({
   },
   getWebhookHandlerDeps: () => webhookHandlerDeps,
   getDb,
+  drainIdleSessionQueues: () =>
+    drainIdleQueuedSessions({
+      stmts: stmts!,
+      activeProcesses,
+      activeDelegationSessions,
+      drainQueue,
+    }),
 } as Parameters<typeof initAutonomous>[0]);
 
 app.use(
@@ -1303,12 +1311,18 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     try {
-      const queuedSessions = stmts!.getAllQueuedSessions.all() as Array<{ session_id: string }>;
-      for (const { session_id } of queuedSessions) {
-        const task = stmts!.getActiveTask.get(session_id);
-        if (!task) drainQueue(session_id);
+      const drained = drainIdleQueuedSessions({
+        stmts: stmts!,
+        activeProcesses,
+        activeDelegationSessions,
+        drainQueue,
+      });
+      if (drained > 0) {
+        console.log(`[QueueDrain] Boot drained idle queues for ${drained} session(s)`);
       }
-    } catch {}
+    } catch (err) {
+      console.error('[QueueDrain] Boot drain failed:', (err as Error).message);
+    }
 
     scheduleAll(allAgents());
 

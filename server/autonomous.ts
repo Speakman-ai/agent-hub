@@ -391,6 +391,8 @@ interface AutonomousDeps {
    * synchronously.
    */
   getDb: () => Database;
+  /** Drain per-session message queues when no CLI/delegation is in flight. */
+  drainIdleSessionQueues?: () => number;
 }
 
 interface WebhookHandlerDeps {
@@ -1190,6 +1192,7 @@ export function startReviewPollingFallback(): void {
       await reconcileKanbanWithGitHub();
       await pollForMissedReviews();
       await pollForLanModeReviewerDispatch();
+      drainIdleSessionQueuesAfterPoll();
       console.log('[ReviewPoll] Startup reconciliation complete');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1204,6 +1207,7 @@ export function startReviewPollingFallback(): void {
         await reconcileKanbanWithGitHub();
         await pollForMissedReviews();
         await pollForLanModeReviewerDispatch();
+        drainIdleSessionQueuesAfterPoll();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[ReviewPoll] Polling error:', msg);
@@ -1215,6 +1219,19 @@ export function startReviewPollingFallback(): void {
     }),
   );
   console.log('[ReviewPoll] Fallback polling started (every 3 minutes)');
+}
+
+/** Failure-mode B safety net: queued autofix/review messages with no live worker. */
+function drainIdleSessionQueuesAfterPoll(): void {
+  try {
+    const drained = getDeps().drainIdleSessionQueues?.() ?? 0;
+    if (drained > 0) {
+      console.log(`[ReviewPoll] Drained idle queued messages for ${drained} session(s)`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[ReviewPoll] Idle queue drain failed:', msg);
+  }
 }
 
 /**
