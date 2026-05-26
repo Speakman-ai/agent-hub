@@ -212,6 +212,22 @@ describe('createStreamParser — Claude Code', () => {
     expect((events[0] as { message: string | null }).message).toBeNull();
   });
 
+  it('ignores Claude control-plane frames in headless mode (no unknown tail noise)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'req-1',
+        request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } },
+      }),
+      JSON.stringify({
+        type: 'control_response',
+        request_id: 'req-1',
+        response: { subtype: 'success', response: { behavior: 'allow' } },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
   it('returns unknown for unhandled types', () => {
     const events = parse([JSON.stringify({ type: 'new_future_event' })]);
     expect(events).toHaveLength(1);

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
+import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
 import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
@@ -2798,6 +2799,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const handleEvent = (event: StreamEvent): void => {
+        if (!shouldPersistStreamEvent(event)) {
+          return;
+        }
         try {
           // Clamp the serialized payload to MAX_PAYLOAD_BYTES so a single
           // huge tool_result / tool_use cannot blow up the table. See

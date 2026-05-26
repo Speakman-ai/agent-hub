@@ -21,6 +21,7 @@ import {
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
 import { extractAskBlocks } from '../../../shared/utils/extractAskBlocks.js';
+import { shouldSuppressStreamEvent } from '../../../shared/utils/benignStreamEvents.js';
 import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
@@ -547,6 +548,7 @@ export function eventsToBlocks(events) {
     if (t === 'browser_tool_activity') continue;
     if (t === 'checkpoint') continue;
     if (t === 'rate_limit') continue;
+    if (shouldSuppressStreamEvent(event)) continue;
 
     if (t === 'tool_use') {
       const toolId = event.id != null ? String(event.id) : '';

@@ -1110,6 +1110,43 @@ export default function App() {
             ),
           );
           break;
+        case 'worktree_failed': {
+          const sid = data.sessionId;
+          if (!sid) break;
+          setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, use_worktree: 0 } : s)));
+          if (sid === activeSessionIdRef.current && data.error) {
+            showToast(`Worktree creation failed: ${data.error}`, 'warning', 8000);
+          }
+          break;
+        }
+        case 'active-room-tasks-snapshot': {
+          const rid = activeRoomIdRef.current;
+          if (!rid) break;
+          const task = (data.tasks || []).find(
+            (t) => (t.room_id || t.roomId) === rid && (t.status || 'running') === 'running',
+          );
+          if (!task) break;
+          setRoomProcessing(true);
+          const agentId = task.agent_id ?? task.agentId;
+          const agentName = task.agent_name ?? task.agentName;
+          const agentColor = task.agent_color ?? task.agentColor;
+          const messageId = task.message_id ?? task.messageId;
+          const output = task.streamed_output ?? task.streamedOutput ?? '';
+          if (output) {
+            setRoomThinking(null);
+            setRoomStreaming({
+              agentId,
+              agentName,
+              agentColor,
+              messageId,
+              content: output,
+            });
+          } else {
+            setRoomStreaming(null);
+            setRoomThinking({ agentId, agentName, agentColor });
+          }
+          break;
+        }
         case 'error':
           if (data.sessionId) {
             setActiveTasks((prev) => {
@@ -2102,9 +2139,15 @@ export default function App() {
           }
           break;
         }
+        default: {
+          if (import.meta.env.DEV) {
+            console.debug('[ws] unhandled message type:', data.type);
+          }
+          break;
+        }
       }
     },
-    [notify, refreshAgents],
+    [notify, refreshAgents, showToast],
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
