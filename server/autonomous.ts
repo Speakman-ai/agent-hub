@@ -1461,8 +1461,11 @@ export async function pollForMissedReviews(): Promise<void> {
   const projects = d.getProjects();
   const ghAuthenticatedUser = d.getGhAuthenticatedUser();
   const webhookHandlerDeps = d.getWebhookHandlerDeps();
+  const config = d.getConfig();
 
   for (const project of projects) {
+    const ghToken = await resolveOrgOwnerGithubToken(config, undefined);
+    const ghEnv = autoGitChildEnv(ghToken);
     const boardData = getOrCreateBoard(d.stmts, project.id);
     if (!boardData?.board) continue;
 
@@ -1508,7 +1511,7 @@ export async function pollForMissedReviews(): Promise<void> {
               '--jq',
               '[.[] | select(.state == "CHANGES_REQUESTED") | {id: .id, submitted_at: .submitted_at}]',
             ],
-            { timeout: 15000 },
+            { timeout: 15000, env: ghEnv },
             (err, stdout, _stderr) => {
               if (err) reject(err);
               else resolve({ stdout });
@@ -1610,7 +1613,7 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
               '--jq',
               '{state: .state, head_sha: .head.sha}',
             ],
-            { timeout: 15000 },
+            { timeout: 15000, env: ghEnv },
             (err, stdout, _stderr) => {
               if (err) reject(err);
               else resolve({ stdout });
@@ -1641,7 +1644,7 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
                 '--jq',
                 '[.check_runs[] | {id: .id, name: .name, conclusion: .conclusion}]',
               ],
-              { timeout: 15000 },
+              { timeout: 15000, env: ghEnv },
               (err, stdout, _stderr) => {
                 if (err) reject(err);
                 else resolve({ stdout });
@@ -1737,7 +1740,7 @@ The CI will re-run automatically once you push.`;
               '--jq',
               '[.[] | {id: .id, body: .body, path: .path, line: .line, user: .user.login}]',
             ],
-            { timeout: 15000 },
+            { timeout: 15000, env: ghEnv },
             (err, stdout, _stderr) => {
               if (err) reject(err);
               else resolve({ stdout });

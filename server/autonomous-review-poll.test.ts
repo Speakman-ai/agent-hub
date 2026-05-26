@@ -415,6 +415,32 @@ describe('pollForMissedReviews', () => {
     expect(mockDispatchReviewFeedback).toHaveBeenCalledTimes(1);
     expect(lastDispatchedReviewId.get('c-r')).toBeUndefined();
   });
+
+  it('runs gh probes with an explicit child env', async () => {
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'b1' } });
+    const envs: unknown[] = [];
+    vi.mocked(execFileImport).mockImplementation(((
+      _cmd: string,
+      args: readonly string[] | null | undefined,
+      opts: unknown,
+      cb: (err: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      envs.push((opts as { env?: unknown } | undefined)?.env);
+      const argv = args ?? [];
+      if (argv[0] === 'api' && String(argv[1]).includes('/pulls/99/reviews')) {
+        cb(null, '[]', '');
+      } else {
+        cb(new Error('unexpected'), '', '');
+      }
+      return undefined as never;
+    }) as unknown as typeof execFileImport);
+
+    initAutonomous(makeDeps({ reviewCardIds: ['c-env'], inProgressCardIds: [] }) as never);
+    await pollForMissedReviews();
+
+    expect(envs.length).toBeGreaterThan(0);
+    expect(envs.every((env) => env && typeof env === 'object')).toBe(true);
+  });
 });
 
 // ─── Secondary probes added by the babysit-gap closure ───────────────────────
