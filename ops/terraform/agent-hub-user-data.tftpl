@@ -264,6 +264,7 @@ exec docker run --rm --name agenthub-server \
   -e "AGENT_HUB_HOST_WORKSPACES_DIR=\$DATA_ROOT/workspaces" \
   -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
   -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
+  -e "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT

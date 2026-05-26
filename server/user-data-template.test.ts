@@ -264,6 +264,16 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).toMatch(/docker pull --quiet "\\\$IMAGE_URI"/);
     });
 
+    // The compose preview health probe defaults to `urlBase(port, '')`, which
+    // collapses to `<publicUrl>/api/sessions//preview/proxy` (empty sessionId)
+    // and 404s forever — every preview boot then trips `markGroupFailed` with
+    // "health check timed out". Setting `AGENT_HUB_PREVIEW_HEALTH_HOST` flips
+    // the probe to `http://host.docker.internal:<port>` which reaches the
+    // host-published port over the `--add-host` alias already in the run line.
+    it('sets AGENT_HUB_PREVIEW_HEALTH_HOST so preview probes target the host gateway', () => {
+      expect(rendered).toMatch(/-e "AGENT_HUB_PREVIEW_HEALTH_HOST=host\.docker\.internal"/);
+    });
+
     // Regression guard for kanban 89903017. The previous wrapper had a 3-attempt
     // pull retry loop that fell through to `exec docker run` on failure, so a
     // disk-full / ECR-blip / network-timeout silently launched the container
