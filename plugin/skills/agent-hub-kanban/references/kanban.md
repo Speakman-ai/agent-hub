@@ -30,10 +30,10 @@ sidebar auto-renames to the card title and `<agenthub:close-card>` becomes
 available. You do not need to remember the JSON field every time:
 
 - **`scripts/kanban-create-card.sh`** defaults `--session-id` to
-  `$AGENT_HUB_SESSION_ID` when omitted.
-- **`scripts/ah-api.sh` / `scripts/_common.sh`** send
-  `X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID` on every Hub API call when
-  the env var is set.
+  `$AGENT_HUB_SESSION_ID` when omitted and sends `X-Agent-Hub-Session-Id` on
+  the create POST (body `session_id` is also set when defaulted).
+- **`scripts/board.sh create`** sends `X-Agent-Hub-Session-Id` when
+  `$AGENT_HUB_SESSION_ID` is set and the JSON body omits `sessionId`.
 - **`POST /board/cards`** auto-stamps `session_id` from that header, or from
   a per-session spawn-creds API key (`spawn:<sessionId>`), when the body
   omits `sessionId`. Pass `"sessionId": null` to opt out (intake / bug-report

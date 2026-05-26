@@ -30,9 +30,9 @@ Scripts live in the shared core tree (`agent-hub/scripts/`) — pass
 ## Self-reporting flow
 
 1. **Create** a card linked to your session when you pick up work. Wrappers
-   auto-link via `$AGENT_HUB_SESSION_ID` (header + default `--session-id`);
-   you can still pass `session_id` explicitly in JSON when using `board.sh
-   create`.
+   auto-link via `$AGENT_HUB_SESSION_ID` (default `--session-id` + scoped
+   session header on create); you can still pass `session_id` explicitly in JSON
+   when using `board.sh create`.
 2. **Move** to In Progress when you start; **Review** when the PR is open;
    **Done** on merge.
 3. **Comment** on the card when opening a PR, hitting a blocker, or

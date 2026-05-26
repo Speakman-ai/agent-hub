@@ -48,13 +48,8 @@ hub_api() {
   if [[ -n "$key" ]]; then
     auth_args+=(-H "x-api-key: $key")
   fi
-  local session_args=()
-  if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
-    session_args+=(-H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID")
-  fi
   curl -fsS -X "$method" \
     "${auth_args[@]}" \
-    "${session_args[@]}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json' \
     "${AGENT_HUB_URL}${path}" \

@@ -277,6 +277,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       githubIssueUrl,
       createdBy,
     } = parsed;
+    // Merge header / spawn-creds fallbacks before dedup and intake gating so
+    // both guards see the same resolved session id (not just the Zod body).
     const sessionId = resolveCardSessionId(req, bodySessionId);
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
 

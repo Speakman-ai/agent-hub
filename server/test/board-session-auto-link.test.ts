@@ -10,7 +10,7 @@ let request: supertest.Agent;
 
 beforeAll(async () => {
   request = await getRequest();
-});
+}, 60_000);
 
 async function getFirstColumnId(projectId: string): Promise<string> {
   const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
@@ -105,6 +105,30 @@ describe('POST /board/cards session auto-link', () => {
     expect((sessRes.body as { name: string }).name).toBe('Rename me in sidebar');
   });
 
+  it('returns existing card when header reuses an already-linked session_id', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Header Dedup Worker' });
+    const session = await createSession({ agentId: agent.id as string });
+    const sessionId = session.id as string;
+    const columnId = await getFirstColumnId(projectId);
+
+    const first = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .set(AGENT_HUB_SESSION_ID_HEADER, sessionId)
+      .send({ title: 'First linked card', columnId })
+      .expect(200);
+    const firstId = (first.body as { id: string }).id;
+
+    const second = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .set(AGENT_HUB_SESSION_ID_HEADER, sessionId)
+      .send({ title: 'Second card same session via header', columnId })
+      .expect(200);
+
+    expect((second.body as { id: string }).id).toBe(firstId);
+  });
+
   it('still strips intake session_id even when auto-filled from header', async () => {
     const project = await createProject();
     const projectId = project.id as string;
@@ -126,5 +150,27 @@ describe('POST /board/cards session auto-link', () => {
     const body = res.body as { session_id: string | null; assignee: string | null };
     expect(body.session_id).toBeNull();
     expect(body.assignee).toBeNull();
+  });
+
+  it('does not rename a user-customized session title when linking via header', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Custom Title Worker' });
+    const customName = 'My hand-picked session title';
+    const session = await createSession({
+      agentId: agent.id as string,
+      name: customName,
+    });
+    const sessionId = session.id as string;
+    const columnId = await getFirstColumnId(projectId);
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .set(AGENT_HUB_SESSION_ID_HEADER, sessionId)
+      .send({ title: 'Card title should not overwrite custom name', columnId })
+      .expect(200);
+
+    const sessRes = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    expect((sessRes.body as { name: string }).name).toBe(customName);
   });
 });
