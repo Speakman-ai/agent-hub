@@ -686,6 +686,51 @@ const { previewRuntime, previewComposeRuntime } = createPreviewRuntimes({
       /* best-effort — never let a broadcast failure stall the spawn */
     }
   },
+  // Fires when the background health-check flips a compose group to a
+  // terminal state. Without this hook the only path that broadcasts
+  // `preview` / `preview_failed` is the chat-handler poll loop in
+  // `handlePreviewBlock`, which exits as soon as the chat turn ends. A
+  // client that reconnected after `handlePreviewBlock` returned (slow
+  // boot, WS drop mid-build) would never see the transition. The
+  // runtime owns the truth — broadcast it directly from there.
+  notifyStatus: ({ sessionId, groupId, status, port, url, logTail, error }) => {
+    try {
+      if (status === 'ready') {
+        broadcast({
+          type: 'agenthub_preview',
+          kind: 'preview',
+          sessionId,
+          previewId: groupId,
+          // We don't have the original `<agenthub:preview>` target/route
+          // here — the chat-handler call site is the only place that
+          // knows them. Use the same generic defaults the WS connect
+          // snapshot uses; clients render against `route='/'` already.
+          target: 'client',
+          route: '/',
+          agentReason: '',
+          previewUrl: url,
+          fullUrl: url,
+          port,
+          screenshotPath: null,
+          logTail,
+        } as Record<string, unknown>);
+      } else {
+        broadcast({
+          type: 'agenthub_preview',
+          kind: 'preview_failed',
+          sessionId,
+          previewId: groupId,
+          target: 'client',
+          route: '/',
+          agentReason: '',
+          error: error ?? 'preview boot failed',
+          logTail,
+        } as Record<string, unknown>);
+      }
+    } catch {
+      /* best-effort — same rationale as notifyLog */
+    }
+  },
 });
 
 if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
@@ -920,6 +965,11 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
     handleDesignChat(ws as WebSocketLike | null, msg),
   handleDesignCancel,
+  // Hand the compose runtime to the WS connect handler so it can replay
+  // active-preview snapshots to (re)connecting clients. Without this,
+  // a client that reconnects after the chat-handler broadcast loop has
+  // exited never learns that the container became ready.
+  getPreviewSnapshotRuntime: () => previewComposeRuntime,
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);

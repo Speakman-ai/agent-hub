@@ -24,6 +24,7 @@ import type {
 } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
+import { buildPreviewSnapshotEvents } from './preview/preview-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 
 /**
@@ -95,6 +96,7 @@ export default function createWebSocket(
     handleRoomDequeue,
     handleDesignChat,
     handleDesignCancel,
+    getPreviewSnapshotRuntime,
   } = deps;
 
   // Per-broadcast: resolve the event's projectId (if any) and look it up
@@ -234,6 +236,42 @@ export default function createWebSocket(
         );
       }
     } catch {}
+
+    // Preview snapshot: replay the current `agenthub_preview` state for every
+    // active compose group the caller is allowed to see. Without this, a
+    // client that reconnected after a tab-sleep / laptop-suspend would sit
+    // frozen on whatever `preview_starting` event it last received before
+    // disconnect — the chat handler's broadcast loop has long since exited,
+    // and the per-row terminal flip on the runtime is invisible by default.
+    // Each event is filtered through `shouldDeliverBroadcast` so a user
+    // doesn't receive snapshots for sessions on projects they can't see.
+    try {
+      const runtime = getPreviewSnapshotRuntime?.();
+      if (runtime) {
+        const snapshots = buildPreviewSnapshotEvents(runtime);
+        for (const event of snapshots) {
+          // Treat the snapshot exactly like a fan-out broadcast: skip
+          // recipients whose visibility stamp says they can't see the
+          // project this event belongs to.
+          if (
+            !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
+              resolveProjectId: resolveProjectIdFromEvent,
+              findProject: findProjectLocal,
+            })
+          ) {
+            continue;
+          }
+          ws.send(JSON.stringify(event));
+        }
+      }
+    } catch (err) {
+      // Snapshot is best-effort — a DB hiccup or a misbehaving runtime
+      // method must never break the rest of the connect handshake.
+      console.error(
+        '[ws] preview snapshot failed (lenient skip):',
+        err instanceof Error ? err.message : err,
+      );
+    }
 
     // Per-session ownership gate. Returns true if the caller may act on
     // `sessionId`. Sessions that don't yet exist (orphan auto-create

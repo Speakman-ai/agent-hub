@@ -244,6 +244,41 @@ export type ComposePreviewNotifyLogFn = (info: {
   stream: 'stdout' | 'stderr';
 }) => void;
 
+/**
+ * Optional callback fired when the background health-check transitions a
+ * compose group's status to a terminal state — `ready` once the entry
+ * service answers a 2xx, or `failed` on timeout / explicit failure.
+ *
+ * Why this exists: the chat handler in `handlePreviewBlock` ALSO polls
+ * `getById(groupId).status` and broadcasts a `preview` / `preview_failed`
+ * event when it sees the flip. That polling loop is bounded by
+ * `readyTimeoutMs` and only runs for the lifetime of the chat turn that
+ * spawned the preview. Once it exits, no further broadcasts happen for
+ * that preview — so if the container becomes ready AFTER the chat
+ * handler returns (slow boot, server-side polling lag, or the loop's
+ * budget was tighter than the runtime's), or if a WS client reconnects
+ * after the chat-handler broadcast already fired, the client never
+ * learns that the container is healthy.
+ *
+ * Wiring `notifyStatus` to the WS broadcast in `server/index.ts` gives
+ * us a second, runtime-driven path that fires exactly once per terminal
+ * transition, independent of any chat handler.
+ *
+ * The `logTail` reflects whatever lines are in the runtime's tail at the
+ * moment the transition fires — recipients should treat it as
+ * informational, not as a complete log.
+ */
+export type ComposePreviewNotifyStatusFn = (info: {
+  sessionId: string;
+  groupId: string;
+  status: 'ready' | 'failed';
+  port: number;
+  url: string;
+  logTail: string[];
+  /** Failure reason when `status === 'failed'`. Unset on `ready`. */
+  error?: string;
+}) => void;
+
 export interface PreviewComposeRuntimeDeps {
   db: Database;
   spawn: SpawnFn;
@@ -252,6 +287,11 @@ export interface PreviewComposeRuntimeDeps {
   config?: PreviewComposeRuntimeConfig;
   /** Optional WS fan-out for live boot logs (mirrors PreviewRuntime.notifyLog). */
   notifyLog?: ComposePreviewNotifyLogFn;
+  /**
+   * Optional WS fan-out for terminal status transitions. See
+   * {@link ComposePreviewNotifyStatusFn} for the contract.
+   */
+  notifyStatus?: ComposePreviewNotifyStatusFn;
   logger?: {
     log: (m: string) => void;
     warn: (m: string) => void;
@@ -560,6 +600,7 @@ export class PreviewComposeRuntime {
   private readonly removeComposeProjectVolumes: RemoveComposeProjectVolumesFn;
   private readonly pathExists: (path: string) => boolean;
   private readonly notifyLog?: ComposePreviewNotifyLogFn;
+  private readonly notifyStatus?: ComposePreviewNotifyStatusFn;
   private readonly logTailLines: number;
 
   /** In-memory boot log tail keyed by group id (compose up + daemon logs). */
@@ -594,6 +635,7 @@ export class PreviewComposeRuntime {
       deps.removeComposeProjectVolumes ?? removeComposeProjectVolumesDefault;
     this.pathExists = deps.pathExists ?? existsSync;
     this.notifyLog = deps.notifyLog;
+    this.notifyStatus = deps.notifyStatus;
     this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
     if (this.portRange.min > this.portRange.max) {
       throw new Error(
@@ -1208,6 +1250,51 @@ export class PreviewComposeRuntime {
     };
   }
 
+  /**
+   * Every compose-managed group whose status is one of `starting`, `ready`,
+   * or `failed`. Ordered by `started_at` ASC so the WS connect snapshot
+   * replay is deterministic when multiple sessions have active previews.
+   *
+   * Returned rows are flat in the same shape as {@link getById} —
+   * `compose_project_name IS NOT NULL` excludes any legacy spawn rows.
+   */
+  listActive(): ComposePreviewRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT g.id, g.session_id, g.project_id, g.compose_project_name,
+                g.status, g.started_at, g.last_active_at,
+                p.port, p.url
+           FROM worktree_preview_groups g
+           LEFT JOIN worktree_preview_processes p
+                  ON p.group_id = g.id AND p.name = ?
+          WHERE g.compose_project_name IS NOT NULL
+            AND g.status IN ('starting','ready','failed')
+          ORDER BY g.started_at ASC`,
+      )
+      .all(ENTRY_PROCESS_NAME) as Array<{
+      id: string;
+      session_id: string;
+      project_id: string;
+      compose_project_name: string;
+      status: ComposeStatus;
+      started_at: string;
+      last_active_at: string;
+      port: number | null;
+      url: string | null;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project_id: row.project_id,
+      port: row.port ?? 0,
+      url: row.url ?? '',
+      compose_project_name: row.compose_project_name,
+      status: row.status,
+      started_at: row.started_at,
+      last_active_at: row.last_active_at,
+    }));
+  }
+
   /** Single group by id, or null. */
   getById(groupId: string): ComposePreviewRow | null {
     const row = this.db
@@ -1442,7 +1529,7 @@ export class PreviewComposeRuntime {
                 WHERE id = ? AND status = 'starting'`,
             )
             .run(opts.entryRowId);
-          this.db
+          const update = this.db
             .prepare(
               `UPDATE worktree_preview_groups
                   SET status = 'ready',
@@ -1450,6 +1537,14 @@ export class PreviewComposeRuntime {
                 WHERE id = ? AND status = 'starting'`,
             )
             .run(opts.groupId);
+          // Only fire `notifyStatus` when this call is the one that actually
+          // flipped the row — `changes === 0` means a concurrent
+          // markGroupFailed (or a duplicate health check) beat us to it, and
+          // we'd otherwise emit a phantom `preview` event for a row that's
+          // already failed/cleaned up.
+          if (update.changes > 0) {
+            this.fireNotifyStatus(opts.groupId, 'ready');
+          }
           return;
         }
       } catch {
@@ -1558,7 +1653,7 @@ export class PreviewComposeRuntime {
           WHERE group_id = ? AND status IN ('pending','starting','ready')`,
       )
       .run(groupId);
-    this.db
+    const update = this.db
       .prepare(
         `UPDATE worktree_preview_groups
             SET status = 'failed',
@@ -1567,6 +1662,62 @@ export class PreviewComposeRuntime {
       )
       .run(groupId);
     this.logger.warn(`[preview-compose ${groupId}] group failed: ${reason}`);
+    if (update.changes > 0) {
+      this.fireNotifyStatus(groupId, 'failed', reason);
+    }
+  }
+
+  /**
+   * Notify any wired-up listener that a group transitioned to a terminal
+   * state. Best-effort: a throwing listener is logged but never crashes
+   * the surrounding caller (health-check loop / failure path). Reads the
+   * row back from the DB so the broadcast carries the current port/url
+   * — the caller has already flipped the status by the time we're
+   * called, so a fresh read also confirms the flip stuck.
+   */
+  private fireNotifyStatus(groupId: string, status: 'ready' | 'failed', error?: string): void {
+    if (!this.notifyStatus) return;
+    let row: ComposePreviewRow | null;
+    try {
+      row = this.getById(groupId);
+    } catch (err) {
+      this.logger.warn(
+        `[preview-compose ${groupId}] fireNotifyStatus: getById threw: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+    if (!row) return;
+    try {
+      this.notifyStatus({
+        sessionId: row.session_id,
+        groupId,
+        status,
+        port: row.port,
+        url: row.url,
+        logTail: this.snapshotLogTail(groupId),
+        ...(error ? { error } : {}),
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[preview-compose ${groupId}] notifyStatus threw: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Snapshot the in-memory log tail without touching the docker daemon.
+   * `getLogTail` does a synchronous `docker compose logs --tail` to
+   * refresh — fine for an HTTP request, too expensive when we're
+   * broadcasting from inside a hot health-check loop. The in-memory map
+   * already contains everything we appended via wireComposeChildStdio +
+   * the periodic refreshComposeLogsFromDaemon ticks in the loop above.
+   */
+  private snapshotLogTail(groupId: string): string[] {
+    return [...(this.logTails.get(groupId) ?? [])];
   }
 
   private getGroupStatus(groupId: string): ComposeStatus | null {

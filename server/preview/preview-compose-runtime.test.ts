@@ -781,6 +781,175 @@ describe('PreviewComposeRuntime.startPreview — failure paths', () => {
   });
 });
 
+// ─── notifyStatus terminal-transition hook ─────────────────────────────
+
+describe('PreviewComposeRuntime — notifyStatus', () => {
+  it('fires once with status:ready when the health check flips the row', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ okOnAttempt: 1 });
+    const clock = makeClock();
+    const calls: Array<{
+      sessionId: string;
+      groupId: string;
+      status: 'ready' | 'failed';
+      port: number;
+      url: string;
+      error?: string;
+    }> = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyStatus: (info) => {
+        calls.push({
+          sessionId: info.sessionId,
+          groupId: info.groupId,
+          status: info.status,
+          port: info.port,
+          url: info.url,
+          ...(info.error ? { error: info.error } : {}),
+        });
+      },
+      config: { readyTimeoutMs: 60_000, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-ready', makeProject(), '/wt/ready');
+
+    // Drain the health-check loop until the row flips to ready.
+    for (let i = 0; i < 10 && runtime.getById(result.previewId)?.status === 'starting'; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)?.status).toBe('ready');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      sessionId: 'sess-ready',
+      groupId: result.previewId,
+      status: 'ready',
+      port: result.port,
+      url: result.url,
+    });
+    expect(calls[0].error).toBeUndefined();
+  });
+
+  it('fires with status:failed + the reason when health check times out', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const calls: Array<{ status: string; error?: string }> = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyStatus: (info) => calls.push({ status: info.status, error: info.error }),
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 50, healthIntervalMs: 10 },
+    });
+
+    await runtime.startPreview('sess-fail-notify', makeProject(), '/wt');
+    for (let i = 0; i < 10; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].status).toBe('failed');
+    expect(calls[0].error).toMatch(/health check timed out/);
+  });
+
+  it('swallows listener exceptions so the runtime never crashes the spawn', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ okOnAttempt: 1 });
+    const clock = makeClock();
+    const warnings: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyStatus: () => {
+        throw new Error('boom');
+      },
+      logger: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      config: { readyTimeoutMs: 60_000, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-boom', makeProject(), '/wt');
+    for (let i = 0; i < 10 && runtime.getById(result.previewId)?.status === 'starting'; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)?.status).toBe('ready');
+    expect(warnings.some((w) => w.includes('notifyStatus threw'))).toBe(true);
+  });
+});
+
+// ─── listActive (used by the WS connect snapshot) ──────────────────────
+
+describe('PreviewComposeRuntime.listActive', () => {
+  it('returns every compose-managed group in starting / ready / failed', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      // Long timeout so the rows stay in `starting` for the assertion.
+      config: { readyTimeoutMs: 1_000_000, healthIntervalMs: 10 },
+    });
+
+    const a = await runtime.startPreview('sess-a', makeProject(), '/wt/a');
+    const b = await runtime.startPreview('sess-b', makeProject(), '/wt/b');
+
+    const rows = runtime.listActive();
+    const ids = rows.map((r) => r.id).sort();
+    expect(ids).toEqual([a.previewId, b.previewId].sort());
+    for (const r of rows) {
+      expect(r.status).toBe('starting');
+      expect(r.compose_project_name).toMatch(/^agenthub-session-/);
+    }
+  });
+
+  it('excludes spawn-managed (legacy) groups whose compose_project_name is NULL', async () => {
+    const db = freshDb();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: makeSpawn().spawn,
+      fetch: makeFetch().fetch,
+    });
+
+    // Hand-insert a legacy spawn row (compose_project_name = NULL) the same
+    // way the legacy `PreviewRuntime.reserveProcessRow` would.
+    db.prepare(
+      `INSERT INTO worktree_preview_groups
+        (id, session_id, project_id, status)
+       VALUES ('legacy-1', 'sess-legacy', 'proj-legacy', 'starting')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+        (id, group_id, name, pid, port, url, log_path, status)
+       VALUES ('legacy-1:web', 'legacy-1', 'web', 1234, 4555, 'http://localhost:4555', NULL, 'starting')`,
+    ).run();
+
+    const rows = runtime.listActive();
+    expect(rows.find((r) => r.id === 'legacy-1')).toBeUndefined();
+  });
+});
+
 // ─── Port allocation ───────────────────────────────────────────────────
 
 describe('PreviewComposeRuntime — port allocation', () => {

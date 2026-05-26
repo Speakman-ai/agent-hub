@@ -38,6 +38,7 @@ import {
   type PreviewComposeRuntimeConfig,
   type DeleteOverrideFileFn,
   type HealthFetchFn as ComposeHealthFetchFn,
+  type ComposePreviewNotifyStatusFn,
 } from './preview-compose-runtime.js';
 import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
@@ -55,6 +56,14 @@ export interface CreatePreviewRuntimesDeps {
     line: string;
     stream: 'stdout' | 'stderr';
   }) => void;
+  /**
+   * Optional terminal-status broadcaster — fed straight into the compose
+   * runtime's `notifyStatus`. Fires when the background health-check
+   * flips a group to `ready` / `failed` outside the chat handler's
+   * polling window. Wired in production to the WS `broadcast()` so a
+   * reconnecting client sees the transition.
+   */
+  notifyStatus?: ComposePreviewNotifyStatusFn;
   /** Optional config overrides — primarily used by integration tests. */
   legacyConfig?: PreviewRuntimeConfig;
   composeConfig?: PreviewComposeRuntimeConfig;
@@ -221,6 +230,7 @@ export function createPreviewRuntimes(
     writeOverrideFile,
     deleteOverrideFile,
     notifyLog: deps.notifyLog,
+    notifyStatus: deps.notifyStatus,
     config: deps.composeConfig,
   });
 
