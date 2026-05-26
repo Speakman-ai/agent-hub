@@ -152,6 +152,23 @@ describe('preview proxy iframe auth', () => {
     expect(res.status).toBe(503);
   });
 
+  it('manifest.webmanifest passes auth even for a session NOT owned by the org owner', async () => {
+    // The original test above passes accidentally: `sessionId` is owned by
+    // the first user, which `resolveOwnerUserId` falls back to for any
+    // unauthenticated request, so the ownership middleware lets the
+    // request through. Real prod sessions are typically owned by users
+    // other than the org owner — without honouring
+    // `authPreviewManifestBypass` in the router-level ownership middleware
+    // those requests 404 with `{"error":"Session not found"}`, which the
+    // browser then parses as a manifest ("Manifest: Line 1, column 1,
+    // Syntax error"). This test exercises that path.
+    const nonOwnerSid = await createSessionAs(otherJwt, 'pti-sess-non-owner');
+    const res = await request.get(
+      `/api/sessions/${nonOwnerSid}/preview/proxy/manifest.webmanifest`,
+    );
+    expect(res.status).toBe(503);
+  });
+
   it('iframe nav with valid ticket → passes auth, sets path-scoped cookie', async () => {
     const ticket = await mintTicket();
     const res = await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`);

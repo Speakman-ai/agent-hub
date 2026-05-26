@@ -422,6 +422,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.use('/api/sessions/:sessionId', (req, res, next) => {
     const sid = (req.params as { sessionId?: string }).sessionId;
     if (!sid || sid === 'cron') return next();
+    // PWA manifest fetches under /preview/proxy/*.webmanifest are allowed
+    // unauthenticated by the auth middleware (browsers omit credentials per
+    // the App Manifest spec). The auth middleware signals this with
+    // `authPreviewManifestBypass`; without honouring it here the request
+    // would still 404 on this ownership gate before reaching the proxy
+    // handler, leaving browsers parsing this JSON error as a manifest and
+    // logging "Manifest: Line 1, column 1, Syntax error".
+    if ((req as AuthenticatedRequest).authPreviewManifestBypass) return next();
     const isRead = req.method === 'GET' || req.method === 'HEAD';
     const ok = isRead
       ? userCanReadSession(req as AuthenticatedRequest, sid)
