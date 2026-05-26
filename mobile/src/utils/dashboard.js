@@ -75,3 +75,51 @@ export function columnRows(byColumn = []) {
 export function activityLabel(type) {
   return ACTIVITY_LABELS[type] || 'Activity';
 }
+
+/**
+ * Canonical activity type keys in display order. The web and mobile
+ * dashboards both render filter chips against this list so a newly-
+ * arriving event type still has a chip after a live refetch.
+ */
+export const ACTIVITY_TYPE_KEYS = [
+  'card_created',
+  'card_updated',
+  'session_created',
+  'escalation',
+  'pr_created',
+];
+
+/**
+ * Narrow an activity list to only the types in `activeTypes`.
+ *
+ * Empty / nullish `activeTypes` means "All" — no narrowing. An invalid
+ * input `items` returns `[]` so callers don't have to defend against
+ * `null` payloads from a half-loaded dashboard.
+ */
+export function filterActivity(items, activeTypes) {
+  if (!Array.isArray(items)) return [];
+  if (!activeTypes) return items;
+  const set =
+    activeTypes instanceof Set
+      ? activeTypes
+      : Array.isArray(activeTypes)
+        ? new Set(activeTypes)
+        : null;
+  if (!set || set.size === 0) return items;
+  return items.filter((it) => set.has(it?.type));
+}
+
+/**
+ * Count activity items grouped by `type`. Returns an object keyed by
+ * type with numeric counts. Items with no `type` are ignored.
+ */
+export function countByType(items) {
+  const counts = {};
+  if (!Array.isArray(items)) return counts;
+  for (const it of items) {
+    const t = it?.type;
+    if (!t) continue;
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  return counts;
+}

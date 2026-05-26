@@ -4,6 +4,9 @@ import {
   priorityRows,
   columnRows,
   activityLabel,
+  filterActivity,
+  countByType,
+  ACTIVITY_TYPE_KEYS,
   HEADLINE_TILES,
   PRIORITY_KEYS,
 } from './dashboard.js';
@@ -98,5 +101,83 @@ describe('activityLabel', () => {
   it('falls back to a generic label for unknown types', () => {
     expect(activityLabel('zoltan')).toBe('Activity');
     expect(activityLabel(undefined)).toBe('Activity');
+  });
+});
+
+const SAMPLE_ACTIVITY = [
+  { type: 'card_created', id: 'c1' },
+  { type: 'card_updated', id: 'c2' },
+  { type: 'card_created', id: 'c3' },
+  { type: 'session_created', id: 's1' },
+  { type: 'escalation', id: 'e1' },
+  { type: 'pr_created', id: 'p1' },
+];
+
+describe('filterActivity', () => {
+  it('returns the full list when no filter is active', () => {
+    expect(filterActivity(SAMPLE_ACTIVITY, new Set())).toEqual(SAMPLE_ACTIVITY);
+    expect(filterActivity(SAMPLE_ACTIVITY, [])).toEqual(SAMPLE_ACTIVITY);
+    expect(filterActivity(SAMPLE_ACTIVITY, null)).toEqual(SAMPLE_ACTIVITY);
+    expect(filterActivity(SAMPLE_ACTIVITY, undefined)).toEqual(SAMPLE_ACTIVITY);
+  });
+
+  it('narrows the list when filter contains one type', () => {
+    const result = filterActivity(SAMPLE_ACTIVITY, new Set(['card_created']));
+    expect(result.map((i) => i.id)).toEqual(['c1', 'c3']);
+  });
+
+  it('narrows the list across multiple selected types', () => {
+    const result = filterActivity(SAMPLE_ACTIVITY, ['session_created', 'escalation']);
+    expect(result.map((i) => i.id)).toEqual(['s1', 'e1']);
+  });
+
+  it('returns an empty list when filter matches nothing', () => {
+    const result = filterActivity(SAMPLE_ACTIVITY, new Set(['nope']));
+    expect(result).toEqual([]);
+  });
+
+  it('handles invalid or missing items gracefully', () => {
+    expect(filterActivity(null, new Set(['card_created']))).toEqual([]);
+    expect(filterActivity(undefined, new Set(['card_created']))).toEqual([]);
+    // Items without a `type` are filtered out when a narrow filter is on.
+    const result = filterActivity([{ id: 'x' }, ...SAMPLE_ACTIVITY], new Set(['card_created']));
+    expect(result.map((i) => i.id)).toEqual(['c1', 'c3']);
+  });
+});
+
+describe('countByType', () => {
+  it('returns a count map keyed by activity type', () => {
+    const counts = countByType(SAMPLE_ACTIVITY);
+    expect(counts).toEqual({
+      card_created: 2,
+      card_updated: 1,
+      session_created: 1,
+      escalation: 1,
+      pr_created: 1,
+    });
+  });
+
+  it('returns an empty object for empty or invalid input', () => {
+    expect(countByType([])).toEqual({});
+    expect(countByType(null)).toEqual({});
+    expect(countByType(undefined)).toEqual({});
+  });
+
+  it('ignores items without a type', () => {
+    expect(countByType([{ id: 'x' }, { type: 'pr_created', id: 'p' }])).toEqual({
+      pr_created: 1,
+    });
+  });
+});
+
+describe('ACTIVITY_TYPE_KEYS', () => {
+  it('lists every known type once in canonical order', () => {
+    expect(ACTIVITY_TYPE_KEYS).toEqual([
+      'card_created',
+      'card_updated',
+      'session_created',
+      'escalation',
+      'pr_created',
+    ]);
   });
 });

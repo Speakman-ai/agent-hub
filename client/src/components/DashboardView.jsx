@@ -298,6 +298,41 @@ const ACTIVITY_ICONS = {
   pr_created: { Icon: GitPullRequest, color: 'text-violet-400', label: 'PR opened' },
 };
 
+// Canonical chip order for the type filter. Listed explicitly (rather
+// than derived from `items`) so a newly-arriving event type still has a
+// chip after a live refetch.
+const ACTIVITY_TYPE_KEYS = [
+  'card_created',
+  'card_updated',
+  'session_created',
+  'escalation',
+  'pr_created',
+];
+
+const FILTER_STORAGE_KEY = 'dashboard.activityFilter.v1';
+
+function loadFilterFromStorage() {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t) => ACTIVITY_TYPE_KEYS.includes(t));
+  } catch {
+    return [];
+  }
+}
+
+function saveFilterToStorage(types) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(types));
+  } catch {
+    /* quota / disabled / private mode — ignore */
+  }
+}
+
 function RecentActivity({
   items = [],
   onOpenSession,
@@ -349,19 +384,101 @@ function RecentActivity({
     return false;
   };
 
+  // Filter state. An empty set means "All" (no narrowing). Persisted in
+  // localStorage so the user's choice survives page reloads; the in-memory
+  // state already survives scroll / refetch because RecentActivity stays
+  // mounted across `setData(...)` from the parent.
+  const [activeTypes, setActiveTypes] = useState(() => new Set(loadFilterFromStorage()));
+
+  const toggleType = (key) => {
+    setActiveTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveFilterToStorage([...next]);
+      return next;
+    });
+  };
+
+  const clearFilter = () => {
+    setActiveTypes(() => {
+      saveFilterToStorage([]);
+      return new Set();
+    });
+  };
+
+  const visibleItems =
+    activeTypes.size === 0 ? items : items.filter((it) => activeTypes.has(it.type));
+
+  const countsByType = items.reduce((acc, it) => {
+    acc[it.type] = (acc[it.type] || 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <section aria-label="Recent activity">
-      <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
-        Recent activity
-      </h2>
+      <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
+          Recent activity
+        </h2>
+        <div
+          role="group"
+          aria-label="Filter activity by type"
+          data-testid="recent-activity-filter"
+          className="flex items-center gap-1.5 flex-wrap"
+        >
+          <button
+            type="button"
+            onClick={clearFilter}
+            aria-pressed={activeTypes.size === 0}
+            data-testid="recent-activity-filter-all"
+            className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+              activeTypes.size === 0
+                ? 'bg-blue-500/20 border-blue-500/60 text-blue-200'
+                : 'bg-gray-900 border-gray-800 text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+            }`}
+          >
+            All
+          </button>
+          {ACTIVITY_TYPE_KEYS.map((key) => {
+            const iconMeta = ACTIVITY_ICONS[key];
+            if (!iconMeta) return null;
+            const { Icon, label } = iconMeta;
+            const active = activeTypes.has(key);
+            const count = countsByType[key] || 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => toggleType(key)}
+                aria-pressed={active}
+                data-testid={`recent-activity-filter-${key}`}
+                className={`text-[11px] px-2 py-1 rounded-md border flex items-center gap-1.5 transition-colors ${
+                  active
+                    ? 'bg-blue-500/20 border-blue-500/60 text-blue-200'
+                    : 'bg-gray-900 border-gray-800 text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                }`}
+              >
+                <Icon size={12} aria-hidden />
+                <span>{label}</span>
+                <span className="tabular-nums text-gray-500">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <div
         data-testid="recent-activity"
         className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
       >
-        {items.length === 0 ? (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">No recent activity yet.</div>
+        {visibleItems.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">
+            {items.length === 0
+              ? 'No recent activity yet.'
+              : 'No activity matches the selected filters.'}
+          </div>
         ) : (
-          items.map((item) => {
+          visibleItems.map((item) => {
             const iconMeta = ACTIVITY_ICONS[item.type] || ACTIVITY_ICONS.session_created;
             const { Icon, color, label } = iconMeta;
             const actionable = rowIsActionable(item);
