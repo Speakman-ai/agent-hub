@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { partitionAttachmentFiles } from '../utils/attachmentValidation.js';
+import { getAuthHeaders } from '../utils/connection.js';
 
 // genId() only works in secure contexts (HTTPS / localhost).
 // Fall back to Math.random-based ID for plain HTTP (e.g. remote EC2 over HTTP).
@@ -316,7 +317,7 @@ export default function MessageInput({
       try {
         const res = await fetch('/api/transcribe', {
           method: 'POST',
-          headers: { 'Content-Type': contentType },
+          headers: { 'Content-Type': contentType, ...getAuthHeaders() },
           body: blob,
           signal: controller.signal,
         });

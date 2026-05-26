@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import MessageInput, { pickAudioMimeType, baseAudioContentType } from './MessageInput.jsx';
 
+vi.mock('../utils/connection.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getAuthHeaders: vi.fn(() => ({ Authorization: 'Bearer test-jwt' })),
+  };
+});
+
 /**
  * MessageInput — mid-stream submission behavior.
  *
@@ -330,6 +338,7 @@ describe('MessageInput voice transcription', () => {
       // Capture the body type for assertions: we expect a Blob, NOT FormData.
       fetchSpy.lastBody = init?.body;
       fetchSpy.lastContentType = init?.headers?.['Content-Type'];
+      fetchSpy.lastAuth = init?.headers?.Authorization;
       return new Response(JSON.stringify({ transcript }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -419,6 +428,7 @@ describe('MessageInput voice transcription', () => {
     // The endpoint expects a raw audio blob, not FormData.
     expect(ft.fetchSpy.lastBody).toBeInstanceOf(Blob);
     expect(ft.fetchSpy.lastContentType).toBe('audio/webm');
+    expect(ft.fetchSpy.lastAuth).toBe('Bearer test-jwt');
 
     await waitFor(() => expect(textarea.value).toBe('hello world'));
     expect(onFileError).not.toHaveBeenCalled();
