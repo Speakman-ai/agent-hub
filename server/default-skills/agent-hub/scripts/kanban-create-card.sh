@@ -89,6 +89,9 @@ if [[ -z "$title" ]]; then
   echo "error: --title is required" >&2
   exit 2
 fi
+if [[ -z "${session_id:-}" && -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+  session_id="$AGENT_HUB_SESSION_ID"
+fi
 if [[ -z "${PROJECT_ID:-}" ]]; then
   echo "error: PROJECT_ID must be set" >&2
   exit 2

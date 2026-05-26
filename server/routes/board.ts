@@ -16,6 +16,7 @@ import type {
   SessionRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { ensureOperatorBaseBranch } from '../autonomous.js';
 import {
@@ -272,10 +273,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       assignee,
       labels,
       columnId,
-      sessionId,
+      sessionId: bodySessionId,
       githubIssueUrl,
       createdBy,
     } = parsed;
+    const sessionId = resolveCardSessionId(req, bodySessionId);
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
 
     // FK pre-flight: better-sqlite3 throws an opaque
@@ -351,6 +353,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       maxPos,
     );
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    if (effectiveSessionId) {
+      maybeRenameSessionForLinkedCard(stmts, broadcast, effectiveSessionId, title);
+    }
     res.json(stmts.getKanbanCard.get(id));
   });
 

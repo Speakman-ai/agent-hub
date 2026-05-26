@@ -46,7 +46,11 @@ describe('spawn-creds-mint', () => {
     ensureSpawnCredsForSession({ sessionId, ownerUserId: userId, cfg });
     const token = readSpawnCredsFile(sessionId, dataDir);
     expect(token).toBeTruthy();
-    expect(verifyApiKey(token!)).toEqual({ userId, keyId: expect.any(String) });
+    expect(verifyApiKey(token!)).toEqual({
+      userId,
+      keyId: expect.any(String),
+      name: spawnCredsKeyName(sessionId),
+    });
     expect(spawnCredsKeyName(sessionId)).toBe('spawn:sess-mint-001');
   });
 

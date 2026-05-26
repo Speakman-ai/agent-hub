@@ -109,8 +109,14 @@ ah_api() {
     auth_args+=(-H "x-api-key: $key")
   fi
 
+  local session_args=()
+  if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+    session_args+=(-H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID")
+  fi
+
   curl -fsS -X "$method" \
     "${auth_args[@]}" \
+    "${session_args[@]}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json' \
     "${AGENT_HUB_URL}${path}" \
@@ -134,6 +140,7 @@ Environment:
   AGENT_HUB_API_KEY     optional; overrides file fallbacks
   AGENT_HUB_DATA_DIR    optional alternate data dir
   AGENT_HUB_SESSION_ID  injected by server at spawn; enables spawn-creds lookup
+                        and auto-links kanban cards via X-Agent-Hub-Session-Id
 
 Examples:
   ah-api.sh GET  /api/health

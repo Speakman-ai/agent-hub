@@ -247,7 +247,9 @@ export function revokeApiKeysBySpawnSession(sessionId: string): number {
  *   - On success, debounces a `last_used_at` write (max once per minute
  *     per key) so high-RPS callers don't generate a write storm.
  */
-export function verifyApiKey(token: string): { userId: string; keyId: string } | null {
+export function verifyApiKey(
+  token: string,
+): { userId: string; keyId: string; name: string } | null {
   if (typeof token !== 'string' || !TOKEN_REGEX.test(token)) return null;
 
   const db = getOrgsDb();
@@ -256,7 +258,7 @@ export function verifyApiKey(token: string): { userId: string; keyId: string } |
   // by prefix for the index hit + revoked/expired filters.
   const row = db
     .prepare(
-      `SELECT id, user_id, last_used_at, revoked_at, expires_at
+      `SELECT id, user_id, name, last_used_at, revoked_at, expires_at
        FROM api_keys
        WHERE prefix = ? AND token_hash = ?`,
     )
@@ -264,6 +266,7 @@ export function verifyApiKey(token: string): { userId: string; keyId: string } |
     | {
         id: string;
         user_id: string;
+        name: string;
         last_used_at: string | null;
         revoked_at: string | null;
         expires_at: string | null;
@@ -286,7 +289,7 @@ export function verifyApiKey(token: string): { userId: string; keyId: string } |
     }
   }
 
-  return { userId: row.user_id, keyId: row.id };
+  return { userId: row.user_id, keyId: row.id, name: row.name };
 }
 
 /** Test-only helper: count keys for a user (active + revoked). */

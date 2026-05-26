@@ -7,6 +7,10 @@ Every project has a board. Default columns (by name; IDs are per-project):
 
 Back to [SKILL.md](../SKILL.md).
 
+**Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Board>
+(request/response shapes for every kanban / epic / blocker endpoint). This
+page is the *how*.
+
 ## Board shape
 
 ```bash
@@ -21,9 +25,38 @@ Cards carry: `id`, `column_id`, `title`, `description`, `priority`
 
 ## Create a card
 
-Always pass `session_id: $AGENT_HUB_SESSION_ID` when the card belongs to
-your current work — the sidebar auto-renames to the card title and
-`<agenthub:close-card>` becomes available.
+When the card belongs to your current work, link it to your session so the
+sidebar auto-renames to the card title and `<agenthub:close-card>` becomes
+available. You do not need to remember the JSON field every time:
+
+- **`scripts/kanban-create-card.sh`** defaults `--session-id` to
+  `$AGENT_HUB_SESSION_ID` when omitted.
+- **`scripts/ah-api.sh` / `scripts/_common.sh`** send
+  `X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID` on every Hub API call when
+  the env var is set.
+- **`POST /board/cards`** auto-stamps `session_id` from that header, or from
+  a per-session spawn-creds API key (`spawn:<sessionId>`), when the body
+  omits `sessionId`. Pass `"sessionId": null` to opt out (intake / bug-report
+  filing). Intake-role sessions are still stripped server-side.
+
+Explicit body `session_id` remains supported and takes precedence over the
+header / spawn key.
+
+**Do NOT self-stamp `assignee` on create.** Leave it `null` (omit the
+field) and let one of the two legitimate auto-assign paths write the
+correct display name:
+
+- `POST /board/cards/:cardId/assign` — used by the UI's Assignee
+  dropdown; writes `agent.name`.
+- `runAutonomousLoop` (autonomous dispatch) — only picks up cards
+  where `assignee IS NULL OR assignee = ''`; writes `agent.name`.
+
+Pre-stamping `assignee` reserves the card out of the autonomous pool,
+which is almost certainly not what you want for a card you just filed.
+The server now normalizes any value matching a known `agent.id` →
+`agent.name` on write (so a stray `"assignee": "agent-hub"` becomes
+`"Hub Lead Dev"`), but it cannot reverse the pickup-blocking side
+effect — leave the field empty and let the dispatcher take over.
 
 ```bash
 scripts/board.sh create '{
@@ -31,7 +64,6 @@ scripts/board.sh create '{
   "description": "Details about the task",
   "columnId": "<column-uuid>",
   "priority": "high",
-  "assignee": "your-agent-name",
   "labels": "bug,backend",
   "session_id": "'"$AGENT_HUB_SESSION_ID"'"
 }'

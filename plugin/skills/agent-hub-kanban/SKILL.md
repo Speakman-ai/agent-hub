@@ -29,8 +29,10 @@ Scripts live in the shared core tree (`agent-hub/scripts/`) — pass
 
 ## Self-reporting flow
 
-1. **Create** a card with `session_id: $AGENT_HUB_SESSION_ID` when you pick
-   up work.
+1. **Create** a card linked to your session when you pick up work. Wrappers
+   auto-link via `$AGENT_HUB_SESSION_ID` (header + default `--session-id`);
+   you can still pass `session_id` explicitly in JSON when using `board.sh
+   create`.
 2. **Move** to In Progress when you start; **Review** when the PR is open;
    **Done** on merge.
 3. **Comment** on the card when opening a PR, hitting a blocker, or
@@ -42,7 +44,8 @@ scripts/get-board-state.sh                          # full board JSON
 scripts/kanban-list.sh --column "In Progress"       # filtered card list
 scripts/resolve-column-id.sh "In Progress"          # name → UUID
 scripts/kanban-create-card.sh --title "…" --column "To Do" \
-  --priority high --session-id "$AGENT_HUB_SESSION_ID"
+  --priority high
+  # --session-id defaults to $AGENT_HUB_SESSION_ID when set
 scripts/kanban-move-card.sh <cardId> "Review"
 
 # Subcommand-style wrappers (raw JSON, thinner layer):

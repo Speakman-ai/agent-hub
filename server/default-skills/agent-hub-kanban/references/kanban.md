@@ -25,9 +25,22 @@ Cards carry: `id`, `column_id`, `title`, `description`, `priority`
 
 ## Create a card
 
-Always pass `session_id: $AGENT_HUB_SESSION_ID` when the card belongs to
-your current work — the sidebar auto-renames to the card title and
-`<agenthub:close-card>` becomes available.
+When the card belongs to your current work, link it to your session so the
+sidebar auto-renames to the card title and `<agenthub:close-card>` becomes
+available. You do not need to remember the JSON field every time:
+
+- **`scripts/kanban-create-card.sh`** defaults `--session-id` to
+  `$AGENT_HUB_SESSION_ID` when omitted.
+- **`scripts/ah-api.sh` / `scripts/_common.sh`** send
+  `X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID` on every Hub API call when
+  the env var is set.
+- **`POST /board/cards`** auto-stamps `session_id` from that header, or from
+  a per-session spawn-creds API key (`spawn:<sessionId>`), when the body
+  omits `sessionId`. Pass `"sessionId": null` to opt out (intake / bug-report
+  filing). Intake-role sessions are still stripped server-side.
+
+Explicit body `session_id` remains supported and takes precedence over the
+header / spawn key.
 
 **Do NOT self-stamp `assignee` on create.** Leave it `null` (omit the
 field) and let one of the two legitimate auto-assign paths write the

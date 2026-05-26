@@ -107,7 +107,7 @@ describe('hashToken / verifyApiKey', () => {
   it('verifies a real token and returns the owner', () => {
     const created = createApiKey(userA.id, 'unit-test-key');
     const verified = verifyApiKey(created.token);
-    expect(verified).toEqual({ userId: userA.id, keyId: created.id });
+    expect(verified).toEqual({ userId: userA.id, keyId: created.id, name: 'unit-test-key' });
   });
 
   it('rejects an expired key', () => {

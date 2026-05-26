@@ -420,7 +420,7 @@ registerPath({
   tags: ['Board'],
   summary: 'Create a kanban card',
   description:
-    'Creates a card in the given column. Returns the existing card unchanged if (a) a card with the same case-insensitive title already exists on this board, or (b) `sessionId` is already linked to a card on this board.',
+    'Creates a card in the given column. When `sessionId` is omitted from the body, the server auto-links from `X-Agent-Hub-Session-Id` or a per-session spawn-creds API key (`spawn:<sessionId>`). Pass `sessionId: null` to opt out. Returns the existing card unchanged if (a) a card with the same case-insensitive title already exists on this board, or (b) `sessionId` is already linked to a card on this board.',
   request: {
     params: projectIdParams,
     body: { content: jsonContent(CreateCardRequestSchema) },
