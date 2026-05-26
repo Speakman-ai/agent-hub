@@ -16,7 +16,7 @@ keep-coding-instructions: true
 ## Bound values
 
 - **`PROJECT_ID`**, **`PROJECT_CWD`** — from kickoff.
-- **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`** — set for curl.
+- **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`** — set for curl. If any wizard curl returns HTTP **401** or **403**, halt — see [Auth failure](#auth-failure) below. **Never** ask the operator to paste a token into chat.
 
 ## Draft (start here)
 
@@ -93,3 +93,19 @@ curl -s -X POST .../preview/wizard-complete
 - Multiple ask rounds are expected for monorepos.
 - Never `startScript` / `processes[]` preview mode.
 - Prefer pointing users to **Settings → Preview** for compose/env edits and **Build and run**; use chat asks for choices you cannot infer from the draft.
+
+## Auth failure
+
+**Trigger:** a wizard curl returns HTTP **401** or **403**. That is the actual auth-rejected signal. Do **not** fire this rule on an empty `$AGENT_HUB_API_KEY` alone — on an **open** hub (no `apiKey` in config, no user signed up via `/api/auth/setup`), an empty key is fine and requests pass through. Treat other HTTP errors (404, 5xx, transport failures) as wizard or hub bugs, not auth failures.
+
+When a 401 or 403 lands: the Hub is auth-gated and the spawn-time credentials missed (or are stale). **Do not** try to work around it by asking the user for a token, prompting them to paste a bearer string into chat, or instructing them to export an env var into the spawned session. The env was frozen at spawn time and cannot be updated from chat; the only fix is to set the key on the server and start a new session.
+
+Halt the wizard and tell the operator, verbatim, one of:
+
+1. **`PATCH /api/config` (hot path, recommended)** — run `curl -X PATCH "$AGENT_HUB_URL/api/config" -H "x-api-key: <existing-or-empty>" -H "Content-Type: application/json" -d '{"apiKey": "<value>"}'`. The handler mutates the live in-memory config and persists to `~/.agent-hub/data/config.json` in one shot, so the change is effective for both new spawns and the running auth middleware — no restart needed.
+2. **Direct file edit (cold path)** — edit `apiKey` in `~/.agent-hub/data/config.json`, then **restart the server** (`pm2 restart agent-hub` on a deployed host, or stop/start the local process). The server only reads `config.apiKey` from the file at boot; without a restart, the new key sits on disk while the auth middleware keeps validating against the old in-memory copy and the next curl 401s again.
+3. **Escalate to a Hub admin** if the operator has neither `PATCH /api/config` nor restart access.
+
+The wiki page **replacing-the-static-api-key-per-user-ahub-tokens-invite-flow** is the canonical reference for the multi-user auth model — it covers the advanced per-user `ahub_*` invite flow, which is adjacent context rather than the fix for this specific error. For this error, paths 1 and 2 above are the resolution.
+
+Then exit the walkthrough — do not retry the curls until the operator confirms the key is set (and the server has been restarted, if they took path 2) and starts a new session.
