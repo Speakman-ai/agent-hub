@@ -33,6 +33,20 @@ describe('eventsToBlocks — browser_tool_activity handling', () => {
   });
 });
 
+describe('eventsToBlocks — benign unknown stream events', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('suppresses historical Claude control_request unknown rows', () => {
+    const events = wrap([
+      { type: 'unknown', text: 'unhandled claude event: control_request' },
+      { type: 'assistant_text', text: 'ok', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks.map((b) => b.kind)).toEqual(['text']);
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   it('does not produce unknown blocks for progress_step-only streams', () => {
     const blocks = eventsToBlocks(

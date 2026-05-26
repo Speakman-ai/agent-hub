@@ -583,6 +583,15 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
         },
       ];
 
+    // Headless Claude Code (`--print`, bypassPermissions) still emits control-plane
+    // frames on stdout when using stream-json + --include-partial-messages. Agent Hub
+    // does not bridge stdin control responses — suppress so SessionTail stays clean.
+    case 'control_request':
+    case 'control_response':
+    case 'sdk_control_request':
+    case 'sdk_control_response':
+      return [];
+
     default:
       return [{ type: 'unknown', text: `unhandled claude event: ${raw.type as string}` }];
   }
