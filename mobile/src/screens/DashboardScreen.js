@@ -19,6 +19,9 @@ import {
   priorityRows,
   columnRows,
   activityLabel,
+  filterActivity,
+  countByType,
+  ACTIVITY_TYPE_KEYS,
   PRIORITY_KEYS,
 } from '../utils/dashboard';
 
@@ -43,6 +46,24 @@ export default function DashboardScreen() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Empty set means "All" (no narrowing). Local-only state — survives
+  // pull-to-refresh because the screen stays mounted, but resets when
+  // the user navigates away and back. The dashboard contract treats
+  // cross-reload persistence as nice-to-have, not required.
+  const [activeTypes, setActiveTypes] = useState(() => new Set());
+
+  const toggleActivityType = useCallback((key) => {
+    setActiveTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const clearActivityFilter = useCallback(() => {
+    setActiveTypes(new Set());
+  }, []);
 
   const load = useCallback(async ({ asRefresh } = {}) => {
     const org = getActiveOrg();
@@ -89,7 +110,9 @@ export default function DashboardScreen() {
   const tiles = data ? formatHeadlineTiles(data.headline) : [];
   const cols = data ? columnRows(data.kanban?.byColumn) : [];
   const prios = data ? priorityRows(data.kanban?.byPriority) : [];
-  const activity = data?.recentActivity || [];
+  const allActivity = data?.recentActivity || [];
+  const activity = filterActivity(allActivity, activeTypes);
+  const activityCounts = countByType(allActivity);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -196,9 +219,63 @@ export default function DashboardScreen() {
 
             {/* Recent activity */}
             <SectionHeader title="Recent activity" />
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+              testID="recent-activity-filter"
+            >
+              <TouchableOpacity
+                onPress={clearActivityFilter}
+                style={[styles.filterChip, activeTypes.size === 0 && styles.filterChipActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: activeTypes.size === 0 }}
+                testID="recent-activity-filter-all"
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    activeTypes.size === 0 && styles.filterChipTextActive,
+                  ]}
+                >
+                  All
+                </Text>
+              </TouchableOpacity>
+              {ACTIVITY_TYPE_KEYS.map((key) => {
+                const isActive = activeTypes.has(key);
+                const count = activityCounts[key] || 0;
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    onPress={() => toggleActivityType(key)}
+                    style={[styles.filterChip, isActive && styles.filterChipActive]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isActive }}
+                    testID={`recent-activity-filter-${key}`}
+                  >
+                    <View
+                      style={[
+                        styles.activityDot,
+                        { backgroundColor: ACTIVITY_DOT[key] || colors.gray500 },
+                      ]}
+                    />
+                    <Text
+                      style={[styles.filterChipText, isActive && styles.filterChipTextActive]}
+                    >
+                      {activityLabel(key)}
+                    </Text>
+                    <Text style={styles.filterChipCount}>{count}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
             <View style={styles.card} testID="recent-activity">
               {activity.length === 0 ? (
-                <Text style={styles.muted}>No recent activity yet.</Text>
+                <Text style={styles.muted}>
+                  {allActivity.length === 0
+                    ? 'No recent activity yet.'
+                    : 'No activity matches the selected filters.'}
+                </Text>
               ) : (
                 activity.map((item) => (
                   <View key={`${item.type}-${item.id}`} style={styles.activityRow}>
@@ -386,6 +463,38 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     color: colors.gray400,
     fontSize: 12,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingBottom: 8,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+  },
+  filterChipActive: {
+    borderColor: colors.blue400,
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+  },
+  filterChipText: {
+    color: colors.gray400,
+    fontSize: 11,
+  },
+  filterChipTextActive: {
+    color: colors.blue400,
+  },
+  filterChipCount: {
+    color: colors.gray500,
+    fontSize: 10,
   },
   activityRow: {
     flexDirection: 'row',

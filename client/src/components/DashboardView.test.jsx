@@ -68,6 +68,11 @@ describe('DashboardView', () => {
         }),
       ),
     );
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch {
+      /* ignore */
+    }
   });
 
   afterEach(() => {
@@ -189,6 +194,122 @@ describe('DashboardView', () => {
     fireEvent.click(screen.getByText('Add dashboard view'));
     expect(onOpenPulls).toHaveBeenCalledWith('proj-dash');
     expect(onOpenKanban).not.toHaveBeenCalled();
+  });
+
+  it('renders activity type filter chips with counts and an "All" reset', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recent-activity-filter')).toBeInTheDocument();
+    });
+
+    // "All" chip is active by default.
+    const allChip = screen.getByTestId('recent-activity-filter-all');
+    expect(allChip).toHaveAttribute('aria-pressed', 'true');
+
+    // Every canonical type has a chip and a count badge.
+    for (const key of [
+      'card_created',
+      'card_updated',
+      'session_created',
+      'escalation',
+      'pr_created',
+    ]) {
+      expect(screen.getByTestId(`recent-activity-filter-${key}`)).toBeInTheDocument();
+    }
+
+    // Sample data contains 1 of each of card_created, session_created,
+    // escalation, pr_created. Verify the count badges render.
+    const cardCreatedChip = screen.getByTestId('recent-activity-filter-card_created');
+    expect(cardCreatedChip).toHaveTextContent('1');
+    const cardUpdatedChip = screen.getByTestId('recent-activity-filter-card_updated');
+    expect(cardUpdatedChip).toHaveTextContent('0');
+  });
+
+  it('narrows the visible activity to the selected types', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Add dashboard view')).toBeInTheDocument();
+    });
+
+    // Pick the "Session started" filter only.
+    fireEvent.click(screen.getByTestId('recent-activity-filter-session_created'));
+
+    const feed = screen.getByTestId('recent-activity');
+    // Session row remains visible.
+    expect(feed).toHaveTextContent('Hub Frontend session');
+    // Other types are filtered out.
+    expect(feed).not.toHaveTextContent('Add dashboard view');
+    expect(feed).not.toHaveTextContent('PR stuck in review');
+    expect(feed).not.toHaveTextContent('PR #501: Ship activity feed');
+    // The "All" chip is no longer pressed.
+    expect(screen.getByTestId('recent-activity-filter-all')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('supports multi-select and the "All" reset', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Add dashboard view')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('recent-activity-filter-session_created'));
+    fireEvent.click(screen.getByTestId('recent-activity-filter-escalation'));
+
+    const feed = screen.getByTestId('recent-activity');
+    expect(feed).toHaveTextContent('Hub Frontend session');
+    expect(feed).toHaveTextContent('PR stuck in review');
+    expect(feed).not.toHaveTextContent('Add dashboard view');
+    expect(feed).not.toHaveTextContent('PR #501: Ship activity feed');
+
+    // Clicking "All" clears the narrowing.
+    fireEvent.click(screen.getByTestId('recent-activity-filter-all'));
+    expect(feed).toHaveTextContent('Add dashboard view');
+    expect(feed).toHaveTextContent('PR #501: Ship activity feed');
+  });
+
+  it('shows an empty-state message when the filter matches nothing', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Add dashboard view')).toBeInTheDocument();
+    });
+
+    // The sample has 0 card_updated events; selecting only that bucket
+    // should produce an empty filtered feed.
+    fireEvent.click(screen.getByTestId('recent-activity-filter-card_updated'));
+    expect(screen.getByTestId('recent-activity')).toHaveTextContent(
+      'No activity matches the selected filters.',
+    );
+  });
+
+  it('persists the filter selection to localStorage', async () => {
+    const { unmount } = render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recent-activity-filter')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('recent-activity-filter-session_created'));
+
+    expect(JSON.parse(localStorage.getItem('dashboard.activityFilter.v1'))).toEqual([
+      'session_created',
+    ]);
+
+    unmount();
+
+    // Re-mount: the previously-saved filter applies on first render.
+    render(<DashboardView orgId="org-1" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('recent-activity-filter-session_created')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    });
   });
 
   it('shows an error message when the fetch fails', async () => {
