@@ -36,24 +36,10 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ah-api.sh"
 
 # hub_api <METHOD> <PATH> [extra curl args...]
-# Emits the raw JSON body to stdout. -f fails on non-2xx (body suppressed),
-# -sS hides progress but shows errors. Accept header guards against SPA
-# fallback returning HTML on unknown routes.
+# Delegates to ah_api() so auth resolution and HTTP error surfacing stay
+# in one place (see ah-api.sh).
 hub_api() {
-  local method="$1"; shift
-  local path="$1"; shift
-  local auth_args=()
-  local key
-  key="$(ah_resolve_key)"
-  if [[ -n "$key" ]]; then
-    auth_args+=(-H "x-api-key: $key")
-  fi
-  curl -fsS -X "$method" \
-    "${auth_args[@]}" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
-    "${AGENT_HUB_URL}${path}" \
-    "$@"
+  ah_api "$@"
 }
 
 # require_var <name> — abort with a clear message if unset or empty.

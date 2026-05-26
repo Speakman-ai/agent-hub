@@ -91,9 +91,35 @@ ah_resolve_key() {
   printf ''
 }
 
+# _ah_api_emit_failure — print HTTP status + JSON body + auth hint to stderr.
+_ah_api_emit_failure() {
+  local method="$1"
+  local path="$2"
+  local http_code="$3"
+  local body_file="$4"
+  local had_key="$5"
+
+  echo "ah_api: HTTP ${http_code} on ${method} ${path}" >&2
+  if [[ -s "$body_file" ]]; then
+    cat "$body_file" >&2
+    echo >&2
+  fi
+  if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+    if [[ "$had_key" != "1" ]]; then
+      echo "ah_api: no API key was sent (AGENT_HUB_API_KEY empty and spawn-creds file missing)." >&2
+      echo "ah_api: use scripts/kanban-create-card.sh or scripts/board.sh — not raw curl without auth." >&2
+      if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+        echo "ah_api: expected spawn-creds at \$AGENT_HUB_DATA_DIR/spawn-creds/\$AGENT_HUB_SESSION_ID.token" >&2
+      fi
+    else
+      echo "ah_api: API key was sent but rejected — token may be revoked or the Hub URL may point at the wrong host." >&2
+    fi
+  fi
+}
+
 # ah_api <METHOD> <PATH> [curl args...] — JSON-aware curl wrapper. Emits the
-# raw response body to stdout. Fails (exit non-zero) on non-2xx because curl
-# is invoked with -f.
+# raw response body to stdout. Fails (exit 22) on non-2xx with the response
+# body and an auth hint printed to stderr.
 ah_api() {
   if [[ $# -lt 2 ]]; then
     echo "ah_api: usage: ah_api <METHOD> <PATH> [curl args...]" >&2
@@ -105,16 +131,39 @@ ah_api() {
   local auth_args=()
   local key
   key="$(ah_resolve_key)"
+  local had_key=0
   if [[ -n "$key" ]]; then
     auth_args+=(-H "x-api-key: $key")
+    had_key=1
   fi
 
-  curl -fsS -X "$method" \
-    "${auth_args[@]}" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
-    "${AGENT_HUB_URL}${path}" \
-    "$@"
+  local body_file
+  body_file="$(mktemp)"
+  local http_code
+  http_code="$(
+    curl -sS -X "$method" \
+      "${auth_args[@]}" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json' \
+      -o "$body_file" \
+      -w '%{http_code}' \
+      "${AGENT_HUB_URL}${path}" \
+      "$@" || echo "000"
+  )"
+
+  if [[ "$http_code" == "000" ]]; then
+    rm -f "$body_file"
+    return 7
+  fi
+
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    _ah_api_emit_failure "$method" "$path" "$http_code" "$body_file" "$had_key"
+    rm -f "$body_file"
+    return 22
+  fi
+
+  cat "$body_file"
+  rm -f "$body_file"
 }
 
 _ah_api_usage() {

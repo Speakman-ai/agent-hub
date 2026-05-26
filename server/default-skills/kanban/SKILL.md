@@ -4,7 +4,7 @@ description: >-
   Manage project kanban board — list, create, move, and update task cards.
   TRIGGER when: user mentions "kanban", "board", "cards", "tasks", "backlog",
   "sprint", or asks to track, create, or move work items.
-version: 1.1.0
+version: 1.2.0
 keep-coding-instructions: true
 ---
 
@@ -14,40 +14,55 @@ You can manage the project's kanban board to track and organize tasks.
 Cards move through columns (To Do → In Progress → Review → Done)
 and can declare dependencies on one another via **blockers**.
 
+> **Never paste raw `curl` without auth headers.** On JWT-enabled Hub
+> deployments, unauthenticated calls return **401** and card creation
+> silently fails. Use the wrappers under `scripts/` — they resolve
+> `x-api-key` from `$AGENT_HUB_API_KEY` or the per-session spawn-creds
+> file (`$AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token`).
+
+Scripts live in the `agent-hub` skill tree (`scripts/`). Set `PROJECT_ID`
+before running them.
+
 ## Available Actions
 
 ### List cards
 
-```
-curl $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards
+```bash
+scripts/kanban-list.sh
+scripts/get-board-state.sh   # columns + cards + epics + blocker edges
 ```
 
 For the full board (columns + cards + epics + **blocker edges**) use
-`GET /board` — every card in that response is enriched with `blockers`
-and `blocks` arrays (see "Blockers" below).
+`GET /board` via `scripts/get-board-state.sh` — every card in that response
+is enriched with `blockers` and `blocks` arrays (see "Blockers" below).
 
 ### Create a card
 
+```bash
+scripts/kanban-create-card.sh --title "Task title" \
+  --column "To Do" \
+  --priority high \
+  --description "Details"
+# --session-id defaults to $AGENT_HUB_SESSION_ID when set
 ```
-curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Task title", "description": "Details", "priority": "high", "columnId": "todo-column-id"}'
+
+REST equivalent (only when you must call curl — **always** send auth):
+
+```bash
+scripts/ah-api.sh POST "/api/projects/$PROJECT_ID/board/cards" \
+  -d '{"title":"Task title","columnId":"<uuid>","priority":"high"}'
 ```
 
 ### Move a card
 
-```
-curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/move \
-  -H "Content-Type: application/json" \
-  -d '{"columnId": "target-column-id", "position": 0}'
+```bash
+scripts/kanban-move-card.sh <cardId> "In Progress"
 ```
 
 ### Update a card
 
-```
-curl -X PUT $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Updated title", "description": "Updated details", "priority": "medium"}'
+```bash
+scripts/board.sh update <cardId> '{"title":"Updated title","priority":"medium"}'
 ```
 
 ## Blockers — "blocked by" relationships
@@ -96,9 +111,8 @@ pick up a newly-clear card next or ping the owner of the downstream.
 
 ### Add a blocker
 
-```
-curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/blockers \
-  -H "Content-Type: application/json" \
+```bash
+scripts/ah-api.sh POST "/api/projects/$PROJECT_ID/board/cards/$CARD_ID/blockers" \
   -d '{"blockedByCardId": "<other-card-id>"}'
 ```
 
@@ -117,8 +131,8 @@ curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/blocke
 
 ### Remove a blocker
 
-```
-curl -X DELETE $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/blockers/$BLOCKED_BY_CARD_ID
+```bash
+scripts/ah-api.sh DELETE "/api/projects/$PROJECT_ID/board/cards/$CARD_ID/blockers/$BLOCKED_BY_CARD_ID"
 ```
 
 - **204** on success.

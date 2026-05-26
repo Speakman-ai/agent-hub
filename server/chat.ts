@@ -724,8 +724,8 @@ After significant work, update the wiki to preserve knowledge. Search first (\`G
         if (projectMode !== 'workflow') {
           const linkedCardLine = options.sessionHasLinkedCard
             ? `**This session is already linked to a kanban card** (the card whose assignment spawned you). Do NOT create another card for this task — pick up the linked card, move it through the column lifecycle (To Do → In Progress → Review → Done), and self-report progress via comments on that card. Only create *new* cards for genuinely separate follow-up work you discover along the way.`
-            : `Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
-When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).`;
+            : `Use the \`kanban\` skill and the \`scripts/kanban-create-card.sh\` / \`scripts/kanban-move-card.sh\` wrappers (auth + base URL are handled for you). Do **not** call the board API with hand-rolled curl — JWT-enabled deployments return 401 without \`x-api-key\`. Skip cards for trivial tasks.
+When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. \`kanban-create-card.sh\` auto-links via \`$AGENT_HUB_SESSION_ID\` (this auto-renames the sidebar to the card title). On failure, log \`scripts/log-tool-error.sh\` and surface the stderr — do not treat a non-zero exit as success.`;
           prompt += `\n\n## Kanban Board — Task Self-Reporting
 ${linkedCardLine}
 

@@ -753,6 +753,50 @@ describe('agent-hub deterministic script wrappers — shape', () => {
       }
     });
   });
+
+  // ─── ah-api.sh surfaces HTTP 401 with auth hint (kanban card creation) ───
+  describe('ah-api.sh HTTP error surfacing', () => {
+    it('prints response body and auth hint on 401 without a key', async () => {
+      const handle = await new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+        const server = http.createServer((_req, res) => {
+          res.statusCode = 401;
+          res.setHeader('content-type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: 'Authentication required. Provide a bearer token via Authorization header.',
+            }),
+          );
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as AddressInfo;
+          resolve({
+            url: `http://127.0.0.1:${port}`,
+            close: () => new Promise<void>((r) => server.close(() => r())),
+          });
+        });
+      });
+      try {
+        const result = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'kanban-create-card.sh'),
+          ['--title', 'should fail', '--column', 'To Do'],
+          {
+            ...process.env,
+            HOME: mkdtempSync(path.join(os.tmpdir(), 'kanban-401-test-')),
+            AGENT_HUB_URL: handle.url,
+            AGENT_HUB_API_KEY: '',
+            AGENT_HUB_SESSION_ID: 'sess-no-creds',
+            PROJECT_ID: 'agent-hub',
+          },
+        );
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HTTP 401/);
+        expect(result.stderr).toMatch(/Authentication required/);
+        expect(result.stderr).toMatch(/kanban-create-card\.sh|no API key was sent/i);
+      } finally {
+        await handle.close();
+      }
+    }, 15_000);
+  });
 });
 
 function fsMkdir(p: string): void {

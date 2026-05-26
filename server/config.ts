@@ -12,6 +12,7 @@ import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
 } from './per-user-codex-device-login.js';
+import { readSpawnCredsFile } from './spawn-creds-file.js';
 import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 
 export { refreshShellPath, getCachedShellPath };
@@ -649,6 +650,23 @@ export function buildSpawnEnv(
   const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
   if (sessionId && spawnCredsUserId) {
     ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
+  }
+
+  // JWT-only deployments mint a per-session `ahub_*` token on disk but leave
+  // `cfg.apiKey` empty. Without this, spawned agents inherit an empty
+  // `AGENT_HUB_API_KEY` and every hand-rolled curl (or skill doc that omits
+  // auth headers) hits 401 — kanban card creation silently fails. Inject the
+  // freshly minted token here; `ah-api.sh` still re-reads the file on every
+  // call for mid-flight `/api/auth/setup` recovery.
+  if (!cfg.apiKey && sessionId) {
+    try {
+      const spawnTok = readSpawnCredsFile(sessionId, cfg.dataDir);
+      if (spawnTok) {
+        env.AGENT_HUB_API_KEY = spawnTok;
+      }
+    } catch {
+      /* best-effort — spawn proceeds; ah-api.sh may still read the file */
+    }
   }
 
   return env;
