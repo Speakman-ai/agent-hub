@@ -139,9 +139,11 @@ print(json.dumps(payload))
 PY
 )"
 
-card_json="$(ah_api POST "/api/projects/$PROJECT_ID/board/cards" \
-  ${session_id:+-H "X-Agent-Hub-Session-Id: $session_id"} \
-  -d "$body")"
+card_create_args=(-d "$body")
+if [[ -n "$session_id" ]]; then
+  card_create_args+=(-H "X-Agent-Hub-Session-Id: $session_id")
+fi
+card_json="$(ah_api POST "/api/projects/$PROJECT_ID/board/cards" "${card_create_args[@]}")"
 
 # Chain the epic link when requested. Failing this leaves the card created but
 # unlinked — surface that by exiting non-zero so the caller can retry or fix.

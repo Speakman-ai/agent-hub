@@ -17,18 +17,21 @@ export function sessionIdFromSpawnKeyName(name: string): string | null {
 /**
  * Resolve the kanban card's `session_id` for POST /board/cards.
  *
- * Precedence:
- *   1. Explicit body value (including `null` to opt out of linking)
- *   2. `X-Agent-Hub-Session-Id` request header
- *   3. Spawn-creds API key (`spawn:<sessionId>`) stamped by auth middleware
+ * Precedence uses `!== undefined` (not `||`) so an explicit body
+ * `"sessionId": null` opts out and the header never overrides it.
+ *
+ *   1. Body key present (`string | null`) — null clears; empty string → null
+ *   2. Body key omitted (`undefined`) — `X-Agent-Hub-Session-Id` header
+ *   3. Spawn-creds API key (`spawn:<sessionId>`) from auth middleware
  */
 export function resolveCardSessionId(
   req: Request,
   bodySessionId: string | null | undefined,
 ): string | null {
-  if (bodySessionId === null) return null;
-  if (typeof bodySessionId === 'string' && bodySessionId.trim()) {
-    return bodySessionId.trim();
+  if (bodySessionId !== undefined) {
+    if (bodySessionId === null) return null;
+    const trimmed = bodySessionId.trim();
+    return trimmed || null;
   }
 
   const header =
@@ -54,6 +57,7 @@ export function maybeRenameSessionForLinkedCard(
   if (!session) return;
   const title = cardTitle.trim();
   if (!title) return;
+  // Mirror chat.ts first-message rename: only overwrite default placeholders.
   if (!session.name.startsWith('Session ')) return;
 
   stmts.updateSessionName.run(title, sessionId);

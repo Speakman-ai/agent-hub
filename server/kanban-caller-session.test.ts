@@ -1,6 +1,50 @@
 import { describe, it, expect, vi } from 'vitest';
-import { maybeRenameSessionForLinkedCard } from './kanban-caller-session.js';
+import {
+  AGENT_HUB_SESSION_ID_HEADER,
+  maybeRenameSessionForLinkedCard,
+  resolveCardSessionId,
+} from './kanban-caller-session.js';
 import type { Stmts } from './types.js';
+
+describe('resolveCardSessionId', () => {
+  const headerReq = {
+    get: (name: string) =>
+      name.toLowerCase() === AGENT_HUB_SESSION_ID_HEADER ? 'header-session' : undefined,
+  } as unknown as import('express').Request;
+
+  it('prefers explicit body over header', () => {
+    expect(resolveCardSessionId(headerReq, 'body-session')).toBe('body-session');
+  });
+
+  it('uses header when body key is omitted (undefined)', () => {
+    expect(resolveCardSessionId(headerReq, undefined)).toBe('header-session');
+  });
+
+  it('honors explicit null in body — header does not override', () => {
+    expect(resolveCardSessionId(headerReq, null)).toBeNull();
+  });
+
+  it('does not fall back to header when body sends empty string', () => {
+    expect(resolveCardSessionId(headerReq, '')).toBeNull();
+    expect(resolveCardSessionId(headerReq, '   ')).toBeNull();
+  });
+
+  it('treats empty header as absent', () => {
+    const req = {
+      get: () => '',
+      authSpawnSessionId: 'spawn-session',
+    } as unknown as import('express').Request;
+    expect(resolveCardSessionId(req, undefined)).toBe('spawn-session');
+  });
+
+  it('uses authSpawnSessionId when body and header omit', () => {
+    const req = {
+      get: () => undefined,
+      authSpawnSessionId: 'spawn-session',
+    } as unknown as import('express').Request;
+    expect(resolveCardSessionId(req, undefined)).toBe('spawn-session');
+  });
+});
 
 describe('maybeRenameSessionForLinkedCard', () => {
   it('no-ops when session name is already customized', () => {

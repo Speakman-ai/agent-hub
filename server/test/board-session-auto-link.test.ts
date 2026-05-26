@@ -1,7 +1,6 @@
 import type supertest from 'supertest';
 import {
   AGENT_HUB_SESSION_ID_HEADER,
-  resolveCardSessionId,
   sessionIdFromSpawnKeyName,
 } from '../kanban-caller-session.js';
 import { getRequest, createProject, createAgent, createSession } from './helpers.js';
@@ -19,31 +18,11 @@ async function getFirstColumnId(projectId: string): Promise<string> {
   return cols[0].id;
 }
 
-describe('kanban-caller-session helpers', () => {
-  it('sessionIdFromSpawnKeyName parses spawn-creds key names', () => {
+describe('sessionIdFromSpawnKeyName', () => {
+  it('parses spawn-creds key names', () => {
     expect(sessionIdFromSpawnKeyName('spawn:sess-abc')).toBe('sess-abc');
     expect(sessionIdFromSpawnKeyName('spawn-recovery (abc)')).toBeNull();
     expect(sessionIdFromSpawnKeyName('my-key')).toBeNull();
-  });
-
-  it('resolveCardSessionId prefers explicit body over header', () => {
-    const req = {
-      get: (name: string) =>
-        name.toLowerCase() === AGENT_HUB_SESSION_ID_HEADER ? 'header-session' : undefined,
-    } as unknown as import('express').Request;
-
-    expect(resolveCardSessionId(req, 'body-session')).toBe('body-session');
-    expect(resolveCardSessionId(req, undefined)).toBe('header-session');
-    expect(resolveCardSessionId(req, null)).toBeNull();
-  });
-
-  it('resolveCardSessionId uses authSpawnSessionId when body and header omit', () => {
-    const req = {
-      get: () => undefined,
-      authSpawnSessionId: 'spawn-session',
-    } as unknown as import('express').Request;
-
-    expect(resolveCardSessionId(req, undefined)).toBe('spawn-session');
   });
 });
 
@@ -63,6 +42,20 @@ describe('POST /board/cards session auto-link', () => {
       .expect(200);
 
     expect((res.body as { session_id: string }).session_id).toBe(sessionId);
+  });
+
+  it('ignores an empty session header when body omits sessionId', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const columnId = await getFirstColumnId(projectId);
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .set(AGENT_HUB_SESSION_ID_HEADER, '')
+      .send({ title: 'No session link from empty header', columnId })
+      .expect(200);
+
+    expect((res.body as { session_id: string | null }).session_id).toBeNull();
   });
 
   it('honors explicit sessionId: null over header auto-link', async () => {
@@ -124,6 +117,28 @@ describe('POST /board/cards session auto-link', () => {
       .post(`/api/projects/${projectId}/board/cards`)
       .set(AGENT_HUB_SESSION_ID_HEADER, sessionId)
       .send({ title: 'Second card same session via header', columnId })
+      .expect(200);
+
+    expect((second.body as { id: string }).id).toBe(firstId);
+  });
+
+  it('returns existing card when body sessionId reuses a link (no header)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Body Dedup Worker' });
+    const session = await createSession({ agentId: agent.id as string });
+    const sessionId = session.id as string;
+    const columnId = await getFirstColumnId(projectId);
+
+    const first = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: 'Body-linked first card', columnId, sessionId })
+      .expect(200);
+    const firstId = (first.body as { id: string }).id;
+
+    const second = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: 'Body-linked second card', columnId, sessionId })
       .expect(200);
 
     expect((second.body as { id: string }).id).toBe(firstId);

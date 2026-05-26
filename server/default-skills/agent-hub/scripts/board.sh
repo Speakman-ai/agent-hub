@@ -32,7 +32,10 @@ case "$cmd" in
     body="${1:-}"
     [[ -n "$body" ]] || usage_die "usage: board.sh create '<json>'"
     # Session header is scoped to card create only (not hub_api globally).
-    # Server reads it when the JSON body omits sessionId; body wins when set.
+    # When $AGENT_HUB_SESSION_ID is set we send both the caller's JSON (which may
+    # already include session_id) and the header. The server prefers an explicit
+    # body sessionId (including null to opt out); the header fills in when the
+    # body key is omitted.
     if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
       hub_api POST "/api/projects/$PROJECT_ID/board/cards" \
         -H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID" \
