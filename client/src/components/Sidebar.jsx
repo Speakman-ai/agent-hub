@@ -1072,7 +1072,9 @@ export default function Sidebar({
                             <button
                               type="button"
                               key={session.id}
-                              onClick={() => focusSession(activeAgentId, session.id)}
+                              onClick={() =>
+                                focusSession(session.agent_id || activeAgentId, session.id)
+                              }
                               className={`w-full text-left px-2 py-1 rounded-md mb-0.5 flex items-center gap-1.5 text-xs transition-colors cursor-pointer ${
                                 activeSessionId === session.id
                                   ? 'bg-gray-800 text-white'

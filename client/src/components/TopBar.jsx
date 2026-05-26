@@ -43,6 +43,7 @@ function fallbackModelsForEngine(engine) {
 
 export default function TopBar({
   agent,
+  accentColor,
   connected,
   reconnecting,
   onNewSession,
@@ -101,8 +102,13 @@ export default function TopBar({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  const headerAccent = accentColor || agent?.color || '#6366f1';
+
   return (
-    <div className="flex items-center justify-between px-3 md:px-6 py-2 md:py-3 border-b border-gray-800 bg-gray-900/50 electron-no-drag">
+    <div
+      className="flex items-center justify-between px-3 md:px-6 py-2 md:py-3 border-b-2 border-gray-800 bg-gray-900/50 electron-no-drag"
+      style={{ borderBottomColor: headerAccent }}
+    >
       <div className="flex items-center gap-3">
         {/* Mobile sidebar toggle */}
         <button
@@ -129,7 +135,7 @@ export default function TopBar({
           <>
             <span
               className="w-3 h-3 rounded-full flex-shrink-0"
-              style={{ backgroundColor: agent.color }}
+              style={{ backgroundColor: headerAccent }}
             />
             <div className="min-w-0">
               <h2 className="font-semibold truncate">{agent.name}</h2>

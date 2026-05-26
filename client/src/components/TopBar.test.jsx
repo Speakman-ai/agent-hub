@@ -177,4 +177,15 @@ describe('<TopBar /> reviewer-agent "+ New" gating', () => {
     renderTopBar({ agent: { ...baseAgent, role: 'lead' } });
     expect(screen.getByRole('button', { name: '+ New' })).toBeTruthy();
   });
+
+  it('uses accentColor for the header dot and border when provided', () => {
+    const { container } = renderTopBar({
+      accentColor: '#10B981',
+      agent: { ...baseAgent, color: '#8B5CF6' },
+    });
+    const header = container.firstChild;
+    expect(header.style.borderBottomColor).toBe('rgb(16, 185, 129)');
+    const dot = container.querySelector('.rounded-full');
+    expect(dot.style.backgroundColor).toBe('rgb(16, 185, 129)');
+  });
 });

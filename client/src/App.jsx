@@ -106,6 +106,7 @@ import {
 } from './utils/sessionDerivedState.js';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail.js';
 import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
+import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -348,6 +349,20 @@ export default function App() {
   activeAgentIdRef.current = activeAgentId;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  /** Cross-agent session rows for accent color + owner sync before per-agent lists reload. */
+  const sessionsByIdRef = useRef(new Map());
+  const [sessionsIndexTick, setSessionsIndexTick] = useState(0);
+  const bumpSessionsIndex = useCallback(() => {
+    setSessionsIndexTick((t) => t + 1);
+  }, []);
+  useEffect(() => {
+    indexSessionsById(sessionsByIdRef.current, sessions);
+    bumpSessionsIndex();
+  }, [sessions, bumpSessionsIndex]);
+  useEffect(() => {
+    indexSessionsById(sessionsByIdRef.current, cronSessions);
+    bumpSessionsIndex();
+  }, [cronSessions, bumpSessionsIndex]);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
   // Mirror of `changesReady` accessible inside WebSocket callbacks (used to
@@ -425,9 +440,6 @@ export default function App() {
   pullsProjectIdRef.current = pullsProjectId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
-  const chatGithubRepo = projects.find((p) => p.id === activeAgent?.projectId)?.githubRepo ?? null;
-  const chatProjectIsWorkflow =
-    projects.find((p) => p.id === activeAgent?.projectId)?.mode === 'workflow';
 
   const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
 
@@ -1921,6 +1933,10 @@ export default function App() {
           // browser tab POST /sessions, etc. — splice into the sidebar without
           // a full refetch when the session belongs to the active agent.
           const row = data.session;
+          if (row?.id) {
+            sessionsByIdRef.current.set(row.id, row);
+            setSessionsIndexTick((t) => t + 1);
+          }
           if (row && data.agentId === activeAgentIdRef.current) {
             setSessions((prev) => {
               if (prev.some((s) => s.id === row.id)) return prev;
@@ -2569,19 +2585,16 @@ export default function App() {
   const focusAgentSession = useCallback(
     (agentId, sessionId) => {
       if (!sessionId) return;
-      if (agentId) {
+      const row =
+        sessionsRef.current.find((x) => x.id === sessionId) ??
+        sessionsByIdRef.current.get(sessionId);
+      const resolvedAgentId = agentId || row?.agent_id;
+      if (resolvedAgentId) {
         pendingSessionIdRef.current = sessionId;
-        setActiveAgentId(agentId);
+        setActiveAgentId(resolvedAgentId);
         setActiveSessionId(sessionId);
       } else {
-        const s = sessionsRef.current.find((x) => x.id === sessionId);
-        if (s?.agent_id) {
-          pendingSessionIdRef.current = sessionId;
-          setActiveAgentId(s.agent_id);
-          setActiveSessionId(sessionId);
-        } else {
-          setActiveSessionId(sessionId);
-        }
+        setActiveSessionId(sessionId);
       }
       setActiveRoomId(null);
       setCurrentView('chat');
@@ -2590,6 +2603,18 @@ export default function App() {
     [setActiveAgentId],
   );
   focusAgentSessionRef.current = focusAgentSession;
+
+  // Keep the active agent aligned with the open session's owner (cross-project switches).
+  useLayoutEffect(() => {
+    if (!activeSessionId) return;
+    const row =
+      sessions.find((s) => s.id === activeSessionId) ??
+      sessionsByIdRef.current.get(activeSessionId);
+    const ownerId = row?.agent_id;
+    if (!ownerId || ownerId === activeAgentId) return;
+    pendingSessionIdRef.current = activeSessionId;
+    setActiveAgentId(ownerId);
+  }, [activeSessionId, sessions, activeAgentId, setActiveAgentId, sessionsIndexTick]);
 
   // Rehydrate the in-Hub ProgressPanel for the active session whenever the
   // session changes. Skip if we already have live steps in memory (avoid
@@ -2850,10 +2875,17 @@ export default function App() {
     [showToast],
   );
 
-  const activeChatProject = useMemo(
-    () => projects.find((p) => p.id === activeAgent?.projectId) ?? null,
-    [projects, activeAgent?.projectId],
-  );
+  const activeChatProject = useMemo(() => {
+    const row =
+      sessions.find((s) => s.id === activeSessionId) ??
+      (activeSessionId ? sessionsByIdRef.current.get(activeSessionId) : null);
+    const agentId = row?.agent_id ?? activeAgentId;
+    const agent = agents.find((a) => a.id === agentId);
+    return projects.find((p) => p.id === agent?.projectId) ?? null;
+  }, [sessions, activeSessionId, activeAgentId, agents, projects, sessionsIndexTick]);
+
+  const chatGithubRepo = activeChatProject?.githubRepo ?? null;
+  const chatProjectIsWorkflow = activeChatProject?.mode === 'workflow';
 
   const activePreviewEvent =
     (activeSessionId && previewEventBySession[activeSessionId]) ||
@@ -3236,8 +3268,30 @@ export default function App() {
 
   const isProcessing = thinking || !!streamingContent;
   const activeSession = useMemo(
-    () => sessions.find((s) => s.id === activeSessionId) || null,
-    [sessions, activeSessionId],
+    () =>
+      sessions.find((s) => s.id === activeSessionId) ||
+      (activeSessionId ? sessionsByIdRef.current.get(activeSessionId) : null) ||
+      null,
+    [sessions, activeSessionId, sessionsIndexTick],
+  );
+
+  const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
+  const chatAgent = useMemo(
+    () => agents.find((a) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
+    [agents, sessionOwnerAgentId, activeAgent],
+  );
+
+  const chatAccentColor = useMemo(
+    () =>
+      resolveChatAccentColor({
+        sessionId: activeSessionId,
+        sessionRow: activeSession,
+        sessionsById: sessionsByIdRef.current,
+        agents,
+        projects,
+        fallbackAgentId: activeAgentId,
+      }),
+    [activeSessionId, activeSession, agents, projects, activeAgentId, sessionsIndexTick],
   );
 
   const activeSessionWorktreeReady =
@@ -3574,11 +3628,7 @@ export default function App() {
             showToast={showToast}
             sessions={sessions}
             activeSessionId={activeSessionId}
-            onSelectSession={(id) => {
-              setActiveSessionId(id);
-              setActiveRoomId(null);
-              setSidebarOpen(false);
-            }}
+            onSelectSession={(id) => focusAgentSession(undefined, id)}
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
@@ -3658,7 +3708,8 @@ export default function App() {
           {!isWizardView(currentView) && (
             <>
               <TopBar
-                agent={activeAgent}
+                agent={chatAgent}
+                accentColor={chatAccentColor}
                 connected={connected}
                 reconnecting={reconnecting}
                 onNewSession={handleNewSession}
@@ -3764,8 +3815,7 @@ export default function App() {
                     // a wizard session and needs the user to land on it
                     // immediately to see the streaming response).
                     if (view === 'chat' && extra) {
-                      if (extra.agentId) setActiveAgentId(extra.agentId);
-                      if (extra.sessionId) setActiveSessionId(extra.sessionId);
+                      focusAgentSession(extra.agentId, extra.sessionId);
                     }
                   }}
                   onOpenSession={({ sessionId, agentId }) => focusAgentSession(agentId, sessionId)}
@@ -3897,7 +3947,8 @@ export default function App() {
                       <div
                         ref={scrollContainerRef}
                         onScroll={handleScrollEvent}
-                        className="flex-1 overflow-y-auto p-3 md:p-6 relative"
+                        className="flex-1 overflow-y-auto p-3 md:p-6 relative border-t-2"
+                        style={{ borderTopColor: chatAccentColor }}
                       >
                         <div className="mx-auto" ref={messagesColumnRef}>
                           {/* Cursor-style timed checklist — rendered at top of chat
@@ -3999,7 +4050,7 @@ export default function App() {
                                       key={msg.id}
                                       message={msg}
                                       events={eventsByMessage[msg.id]}
-                                      agentColor={activeAgent?.color}
+                                      agentColor={chatAccentColor}
                                       onEventsLoaded={handleEventsLoaded}
                                       onAskSubmit={handleAskSubmit}
                                       askSubmittedIds={askSubmitted}
@@ -4019,12 +4070,12 @@ export default function App() {
                                     <ChatMessage
                                       key={msg.id}
                                       message={msg}
-                                      agentColor={activeAgent?.color}
+                                      agentColor={chatAccentColor}
                                     />
                                   ),
                                 )}
                                 {thinking && !streamingMsgId && (
-                                  <ThinkingIndicator agentColor={activeAgent?.color} />
+                                  <ThinkingIndicator agentColor={chatAccentColor} />
                                 )}
                                 {streamingMsgId && (
                                   <SessionTail
@@ -4037,7 +4088,7 @@ export default function App() {
                                       content: streamingContent,
                                     }}
                                     events={eventsByMessage[streamingMsgId]}
-                                    agentColor={activeAgent?.color}
+                                    agentColor={chatAccentColor}
                                     streaming
                                     onAskSubmit={handleAskSubmit}
                                     askSubmittedIds={askSubmitted}
@@ -4114,7 +4165,7 @@ export default function App() {
                                   <ChatMessage
                                     key={msg.id}
                                     message={{ ...msg, queued: true }}
-                                    agentColor={activeAgent?.color}
+                                    agentColor={chatAccentColor}
                                     onDequeue={handleDequeue}
                                     onEditQueued={handleEditQueuedMessage}
                                   />
@@ -4272,7 +4323,7 @@ export default function App() {
                         disabled={!activeAgent || !connected}
                         isProcessing={isProcessing}
                         queueLength={(messageQueues[activeSessionId] || []).length}
-                        agentColor={activeAgent?.color}
+                        agentColor={chatAccentColor}
                         skills={skills}
                         askMode={sessionAskMode}
                         readOnly={activeAgent?.role === 'reviewer'}
