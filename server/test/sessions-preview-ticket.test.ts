@@ -146,6 +146,12 @@ describe('preview proxy iframe auth', () => {
     expect(res.status).toBe(401);
   });
 
+  it('manifest.webmanifest passes auth without ticket or cookie (spec omits credentials)', async () => {
+    const res = await request.get(`/api/sessions/${sessionId}/preview/proxy/manifest.webmanifest`);
+    // No preview running → 503, but not 401 (manifest fetch never sends cookies).
+    expect(res.status).toBe(503);
+  });
+
   it('iframe nav with valid ticket → passes auth, sets path-scoped cookie', async () => {
     const ticket = await mintTicket();
     const res = await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`);

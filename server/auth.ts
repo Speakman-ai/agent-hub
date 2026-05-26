@@ -14,6 +14,7 @@ import {
   consumePreviewCookie,
   consumePreviewTicket,
   issuePreviewCookieToken,
+  isPreviewManifestAssetPath,
   matchPreviewProxyPath,
   readPreviewCookie,
 } from './preview-auth.js';
@@ -111,6 +112,11 @@ export interface AuthenticatedRequest extends Request {
    * backward compatibility.
    */
   authRole?: Role;
+  /**
+   * Preview-proxy GET for `*.webmanifest`. Manifest fetches omit cookies
+   * per the App Manifest spec; see `isPreviewManifestAssetPath`.
+   */
+  authPreviewManifestBypass?: boolean;
 }
 
 function extractBearerToken(req: Request): string | null {
@@ -227,6 +233,17 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   const previewSessionId = matchPreviewProxyPath(req.path);
   if (previewSessionId) {
     const authedReq = req as AuthenticatedRequest;
+
+    // Manifest sub-fetches never carry the preview cookie (spec omits
+    // credentials). Synthetic User role is enough for requireRole; the
+    // proxy handler skips session ownership for these public assets.
+    if (req.method === 'GET' && isPreviewManifestAssetPath(req.path)) {
+      authedReq.authRole = 'User';
+      authedReq.authPreviewManifestBypass = true;
+      next();
+      return;
+    }
+
     const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : null;
     if (ticket) {
       const ctx = consumePreviewTicket(ticket, previewSessionId);

@@ -10,6 +10,7 @@ import {
   consumePreviewCookie,
   consumePreviewTicket,
   issuePreviewCookieToken,
+  isPreviewManifestAssetPath,
   matchPreviewProxyPath,
   mintPreviewTicket,
   parseCookieHeader,
@@ -122,6 +123,23 @@ describe('preview-auth path matcher', () => {
     expect(matchPreviewProxyPath('/api/health')).toBeNull();
     expect(matchPreviewProxyPath('')).toBeNull();
     expect(matchPreviewProxyPath(undefined)).toBeNull();
+  });
+});
+
+describe('isPreviewManifestAssetPath', () => {
+  it('matches webmanifest files under the preview proxy mount', () => {
+    expect(isPreviewManifestAssetPath('/api/sessions/abc/preview/proxy/manifest.webmanifest')).toBe(
+      true,
+    );
+    expect(
+      isPreviewManifestAssetPath('/api/sessions/abc/preview/proxy/assets/site.webmanifest'),
+    ).toBe(true);
+  });
+
+  it('rejects non-manifest paths', () => {
+    expect(isPreviewManifestAssetPath('/api/sessions/abc/preview/proxy/main.js')).toBe(false);
+    expect(isPreviewManifestAssetPath('/api/sessions/abc/preview/proxy/')).toBe(false);
+    expect(isPreviewManifestAssetPath('/manifest.webmanifest')).toBe(false);
   });
 });
 

@@ -221,7 +221,8 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
       res.status(400).send('sessionId required');
       return;
     }
-    if (!deps.userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+    const authed = req as AuthenticatedRequest;
+    if (!authed.authPreviewManifestBypass && !deps.userOwnsSession(authed, sessionId)) {
       res.status(404).send('Session not found');
       return;
     }

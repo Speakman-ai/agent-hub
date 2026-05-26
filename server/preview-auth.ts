@@ -237,6 +237,21 @@ export function matchPreviewProxyPath(pathname: string | undefined | null): stri
 }
 
 /**
+ * True for PWA manifest files served through the preview proxy mount.
+ *
+ * The App Manifest spec deliberately fetches manifests **without**
+ * credentials (unlike `<script>` / `<link rel="stylesheet">`), so the
+ * path-scoped preview HttpOnly cookie is never attached. Browsers then
+ * hit the proxy unauthenticated and get 401 even when the rest of the
+ * preview iframe works. Manifest JSON is non-secret; gating it on the
+ * preview cookie buys nothing.
+ */
+export function isPreviewManifestAssetPath(pathname: string | undefined | null): boolean {
+  if (!pathname || !matchPreviewProxyPath(pathname)) return false;
+  return /\.webmanifest$/i.test(pathname);
+}
+
+/**
  * Cookie name for a given session. Namespacing by session id ensures
  * two preview cookies (different sessions) can coexist on the same
  * origin without one overwriting the other.
