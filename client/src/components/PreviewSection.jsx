@@ -13,7 +13,6 @@ import {
   Sparkles,
   Layers,
   ClipboardList,
-  CircleHelp,
   Square,
   Trash2,
 } from 'lucide-react';
@@ -237,7 +236,6 @@ const CHECKLIST_STATUS_META = {
   pass: { label: 'Pass', className: 'text-emerald-400 border-emerald-900/50 bg-emerald-950/30' },
   warn: { label: 'Warn', className: 'text-amber-400 border-amber-900/50 bg-amber-950/30' },
   fail: { label: 'Fail', className: 'text-red-400 border-red-900/50 bg-red-950/30' },
-  manual: { label: 'Check', className: 'text-sky-300 border-sky-900/50 bg-sky-950/30' },
 };
 
 function ComposePreviewChecklist({ items }) {
@@ -271,7 +269,7 @@ function ComposePreviewChecklist({ items }) {
       </p>
       <ul className="space-y-2">
         {items.map((item) => {
-          const meta = CHECKLIST_STATUS_META[item.status] ?? CHECKLIST_STATUS_META.manual;
+          const meta = CHECKLIST_STATUS_META[item.status] ?? CHECKLIST_STATUS_META.warn;
           return (
             <li
               key={item.id}
@@ -286,9 +284,6 @@ function ComposePreviewChecklist({ items }) {
                 </span>
                 <span className="text-[10px] text-gray-500 uppercase">{item.category}</span>
                 <span className="text-sm text-gray-200 flex-1 min-w-0">{item.title}</span>
-                {item.kind === 'manual' && (
-                  <CircleHelp size={12} className="text-gray-500 shrink-0" aria-hidden />
-                )}
               </div>
               <p className="text-xs text-gray-400 pl-0.5">{item.description}</p>
               {item.hint && <p className="text-xs text-gray-500 italic pl-0.5">{item.hint}</p>}

@@ -20,6 +20,11 @@ describe('collectPreviewEnvironmentDraft', () => {
     expect(draft.envVars.some((v) => v.key === 'API_KEY')).toBe(true);
     expect(draft.scriptHints.length).toBeGreaterThan(0);
     expect(draft.composeChecklist.length).toBeGreaterThan(0);
-    expect(draft.composeChecklist.some((i) => i.id === 'worktree-bind-mounts')).toBe(true);
+    // After dropping the always-CHECK manual rows, every checklist item
+    // must resolve to a real verdict — no perpetually-unresolved entries.
+    for (const item of draft.composeChecklist) {
+      expect(['pass', 'warn', 'fail']).toContain(item.status);
+    }
+    expect(draft.composeChecklist.some((i) => i.id === 'compose-file-readable')).toBe(true);
   });
 });

@@ -115,7 +115,7 @@ export function buildKickoffPrompt(
     '   - Explain which service is the **browser entry** (UI) vs API/worker/DB — previews iframe the **entry** service only.',
     '   - Use a fenced `agenthub:ask` so the user picks **compose file** (if multiple in `composeCandidates`) and **entry service** (one option per service, with short descriptions).',
     '3. **Bootstrap** — If `draft.phase === "bootstrap_compose"`: propose `draft.bootstrap.composeYaml`, get approval, `POST .../preview/setup-compose-bootstrap`, then continue.',
-    '4. **Compose preview checklist** — Walk `draft.composeChecklist` with the user (section above). Fix every **FAIL** in `compose.preview.yml` before build; explain **WARN** and **CHECK** items (bind mounts relative to worktree, `${AGENTHUB_HOST_PORT}` / `FRONTEND_PORT`, health on entry URL).',
+    '4. **Compose preview checklist** — Walk `draft.composeChecklist` with the user (section above). Fix every **FAIL** in `compose.preview.yml` before build; explain remaining **WARN** items (relative bind paths, `${AGENTHUB_HOST_PORT}` / `FRONTEND_PORT`, host port mapping, file-watching polling).',
     '5. **Compose details** — `agenthub:ask` for entry port, health path, env file, idle TTL, capture routes (use draft defaults as option labels).',
     '6. **Environment variables** — For each key in `draft.envVars` (especially `required: true`), ask in **plain prose** for values. Do not echo secrets back. Then include in `setup-apply` `secrets.env` as dotenv lines.',
     '7. **Persist** — `POST .../preview/setup-apply` with `preview.compose` only (health on `preview.compose.healthPath`).',

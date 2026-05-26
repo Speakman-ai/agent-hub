@@ -27,12 +27,11 @@ const bootstrapDraft: PreviewSetupDraft = {
   scriptHints: [],
   composeChecklist: [
     {
-      id: 'worktree-bind-mounts',
+      id: 'compose-file-readable',
       category: 'mount',
-      title: 'Bind mounts are relative to the session worktree',
-      description: 'test',
-      kind: 'manual',
-      status: 'manual',
+      title: 'Compose file present for scan',
+      description: 'No compose file on disk yet — generate or bootstrap first, then rescan.',
+      status: 'warn',
     },
   ],
 };

@@ -2,11 +2,17 @@
  * Compose preview onboarding checklist — contract between Agent Hub and
  * project `compose.preview.yml` files. Surfaced in Settings draft scan
  * and the preview setup wizard kickoff prompt.
+ *
+ * Every item here is the result of an automated scan: each one resolves
+ * to `pass | warn | fail`. There is no "manual / always show CHECK" tier
+ * — those were dropped because they rendered as unresolved-forever rows
+ * in Settings → Preview environment and duplicated checks that the
+ * auto-scan already performs (relative-volume-paths, docker-polling-hints).
  */
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 
-export type ComposeChecklistStatus = 'pass' | 'warn' | 'fail' | 'manual';
+export type ComposeChecklistStatus = 'pass' | 'warn' | 'fail';
 
 export interface ComposePreviewChecklistItem {
   /** Stable id for tests and wizard references. */
@@ -14,8 +20,6 @@ export interface ComposePreviewChecklistItem {
   category: 'mount' | 'ports' | 'health' | 'runtime' | 'deploy';
   title: string;
   description: string;
-  /** `manual` = operator verifies; `auto` = repo scan when compose file exists. */
-  kind: 'manual' | 'auto';
   status: ComposeChecklistStatus;
   hint?: string;
 }
@@ -56,59 +60,6 @@ function entryServiceBlock(composeText: string, entryService: string): string | 
   return m?.[1] ?? null;
 }
 
-function manualItems(healthPath: string): ComposePreviewChecklistItem[] {
-  return [
-    {
-      id: 'worktree-bind-mounts',
-      category: 'mount',
-      title: 'Bind mounts are relative to the session worktree',
-      description:
-        'Agent Hub runs `docker compose` with `--project-directory` set to the session worktree (not project.cwd). Use paths like `./frontend:/app`, never a fixed host checkout path.',
-      kind: 'manual',
-      status: 'manual',
-      hint: 'Preview edits and git worktrees live under ~/.agent-hub/.../workspaces/<project>/session-<id>/',
-    },
-    {
-      id: 'health-on-entry-url',
-      category: 'health',
-      title: 'Health check hits the browser entry URL',
-      description:
-        'Hub polls `http://<allocated-host-port><healthPath>` until HTTP 2xx. The path must be served by the entry service (usually the UI dev server), not only the API container.',
-      kind: 'manual',
-      status: 'manual',
-      hint: `Configured healthPath: ${healthPath} — use \`/\` for ng serve/Vite unless the entry proxies your API health route.`,
-    },
-    {
-      id: 'mac-file-watching',
-      category: 'runtime',
-      title: 'File watching works through Docker bind mounts (macOS/Windows)',
-      description:
-        'On Docker Desktop, inotify often misses host edits. Set `CHOKIDAR_USEPOLLING=true` and/or `ng serve --poll 2000` (or equivalent) on the entry service.',
-      kind: 'manual',
-      status: 'manual',
-    },
-    {
-      id: 'deploy-workspaces-dir',
-      category: 'deploy',
-      title: 'Production Hub: workspace path translation',
-      description:
-        'When Agent Hub runs inside Docker, set `AGENT_HUB_HOST_WORKSPACES_DIR` to the host path backing `/data/.agent-hub/workspaces` so previews mount session worktrees, not project.cwd.',
-      kind: 'manual',
-      status: 'manual',
-      hint: 'See repo `docker-compose.yml` — also set `AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal` (or equivalent).',
-    },
-    {
-      id: 'session-worktree-before-preview',
-      category: 'deploy',
-      title: 'Start preview after the session worktree exists',
-      description:
-        'Open the chat session (or wait for “Preparing workspace…”) before Start preview so compose uses the same tree the agent edits.',
-      kind: 'manual',
-      status: 'manual',
-    },
-  ];
-}
-
 function autoScanCompose(
   composeText: string | null,
   entryService: string | null,
@@ -122,7 +73,6 @@ function autoScanCompose(
       category: 'mount',
       title: 'Compose file present for scan',
       description: 'No compose file on disk yet — generate or bootstrap first, then rescan.',
-      kind: 'auto',
       status: 'warn',
     });
     return items;
@@ -133,7 +83,6 @@ function autoScanCompose(
     category: 'mount',
     title: 'Compose file present for scan',
     description: 'Compose file was read for automated checks below.',
-    kind: 'auto',
     status: 'pass',
   });
 
@@ -146,7 +95,6 @@ function autoScanCompose(
     description: hasRelative
       ? 'Found `./…` bind-mount sources.'
       : 'No `./` bind-mount sources detected — add relative paths so worktree mounts work.',
-    kind: 'auto',
     status: hasRelative && !hasAbsolute ? 'pass' : hasAbsolute ? 'fail' : 'warn',
     hint: hasAbsolute
       ? 'Remove absolute host paths like /Users/... or /home/... from `volumes:`.'
@@ -159,7 +107,6 @@ function autoScanCompose(
     title: 'No fixed container_name on services',
     description:
       'Concurrent session previews require compose project isolation; `container_name:` breaks parallel previews.',
-    kind: 'auto',
     status: CONTAINER_NAME_RE.test(composeText) ? 'fail' : 'pass',
   });
 
@@ -173,7 +120,6 @@ function autoScanCompose(
     title: 'Host port uses AGENTHUB_HOST_PORT or FRONTEND_PORT',
     description:
       'Hub sets `AGENTHUB_HOST_PORT` (allocated) and `FRONTEND_PORT` (entry internal port, e.g. 4200). Map `${AGENTHUB_HOST_PORT:-…}:${FRONTEND_PORT:-4200}` or rely on the Hub port override file.',
-    kind: 'auto',
     status: usesAgentHubPort || usesFrontendPort ? 'pass' : 'warn',
     hint:
       !usesAgentHubPort && !usesFrontendPort
@@ -193,7 +139,6 @@ function autoScanCompose(
     title: `Entry service targets internal port ${entryPort}`,
     description:
       'The dev server inside the entry container must listen on `entryPort` (Hub `FRONTEND_PORT`), not only on the allocated host port.',
-    kind: 'auto',
     status: listensOnEntryPort ? 'pass' : 'warn',
     hint: `Set prEnv.preview.compose.entryPort to match ng serve / Vite (often 4200 or 3000).`,
   });
@@ -203,7 +148,6 @@ function autoScanCompose(
     category: 'runtime',
     title: 'Compose hints at poll-based file watching',
     description: 'Detected CHOKIDAR_USEPOLLING, WATCHPACK_POLLING, or `--poll` in compose/entry.',
-    kind: 'auto',
     status: CHOKIDAR_RE.test(composeText) ? 'pass' : 'warn',
   });
 
@@ -217,7 +161,6 @@ export function buildComposePreviewChecklist(
   input: ComposeChecklistScanInput,
 ): ComposePreviewChecklistItem[] {
   const composeFile = (input.composeFile ?? 'compose.preview.yml').trim() || 'compose.preview.yml';
-  const healthPath = (input.healthPath ?? '/').trim() || '/';
   const entryPort =
     typeof input.entryPort === 'number' && Number.isFinite(input.entryPort)
       ? input.entryPort
@@ -225,7 +168,7 @@ export function buildComposePreviewChecklist(
   const entryService = input.entryService?.trim() || null;
   const composeText = readComposeText(input.workspaceDir, composeFile);
 
-  return [...manualItems(healthPath), ...autoScanCompose(composeText, entryService, entryPort)];
+  return autoScanCompose(composeText, entryService, entryPort);
 }
 
 /** Markdown bullet list for wizard / agent prompts. */
@@ -237,14 +180,7 @@ export function formatComposeChecklistForPrompt(items: ComposePreviewChecklistIt
     '',
   ];
   for (const item of items) {
-    const badge =
-      item.status === 'pass'
-        ? 'PASS'
-        : item.status === 'fail'
-          ? 'FAIL'
-          : item.status === 'warn'
-            ? 'WARN'
-            : 'CHECK';
+    const badge = item.status === 'pass' ? 'PASS' : item.status === 'fail' ? 'FAIL' : 'WARN';
     lines.push(`- **[${badge}]** (${item.category}) ${item.title}`);
     lines.push(`  ${item.description}`);
     if (item.hint) lines.push(`  _Hint:_ ${item.hint}`);

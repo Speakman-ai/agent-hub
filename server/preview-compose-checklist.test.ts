@@ -35,7 +35,42 @@ describe('buildComposePreviewChecklist', () => {
     expect(items.find((i) => i.id === 'relative-volume-paths')?.status).toBe('pass');
     expect(items.find((i) => i.id === 'host-port-env-vars')?.status).toBe('pass');
     expect(items.find((i) => i.id === 'docker-polling-hints')?.status).toBe('pass');
-    expect(items.some((i) => i.id === 'worktree-bind-mounts' && i.status === 'manual')).toBe(true);
+  });
+
+  it('returns only automated items — no always-CHECK manual rows', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ah-checklist-no-manual-'));
+    writeFileSync(
+      path.join(dir, 'compose.preview.yml'),
+      `services:
+  frontend:
+    volumes:
+      - ./frontend:/app
+`,
+    );
+
+    const items = buildComposePreviewChecklist({
+      workspaceDir: dir,
+      composeFile: 'compose.preview.yml',
+      entryService: 'frontend',
+      entryPort: 4200,
+    });
+
+    // Every item must resolve to a real verdict — no 'manual' / unresolved-forever rows.
+    for (const item of items) {
+      expect(['pass', 'warn', 'fail']).toContain(item.status);
+    }
+
+    // The previously-manual ids must be gone.
+    const manualIds = [
+      'worktree-bind-mounts',
+      'health-on-entry-url',
+      'mac-file-watching',
+      'deploy-workspaces-dir',
+      'session-worktree-before-preview',
+    ];
+    for (const id of manualIds) {
+      expect(items.find((i) => i.id === id)).toBeUndefined();
+    }
   });
 
   it('fails on absolute volume paths and container_name', () => {
@@ -69,14 +104,25 @@ describe('buildComposePreviewChecklist', () => {
 });
 
 describe('formatComposeChecklistForPrompt', () => {
-  it('includes status badges and titles', () => {
+  it('includes status badges and titles, and never emits [CHECK]', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ah-prompt-'));
+    writeFileSync(
+      path.join(dir, 'compose.preview.yml'),
+      `services:
+  frontend:
+    volumes:
+      - ./frontend:/app
+`,
+    );
     const text = formatComposeChecklistForPrompt(
       buildComposePreviewChecklist({
-        workspaceDir: mkdtempSync(path.join(tmpdir(), 'ah-prompt-')),
+        workspaceDir: dir,
+        composeFile: 'compose.preview.yml',
+        entryService: 'frontend',
       }),
     );
     expect(text).toMatch(/## Compose preview checklist/);
-    expect(text).toMatch(/\*\*\[CHECK\]\*\*/);
-    expect(text).toMatch(/worktree-bind-mounts|Bind mounts are relative/);
+    expect(text).toMatch(/\*\*\[PASS\]\*\*|\*\*\[WARN\]\*\*|\*\*\[FAIL\]\*\*/);
+    expect(text).not.toMatch(/\[CHECK\]/);
   });
 });

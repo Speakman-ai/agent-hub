@@ -50,19 +50,17 @@ const monorepoDraft = {
   scriptHints: [],
   composeChecklist: [
     {
-      id: 'worktree-bind-mounts',
+      id: 'compose-file-readable',
       category: 'mount',
-      title: 'Bind mounts are relative to the session worktree',
-      description: 'Use ./ paths.',
-      kind: 'manual',
-      status: 'manual',
+      title: 'Compose file present for scan',
+      description: 'Compose file was read for automated checks below.',
+      status: 'pass',
     },
     {
       id: 'host-port-env-vars',
       category: 'ports',
       title: 'Host port uses AGENTHUB_HOST_PORT or FRONTEND_PORT',
       description: 'Map allocated port.',
-      kind: 'auto',
       status: 'pass',
     },
   ],
@@ -148,7 +146,7 @@ describe('PreviewSection', () => {
     expect(screen.queryByTestId('preview-setup-start-card')).not.toBeInTheDocument();
     expect(screen.getByText(/Monorepo/)).toBeInTheDocument();
     expect(screen.getByTestId('preview-compose-checklist')).toBeInTheDocument();
-    expect(screen.getByTestId('preview-checklist-worktree-bind-mounts')).toBeInTheDocument();
+    expect(screen.getByTestId('preview-checklist-compose-file-readable')).toBeInTheDocument();
   });
 
   it('shows validation error when entry service is missing', async () => {
