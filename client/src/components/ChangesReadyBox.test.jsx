@@ -206,3 +206,64 @@ describe('ChangesReadyBox auto-merge default', () => {
     expect(screen.getByTestId('create-ticket-pr-popover')).toBeInTheDocument();
   });
 });
+
+/**
+ * Always-on rendering — `App.jsx` now mounts this component whenever a
+ * session is open, even before the server has reported a `changes_ready`
+ * event. The component must tolerate a missing or partially-populated
+ * `changes` prop and let the server's 4xx/422 response surface inline when
+ * the user clicks anyway.
+ */
+describe('ChangesReadyBox tolerates missing changes prop', () => {
+  it('renders the button when `changes` is undefined', () => {
+    render(<ChangesReadyBox sessionId="s1" />);
+    expect(screen.getByTestId('create-ticket-pr-button')).toBeInTheDocument();
+  });
+
+  it('uses a generic tooltip and omits the branch label when branch is empty', () => {
+    render(
+      <ChangesReadyBox
+        sessionId="s1"
+        changes={{ agentId: 'a1', branch: '', hasUncommitted: false, hasUnpushed: false }}
+      />,
+    );
+    const btn = screen.getByTestId('create-ticket-pr-button');
+    expect(btn).toHaveAttribute('title', 'Create ticket & PR');
+  });
+
+  it('shows the branch in the tooltip when branch is present', () => {
+    render(
+      <ChangesReadyBox
+        sessionId="s1"
+        changes={{ agentId: 'a1', branch: 'feature/x', hasUncommitted: false, hasUnpushed: false }}
+      />,
+    );
+    const btn = screen.getByTestId('create-ticket-pr-button');
+    expect(btn).toHaveAttribute('title', 'Create ticket & PR for feature/x');
+  });
+
+  it('surfaces a server 400 "no worktree" error inline when the user clicks with nothing to commit', async () => {
+    api.createPrFromSession.mockRejectedValueOnce(
+      new Error('400: Session has no worktree — nothing to commit'),
+    );
+    render(<ChangesReadyBox sessionId="s1" />);
+    fireEvent.click(screen.getByTestId('create-ticket-pr-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('create-ticket-pr-popover')).toBeInTheDocument();
+      expect(screen.getByText(/no worktree/)).toBeInTheDocument();
+    });
+  });
+
+  it('surfaces a server 403 workflow-mode rejection inline', async () => {
+    api.createPrFromSession.mockRejectedValueOnce(
+      new Error('403: Session PR creation is disabled while this project is in workflow mode'),
+    );
+    render(<ChangesReadyBox sessionId="s1" />);
+    fireEvent.click(screen.getByTestId('create-ticket-pr-button'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/workflow mode/)).toBeInTheDocument();
+    });
+  });
+});

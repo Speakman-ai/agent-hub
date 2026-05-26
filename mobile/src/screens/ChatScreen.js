@@ -132,12 +132,25 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    ...(pendingChanges &&
-    !workflowProject &&
-    !thinking &&
-    !streamingContent &&
-    !activeResolvePrBannerInfo
-      ? [{ type: 'changes-ready', key: 'changes-ready', data: pendingChanges }]
+    // Always render the Create-ticket-&-PR row while a session is open. The
+    // server validates each request (404 missing session/agent, 403 workflow
+    // project, 400 no worktree, 422 commit/PR failed) and surfaces errors
+    // inline. This matches web/App.jsx — see PR "Always show Create ticket &
+    // PR button in chat toolbar".
+    ...(activeSessionId
+      ? [
+          {
+            type: 'changes-ready',
+            key: 'changes-ready',
+            data:
+              pendingChanges || {
+                agentId: activeSession?.agent_id,
+                branch: activeSession?.worktree_branch || '',
+                hasUncommitted: false,
+                hasUnpushed: false,
+              },
+          },
+        ]
       : []),
   ];
 

@@ -46,6 +46,11 @@ export default function ChangesReadyBox({
   const logEndRef = useRef(null);
   const rootRef = useRef(null);
 
+  // `changes` is optional — the parent now always renders this button while
+  // a session is open, even if the server hasn't reported a changes_ready
+  // event yet. Fall back to an empty branch label rather than crashing.
+  const branchLabel = changes?.branch || '';
+
   // The popover is forced open while we're talking to the server, while
   // a live log is streaming, or when there's an error to show. Otherwise
   // it follows whatever the user clicked on the caret.
@@ -92,7 +97,7 @@ export default function ChangesReadyBox({
           type="button"
           onClick={handleCreate}
           disabled={loading}
-          title={`Create ticket & PR for ${changes.branch}`}
+          title={branchLabel ? `Create ticket & PR for ${branchLabel}` : 'Create ticket & PR'}
           data-testid="create-ticket-pr-button"
           className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 transition-colors ${
             loading
@@ -125,9 +130,11 @@ export default function ChangesReadyBox({
             <div className="flex items-center gap-2 text-xs text-gray-300">
               <GitPullRequest size={14} className="text-purple-400" />
               <span className="font-medium">Changes ready</span>
-              <span className="text-[11px] text-gray-500 truncate max-w-[12rem]">
-                ({changes.branch})
-              </span>
+              {branchLabel && (
+                <span className="text-[11px] text-gray-500 truncate max-w-[12rem]">
+                  ({branchLabel})
+                </span>
+              )}
             </div>
             <button
               type="button"
