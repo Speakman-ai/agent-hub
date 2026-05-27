@@ -308,7 +308,12 @@ export default function SessionPreviewPane({
     return () => {
       cancelled = true;
     };
-  }, [baseIframeSrc, proxySessionId]);
+    // iframeKey is included so that a manual refresh (which bumps
+    // iframeKey) always mints a fresh ticket and cookie, even when
+    // refreshAt is non-null and holds baseIframeSrc's bust param
+    // constant. Without this the remounted iframe loads with a stale
+    // (already-consumed) ticket and gets 401.
+  }, [baseIframeSrc, proxySessionId, iframeKey]);
 
   const iframeSrc = ticketedSrc;
   useEffect(() => {

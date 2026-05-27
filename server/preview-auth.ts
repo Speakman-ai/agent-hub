@@ -91,10 +91,15 @@ export const PREVIEW_TICKET_TTL_MS = 60_000;
 
 /**
  * Cookies live longer than tickets — they cover the full
- * lifetime of the iframe's sub-resource fetches. Default 5 min. The
- * browser also enforces this via `Max-Age` on the Set-Cookie.
+ * lifetime of the iframe's sub-resource fetches. Default 4 hours.
+ * The browser also enforces this via `Max-Age` on the Set-Cookie.
+ *
+ * The previous 5-minute TTL caused 401 errors after the cookie
+ * expired while the user was still actively viewing the preview.
+ * 4 hours matches the reaper's default idle TTL so the cookie
+ * outlives the preview session itself.
  */
-export const PREVIEW_COOKIE_TTL_MS = 5 * 60_000;
+export const PREVIEW_COOKIE_TTL_MS = 4 * 60 * 60_000;
 
 /** Length of the random portion of a ticket / cookie token (bytes). */
 const TOKEN_BYTES = 24;

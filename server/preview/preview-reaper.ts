@@ -30,12 +30,12 @@ import type { Project } from '../types.js';
 export const PREVIEW_REAPER_CRON = '* * * * *';
 
 export interface PreviewReaperConfig {
-  /** Fallback idle TTL when a project has no `preview.idleTTL` set. Default 600 s. */
+  /** Fallback idle TTL when a project has no `preview.idleTTL` set. Default 4 hours (14400 s). */
   defaultIdleTtlSeconds: number;
 }
 
 export const DEFAULT_PREVIEW_REAPER_CONFIG: PreviewReaperConfig = {
-  defaultIdleTtlSeconds: 600,
+  defaultIdleTtlSeconds: 14_400,
 };
 
 export interface PreviewReaperDeps {
