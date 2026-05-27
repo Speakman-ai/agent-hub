@@ -3,6 +3,9 @@ import {
   findAgentByName,
   hasActiveSession,
   buildAssigneeOptions,
+  validModelsForAgent,
+  engineEntriesWithModels,
+  effectiveAssignEngine,
 } from './kanbanAssign.js';
 
 describe('findAgentByName', () => {
@@ -77,5 +80,105 @@ describe('buildAssigneeOptions', () => {
     expect(buildAssigneeOptions(undefined)).toEqual([
       { id: '', name: 'Unassigned' },
     ]);
+  });
+});
+
+describe('validModelsForAgent', () => {
+  const agents = [
+    { id: 'a1', name: 'ClaudeAgent', engine: 'claude-code' },
+    { id: 'a2', name: 'CodexAgent', engine: 'codex-cli' },
+  ];
+  const modelConfig = {
+    engineValidModels: {
+      'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'],
+      'codex-cli': ['gpt-5-codex'],
+      'cursor-agent': [],
+    },
+  };
+
+  it('returns models for the agents own engine when no override is set', () => {
+    expect(validModelsForAgent(agents, modelConfig, 'ClaudeAgent')).toEqual([
+      'claude-opus-4-7',
+      'claude-sonnet-4-20250514',
+    ]);
+    expect(validModelsForAgent(agents, modelConfig, 'CodexAgent')).toEqual([
+      'gpt-5-codex',
+    ]);
+  });
+
+  it('returns models for the override engine instead of the agents own', () => {
+    // Reassigning a Claude agent under codex-cli — picker should show
+    // codex models, not claude models.
+    expect(
+      validModelsForAgent(agents, modelConfig, 'ClaudeAgent', 'codex-cli'),
+    ).toEqual(['gpt-5-codex']);
+  });
+
+  it('trims and ignores blank overrides (falls back to the agent default)', () => {
+    expect(
+      validModelsForAgent(agents, modelConfig, 'ClaudeAgent', '   '),
+    ).toEqual(['claude-opus-4-7', 'claude-sonnet-4-20250514']);
+    expect(
+      validModelsForAgent(agents, modelConfig, 'ClaudeAgent', ''),
+    ).toEqual(['claude-opus-4-7', 'claude-sonnet-4-20250514']);
+  });
+
+  it('returns [] when modelConfig is missing or the engine has no models', () => {
+    expect(validModelsForAgent(agents, null, 'ClaudeAgent')).toEqual([]);
+    expect(validModelsForAgent(agents, {}, 'ClaudeAgent')).toEqual([]);
+    expect(
+      validModelsForAgent(agents, modelConfig, 'ClaudeAgent', 'cursor-agent'),
+    ).toEqual([]);
+  });
+
+  it('returns [] when neither agent nor override resolves an engine', () => {
+    expect(validModelsForAgent(agents, modelConfig, 'Nobody')).toEqual([]);
+    expect(validModelsForAgent(agents, modelConfig, '')).toEqual([]);
+  });
+});
+
+describe('engineEntriesWithModels', () => {
+  it('returns engine keys whose model arrays are non-empty', () => {
+    expect(
+      engineEntriesWithModels({
+        engineValidModels: {
+          'claude-code': ['claude-opus-4-7'],
+          'codex-cli': ['gpt-5-codex'],
+          'cursor-agent': [],
+          gemini: [],
+        },
+      }),
+    ).toEqual(['claude-code', 'codex-cli']);
+  });
+
+  it('returns [] when modelConfig is missing or malformed', () => {
+    expect(engineEntriesWithModels(null)).toEqual([]);
+    expect(engineEntriesWithModels(undefined)).toEqual([]);
+    expect(engineEntriesWithModels({})).toEqual([]);
+    expect(engineEntriesWithModels({ engineValidModels: null })).toEqual([]);
+  });
+});
+
+describe('effectiveAssignEngine', () => {
+  const agents = [
+    { id: 'a1', name: 'ClaudeAgent', engine: 'claude-code' },
+    { id: 'a2', name: 'CodexAgent', engine: 'codex-cli' },
+  ];
+
+  it('returns the override when set (non-blank)', () => {
+    expect(effectiveAssignEngine(agents, 'ClaudeAgent', 'codex-cli')).toBe(
+      'codex-cli',
+    );
+  });
+
+  it('falls back to the agents configured engine when override is blank', () => {
+    expect(effectiveAssignEngine(agents, 'ClaudeAgent', '')).toBe('claude-code');
+    expect(effectiveAssignEngine(agents, 'CodexAgent', '   ')).toBe('codex-cli');
+    expect(effectiveAssignEngine(agents, 'CodexAgent')).toBe('codex-cli');
+  });
+
+  it('falls back to claude-code when the agent is unknown and no override', () => {
+    expect(effectiveAssignEngine(agents, 'Nobody', '')).toBe('claude-code');
+    expect(effectiveAssignEngine([], 'ClaudeAgent', '')).toBe('claude-code');
   });
 });

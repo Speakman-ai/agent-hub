@@ -304,6 +304,8 @@ export const api = {
   assignCard: (projectId, cardId, agentId, opts = {}) => {
     const body = { agentId };
     if (opts.model != null && String(opts.model).trim()) body.model = String(opts.model).trim();
+    if (opts.engine != null && String(opts.engine).trim())
+      body.engine = String(opts.engine).trim();
     return fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
       method: 'POST',
       body: JSON.stringify(body),

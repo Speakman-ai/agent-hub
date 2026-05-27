@@ -422,3 +422,68 @@ describe('fetchJSON error body parsing — cycle/duplicate 409s surface in messa
     await expect(api.getAgents()).rejects.toThrow('API error: 500');
   });
 });
+
+describe('api.assignCard — engine/model opts parity with web client', () => {
+  it('POSTs only { agentId } when no opts are given', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1/board/cards/card-1/assign');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ agentId: 'agent-a' });
+  });
+
+  it('forwards model only when set and non-blank', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', {
+      model: 'claude-opus-4-7',
+    });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      agentId: 'agent-a',
+      model: 'claude-opus-4-7',
+    });
+  });
+
+  it('forwards engine only when set and non-blank', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', { engine: 'codex-cli' });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      agentId: 'agent-a',
+      engine: 'codex-cli',
+    });
+  });
+
+  it('forwards both engine and model when both are set', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', {
+      engine: 'codex-cli',
+      model: 'gpt-5-codex',
+    });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      agentId: 'agent-a',
+      engine: 'codex-cli',
+      model: 'gpt-5-codex',
+    });
+  });
+
+  it('trims engine/model whitespace before posting', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', {
+      engine: '  codex-cli  ',
+      model: '  gpt-5-codex  ',
+    });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      agentId: 'agent-a',
+      engine: 'codex-cli',
+      model: 'gpt-5-codex',
+    });
+  });
+
+  it('drops blank/whitespace-only engine and model', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', {
+      engine: '   ',
+      model: '',
+    });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ agentId: 'agent-a' });
+  });
+});

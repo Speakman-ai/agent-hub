@@ -40,3 +40,52 @@ export function buildAssigneeOptions(agents) {
       .map((a) => ({ id: a.id, name: a.name })),
   );
 }
+
+/**
+ * Resolve the engine the spawned session will actually run under for a given
+ * card assignment. Returns the optional `overrideEngine` when set (matching
+ * the server's `assign_engine` column), otherwise the agent's configured
+ * engine, falling back to `claude-code` so the model picker always has a
+ * deterministic key to look up.
+ */
+export function effectiveAssignEngine(agents, agentName, overrideEngine) {
+  const trimmed = (overrideEngine || '').trim();
+  if (trimmed) return trimmed;
+  const agent = findAgentByName(agents, agentName);
+  return agent?.engine || 'claude-code';
+}
+
+/**
+ * Models that are valid for the engine the card would spawn under. When
+ * `overrideEngine` is set the picker filters on the override; otherwise it
+ * falls back to the agent's configured engine. Mirrors the web client's
+ * inline `effectiveEngine` lookup in `KanbanBoard.jsx`.
+ *
+ * @param {Array<{id: string, name: string, engine?: string}>} agents
+ * @param {{engineValidModels?: Record<string, string[]>}} modelConfig
+ * @param {string} agentName
+ * @param {string} [overrideEngine]
+ */
+export function validModelsForAgent(agents, modelConfig, agentName, overrideEngine) {
+  if (!modelConfig?.engineValidModels) return [];
+  // No agent yet → caller is mid-picker; nothing to filter on.
+  const agent = findAgentByName(agents, agentName);
+  if (!agent && !overrideEngine) return [];
+  const eng = effectiveAssignEngine(agents, agentName, overrideEngine);
+  return modelConfig.engineValidModels[eng] || [];
+}
+
+/**
+ * Engines the operator may override the spawn to — every key on
+ * `modelConfig.engineValidModels` whose model list is non-empty (i.e. the
+ * user is authenticated for that engine). Mirrors the web client's
+ * `engineEntries` filter in `KanbanBoard.jsx`.
+ *
+ * @param {{engineValidModels?: Record<string, string[]>}} modelConfig
+ * @returns {string[]}
+ */
+export function engineEntriesWithModels(modelConfig) {
+  const map = modelConfig?.engineValidModels;
+  if (!map) return [];
+  return Object.keys(map).filter((eng) => (map[eng]?.length ?? 0) > 0);
+}

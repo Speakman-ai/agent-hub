@@ -34,6 +34,8 @@ import {
   findAgentByName,
   hasActiveSession,
   buildAssigneeOptions,
+  validModelsForAgent,
+  engineEntriesWithModels,
 } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 
@@ -59,12 +61,6 @@ function getPriorityColor(priority) {
 function getPriorityLabel(priority) {
   const opt = PRIORITY_OPTIONS.find((p) => p.value === priority);
   return opt ? opt.label : priority || 'None';
-}
-
-function validModelsForAgent(agents, modelConfig, agentName) {
-  const agent = findAgentByName(agents, agentName);
-  if (!agent || !modelConfig?.engineValidModels) return [];
-  return modelConfig.engineValidModels[agent.engine || 'claude-code'] || [];
 }
 
 export default function KanbanScreen({ route, navigation }) {
@@ -100,6 +96,11 @@ export default function KanbanScreen({ route, navigation }) {
   const [assigning, setAssigning] = useState(false);
   const [editAssignModel, setEditAssignModel] = useState('');
   const [showAssignModelPicker, setShowAssignModelPicker] = useState(false);
+  // Optional engine override for the spawn. Empty string = "use the agent's
+  // configured engine" (server falls back to agents.engine). Mirrors the
+  // web client's `detailForm.assign_engine`.
+  const [editAssignEngine, setEditAssignEngine] = useState('');
+  const [showAssignEnginePicker, setShowAssignEnginePicker] = useState(false);
   const [modelConfig, setModelConfig] = useState(null);
 
   // Blocker picker state
@@ -203,6 +204,7 @@ export default function KanbanScreen({ route, navigation }) {
     setEditPriority(card.priority || 'medium');
     setEditAssignee(card.assignee || '');
     setEditAssignModel(card.assign_model || '');
+    setEditAssignEngine(card.assign_engine || '');
     setEditLabels(typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '));
     setEditGithubUrl(card.github_issue_url || '');
     setEditEpicId(card.epic_id || '');
@@ -302,12 +304,22 @@ export default function KanbanScreen({ route, navigation }) {
   const handleSelectAssignee = (agentName) => {
     setEditAssignee(agentName || '');
     setEditAssignModel('');
+    setEditAssignEngine('');
     setShowAssigneePicker(false);
   };
 
   const handleSelectAssignModel = (modelId) => {
     setEditAssignModel(modelId || '');
     setShowAssignModelPicker(false);
+  };
+
+  // Pick the engine the spawn will run under. Resetting the model is critical:
+  // a saved claude-code model is invalid under codex-cli, and the server would
+  // refuse the POST. Matches the web client's onChange handler.
+  const handleSelectAssignEngine = (engineId) => {
+    setEditAssignEngine(engineId || '');
+    setEditAssignModel('');
+    setShowAssignEnginePicker(false);
   };
 
   // Spawn a session on the selected agent and attach it to this card. Server
@@ -324,6 +336,7 @@ export default function KanbanScreen({ route, navigation }) {
     try {
       const assignOpts = {};
       if (editAssignModel.trim()) assignOpts.model = editAssignModel.trim();
+      if (editAssignEngine.trim()) assignOpts.engine = editAssignEngine.trim();
       const result = await api.assignCard(projectId, selectedCard.id, agent.id, assignOpts);
       setSelectedCard(null);
       setShowReassign(false);
@@ -581,17 +594,38 @@ export default function KanbanScreen({ route, navigation }) {
                   )}
                   <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
                 </TouchableOpacity>
-                {!!editAssignee && validModelsForAgent(agents, modelConfig, editAssignee).length > 0 && (
+                {/* Optional engine override: spawn the session under a different
+                    engine than the agent's configured one (e.g. assign a Claude
+                    agent but spawn under codex-cli). Listed engines are exactly
+                    the ones the user is authenticated for. Changing the engine
+                    resets the model selection \u2014 a claude-code model id is
+                    invalid under codex-cli and the server would refuse it. */}
+                {!!editAssignee && engineEntriesWithModels(modelConfig).length > 0 && (
                   <TouchableOpacity
                     style={[styles.epicPickerBtn, { marginTop: 8 }]}
-                    onPress={() => setShowAssignModelPicker(true)}
+                    onPress={() => setShowAssignEnginePicker(true)}
+                    testID="card-assign-engine-picker"
                   >
                     <Text style={styles.epicPickerText}>
-                      {editAssignModel ? editAssignModel : 'Session model: Agent default'}
+                      {editAssignEngine
+                        ? `Session engine: ${editAssignEngine}`
+                        : `Session engine: Agent default (${findAgentByName(agents, editAssignee)?.engine || 'claude-code'})`}
                     </Text>
                     <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
                   </TouchableOpacity>
                 )}
+                {!!editAssignee &&
+                  validModelsForAgent(agents, modelConfig, editAssignee, editAssignEngine).length > 0 && (
+                    <TouchableOpacity
+                      style={[styles.epicPickerBtn, { marginTop: 8 }]}
+                      onPress={() => setShowAssignModelPicker(true)}
+                    >
+                      <Text style={styles.epicPickerText}>
+                        {editAssignModel ? editAssignModel : 'Session model: Agent default'}
+                      </Text>
+                      <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
+                    </TouchableOpacity>
+                  )}
                 {!!editAssignee && (
                   <TouchableOpacity
                     style={[
@@ -617,6 +651,7 @@ export default function KanbanScreen({ route, navigation }) {
                       setShowReassign(false);
                       setEditAssignee(selectedCard.assignee || '');
                       setEditAssignModel(selectedCard.assign_model || '');
+                      setEditAssignEngine(selectedCard.assign_engine || '');
                     }}
                   >
                     <Text style={styles.reassignBtnText}>Cancel</Text>
@@ -825,6 +860,52 @@ export default function KanbanScreen({ route, navigation }) {
         </Modal>
 
         <Modal
+          visible={showAssignEnginePicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowAssignEnginePicker(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowAssignEnginePicker(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Session engine</Text>
+              <ScrollView style={{ maxHeight: 320 }}>
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => handleSelectAssignEngine('')}
+                  testID="card-assign-engine-option-default"
+                >
+                  <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
+                  <Text style={styles.modalOptionText}>
+                    {`Agent default (${findAgentByName(agents, editAssignee)?.engine || 'claude-code'})`}
+                  </Text>
+                </TouchableOpacity>
+                {engineEntriesWithModels(modelConfig).map((eng) => (
+                  <TouchableOpacity
+                    key={eng}
+                    style={styles.modalOption}
+                    onPress={() => handleSelectAssignEngine(eng)}
+                    testID={`card-assign-engine-option-${eng}`}
+                  >
+                    <View style={[styles.modalOptionDot, { backgroundColor: colors.blue500 }]} />
+                    <Text style={styles.modalOptionText}>{eng}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowAssignEnginePicker(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal
           visible={showAssignModelPicker}
           transparent
           animationType="fade"
@@ -845,7 +926,7 @@ export default function KanbanScreen({ route, navigation }) {
                   <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
                   <Text style={styles.modalOptionText}>Agent default</Text>
                 </TouchableOpacity>
-                {validModelsForAgent(agents, modelConfig, editAssignee).map((m) => (
+                {validModelsForAgent(agents, modelConfig, editAssignee, editAssignEngine).map((m) => (
                   <TouchableOpacity
                     key={m}
                     style={styles.modalOption}
