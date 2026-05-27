@@ -6,6 +6,7 @@ import {
   appendRunCancelledSystemMessage,
   buildRunCancelledSystemMessage,
   consumeSessionTermination,
+  finalizeChatRunAfterTermination,
   formatChatExitLog,
   isSignalTermination,
   markSessionTermination,
@@ -23,6 +24,8 @@ describe('process-termination', () => {
   it('detects SIGTERM via signal name and shell exit 143', () => {
     expect(isSignalTermination(null, 'SIGTERM')).toBe(true);
     expect(isSignalTermination(143, null)).toBe(true);
+    expect(isSignalTermination(null, 'SIGINT')).toBe(true);
+    expect(isSignalTermination(130, null)).toBe(true);
     expect(isSignalTermination(0, null)).toBe(false);
     expect(isSignalTermination(1, null)).toBe(false);
   });
@@ -101,6 +104,59 @@ describe('process-termination', () => {
     ).toBe(true);
   });
 
+  it('finalizeChatRunAfterTermination saves partial assistant without continuation hooks', () => {
+    const stmts = getStmts();
+    const agentId = `term-part-${randomUUID().slice(0, 8)}`;
+    const sessionId = `term-part-${randomUUID().slice(0, 8)}`;
+    const assistantMsgId = `term-asst-${randomUUID().slice(0, 8)}`;
+    stmts.createSession.run(
+      sessionId,
+      agentId,
+      'partial cancel test',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+      1,
+    );
+
+    const broadcasts: Array<Record<string, unknown>> = [];
+    finalizeChatRunAfterTermination({
+      stmts,
+      broadcast: (msg) => {
+        broadcasts.push(msg as Record<string, unknown>);
+      },
+      sessionId,
+      assistantMsgId,
+      engine: 'claude-code',
+      model: 'claude-opus-4-7',
+      agentId,
+      agentName: 'Partial agent',
+      assembled: 'Partial answer before cancel.',
+    });
+
+    const messages = stmts.getMessages.all(sessionId) as Array<{
+      id: string;
+      role: string;
+      content: string;
+    }>;
+    expect(messages.some((m) => m.id === assistantMsgId && m.role === 'assistant')).toBe(true);
+    expect(broadcasts.some((b) => b.type === 'done' && b.messageId === assistantMsgId)).toBe(true);
+    expect(broadcasts.some((b) => b.type === 'chat')).toBe(false);
+  });
+
+  it('chat close handler bails out before shouldAutoContinue when termination is set', async () => {
+    const { readFile } = await import('fs/promises');
+    const src = await readFile(new URL('./chat.ts', import.meta.url), 'utf8');
+    const termIdx = src.indexOf('if (termination) {');
+    const autoIdx = src.indexOf('shouldAutoContinue = budgetResult.ok');
+    expect(termIdx).toBeGreaterThan(-1);
+    expect(autoIdx).toBeGreaterThan(termIdx);
+    const between = src.slice(termIdx, autoIdx);
+    expect(between).toMatch(/finalizeChatRunAfterTermination\(/);
+    expect(between).toMatch(/drainQueue\(sessionId\);\s*\n\s*return;/);
+  });
+
   it('appendRunCancelledSystemMessage persists a system role row', () => {
     const stmts = getStmts();
     const agentId = `term-agent-${randomUUID().slice(0, 8)}`;
@@ -133,15 +189,5 @@ describe('process-termination', () => {
     expect(system?.content).toContain('Run cancelled — reason:');
     expect(system?.content).toContain('Stop / Cancel');
     expect(broadcasts.some((b) => b.type === 'message')).toBe(true);
-  });
-});
-
-describe('handleCancel contract', () => {
-  it('marks user_cancel before killProcessGroup in index.ts', async () => {
-    const { readFile } = await import('fs/promises');
-    const src = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
-    expect(src).toMatch(
-      /markSessionTermination\(sessionId,\s*'user_cancel'\)[\s\S]*killProcessGroup\(proc,\s*'SIGTERM'\)/,
-    );
   });
 });

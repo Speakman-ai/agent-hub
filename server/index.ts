@@ -65,6 +65,7 @@ import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
+import { cancelSessionChatRun } from './session-chat-cancel.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
@@ -1063,12 +1064,7 @@ handleChat = chatHandler.handleChat as (ws: unknown, msg: ChatMessage) => Promis
 saveErrorMessage = chatHandler.saveErrorMessage;
 
 function handleCancel(sessionId: string): void {
-  const proc = activeProcesses.get(sessionId);
-  if (proc) {
-    markSessionTermination(sessionId, 'user_cancel');
-    console.info(`[chat] user_cancel: sending SIGTERM session=${sessionId}`);
-    killProcessGroup(proc, 'SIGTERM');
-  }
+  cancelSessionChatRun({ sessionId, activeProcesses });
   handleDelegationCancel(sessionId);
   stmts!.clearSessionQueue.run(sessionId);
   broadcast({ type: 'queue_updated', sessionId, queue: [] });

@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { BroadcastFn, MessageRow, Stmts } from './types.js';
+import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
+import type { BroadcastFn, MessageRow, SessionRow, Stmts } from './types.js';
 
 /**
  * Why the Hub sent SIGTERM/SIGKILL to a session-scoped CLI child.
@@ -31,11 +32,13 @@ export function consumeSessionTermination(sessionId: string): ProcessTermination
 
 /** Node `close` with signal set, or shell-style 128+signal exit codes. */
 export function isSignalTermination(code: number | null, signal: NodeJS.Signals | null): boolean {
-  if (signal === 'SIGTERM' || signal === 'SIGKILL') return true;
-  if (code === 143 || code === 137) return true;
+  if (signal === 'SIGTERM' || signal === 'SIGKILL' || signal === 'SIGINT' || signal === 'SIGHUP') {
+    return true;
+  }
+  if (code === 143 || code === 137 || code === 130 || code === 129) return true;
   if (code != null && code > 128) {
     const sigNum = code - 128;
-    return sigNum === 15 || sigNum === 9;
+    return sigNum === 15 || sigNum === 9 || sigNum === 2 || sigNum === 1;
   }
   return false;
 }
@@ -130,13 +133,83 @@ export function appendRunCancelledSystemMessage(
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[chat] run-cancelled system message insert failed for ${sessionId}: ${message}`);
+    console.warn(
+      `[chat] run-cancelled system message insert failed session=${sessionId} reason=${reason}: ${message}`,
+    );
   }
 }
 
 export interface ResolvedChatTermination {
   terminated: boolean;
   reason: ProcessTerminationReason;
+}
+
+export interface FinalizeTerminatedChatTurnParams {
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  sessionId: string;
+  assistantMsgId: string;
+  engine: string;
+  model: string | null;
+  agentId: string;
+  agentName: string;
+  /** Streamed assistant text accumulated before SIGTERM (may be empty). */
+  assembled: string;
+}
+
+/**
+ * Persist partial assistant output after a hub-initiated kill, without running
+ * ReAct / auto-continuation. Called from the chat `close` handler once the
+ * cancel system message has been written.
+ */
+export function finalizeChatRunAfterTermination(params: FinalizeTerminatedChatTurnParams): void {
+  const partialContent = stripAssistantControlBlocks(params.assembled).trim();
+  if (!partialContent) return;
+
+  const { stmts, broadcast, sessionId, assistantMsgId, engine, model, agentId, agentName } = params;
+  try {
+    stmts.addMessage.run(
+      assistantMsgId,
+      sessionId,
+      'assistant',
+      partialContent,
+      engine,
+      model,
+      null,
+      null,
+    );
+    stmts.touchSession.run(sessionId);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[chat] partial assistant save failed after termination session=${sessionId}: ${message}`,
+    );
+    return;
+  }
+
+  const sess = stmts.getSession.get(sessionId) as SessionRow | undefined;
+  try {
+    broadcast({
+      type: 'done',
+      messageId: assistantMsgId,
+      sessionId,
+      agentId,
+      agentName,
+      sessionName: sess?.name,
+      message: {
+        id: assistantMsgId,
+        session_id: sessionId,
+        role: 'assistant',
+        content: partialContent,
+        engine,
+        model,
+        created_at: new Date().toISOString(),
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[chat] partial assistant done broadcast failed session=${sessionId}: ${message}`);
+  }
 }
 
 /**

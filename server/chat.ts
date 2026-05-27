@@ -78,6 +78,7 @@ import {
 import { pickProcessErrorMessage } from './process-error-message.js';
 import {
   appendRunCancelledSystemMessage,
+  finalizeChatRunAfterTermination,
   formatChatExitLog,
   markSessionTermination,
   resolveChatTerminationOnClose,
@@ -2881,14 +2882,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       activeProcesses.set(sessionId, proc);
       trackChild(proc);
-      const chatWallTimeoutMs = config.defaultTimeoutMs;
-      const chatWallTimer = setTimeout(() => {
-        markSessionTermination(sessionId, 'chat_wall_timeout');
-        console.info(
-          `[chat] chat_wall_timeout: sending SIGTERM after ${chatWallTimeoutMs}ms session=${sessionId}`,
-        );
-        killProcessGroup(proc, 'SIGTERM');
-      }, chatWallTimeoutMs);
       if (proc.pid) {
         try {
           S.updateActiveTaskPid.run(proc.pid, sessionId);
@@ -3121,7 +3114,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
 
       proc.on('close', async (code: number | null, signal: NodeJS.Signals | null) => {
-        clearTimeout(chatWallTimer);
         activeProcesses.delete(sessionId);
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
@@ -3191,11 +3183,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           appendRunCancelledSystemMessage({ stmts: S, broadcast }, sessionId, termination.reason);
         }
 
-        if (termination && !assembled) {
+        if (termination) {
           if (delegationWorkPromise) {
             handleDelegationCancel(sessionId);
             delegationWorkPromise = null;
           }
+          finalizeChatRunAfterTermination({
+            stmts: S,
+            broadcast,
+            sessionId,
+            assistantMsgId,
+            engine,
+            model,
+            agentId: agent.id,
+            agentName: agent.name,
+            assembled,
+          });
           drainQueue(sessionId);
           return;
         }
@@ -4368,7 +4371,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
 
       proc.on('error', (err: Error) => {
-        clearTimeout(chatWallTimer);
         spawnErrored = true;
         activeProcesses.delete(sessionId);
         // Also clean up the per-spawn system-prompt temp file when
