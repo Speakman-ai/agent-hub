@@ -529,17 +529,32 @@ export default function App() {
     streamingMsgIdRef.current = streamingMsgId;
   }, [streamingMsgId]);
 
+  // Holds the cancel function returned by `forcePinChatTailScroll`. The pin
+  // schedules a delayed (~100 ms) re-scroll to defeat late layout shifts. If
+  // the user switches sessions inside that window the queued pin would snap
+  // the (still-mounted) scroll container to the bottom of the *new* session's
+  // content. Storing the cancel here lets us suppress any pending pin on the
+  // next invocation and on session switch. See chatScroll.js for the timer
+  // contract.
+  const pendingPinCancelRef = useRef(null);
+
   const pinChatTail = useCallback((messageId) => {
+    // Cancel any pending delayed pin from a previous call before scheduling a
+    // new one — otherwise a stale 100 ms timer could fire after the new pin's
+    // RAF chain completes and re-snap to the bottom.
+    pendingPinCancelRef.current?.();
+    pendingPinCancelRef.current = null;
     isNearBottomRef.current = true;
     setShowScrollBtn(false);
     const el = scrollContainerRef.current;
-    forcePinChatTailScroll(el, (container) => {
+    const cancel = forcePinChatTailScroll(el, (container) => {
       programmaticScrollRef.current = true;
       container.scrollTop = container.scrollHeight;
       requestAnimationFrame(() => {
         programmaticScrollRef.current = false;
       });
     });
+    pendingPinCancelRef.current = cancel;
     if (messageId && el) {
       const root = [...el.querySelectorAll('[data-message-id]')].find(
         (node) => node.getAttribute('data-message-id') === messageId,
@@ -551,6 +566,10 @@ export default function App() {
 
   // Reset follow state when switching sessions (must run before the scroll layout effect below).
   useLayoutEffect(() => {
+    // Cancel any pending delayed pin from the prior session so it doesn't fire
+    // after the new session's messages render and yank scroll position.
+    pendingPinCancelRef.current?.();
+    pendingPinCancelRef.current = null;
     initialScrollRef.current = true;
     isNearBottomRef.current = true;
     setShowScrollBtn(false);

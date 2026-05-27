@@ -50,4 +50,42 @@ describe('ChatMessage in-flight user actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     expect(screen.getByRole('textbox')).toBeInTheDocument();
   });
+
+  // `showInFlightActions` is true for `inFlightWhileStreaming && isUser && (isQueued || isInterrupted)`.
+  // A message can be in the interrupted state without being queued (e.g. mid-send when the
+  // previous stream was cancelled). Without this case, dropping the `|| isInterrupted` branch
+  // would not be caught by the suite.
+  it('shows Edit, Interrupt, and Remove for an interrupted message that is not queued', () => {
+    const interruptedMessage = {
+      id: 'msg-2',
+      role: 'user',
+      content: 'Sent right before cancel',
+      queued: false,
+      interrupted: true,
+      created_at: new Date().toISOString(),
+    };
+    const onEditInComposer = vi.fn();
+    const onInterrupt = vi.fn();
+    const onDequeue = vi.fn();
+
+    render(
+      <ChatMessage
+        message={interruptedMessage}
+        agentColor="#6366f1"
+        inFlightWhileStreaming
+        onEditInComposer={onEditInComposer}
+        onInterrupt={onInterrupt}
+        onDequeue={onDequeue}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(onEditInComposer).toHaveBeenCalledWith('msg-2', interruptedMessage.content);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+    expect(onInterrupt).toHaveBeenCalledWith(interruptedMessage);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(onDequeue).toHaveBeenCalledWith('msg-2', { cancelStream: true });
+  });
 });

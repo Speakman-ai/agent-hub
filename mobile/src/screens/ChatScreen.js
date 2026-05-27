@@ -218,6 +218,14 @@ export default function ChatScreen() {
                 events={eventsByMessage[streamingMsgId]}
                 agentColor={activeAgent?.color}
                 streaming
+                /* Pass onInterrupt so the streaming SessionTail carries its
+                 * own interrupt control. Without this, when the SessionTail
+                 * expands below the fold (e.g. an ask_user_question picker
+                 * occupies the visible viewport) the only interrupt button
+                 * is the StreamingMessage one above, which can be off-screen.
+                 * Matches the web SessionTail Header in client/src/components/SessionTail.jsx.
+                 */
+                onInterrupt={handleCancel}
                 onEventsLoaded={handleEventsLoaded}
                 onAskSubmit={handleAskSubmit}
                 askSubmittedIds={askSubmitted}

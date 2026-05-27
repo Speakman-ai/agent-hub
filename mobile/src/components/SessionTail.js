@@ -227,6 +227,7 @@ function SessionTail({
   events,
   agentColor,
   streaming,
+  onInterrupt,
   onEventsLoaded,
   onAskSubmit,
   askSubmittedIds,
@@ -332,6 +333,24 @@ function SessionTail({
   const thinkingCount = blocks.filter((b) => b.kind === 'thinking').length;
   const resultBlock = blocks.find((b) => b.kind === 'result');
 
+  // When streaming with an interrupt handler attached, surface a small
+  // interrupt control inside the SessionTail itself. Web parity: the live
+  // SessionTail in client/src/components/SessionTail.jsx renders the same
+  // button in its header so a long picker / browser panel can't push the
+  // ChatScreen StreamingMessage interrupt button off-screen.
+  const showInterrupt = !!streaming && typeof onInterrupt === 'function';
+  const interruptButton = showInterrupt ? (
+    <TouchableOpacity
+      onPress={onInterrupt}
+      accessibilityRole="button"
+      accessibilityLabel="Interrupt streaming response"
+      testID="session-tail-interrupt"
+      style={styles.interruptButton}
+    >
+      <Text style={styles.interruptButtonText}>Interrupt</Text>
+    </TouchableOpacity>
+  ) : null;
+
   if (!expanded) {
     const hasClassicMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
     const hasMeta = hasClassicMeta || hasBrowserTimeline;
@@ -339,6 +358,7 @@ function SessionTail({
       if (eventsFetchFailed) {
         return (
           <View style={styles.retryBanner}>
+            {interruptButton}
             <TouchableOpacity
               onPress={() => {
                 setEventsFetchFailed(false);
@@ -351,11 +371,17 @@ function SessionTail({
           </View>
         );
       }
+      // Even without meta blocks, surface the interrupt button so the user
+      // can stop a runaway stream that has not yet produced visible events.
+      if (interruptButton) {
+        return <View style={styles.bareInterruptWrap}>{interruptButton}</View>;
+      }
       return null;
     }
 
     return (
       <View>
+        {interruptButton}
         {askBlocks.map((b) => (
           <AskUserQuestion
             key={b.event.askId}
@@ -394,6 +420,7 @@ function SessionTail({
       <TouchableOpacity style={styles.collapseBar} onPress={() => setExpanded(false)}>
         <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
         <Text style={styles.collapseText}>Event Timeline</Text>
+        {interruptButton}
         <Text style={styles.expandHint}>{'\u25BE'}</Text>
       </TouchableOpacity>
 
@@ -783,6 +810,18 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.gray800,
   },
   collapseText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.gray400 },
+  interruptButton: {
+    alignSelf: 'flex-start',
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(217, 119, 6, 0.9)',
+  },
+  interruptButtonText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+  bareInterruptWrap: { marginTop: 2, marginBottom: 4 },
   tailContainer: {
     backgroundColor: colors.gray900,
     borderRadius: 12,
