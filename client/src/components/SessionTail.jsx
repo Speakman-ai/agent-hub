@@ -86,6 +86,7 @@ function SessionTail({
   delegationDispatchError,
   onOpenSession,
   browserScreenshots = {},
+  onInterrupt,
 }) {
   // `streaming` doubles as the parent-active signal for DelegateCard so it
   // can decide whether an empty live snapshot means "still awaiting dispatch"
@@ -305,7 +306,7 @@ function SessionTail({
   }
 
   return (
-    <div className="flex justify-start mb-4 min-w-0">
+    <div className="flex justify-start mb-4 min-w-0" data-message-id={messageId || undefined}>
       {/* Cursor-style assistant turn: no heavy bubble, just a thin left stripe
           in the agent's color so the column reads as one logical turn while
           letting individual cards/text breathe. The Header below carries the
@@ -321,6 +322,7 @@ function SessionTail({
           streaming={streaming}
           createdAt={message?.created_at}
           outcome={outcome}
+          onInterrupt={streaming ? onInterrupt : undefined}
         />
 
         <BrowserActivityPanel
@@ -416,6 +418,7 @@ function SessionTail({
             }
           })}
         </div>
+        <div data-testid="session-tail-bottom" className="h-px w-full shrink-0" aria-hidden />
       </div>
     </div>
   );
@@ -619,7 +622,7 @@ function truncateStatusDetail(s, max) {
   return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
 }
 
-function Header({ agentColor, engine, model, streaming, createdAt, outcome }) {
+function Header({ agentColor, engine, model, streaming, createdAt, outcome, onInterrupt }) {
   const badge = engine ? ENGINE_BADGES[engine] : null;
   const modelLabel = model ? model.replace('claude-', '').replace(/-/g, ' ') : null;
   const phase = outcome?.phase;
@@ -644,6 +647,18 @@ function Header({ agentColor, engine, model, streaming, createdAt, outcome }) {
           <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
           <span className="text-emerald-500">streaming</span>
         </span>
+      )}
+      {showWorking && typeof onInterrupt === 'function' && (
+        <button
+          type="button"
+          onClick={onInterrupt}
+          className="ml-1 shrink-0 rounded-md bg-amber-600/90 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-amber-500 transition-colors"
+          title="Interrupt streaming response"
+          aria-label="Interrupt streaming response"
+          data-testid="session-tail-interrupt"
+        >
+          Interrupt
+        </button>
       )}
       {showTerminal && phase === 'done' && (
         <span

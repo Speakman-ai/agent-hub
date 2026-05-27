@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { isNearBottom, CHAT_STICK_TO_BOTTOM_THRESHOLD_PX } from './chatScroll.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  isNearBottom,
+  CHAT_STICK_TO_BOTTOM_THRESHOLD_PX,
+  forcePinChatTailScroll,
+} from './chatScroll.js';
 
 describe('isNearBottom', () => {
   it('returns true when el is null (treat as follow / no container yet)', () => {
@@ -15,5 +19,23 @@ describe('isNearBottom', () => {
     // gap = scrollHeight - scrollTop - clientHeight = 1000 - 700 - 100 = 200 (> 150)
     const el = { scrollHeight: 1000, scrollTop: 700, clientHeight: 100 };
     expect(isNearBottom(el, CHAT_STICK_TO_BOTTOM_THRESHOLD_PX)).toBe(false);
+  });
+});
+
+describe('forcePinChatTailScroll', () => {
+  it('invokes pin at least once immediately', () => {
+    const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100, isConnected: true };
+    const pin = vi.fn((target) => {
+      target.scrollTop = target.scrollHeight;
+    });
+    forcePinChatTailScroll(el, pin);
+    expect(pin).toHaveBeenCalledWith(el);
+    expect(el.scrollTop).toBe(500);
+  });
+
+  it('returns a cleanup function', () => {
+    const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100, isConnected: true };
+    const cancel = forcePinChatTailScroll(el, vi.fn());
+    expect(typeof cancel).toBe('function');
   });
 });

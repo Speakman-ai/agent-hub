@@ -94,6 +94,58 @@ describe('MessageInput mid-stream behavior', () => {
   });
 });
 
+describe('MessageInput composer prefill (edit queued)', () => {
+  const baseProps = {
+    onSend: vi.fn(),
+    onCancel: () => {},
+    disabled: false,
+    isProcessing: true,
+    queueLength: 1,
+    agentColor: '#4F46E5',
+    skills: [],
+    askMode: false,
+  };
+
+  it('replaces queued text via onReplaceQueuedMessage and shows text-only banner', () => {
+    const onReplaceQueuedMessage = vi.fn();
+    const onComposerPrefillClear = vi.fn();
+    render(
+      <MessageInput
+        {...baseProps}
+        composerPrefill={{ messageId: 'q-1', content: 'original' }}
+        onReplaceQueuedMessage={onReplaceQueuedMessage}
+        onComposerPrefillClear={onComposerPrefillClear}
+      />,
+    );
+
+    expect(screen.getByTestId('composer-edit-queued-banner')).toBeInTheDocument();
+    const textarea = screen.getByRole('textbox');
+    expect(textarea.value).toBe('original');
+
+    fireEvent.change(textarea, { target: { value: 'revised prompt' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    expect(onReplaceQueuedMessage).toHaveBeenCalledWith('q-1', 'revised prompt');
+    expect(baseProps.onSend).not.toHaveBeenCalled();
+    expect(onComposerPrefillClear).toHaveBeenCalled();
+  });
+
+  it('disables the attach button while editing a queued message', () => {
+    render(
+      <MessageInput
+        {...baseProps}
+        composerPrefill={{ messageId: 'q-1', content: 'original' }}
+        onReplaceQueuedMessage={vi.fn()}
+        onComposerPrefillClear={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTitle('Attachments are not supported when editing a queued message'),
+    ).toBeDisabled();
+  });
+});
+
 describe('MessageInput per-session drafts', () => {
   const baseProps = {
     onSend: () => {},
