@@ -714,6 +714,32 @@ export const api = {
   logoutMyCodexBrowser: () =>
     fetchJSON('/auth/me/codex-auth/browser', { method: 'DELETE', timeout: 65000 }),
 
+  // Shorter aliases used by the dedicated `MyCursorAuthSection` /
+  // `MyCodexAuthSection` components (P5). They forward to the same
+  // `/auth/me/<engine>-auth/browser/*` routes as the longer names above;
+  // the alias exists so dedicated-component code reads cleanly without
+  // every call repeating "Browser" in the method name.
+  startMyCursorLogin: () =>
+    fetchJSON('/auth/me/cursor-auth/browser/login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 22000,
+    }),
+  cancelMyCursorLogin: () =>
+    fetchJSON('/auth/me/cursor-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyCursor: () =>
+    fetchJSON('/auth/me/cursor-auth/browser', { method: 'DELETE', timeout: 35000 }),
+  startMyCodexDeviceLogin: () =>
+    fetchJSON('/auth/me/codex-auth/browser/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 50000,
+    }),
+  cancelMyCodexDeviceLogin: () =>
+    fetchJSON('/auth/me/codex-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyCodex: () =>
+    fetchJSON('/auth/me/codex-auth/browser', { method: 'DELETE', timeout: 65000 }),
+
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>

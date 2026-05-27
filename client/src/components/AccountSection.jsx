@@ -7,7 +7,6 @@ import {
   Plus,
   Sparkles,
   SquareKanban,
-  Terminal,
   Trash2,
   Users,
   X,
@@ -15,7 +14,8 @@ import {
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
 import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
-import MyBrowserAuthSection from './MyBrowserAuthSection.jsx';
+import MyCursorAuthSection from './MyCursorAuthSection.jsx';
+import MyCodexAuthSection from './MyCodexAuthSection.jsx';
 import MySkillCredentialSection from './MySkillCredentialSection.jsx';
 import { api } from '../utils/api.js';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
@@ -203,29 +203,7 @@ export default function AccountSection() {
 
       {me && <MyClaudeAuthSection />}
 
-      {me && (
-        <MySingleKeyAuthSection
-          engineLabel="Cursor"
-          Icon={Terminal}
-          placeholder="cursor-api-key-..."
-          hostSettingHint="Settings → Cursor Auth"
-          getter={() => api.getMyCursorAuth()}
-          setter={(body) => api.putMyCursorAuth(body)}
-        />
-      )}
-
-      {me && (
-        <MyBrowserAuthSection
-          engine="cursor"
-          engineLabel="Cursor"
-          hostSettingHint="Settings → Cursor Auth"
-          loginMode="oauth"
-          getStatus={() => api.getMyCursorBrowserAuth()}
-          startLogin={() => api.startMyCursorBrowserLogin()}
-          cancelLogin={() => api.cancelMyCursorBrowserLogin()}
-          logout={() => api.logoutMyCursorBrowser()}
-        />
-      )}
+      {me && <MyCursorAuthSection />}
 
       {me && (
         <MySingleKeyAuthSection
@@ -238,29 +216,7 @@ export default function AccountSection() {
         />
       )}
 
-      {me && (
-        <MySingleKeyAuthSection
-          engineLabel="Codex"
-          Icon={Terminal}
-          placeholder="sk-..."
-          hostSettingHint="Settings → Codex Auth"
-          getter={() => api.getMyCodexAuth()}
-          setter={(body) => api.putMyCodexAuth(body)}
-        />
-      )}
-
-      {me && (
-        <MyBrowserAuthSection
-          engine="codex"
-          engineLabel="Codex"
-          hostSettingHint="Settings → Codex Auth"
-          loginMode="device"
-          getStatus={() => api.getMyCodexBrowserAuth()}
-          startLogin={() => api.startMyCodexBrowserDeviceLogin()}
-          cancelLogin={() => api.cancelMyCodexBrowserDeviceLogin()}
-          logout={() => api.logoutMyCodexBrowser()}
-        />
-      )}
+      {me && <MyCodexAuthSection />}
 
       {me && (
         <MySkillCredentialSection
