@@ -57,10 +57,28 @@ describe('pr-resolve — pure helpers', () => {
       ]);
     });
 
-    it('detects ci for any failing check conclusion', () => {
-      for (const c of ['failure', 'timed_out', 'action_required', 'cancelled']) {
-        expect(detectKinds({ mergeable: true }, [], [{ conclusion: c }])).toEqual(['ci']);
+    it('detects ci for actionable failing check conclusions', () => {
+      for (const c of ['failure', 'timed_out', 'action_required']) {
+        expect(
+          detectKinds({ mergeable: true }, [], [{ id: 1, name: 'CI', conclusion: c }]),
+        ).toEqual(['ci']);
       }
+    });
+
+    it('does not detect ci for cancelled or superseded check runs', () => {
+      expect(
+        detectKinds({ mergeable: true }, [], [{ id: 1, name: 'CI', conclusion: 'cancelled' }]),
+      ).toEqual([]);
+      expect(
+        detectKinds(
+          { mergeable: true },
+          [],
+          [
+            { id: 1, name: 'CI', conclusion: 'failure' },
+            { id: 2, name: 'CI', conclusion: 'success' },
+          ],
+        ),
+      ).toEqual([]);
     });
 
     it('ignores green and neutral conclusions', () => {
@@ -89,7 +107,7 @@ describe('pr-resolve — pure helpers', () => {
 
     it('emits kinds in stable canonical order regardless of detection order', () => {
       const reviews = [{ user: 'bob', state: 'CHANGES_REQUESTED' }];
-      const checks = [{ conclusion: 'failure' }];
+      const checks = [{ id: 1, name: 'CI', conclusion: 'failure' }];
       expect(detectKinds({ mergeable: false }, reviews, checks)).toEqual([
         'review',
         'ci',
@@ -123,7 +141,7 @@ describe('pr-resolve — pure helpers', () => {
           mergeable_state: 'dirty',
         },
         [{ user: 'bob', state: 'CHANGES_REQUESTED', body: 'please fix' }],
-        [{ name: 'lint', conclusion: 'failure', html_url: 'https://ci/log' }],
+        [{ id: 1, name: 'lint', conclusion: 'failure', html_url: 'https://ci/log' }],
         [],
         'o/r',
         ['review', 'ci', 'conflict'],
@@ -342,7 +360,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
         base: 'main',
       },
       reviews: [{ user: 'bob', state: 'CHANGES_REQUESTED', body: 'no', submitted_at: 't' }],
-      checks: [{ name: 'ci', conclusion: 'failure', html_url: 'u' }],
+      checks: [{ id: 99, name: 'ci', conclusion: 'failure', html_url: 'u' }],
       comments: [],
     });
 

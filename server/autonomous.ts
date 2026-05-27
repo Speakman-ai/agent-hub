@@ -21,7 +21,7 @@ import {
 import { resolveEffectiveModel } from './effective-model.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { linkKanbanCardPrUrl } from './kanban-pr-link.js';
-import { CI_FAIL_CONCLUSIONS } from './ci-conclusions.js';
+import { CI_FAIL_CONCLUSIONS, latestCheckRunPerName } from './ci-conclusions.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import type {
   Stmts,
@@ -1664,9 +1664,13 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
             name: string;
             conclusion: string | null;
           }>;
-          const failed = runs.filter(
-            (r) => r.conclusion !== null && CI_FAIL_CONCLUSIONS.has(r.conclusion),
-          );
+          const failed = latestCheckRunPerName(
+            runs.map((r) => ({
+              id: r.id,
+              name: r.name,
+              conclusion: r.conclusion,
+            })),
+          ).filter((r) => r.conclusion !== null && CI_FAIL_CONCLUSIONS.has(r.conclusion));
 
           const lastDispatched =
             card.last_dispatched_check_run_id != null

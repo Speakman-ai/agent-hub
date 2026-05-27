@@ -42,7 +42,8 @@ import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import { resolveOrgOwnerGithubToken, autoGitChildEnv } from '../auto-git.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { dispatchAutofixFeedback, type AutofixDispatchKind } from '../autofix-dispatch.js';
-import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
+import { CI_FAIL_CONCLUSIONS, hasActionableCiFailure } from '../ci-conclusions.js';
+import { fetchCommitCheckRunsForCi } from '../ci-head-checks.js';
 import {
   findKanbanCardForIncomingPr,
   linkKanbanCardPrUrl,
@@ -2298,6 +2299,37 @@ async function handleWebhookCiCompleted(
       `[Webhook/Kanban] CI ${conclusion} on "${card.title}" — card not in Review/In Progress, skipping autofix`,
     );
     return true;
+  }
+
+  const headSha =
+    (payload.check_run &&
+      typeof payload.check_run.head_sha === 'string' &&
+      payload.check_run.head_sha) ||
+    (payload.check_suite &&
+      typeof payload.check_suite.head_sha === 'string' &&
+      payload.check_suite.head_sha) ||
+    null;
+  const repoFullName =
+    typeof payload.repository?.full_name === 'string' ? payload.repository.full_name : null;
+  if (headSha && repoFullName) {
+    const slash = repoFullName.indexOf('/');
+    if (slash > 0) {
+      const owner = repoFullName.slice(0, slash);
+      const repo = repoFullName.slice(slash + 1);
+      const headRuns = await fetchCommitCheckRunsForCi(deps.config, owner, repo, headSha);
+      if (headRuns.length > 0 && !hasActionableCiFailure(headRuns)) {
+        console.log(
+          `[Webhook/Kanban] CI ${conclusion} on "${checkLabel}" is stale for ${headSha.slice(0, 7)} — HEAD checks are green, skipping autofix`,
+        );
+        return true;
+      }
+      if (headRuns.length === 0) {
+        console.log(
+          `[Webhook/Kanban] CI ${conclusion} on "${checkLabel}" — could not verify HEAD checks for ${headSha.slice(0, 7)}, skipping autofix`,
+        );
+        return true;
+      }
+    }
   }
 
   if (reviewCol && card.column_id === reviewCol.id && inProgressCol) {

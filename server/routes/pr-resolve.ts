@@ -29,7 +29,12 @@ import { AUTOFIX_KINDS, loadAutofixTemplate, type AutofixKind } from '../prompts
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
+import {
+  CI_FAIL_CONCLUSIONS,
+  hasActionableCiFailure,
+  latestCheckRunPerName,
+  type CheckRunCiRow,
+} from '../ci-conclusions.js';
 
 /** CLI (`CONFLICTING`) and App (`dirty`, `conflicting`) values both get caught here. */
 const CONFLICT_STATES = new Set(['dirty', 'conflicting']);
@@ -77,11 +82,16 @@ export function detectKinds(
   const conflictByState = mergeableState !== null && CONFLICT_STATES.has(mergeableState);
   if (conflictByMergeable || conflictByState) kinds.push('conflict');
 
-  const ciFail = checks.some((c) => {
-    const conc = typeof c.conclusion === 'string' ? (c.conclusion as string).toLowerCase() : null;
-    return conc !== null && CI_FAIL_CONCLUSIONS.has(conc);
-  });
-  if (ciFail) kinds.push('ci');
+  const ciRows: CheckRunCiRow[] = checks
+    .map((c) => {
+      const id = typeof c.id === 'number' ? c.id : null;
+      const name = typeof c.name === 'string' ? c.name : null;
+      const conclusion = typeof c.conclusion === 'string' ? (c.conclusion as string) : null;
+      if (id == null || !name) return null;
+      return { id, name, conclusion };
+    })
+    .filter((r): r is CheckRunCiRow => r !== null);
+  if (hasActionableCiFailure(ciRows)) kinds.push('ci');
 
   if (latestChangesRequestedReviews(reviews).length > 0) kinds.push('review');
 
@@ -125,6 +135,16 @@ export function buildPrContextHeader(
   //      pre-check in `commitPushAndCreatePR` and pushes the fix.
   // See server/auto-git.ts → autoCommitAndPR (`!isAutonomousCard` branch) and
   // the resolve-comment regression test in server/auto-git.test.ts.
+  const ciRows: CheckRunCiRow[] = checks
+    .map((c) => {
+      const id = typeof c.id === 'number' ? c.id : null;
+      const name = typeof c.name === 'string' ? c.name : null;
+      const conclusion = typeof c.conclusion === 'string' ? (c.conclusion as string) : null;
+      if (id == null || !name) return null;
+      return { id, name, conclusion };
+    })
+    .filter((r): r is CheckRunCiRow => r !== null);
+
   const prNumber = pr.number;
   if (typeof prNumber === 'number' && Number.isFinite(prNumber) && prNumber > 0) {
     lines.push('');
@@ -138,9 +158,18 @@ export function buildPrContextHeader(
     );
   }
 
+  const latestFailedNames = new Set(
+    latestCheckRunPerName(ciRows)
+      .filter((c) => {
+        const conc = c.conclusion?.toLowerCase() ?? null;
+        return conc !== null && CI_FAIL_CONCLUSIONS.has(conc);
+      })
+      .map((c) => c.name),
+  );
   const failingChecks = checks.filter((c) => {
+    const name = typeof c.name === 'string' ? c.name : '';
     const conc = typeof c.conclusion === 'string' ? (c.conclusion as string).toLowerCase() : null;
-    return conc !== null && CI_FAIL_CONCLUSIONS.has(conc);
+    return latestFailedNames.has(name) && conc !== null && CI_FAIL_CONCLUSIONS.has(conc);
   });
   if (failingChecks.length) {
     lines.push('');
