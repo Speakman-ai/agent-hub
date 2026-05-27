@@ -585,7 +585,11 @@ export function buildComposeOverrideYaml(opts: {
     // base compose file's `volumes:` list is replaced wholesale —
     // this matches the ports semantics and avoids surprising merges
     // when the base file already declares its own bind.
-    const sourceDir = (opts.entrySourceDir ?? '.').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
+    // Prefix with ./ so compose treats it as a bind-mount path, not a
+    // named volume. Without ./, `frontend:/app` means "named volume
+    // called frontend" → "undefined volume" error.
+    const raw = (opts.entrySourceDir ?? '.').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
+    const sourceDir = raw === '.' ? '.' : `./${raw}`;
     lines.push(`    volumes: !override`);
     lines.push(`      - "${sourceDir}:${opts.entryWorkdir}"`);
     for (const shadow of opts.shadowDirs ?? []) {
