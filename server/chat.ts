@@ -170,6 +170,7 @@ import {
   mergeProjectAwsSpawnEnv,
   getProjectAwsSsoProfiles,
   projectHasAwsSsoProfiles,
+  linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
@@ -2267,6 +2268,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
+      const awsSsoEnabledForProject = projectHasAwsSsoProfiles(project);
+      let projectAwsConfigPath: string | undefined;
+      if (awsSsoEnabledForProject) {
+        try {
+          projectAwsConfigPath = writeProjectAwsConfigFile(
+            project.id,
+            getProjectAwsSsoProfiles(project),
+          );
+        } catch {
+          /* mergeProjectAwsSpawnEnv logs when applying env */
+        }
+      }
+
       let args: string[];
       let bin: string;
       // Prompt content to write to the child's stdin after spawn. Used by
@@ -2368,25 +2382,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('resume', engineSessionId);
         }
         args.push('--json', '--skip-git-repo-check');
-        const awsSsoEnabled = projectHasAwsSsoProfiles(project);
         appendCodexExecSandboxFlags(args, {
           askMode: isAskMode,
           dangerBypass: !!config.codexDangerBypass,
-          awsSsoEnabled,
+          awsSsoEnabled: awsSsoEnabledForProject,
         });
-        if (awsSsoEnabled) {
-          let awsConfigForDirs: string | undefined;
-          try {
-            awsConfigForDirs = writeProjectAwsConfigFile(
-              project.id,
-              getProjectAwsSsoProfiles(project),
-            );
-          } catch {
-            /* mergeProjectAwsSpawnEnv logs and recovers when building spawn env */
-          }
+        if (awsSsoEnabledForProject && projectAwsConfigPath) {
           appendCodexAwsAccessDirs(args, {
             HOME: sessionCliEnv.HOME,
-            AWS_CONFIG_FILE: awsConfigForDirs,
+            AWS_CONFIG_FILE: projectAwsConfigPath,
           });
         }
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
@@ -2717,9 +2721,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
-        mergeProjectAwsSpawnEnv(base, project);
+        mergeProjectAwsSpawnEnv(base, project, { configPath: projectAwsConfigPath });
         return base;
       })();
+
+      if (engine === 'codex-cli' && spawnEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
+        linkAwsSsoHostCacheIntoSpawnHome(spawnEnv);
+      }
 
       // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
       // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.

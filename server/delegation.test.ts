@@ -610,6 +610,55 @@ describe('handleDelegation — retry logic', () => {
     const results = await pending;
     expect(results[0].output).toContain('codex bypass ok');
   });
+
+  it('Codex delegate widens sandbox and adds AWS dirs when project has SSO profiles', async () => {
+    delegationCodexDangerBypass = false;
+    subAgent = makeAgent('sub-1', {
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+    project = {
+      ...project,
+      awsSsoProfiles: {
+        dev: {
+          sso_start_url: 'https://example.awsapps.com/start',
+          sso_region: 'us-east-1',
+          sso_account_id: '111111111111',
+          sso_role_name: 'Admin',
+          region: 'us-east-1',
+        },
+      },
+    } as unknown as Project;
+
+    const pending = handleDelegation(
+      'session-codex-aws',
+      'msg-aws',
+      [delegateTask('aws sts check')],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('--sandbox');
+    expect(argv).toContain('danger-full-access');
+    expect(argv).not.toContain('--full-auto');
+    expect(argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(argv).toContain('--add-dir');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'item.completed',
+          item: { id: 'z', type: 'agent_message', text: 'codex aws ok' },
+        }) + '\n',
+    });
+
+    const results = await pending;
+    expect(results[0].output).toContain('codex aws ok');
+  });
 });
 
 /** Stubs for delegation synthesis tests (session row + message writers). */

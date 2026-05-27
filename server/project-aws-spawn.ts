@@ -21,18 +21,30 @@ function awsSsoCacheHasTokens(cacheDir: string): boolean {
   }
 }
 
+export interface MergeProjectAwsSpawnEnvOpts {
+  /**
+   * When the caller already wrote the project config (e.g. chat codex argv
+   * planning), pass the path here to avoid a second `writeFileSync`.
+   */
+  configPath?: string;
+}
+
 /**
- * When a spawn uses per-user HOME but AWS SSO was completed via break-glass
- * (host HOME), link the host SSO cache into the spawn HOME so `aws` inside
- * Codex can still resolve credentials. Best-effort; never throws.
+ * When a Codex spawn uses per-user HOME but AWS SSO login ran under break-glass
+ * (host HOME), link the host SSO cache into the spawn HOME. Call only for
+ * Codex spawns — other engines either use host HOME (Claude fallback) or the
+ * same per-user HOME as the Hub SSO login API. Best-effort; never throws.
  */
-export function ensureAwsSsoCacheInSpawnHome(
+export function linkAwsSsoHostCacheIntoSpawnHome(
   env: NodeJS.ProcessEnv,
   dataDir: string = config.dataDir,
 ): void {
   const home = env.HOME?.trim();
   if (!home) return;
   const userCache = path.join(home, '.aws', 'sso', 'cache');
+  // If userCache already exists (including a stale symlink to an expired host
+  // cache), we do not replace it — operators must remove ~/.aws/sso/cache under
+  // the per-user HOME and re-run Hub SSO login to refresh tokens.
   if (awsSsoCacheHasTokens(userCache)) return;
 
   const hostCache = path.join(hostCliHomePath(dataDir), '.aws', 'sso', 'cache');
@@ -43,24 +55,39 @@ export function ensureAwsSsoCacheInSpawnHome(
     if (existsSync(userCache)) return;
     const linkType = process.platform === 'win32' ? 'junction' : 'dir';
     symlinkSync(hostCache, userCache, linkType);
-  } catch {
-    /* non-fatal — spawn proceeds; user may need to re-login via Hub SSO API */
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return;
+    const summary = (err as Error).message
+      .replace(/[\r\n|]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    console.warn(
+      `[project-aws] link host SSO cache into spawn HOME failed (${code ?? 'unknown'}): ${summary}`,
+    );
   }
 }
 
 /**
  * Point spawned CLIs at a generated config ini for this project's SSO
- * profiles. SSO tokens are still cached under the user's HOME.
+ * profiles. SSO tokens still live under the user's HOME. Env-only — no
+ * filesystem side effects (see `linkAwsSsoHostCacheIntoSpawnHome` for Codex).
+ *
+ * @returns Config file path when profiles are configured, else null.
  */
-export function mergeProjectAwsSpawnEnv(base: NodeJS.ProcessEnv, project: Project): void {
+export function mergeProjectAwsSpawnEnv(
+  base: NodeJS.ProcessEnv,
+  project: Project,
+  opts?: MergeProjectAwsSpawnEnvOpts,
+): string | null {
   const profiles = getProjectAwsSsoProfiles(project);
   const names = Object.keys(profiles);
-  if (names.length === 0) return;
+  if (names.length === 0) return null;
   try {
-    const configPath = writeProjectAwsConfigFile(project.id, profiles);
+    const configPath = opts?.configPath?.trim() || writeProjectAwsConfigFile(project.id, profiles);
     base.AWS_CONFIG_FILE = configPath;
     base.AGENT_HUB_AWS_PROFILE_NAMES = names.join(',');
-    ensureAwsSsoCacheInSpawnHome(base);
+    return configPath;
   } catch (err) {
     const summary = (err as Error).message
       .replace(/[\r\n|]+/g, ' ')
@@ -69,6 +96,7 @@ export function mergeProjectAwsSpawnEnv(base: NodeJS.ProcessEnv, project: Projec
     console.error(
       `TOOL_ERROR | ${new Date().toISOString()} | project-aws | spawn merge | error | ${summary} | ${JSON.stringify({ v: 2, sev: 'soft', resolution: 'recovered', tags: ['project-aws', 'spawn'] })}`,
     );
+    return null;
   }
 }
 
@@ -76,3 +104,6 @@ export function mergeProjectAwsSpawnEnv(base: NodeJS.ProcessEnv, project: Projec
 export function projectHasAwsSsoProfiles(project: Project): boolean {
   return Object.keys(getProjectAwsSsoProfiles(project)).length > 0;
 }
+
+/** @deprecated Use {@link linkAwsSsoHostCacheIntoSpawnHome}. */
+export const ensureAwsSsoCacheInSpawnHome = linkAwsSsoHostCacheIntoSpawnHome;

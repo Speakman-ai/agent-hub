@@ -2,19 +2,26 @@ import path from 'path';
 
 /**
  * Codex `exec` sandbox flags for Agent Hub spawns (interactive chat, rooms,
- * design). Mirrors branches in `chat.ts`; summarized reads remain read-only.
+ * design). Mirrors branches in `chat.ts`.
  *
- * See OpenAI docs: https://developers.openai.com/codex/agent-approvals-security
- * (`--dangerously-bypass-approvals-and-sandbox` aliases `--yolo`).
+ * Sandbox mode names verified against the installed Codex CLI:
+ *   `codex exec --help` (codex-cli 0.132.0, 2026-05-26) lists
+ *   `[possible values: read-only, workspace-write, danger-full-access]`.
+ * OpenAI docs: https://developers.openai.com/codex/cli/reference#codex-exec
+ * Security overview: https://developers.openai.com/codex/agent-approvals-security
+ *
+ * `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) skips sandboxing
+ * entirely. `danger-full-access` is the most permissive *sandboxed* mode (no
+ * OS-level boundary); it is not the same as the bypass flag.
  */
 export interface CodexExecSandboxOpts {
   askMode: boolean;
   dangerBypass: boolean;
   /**
    * Project has Hub-managed AWS IAM Identity Center profiles. When true and
-   * `dangerBypass` is false, use `danger-full-access` + network instead of
-   * `--full-auto` so nested `aws` calls can read `AWS_CONFIG_FILE`,
-   * `~/.aws/sso/cache`, and reach the SSO endpoint.
+   * `dangerBypass` is false, use `--sandbox danger-full-access` instead of
+   * `--full-auto` so nested `aws` can read `AWS_CONFIG_FILE` and
+   * `~/.aws/sso/cache` outside the workspace cwd.
    */
   awsSsoEnabled?: boolean;
 }
@@ -30,7 +37,6 @@ export function appendCodexExecSandboxFlags(args: string[], opts: CodexExecSandb
   }
   if (opts.awsSsoEnabled) {
     args.push('--sandbox', 'danger-full-access');
-    args.push('-c', 'sandbox_workspace_write.network_access=true');
     return;
   }
   args.push('--full-auto');

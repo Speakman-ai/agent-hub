@@ -69,8 +69,7 @@ describe('codex chat AWS SSO spawn contract', () => {
     expect(args).toContain('--sandbox');
     expect(args).toContain('danger-full-access');
     expect(args).not.toContain('--full-auto');
-    expect(args).toContain('-c');
-    expect(args).toContain('sandbox_workspace_write.network_access=true');
+    expect(args).not.toContain('-c');
     expect(args).toContain('--add-dir');
     expect(args).toContain(path.dirname(awsConfig));
     expect(args).toContain(path.join(home, '.aws'));

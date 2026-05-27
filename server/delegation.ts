@@ -5,7 +5,11 @@ import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
-import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
+import {
+  mergeProjectAwsSpawnEnv,
+  projectHasAwsSsoProfiles,
+  linkAwsSsoHostCacheIntoSpawnHome,
+} from './project-aws-spawn.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
 import type { StreamEvent } from './types.js';
@@ -596,6 +600,10 @@ export async function handleDelegation(
           const parser = spec.parseStream ? createStreamParser(spec.engine) : null;
           const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
 
+          if (spec.engine === 'codex-cli' && spawnEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
+            linkAwsSsoHostCacheIntoSpawnHome(spawnEnv);
+          }
+
           const proc = spawn(spec.bin, spec.args, {
             cwd: spawnCwd,
             env: spawnEnv,
@@ -1059,6 +1067,10 @@ export async function synthesizeResults(
       const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
 
       console.warn(`[Delegation] synthesis engine=${sessionEngine} bin=${bin} cwd=${cwdSynth}`);
+
+      if (sessionEngine === 'codex-cli' && synthEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
+        linkAwsSsoHostCacheIntoSpawnHome(synthEnv);
+      }
 
       const proc = spawn(bin, args, {
         cwd: cwdSynth,

@@ -27,14 +27,7 @@ describe('appendCodexExecSandboxFlags', () => {
       dangerBypass: false,
       awsSsoEnabled: true,
     });
-    expect(a).toEqual([
-      'exec',
-      '--json',
-      '--sandbox',
-      'danger-full-access',
-      '-c',
-      'sandbox_workspace_write.network_access=true',
-    ]);
+    expect(a).toEqual(['exec', '--json', '--sandbox', 'danger-full-access']);
   });
 
   it('dangerBypass wins over awsSsoEnabled', () => {

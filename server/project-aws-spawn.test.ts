@@ -8,7 +8,7 @@ vi.mock('./config.js', () => ({
   default: { dataDir: '' },
 }));
 
-const { ensureAwsSsoCacheInSpawnHome, mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } =
+const { linkAwsSsoHostCacheIntoSpawnHome, mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } =
   await import('./project-aws-spawn.js');
 const configMod = await import('./config.js');
 
@@ -45,13 +45,34 @@ describe('project-aws-spawn', () => {
     const env: NodeJS.ProcessEnv = { HOME: path.join(tmpDataDir, 'user-home') };
     mkdirSync(env.HOME!, { recursive: true, mode: 0o700 });
 
-    mergeProjectAwsSpawnEnv(env, project);
+    const written = mergeProjectAwsSpawnEnv(env, project);
 
-    expect(env.AWS_CONFIG_FILE).toContain(path.join('project-aws-config', 'agent-hub', 'config'));
+    expect(written).toContain(path.join('project-aws-config', 'agent-hub', 'config'));
+    expect(env.AWS_CONFIG_FILE).toBe(written);
     expect(env.AGENT_HUB_AWS_PROFILE_NAMES).toBe('dev');
   });
 
-  it('ensureAwsSsoCacheInSpawnHome links host SSO cache when per-user cache is empty', () => {
+  it('mergeProjectAwsSpawnEnv reuses a pre-written config path', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: {
+        dev: {
+          sso_start_url: 'https://example.awsapps.com/start',
+          sso_region: 'us-east-1',
+          sso_account_id: '111111111111',
+          sso_role_name: 'Admin',
+          region: 'us-east-1',
+        },
+      },
+    } as unknown as Project;
+    const prewritten = path.join(tmpDataDir, 'existing-config');
+    const env: NodeJS.ProcessEnv = {};
+    const returned = mergeProjectAwsSpawnEnv(env, project, { configPath: prewritten });
+    expect(returned).toBe(prewritten);
+    expect(env.AWS_CONFIG_FILE).toBe(prewritten);
+  });
+
+  it('linkAwsSsoHostCacheIntoSpawnHome links host SSO cache when per-user cache is empty', () => {
     const hostHome = path.join(tmpDataDir, 'host-creds', 'home');
     const hostCache = path.join(hostHome, '.aws', 'sso', 'cache');
     mkdirSync(hostCache, { recursive: true, mode: 0o700 });
@@ -61,7 +82,7 @@ describe('project-aws-spawn', () => {
     mkdirSync(userHome, { recursive: true, mode: 0o700 });
     const env: NodeJS.ProcessEnv = { HOME: userHome };
 
-    ensureAwsSsoCacheInSpawnHome(env, tmpDataDir);
+    linkAwsSsoHostCacheIntoSpawnHome(env, tmpDataDir);
 
     const userCache = path.join(userHome, '.aws', 'sso', 'cache');
     expect(existsSync(userCache)).toBe(true);

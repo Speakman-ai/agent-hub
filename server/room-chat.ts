@@ -6,7 +6,11 @@ import { resolveEffectiveModel } from './effective-model.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
-import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
+import {
+  mergeProjectAwsSpawnEnv,
+  projectHasAwsSsoProfiles,
+  linkAwsSsoHostCacheIntoSpawnHome,
+} from './project-aws-spawn.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import { buildRoomSpawnArgs, normalizeRoomEngine } from './room-multi-engine.js';
@@ -471,6 +475,10 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           let errorOutput = '';
           let streamErrorMessage = '';
           let spawnErrored = false;
+
+          if (engine === 'codex-cli' && roomEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
+            linkAwsSsoHostCacheIntoSpawnHome(roomEnv);
+          }
 
           const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
           const proc = spawn(bin, args, {
