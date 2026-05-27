@@ -1598,6 +1598,44 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         const isInterrupt = msg.interrupt === true;
 
+        if (isInterrupt && msg._existingMsgId) {
+          const existingId = msg._existingMsgId;
+          stmts.dequeueMessage.run(existingId);
+          broadcast({
+            type: 'queue_updated',
+            sessionId,
+            queue: stmts.getQueuedMessages.all(sessionId),
+          });
+
+          const runExistingQueued = () => {
+            void handleChat(null, {
+              type: 'chat',
+              agentId,
+              sessionId,
+              content,
+              images: msg.images,
+              _fromQueue: true,
+              _existingMsgId: existingId,
+            } as InternalChatMessage);
+          };
+
+          console.log(
+            `[chat] Interrupt-now on queued message ${existingId} for session ${sessionId}`,
+          );
+          const proc = activeProcesses.get(sessionId);
+          if (proc) {
+            killProcessGroup(proc, 'SIGTERM');
+          }
+          if (activeDelegationSessions.has(sessionId)) {
+            handleDelegationCancel(sessionId);
+            setTimeout(runExistingQueued, 500);
+          } else {
+            setTimeout(runExistingQueued, 100);
+          }
+          broadcast({ type: 'interrupted', sessionId });
+          return;
+        }
+
         if (!isInterrupt) {
           const currentQueue = stmts.getQueuedMessages.all(sessionId) as MessageQueueRow[];
           if (currentQueue.length >= MAX_QUEUE_SIZE) {

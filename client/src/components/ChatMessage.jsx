@@ -453,7 +453,7 @@ function ChatMessage({
                 {onInterrupt && (
                   <button
                     type="button"
-                    onClick={() => onInterrupt()}
+                    onClick={() => onInterrupt(message)}
                     className="text-xs text-amber-300/80 hover:text-amber-200 transition-colors"
                   >
                     Interrupt

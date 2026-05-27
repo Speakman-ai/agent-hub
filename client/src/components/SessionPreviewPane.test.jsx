@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import SessionPreviewPane from './SessionPreviewPane.jsx';
 
 const readyEvent = {
@@ -14,22 +14,55 @@ const readyEvent = {
   target: 'web',
 };
 
+/** Wait until preview config fetch resolves and the ready iframe URL is wired. */
+async function waitForReadyPreviewUrl() {
+  await waitFor(() => {
+    expect(screen.getByTestId('session-preview-pane-url')).toHaveValue(
+      'http://localhost:4101/board',
+    );
+  });
+}
+
+async function renderReady(props = {}) {
+  const view = render(
+    <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} {...props} />,
+  );
+  await waitForReadyPreviewUrl();
+  return view;
+}
+
 describe('SessionPreviewPane', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const u = String(input);
+        if (u.includes('/config')) {
+          return { ok: true, json: async () => ({ previewSubdomainBase: null }) };
+        }
+        if (u.includes('/preview/ticket')) {
+          return { ok: true, json: async () => ({ ticket: 'test-ticket' }) };
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      }),
+    );
   });
 
-  it('renders the URL and iframe when a `ready` event arrives', () => {
-    render(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('renders the URL and iframe when a `ready` event arrives', async () => {
+    await renderReady();
     expect(screen.getByTestId('session-preview-pane-status')).toHaveTextContent(/ready/i);
-    const url = screen.getByTestId('session-preview-pane-url');
-    expect(url).toHaveValue('http://localhost:4101/board');
     const iframe = screen.getByTestId('session-preview-pane-iframe');
     expect(iframe.getAttribute('src')).toBe('http://localhost:4101/board?_ah=0');
   });
 
-  it('clicking refresh bumps the iframe key (forcing a reload)', () => {
-    render(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />);
+  it('clicking refresh bumps the iframe key (forcing a reload)', async () => {
+    await renderReady();
     const iframe = screen.getByTestId('session-preview-pane-iframe');
     const before = Number(iframe.getAttribute('data-iframe-key'));
     fireEvent.click(screen.getByTestId('session-preview-pane-refresh'));
@@ -43,10 +76,8 @@ describe('SessionPreviewPane', () => {
     expect(after).toBe(before + 1);
   });
 
-  it('reloads iframe when event.refreshAt changes', () => {
-    const { rerender } = render(
-      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
-    );
+  it('reloads iframe when event.refreshAt changes', async () => {
+    const { rerender } = await renderReady();
     const before = Number(
       screen.getByTestId('session-preview-pane-iframe').getAttribute('data-iframe-key'),
     );
@@ -147,19 +178,9 @@ describe('SessionPreviewPane', () => {
     expect(onConfigure).toHaveBeenCalledWith(event);
   });
 
-  it('pop-out opens a window with the expected URL and switches to reattach placeholder', () => {
+  it('pop-out opens a window with the expected URL and switches to reattach placeholder', async () => {
     const popOut = vi.fn(() => ({ closed: false, close: vi.fn() }));
-    render(
-      <SessionPreviewPane
-        sessionId="s-1"
-        event={readyEvent}
-        onClose={() => {}}
-        popOut={popOut}
-        // Force the browser fallback path even if a stray test-env
-        // electronAPI is present.
-        electronApi={null}
-      />,
-    );
+    await renderReady({ popOut, electronApi: null });
     fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
     expect(popOut).toHaveBeenCalledTimes(1);
     expect(popOut.mock.calls[0][0]).toBe('http://localhost:4101/board');
@@ -169,18 +190,10 @@ describe('SessionPreviewPane', () => {
     expect(screen.queryByTestId('session-preview-pane-iframe')).toBeNull();
   });
 
-  it('pop-out uses the Electron IPC bridge when available', () => {
+  it('pop-out uses the Electron IPC bridge when available', async () => {
     const electronApi = { popOutPreview: vi.fn(), isElectron: true };
     const popOut = vi.fn();
-    render(
-      <SessionPreviewPane
-        sessionId="s-1"
-        event={readyEvent}
-        onClose={() => {}}
-        popOut={popOut}
-        electronApi={electronApi}
-      />,
-    );
+    await renderReady({ popOut, electronApi });
     fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
     expect(electronApi.popOutPreview).toHaveBeenCalledTimes(1);
     expect(electronApi.popOutPreview).toHaveBeenCalledWith({
@@ -192,68 +205,51 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
   });
 
-  it('Electron pop-out does not snap back to inline after 1s (no window handle to poll)', () => {
-    vi.useFakeTimers();
+  it('Electron pop-out does not snap back to inline after 1s (no window handle to poll)', async () => {
     const electronApi = { popOutPreview: vi.fn(), isElectron: true };
-    render(
-      <SessionPreviewPane
-        sessionId="s-1"
-        event={readyEvent}
-        onClose={() => {}}
-        electronApi={electronApi}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
-    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
-    // Advance past the 1s poll tick — the Electron path must NOT reset the
-    // pane back to inline mode because there is no JS window handle to check.
-    act(() => {
-      vi.advanceTimersByTime(3000);
-    });
-    // Still in popped state, not reverted to iframe.
-    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
-    expect(screen.queryByTestId('session-preview-pane-iframe')).toBeNull();
-    vi.useRealTimers();
-  });
-
-  it('browser pop-out auto-reattaches when the window closes', () => {
+    await renderReady({ electronApi });
     vi.useFakeTimers();
-    const fakeWindow = { closed: false, close: vi.fn() };
-    const popOut = vi.fn(() => fakeWindow);
-    render(
-      <SessionPreviewPane
-        sessionId="s-1"
-        event={readyEvent}
-        onClose={() => {}}
-        popOut={popOut}
-        electronApi={null}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
-    expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
-    // Simulate the user closing the detached window.
-    fakeWindow.closed = true;
-    act(() => {
-      vi.advanceTimersByTime(1500);
-    });
-    // Poll loop should have detected closed=true and auto-reattached.
-    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
-    expect(screen.queryByTestId('session-preview-pane-popped')).toBeNull();
-    vi.useRealTimers();
+    try {
+      fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
+      expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+      // Advance past the 1s poll tick — the Electron path must NOT reset the
+      // pane back to inline mode because there is no JS window handle to check.
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      // Still in popped state, not reverted to iframe.
+      expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+      expect(screen.queryByTestId('session-preview-pane-iframe')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('reattach restores the iframe view', () => {
+  it('browser pop-out auto-reattaches when the window closes', async () => {
     const fakeWindow = { closed: false, close: vi.fn() };
     const popOut = vi.fn(() => fakeWindow);
-    render(
-      <SessionPreviewPane
-        sessionId="s-1"
-        event={readyEvent}
-        onClose={() => {}}
-        popOut={popOut}
-        electronApi={null}
-      />,
-    );
+    await renderReady({ popOut, electronApi: null });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
+      expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
+      // Simulate the user closing the detached window.
+      fakeWindow.closed = true;
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      // Poll loop should have detected closed=true and auto-reattached.
+      expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+      expect(screen.queryByTestId('session-preview-pane-popped')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reattach restores the iframe view', async () => {
+    const fakeWindow = { closed: false, close: vi.fn() };
+    const popOut = vi.fn(() => fakeWindow);
+    await renderReady({ popOut, electronApi: null });
     fireEvent.click(screen.getByTestId('session-preview-pane-popout'));
     expect(screen.getByTestId('session-preview-pane-popped')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('session-preview-pane-reattach'));
@@ -261,20 +257,13 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
   });
 
-  it('touch handler is throttled to at most once per 30 s under rapid activity', () => {
+  it('touch handler is throttled to at most once per 30 s under rapid activity', async () => {
     const onTouch = vi.fn();
     const dateNow = vi.spyOn(Date, 'now');
     let t = 1_000_000;
     dateNow.mockImplementation(() => t);
     try {
-      render(
-        <SessionPreviewPane
-          sessionId="s-1"
-          event={readyEvent}
-          onClose={() => {}}
-          onTouch={onTouch}
-        />,
-      );
+      await renderReady({ onTouch });
       const iframe = screen.getByTestId('session-preview-pane-iframe');
       // Burst of mousemoves inside the same 30s window.
       for (let i = 0; i < 20; i++) {
@@ -291,32 +280,28 @@ describe('SessionPreviewPane', () => {
     }
   });
 
-  it('Close button invokes onClose', () => {
+  it('Close button invokes onClose', async () => {
     const onClose = vi.fn();
-    render(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={onClose} />);
+    await renderReady({ onClose });
     fireEvent.click(screen.getByTestId('session-preview-pane-close'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('persists pane width to localStorage under the per-session key', () => {
-    render(<SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />);
+  it('persists pane width to localStorage under the per-session key', async () => {
+    await renderReady();
     // Default width persists on first render.
     expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('560');
   });
 
-  it('reads pane width from localStorage on mount', () => {
+  it('reads pane width from localStorage on mount', async () => {
     window.localStorage.setItem('previewPaneWidth:s-1', '800');
-    const { container } = render(
-      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
-    );
+    const { container } = await renderReady();
     const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
     expect(aside.style.width).toBe('800px');
   });
 
-  it('widens the pane when the resize handle is dragged left', () => {
-    const { container } = render(
-      <SessionPreviewPane sessionId="s-1" event={readyEvent} onClose={() => {}} />,
-    );
+  it('widens the pane when the resize handle is dragged left', async () => {
+    const { container } = await renderReady();
     const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
     const handle = screen.getByTestId('session-preview-pane-resize-handle');
     expect(aside.style.width).toBe('560px');
@@ -329,12 +314,13 @@ describe('SessionPreviewPane', () => {
     expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('660');
   });
 
-  it('loads per-session width when sessionId changes', () => {
+  it('loads per-session width when sessionId changes', async () => {
     window.localStorage.setItem('previewPaneWidth:s-a', '420');
     window.localStorage.setItem('previewPaneWidth:s-b', '900');
     const { container, rerender } = render(
       <SessionPreviewPane sessionId="s-a" event={readyEvent} onClose={() => {}} />,
     );
+    await waitForReadyPreviewUrl();
     let aside = container.querySelector('aside[data-testid="session-preview-pane"]');
     expect(aside.style.width).toBe('420px');
 

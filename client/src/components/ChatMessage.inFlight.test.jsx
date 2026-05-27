@@ -31,7 +31,7 @@ describe('ChatMessage in-flight user actions', () => {
     expect(onEditInComposer).toHaveBeenCalledWith('msg-1', baseMessage.content);
 
     fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
-    expect(onInterrupt).toHaveBeenCalled();
+    expect(onInterrupt).toHaveBeenCalledWith(baseMessage);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
     expect(onDequeue).toHaveBeenCalledWith('msg-1', { cancelStream: true });

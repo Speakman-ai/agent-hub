@@ -27,6 +27,10 @@ import {
   defaultModelForAuthenticatedEngine,
 } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '../../../shared/utils/browserScreensBySessionMerge.js';
+import {
+  buildInterruptQueuedMessageDispatch,
+  isPersistedUploadAttachment,
+} from '../../../shared/utils/queuedMessageAttachments.js';
 
 const AppContext = createContext(null);
 
@@ -1364,12 +1368,12 @@ export function AppProvider({ children }) {
   const handleCancel = useCallback(() => {
     const sid = activeSessionIdRef.current;
     if (sid) {
+      setChatScrollNonce((n) => n + 1);
       send({ type: 'cancel', sessionId: sid });
       setThinking(false);
       setStreamingContent('');
       setStreamingMsgId(null);
       setStreamingEngine(null);
-      setChatScrollNonce((n) => n + 1);
     }
   }, [send]);
 
@@ -1391,7 +1395,7 @@ export function AppProvider({ children }) {
     return union;
   }, [askSubmittedOptimistic, askSubmittedFromHistory]);
 
-  const handleSend = useCallback(async (content, images = []) => {
+  const handleSend = useCallback(async (content, images = [], { interrupt = false } = {}) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
       const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
@@ -1416,8 +1420,11 @@ export function AppProvider({ children }) {
     // via /api/upload/file using api.uploadFile (FileSystem.uploadAsync).
     let uploadedImages = [];
     if (images.length > 0) {
+      const persisted = images.filter(isPersistedUploadAttachment);
+      const pending = images.filter((img) => !isPersistedUploadAttachment(img));
       try {
-        uploadedImages = await uploadAttachments(images, api);
+        const uploaded = pending.length > 0 ? await uploadAttachments(pending, api) : [];
+        uploadedImages = [...persisted, ...uploaded];
       } catch (err) {
         console.error('Attachment upload failed:', err);
       }
@@ -1429,8 +1436,23 @@ export function AppProvider({ children }) {
       sessionId,
       content,
       ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
+      ...(interrupt ? { interrupt: true } : {}),
     });
   }, [activeAgentId, sessionAskMode, send]);
+
+  const handleInterruptQueuedMessage = useCallback(
+    (message) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId || !message?.id) return;
+      const { chat } = buildInterruptQueuedMessageDispatch({
+        message,
+        agentId: activeAgentId,
+        sessionId,
+      });
+      send(chat);
+    },
+    [send, activeAgentId],
+  );
 
   // Handle submission from an <AskUserQuestion> picker. We dispatch the
   // pre-formatted chat message (which already contains the
@@ -1643,6 +1665,7 @@ export function AppProvider({ children }) {
     eventsByMessage,
     browserScreensBySession,
     handleDequeue,
+    handleInterruptQueuedMessage,
     handleEditQueuedMessage,
     handleDelegationCancel,
     handleEventsLoaded,
