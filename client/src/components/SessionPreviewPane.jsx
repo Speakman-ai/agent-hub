@@ -103,6 +103,10 @@ export default function SessionPreviewPane({
   // ticket is gone and the cookie lives on the wrong origin → white screen.
   const SUBDOMAIN_LOADING = 'loading';
   const [previewSubdomainBase, setPreviewSubdomainBase] = useState(SUBDOMAIN_LOADING);
+  // DEBUG — remove after validating subdomain mode on dev
+  useEffect(() => {
+    console.log('[preview-debug] previewSubdomainBase changed to:', previewSubdomainBase);
+  }, [previewSubdomainBase]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -219,10 +223,22 @@ export default function SessionPreviewPane({
     // Block until the /api/config fetch resolves so we don't race — see
     // the SUBDOMAIN_LOADING comment above. '' suppresses the iframe and
     // the ticket-mint effect until we know which origin to use.
-    if (previewSubdomainBase === SUBDOMAIN_LOADING) return '';
-    return resolvePreviewBrowserUrl(state.url, {
+    if (previewSubdomainBase === SUBDOMAIN_LOADING) {
+      console.log('[preview-debug] browserPreviewUrl: blocked (still loading config)');
+      return '';
+    }
+    const result = resolvePreviewBrowserUrl(state.url, {
       subdomainBase: previewSubdomainBase,
     });
+    console.log(
+      '[preview-debug] browserPreviewUrl:',
+      result,
+      'subdomainBase:',
+      previewSubdomainBase,
+      'state.url:',
+      state.url,
+    );
+    return result;
   }, [state.status, state.url, previewSubdomainBase]);
 
   const baseIframeSrc = useMemo(() => {
