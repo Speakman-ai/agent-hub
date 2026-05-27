@@ -103,10 +103,6 @@ export default function SessionPreviewPane({
   // ticket is gone and the cookie lives on the wrong origin → white screen.
   const SUBDOMAIN_LOADING = 'loading';
   const [previewSubdomainBase, setPreviewSubdomainBase] = useState(SUBDOMAIN_LOADING);
-  // DEBUG — remove after validating subdomain mode on dev
-  useEffect(() => {
-    console.log('[preview-debug] previewSubdomainBase changed to:', previewSubdomainBase);
-  }, [previewSubdomainBase]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -220,25 +216,19 @@ export default function SessionPreviewPane({
   const refreshAt = event?.refreshAt;
   const browserPreviewUrl = useMemo(() => {
     if (state.status !== 'ready' || !state.url) return '';
-    // Block until the /api/config fetch resolves so we don't race — see
-    // the SUBDOMAIN_LOADING comment above. '' suppresses the iframe and
-    // the ticket-mint effect until we know which origin to use.
+    // Local-dev URLs (`http://localhost:<port>`) bypass Hub proxy/subdomain
+    // routing — safe to render immediately without waiting on /api/config.
+    if (!previewProxySessionIdFromUrl(state.url)) {
+      return state.url;
+    }
+    // Hub-proxied URLs need subdomain vs path-prefix resolution — block until
+    // the /api/config fetch resolves so we don't race (SUBDOMAIN_LOADING).
     if (previewSubdomainBase === SUBDOMAIN_LOADING) {
-      console.log('[preview-debug] browserPreviewUrl: blocked (still loading config)');
       return '';
     }
-    const result = resolvePreviewBrowserUrl(state.url, {
+    return resolvePreviewBrowserUrl(state.url, {
       subdomainBase: previewSubdomainBase,
     });
-    console.log(
-      '[preview-debug] browserPreviewUrl:',
-      result,
-      'subdomainBase:',
-      previewSubdomainBase,
-      'state.url:',
-      state.url,
-    );
-    return result;
   }, [state.status, state.url, previewSubdomainBase]);
 
   const baseIframeSrc = useMemo(() => {
