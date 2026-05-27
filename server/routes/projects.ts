@@ -330,6 +330,7 @@ export interface ValidatedPreviewComposeConfig {
   hostPortRange?: { min: number; max: number };
   readyTimeoutMs?: number;
   entryWorkdir?: string;
+  entrySourceDir?: string;
   shadowDirs?: string[];
 }
 
@@ -669,6 +670,44 @@ function validatePreviewCompose(
     }
   }
 
+  // entrySourceDir — optional relative path from worktree root to the
+  // directory that maps to entryWorkdir inside the container. For
+  // monorepos where the Dockerfile build context is a subdirectory
+  // (e.g. `frontend/`). Defaults to `.` (worktree root). Same
+  // validation as file/envFile: relative, no traversal, length-capped.
+  let entrySourceDir: string | undefined;
+  if (
+    obj.entrySourceDir !== undefined &&
+    obj.entrySourceDir !== null &&
+    obj.entrySourceDir !== ''
+  ) {
+    if (typeof obj.entrySourceDir !== 'string') {
+      return { ok: false, error: 'prEnv.preview.compose.entrySourceDir must be a string' };
+    }
+    const es = obj.entrySourceDir.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    if (es) {
+      if (es.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.entrySourceDir exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
+        };
+      }
+      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(es)) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.entrySourceDir must not contain '..' path segments`,
+        };
+      }
+      if (!entryWorkdir) {
+        return {
+          ok: false,
+          error: 'prEnv.preview.compose.entrySourceDir is only valid when entryWorkdir is set',
+        };
+      }
+      entrySourceDir = es;
+    }
+  }
+
   // shadowDirs — optional list of relative paths under entryWorkdir
   // that should remain image-provided (anonymous-volume "holes" in the
   // parent bind). Without these, the host bind shadows the image's
@@ -734,6 +773,7 @@ function validatePreviewCompose(
   if (hostPortRange) value.hostPortRange = hostPortRange;
   if (readyTimeoutMs !== undefined) value.readyTimeoutMs = readyTimeoutMs;
   if (entryWorkdir) value.entryWorkdir = entryWorkdir;
+  if (entrySourceDir) value.entrySourceDir = entrySourceDir;
   if (shadowDirs) value.shadowDirs = shadowDirs;
   return { ok: true, value };
 }

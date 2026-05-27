@@ -1562,6 +1562,15 @@ export interface PreviewComposeConfig {
    */
   entryWorkdir?: string;
   /**
+   * Subdirectory of the worktree root to bind-mount at `entryWorkdir`.
+   * Defaults to `.` (the worktree root itself). For monorepos where
+   * the Dockerfile build context is a subdirectory (e.g. `frontend/`),
+   * set this to that subdirectory so the bind source matches what the
+   * image expects at `entryWorkdir`. Must be a relative path without
+   * `..` segments. Ignored when `entryWorkdir` is unset.
+   */
+  entrySourceDir?: string;
+  /**
    * Paths under `entryWorkdir` that should remain image-provided
    * rather than coming from the host bind mount. Compose anonymous
    * volumes "punch holes" in the parent bind — without this,

@@ -167,6 +167,8 @@ export type WriteOverrideFileFn = (opts: {
    * path), so the writer doesn't need the host path itself.
    */
   entryWorkdir?: string;
+  /** Subdirectory of the worktree to mount (default `.`). For monorepos. */
+  entrySourceDir?: string;
   /**
    * Relative paths under `entryWorkdir` to declare as compose
    * anonymous volumes, "punching holes" in the parent bind so the
@@ -554,6 +556,8 @@ export function buildComposeOverrideYaml(opts: {
   entryPort: number;
   /** See {@link WriteOverrideFileFn} — when set, emits the bind-mount volumes block. */
   entryWorkdir?: string;
+  /** Subdirectory of the worktree to mount (default `.`). For monorepos. */
+  entrySourceDir?: string;
   /** See {@link WriteOverrideFileFn} — relative paths under `entryWorkdir`. */
   shadowDirs?: string[];
   /** See {@link WriteOverrideFileFn} — public path prefix the proxy serves this session under. */
@@ -581,8 +585,9 @@ export function buildComposeOverrideYaml(opts: {
     // base compose file's `volumes:` list is replaced wholesale —
     // this matches the ports semantics and avoids surprising merges
     // when the base file already declares its own bind.
+    const sourceDir = (opts.entrySourceDir ?? '.').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
     lines.push(`    volumes: !override`);
-    lines.push(`      - ".:${opts.entryWorkdir}"`);
+    lines.push(`      - "${sourceDir}:${opts.entryWorkdir}"`);
     for (const shadow of opts.shadowDirs ?? []) {
       const clean = shadow.replace(/^\/+/, '').replace(/\/+$/, '');
       if (!clean) continue;
@@ -629,6 +634,7 @@ export function resolveComposeConfig(
   hostPortRange: PortRange;
   readyTimeoutMs: number;
   entryWorkdir: string | undefined;
+  entrySourceDir: string | undefined;
   shadowDirs: string[] | undefined;
 } {
   return {
@@ -640,6 +646,7 @@ export function resolveComposeConfig(
     hostPortRange: raw.hostPortRange ?? defaults.portRange,
     readyTimeoutMs: raw.readyTimeoutMs ?? defaults.readyTimeoutMs,
     entryWorkdir: raw.entryWorkdir,
+    entrySourceDir: raw.entrySourceDir,
     shadowDirs: raw.shadowDirs,
   };
 }
@@ -833,6 +840,7 @@ export class PreviewComposeRuntime {
         hostPort: port,
         entryPort: cfg.entryPort,
         entryWorkdir: cfg.entryWorkdir,
+        entrySourceDir: cfg.entrySourceDir,
         shadowDirs: cfg.shadowDirs,
         previewBasePath: `${previewProxyMountPath(sessionId)}/`,
       });

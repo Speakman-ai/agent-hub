@@ -89,6 +89,7 @@ type DiskOverrideFileWriter = (opts: {
   hostPort: number;
   entryPort: number;
   entryWorkdir?: string;
+  entrySourceDir?: string;
   shadowDirs?: string[];
   previewBasePath?: string;
 }) => string;
@@ -115,6 +116,7 @@ export function buildDiskOverrideFileWriter(composeOverrideDir: string): DiskOve
     hostPort,
     entryPort,
     entryWorkdir,
+    entrySourceDir,
     shadowDirs,
     previewBasePath,
   }) => {
@@ -130,6 +132,7 @@ export function buildDiskOverrideFileWriter(composeOverrideDir: string): DiskOve
       hostPort,
       entryPort,
       entryWorkdir,
+      entrySourceDir,
       shadowDirs,
       previewBasePath,
     });
