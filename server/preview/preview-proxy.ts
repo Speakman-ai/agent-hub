@@ -15,6 +15,7 @@ import type { Request, Response, RequestHandler } from 'express';
 import { authenticateWsDetailed } from '../auth.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession as defaultUserOwnsSession } from '../session-ownership.js';
+import { parsePreviewSubdomainHost } from './preview-subdomain-host.js';
 import {
   previewProxyMountPath,
   previewUpstreamPath,
@@ -218,9 +219,34 @@ export function handlePreviewProxyUpgrade(
 /**
  * Handle preview-proxy WebSocket upgrades before the Hub chat `ws` server.
  * Non-matching URLs are left for other upgrade listeners.
+ *
+ * In subdomain mode, the upgrade arrives at `wss://<sid>.<base>/...`
+ * with NO path prefix on `req.url` — dev-server HMR sockets just hit
+ * `/` or `/_vite/ws` etc. To keep `handlePreviewProxyUpgrade` working
+ * unchanged (it parses the session id off `req.url` via the path
+ * prefix), we rewrite `req.url` here when the Host matches the
+ * configured subdomain base, mirroring the HTTP middleware in
+ * `server/index.ts`.
  */
-export function attachPreviewProxyUpgrade(server: Server, deps: PreviewProxyDeps): void {
+export function attachPreviewProxyUpgrade(
+  server: Server,
+  deps: PreviewProxyDeps,
+  opts?: { subdomainBase?: string | null },
+): void {
   server.prependListener('upgrade', (req, socket, head) => {
+    // Subdomain dispatch — only fires when `opts.subdomainBase` is set
+    // AND the Host matches `<uuid>.<base>`. Mirrors the HTTP middleware
+    // in server/index.ts (same parser, same rewrite shape) so the WS
+    // and HTTP code paths can't drift.
+    const base = opts?.subdomainBase ?? null;
+    if (base) {
+      const subSid = parsePreviewSubdomainHost(req.headers.host, base);
+      if (subSid && !parsePreviewProxySessionId(req.url)) {
+        const original = req.url || '/';
+        const suffix = original.startsWith('/') ? original : `/${original}`;
+        req.url = `/api/sessions/${encodeURIComponent(subSid)}/preview/proxy${suffix}`;
+      }
+    }
     if (!parsePreviewProxySessionId(req.url)) return;
     handlePreviewProxyUpgrade(req, socket, head, deps);
   });
@@ -251,9 +277,14 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
 export function attachDefaultPreviewProxyUpgrade(
   server: Server,
   lookup: Pick<PreviewProxyDeps, 'getSessionPreviewPort'>,
+  opts?: { subdomainBase?: string | null },
 ): void {
-  attachPreviewProxyUpgrade(server, {
-    getSessionPreviewPort: lookup.getSessionPreviewPort,
-    userOwnsSession: defaultUserOwnsSession,
-  });
+  attachPreviewProxyUpgrade(
+    server,
+    {
+      getSessionPreviewPort: lookup.getSessionPreviewPort,
+      userOwnsSession: defaultUserOwnsSession,
+    },
+    opts,
+  );
 }

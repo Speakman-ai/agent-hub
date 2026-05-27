@@ -163,6 +163,7 @@ import createChatHandler, {
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
 import { createPreviewUrlBase } from './preview/preview-public-url.js';
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
+import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
 import cron from 'node-cron';
@@ -605,6 +606,33 @@ app.use(
 
 // (Preview proxy removed — session previews use preview-runtime instead)
 
+// Subdomain preview dispatch — opt-in via AGENT_HUB_PREVIEW_SUBDOMAIN_BASE.
+// When a request arrives at `<sessionId>.<base>` (e.g.
+// `b371b1ba-….preview.agenthub.dev.surveytracker.io`), rewrite the URL to
+// the path-prefix mount so the rest of the pipeline (authMiddleware →
+// session router → previewProxyHandler) handles it identically — no
+// dual code path, no auth-bypass risk.
+//
+// Mounted BEFORE authMiddleware specifically so the auth ticket/cookie
+// machinery in `server/auth.ts` (which keys on the proxy path prefix
+// via `matchPreviewProxyPath`) keeps working without changes. Mounted
+// AFTER the workflow incoming router because that one handles GitHub
+// webhook callbacks whose Host header would never match the subdomain
+// pattern, and short-circuiting it would only skip the chance to reject
+// non-preview hosts.
+app.use((req, _res, next) => {
+  const base = config.previewSubdomainBase;
+  if (!base) return next();
+  const sessionId = parsePreviewSubdomainHost(req.headers.host, base);
+  if (!sessionId) return next();
+  // Preserve the original suffix (query string included). Express
+  // strips the host from req.url already, so it's just `/some/path?q=v`.
+  const original = req.url || '/';
+  const suffix = original.startsWith('/') ? original : `/${original}`;
+  req.url = `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy${suffix}`;
+  return next();
+});
+
 app.use(authMiddleware);
 
 // Releases page powers the in-app "What's new" view, only reachable from
@@ -986,13 +1014,17 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
 
-attachDefaultPreviewProxyUpgrade(server, {
-  getSessionPreviewPort: (sessionId) =>
-    getSessionPreviewPort(sessionId, {
-      getPreviewComposeRuntime: () => previewComposeRuntime,
-      getPreviewRuntime: () => previewRuntime,
-    }),
-});
+attachDefaultPreviewProxyUpgrade(
+  server,
+  {
+    getSessionPreviewPort: (sessionId) =>
+      getSessionPreviewPort(sessionId, {
+        getPreviewComposeRuntime: () => previewComposeRuntime,
+        getPreviewRuntime: () => previewRuntime,
+      }),
+  },
+  { subdomainBase: config.previewSubdomainBase },
+);
 
 const chatHandler = createChatHandler({
   broadcast,

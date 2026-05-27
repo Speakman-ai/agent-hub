@@ -337,6 +337,20 @@ const config: AppConfig = {
     1_800_000,
   ),
 
+  // Wildcard subdomain base for "subdomain preview" mode. When set
+  // (e.g. `preview.agenthub.dev.surveytracker.io`), the request
+  // dispatcher accepts `<sessionId>.<base>` hostnames and rewrites
+  // them to the same path-prefix proxy mount, letting apps render at
+  // their default base of `/` with zero per-app config. Unset =
+  // subdomain mode OFF; only the path-prefix proxy is active. Requires
+  // a wildcard ACM cert + Route 53 alias + ALB listener cert
+  // attachment in the operator's stack; see the session-previews RFC.
+  previewSubdomainBase: resolve(
+    'AGENT_HUB_PREVIEW_SUBDOMAIN_BASE',
+    'previewSubdomainBase',
+    null,
+  ),
+
   // ── GitHub ─────────────────────────────────────────────────────
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),
   defaultReviewer: resolve('AGENT_HUB_DEFAULT_REVIEWER', 'defaultReviewer', null),

@@ -52,6 +52,7 @@ function makeConfig(): AppConfig {
     browserAllowDownloads: false,
     browserBlockAdsTrackers: true,
     previewComposeReadyTimeoutMs: 600_000,
+    previewSubdomainBase: null,
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },

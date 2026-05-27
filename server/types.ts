@@ -1887,6 +1887,17 @@ export interface AppConfig {
    * `previewComposeReadyTimeoutMs`. Clamped 5000–1800000.
    */
   previewComposeReadyTimeoutMs: number;
+  /**
+   * Wildcard subdomain base for "subdomain preview" mode. When set
+   * (e.g. `preview.agenthub.dev.surveytracker.io`), the request
+   * dispatcher accepts `<sessionId>.<base>` hostnames and rewrites
+   * them to the path-prefix proxy mount, letting apps render at
+   * base `/` with zero per-app config. `null` = subdomain mode off
+   * (only the path-prefix proxy is active). Env:
+   * `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`; config.json:
+   * `previewSubdomainBase`.
+   */
+  previewSubdomainBase: string | null;
   publicUrl: string | null;
   defaultReviewer: string | null;
   botGithubToken: string | null;
