@@ -246,4 +246,47 @@ describe('App — sidebar loading vs projects/sessions', () => {
       expect(side()).toHaveAttribute('data-is-loading', 'false');
     });
   });
+
+  it('does not snap back to prior agent when switching with an active session', async () => {
+    render(<App />);
+
+    await waitFor(
+      () => {
+        expect(typeof ctl.resolveProjects).toBe('function');
+      },
+      { timeout: 3000 },
+    );
+    await act(async () => {
+      ctl.resolveProjects(TWO_AGENT_FIXTURE);
+    });
+
+    await waitFor(
+      () => {
+        expect(typeof ctl.resolveSessionsByAgent['agent-1']).toBe('function');
+      },
+      { timeout: 3000 },
+    );
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-1']([{ id: 's-a', name: 'SA', engine: 'claude-code' }]);
+    });
+
+    const callsBefore = api.getSessions.mock.calls.length;
+    await act(async () => {
+      globalThis.__ahTestSelectAgent('agent-2');
+    });
+    await waitFor(
+      () => {
+        expect(typeof ctl.resolveSessionsByAgent['agent-2']).toBe('function');
+      },
+      { timeout: 3000 },
+    );
+    expect(api.getSessions).toHaveBeenLastCalledWith('agent-2');
+
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-2']([]);
+    });
+    await waitFor(() => {
+      expect(api.getSessions.mock.calls.length).toBe(callsBefore + 1);
+    });
+  });
 });

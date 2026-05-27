@@ -3649,6 +3649,8 @@ export default function App() {
             agents={agents}
             activeAgentId={activeAgentId}
             onSelectAgent={(id) => {
+              pendingSessionIdRef.current = null;
+              setActiveSessionId(null);
               setActiveAgentId(id);
               setSidebarOpen(false);
             }}
