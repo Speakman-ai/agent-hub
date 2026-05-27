@@ -64,6 +64,7 @@ import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
+import { markSessionTermination } from './process-termination.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
@@ -1064,6 +1065,8 @@ saveErrorMessage = chatHandler.saveErrorMessage;
 function handleCancel(sessionId: string): void {
   const proc = activeProcesses.get(sessionId);
   if (proc) {
+    markSessionTermination(sessionId, 'user_cancel');
+    console.info(`[chat] user_cancel: sending SIGTERM session=${sessionId}`);
     killProcessGroup(proc, 'SIGTERM');
   }
   handleDelegationCancel(sessionId);
@@ -1330,6 +1333,17 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
 
   // SIGTERM/SIGINT → drain spawned CLI children before exit, so pm2 restarts
   // (e.g. max_memory_restart) don't reparent in-flight claudes to init.
+  const markActiveSessionsForShutdown = (signal: string): void => {
+    for (const sessionId of activeProcesses.keys()) {
+      markSessionTermination(sessionId, 'server_shutdown');
+      console.info(
+        `[shutdown] server_shutdown: marked session=${sessionId} before drain (${signal})`,
+      );
+    }
+  };
+  process.on('SIGTERM', () => markActiveSessionsForShutdown('SIGTERM'));
+  process.on('SIGINT', () => markActiveSessionsForShutdown('SIGINT'));
+  process.on('SIGHUP', () => markActiveSessionsForShutdown('SIGHUP'));
   installShutdownHandlers();
 
   server.listen(PORT, '0.0.0.0', () => {

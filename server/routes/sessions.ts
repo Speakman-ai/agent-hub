@@ -14,6 +14,7 @@ import {
   PatchCheckpointRequestSchema,
 } from './sessions.openapi.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
+import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
 import { manualCommitAndPR } from '../auto-git.js';
 import {
@@ -544,6 +545,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     const proc = activeProcesses.get(task.session_id);
     if (proc) {
+      markSessionTermination(task.session_id, 'task_stopped');
+      console.info(
+        `[sessions] task_stopped: sending SIGTERM session=${task.session_id} task=${task.id}`,
+      );
       proc.kill('SIGTERM');
       setTimeout(() => {
         try {
@@ -678,6 +683,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const proc = activeProcesses.get(session.id);
       if (proc) {
         try {
+          markSessionTermination(session.id, 'session_deleted');
+          console.info(`[sessions] session_deleted: sending SIGTERM session=${session.id}`);
           proc.kill('SIGTERM');
         } catch {
           /* best-effort */
@@ -737,6 +744,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const proc = activeProcesses.get(sessionId);
     if (proc) {
       try {
+        markSessionTermination(sessionId, 'session_deleted');
+        console.info(`[sessions] session_deleted: sending SIGTERM session=${sessionId}`);
         proc.kill('SIGTERM');
       } catch {
         /* best-effort */

@@ -29,6 +29,7 @@
  */
 
 import type { ChildProcess } from 'child_process';
+import { markSessionTermination } from './process-termination.js';
 import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 
 export interface ParsedPR {
@@ -104,6 +105,8 @@ export function cleanupReviewerSessionForPR(
     const proc = deps.activeProcesses.get(row.id);
     if (proc) {
       try {
+        markSessionTermination(row.id, 'reviewer_cleanup');
+        console.info(`[reviewer-cleanup] reviewer_cleanup: sending SIGTERM session=${row.id}`);
         proc.kill('SIGTERM');
         processKilled = true;
       } catch {

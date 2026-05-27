@@ -249,6 +249,9 @@ export function runClaude(
     trackChild(proc);
 
     const timer = setTimeout(() => {
+      console.info(
+        `[heartbeat] heartbeat_wall_timeout: sending SIGTERM after ${timeout}ms cwd=${cwd}`,
+      );
       killProcessGroup(proc, 'SIGTERM');
       if (options.detailed) {
         reject(

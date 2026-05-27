@@ -1,0 +1,147 @@
+import './test/setup.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { randomUUID } from 'crypto';
+import { getStmts } from './db.js';
+import {
+  appendRunCancelledSystemMessage,
+  buildRunCancelledSystemMessage,
+  consumeSessionTermination,
+  formatChatExitLog,
+  isSignalTermination,
+  markSessionTermination,
+  resolveChatTerminationOnClose,
+} from './process-termination.js';
+
+describe('process-termination', () => {
+  beforeEach(() => {
+    // Drain any markers leaked across tests.
+    const orphan = `orphan-${randomUUID()}`;
+    markSessionTermination(orphan, 'user_cancel');
+    consumeSessionTermination(orphan);
+  });
+
+  it('detects SIGTERM via signal name and shell exit 143', () => {
+    expect(isSignalTermination(null, 'SIGTERM')).toBe(true);
+    expect(isSignalTermination(143, null)).toBe(true);
+    expect(isSignalTermination(0, null)).toBe(false);
+    expect(isSignalTermination(1, null)).toBe(false);
+  });
+
+  it('mark/consume returns the reason once', () => {
+    const sessionId = `term-${randomUUID()}`;
+    markSessionTermination(sessionId, 'user_cancel');
+    expect(consumeSessionTermination(sessionId)).toBe('user_cancel');
+    expect(consumeSessionTermination(sessionId)).toBeNull();
+  });
+
+  it('resolveChatTerminationOnClose consumes a pending marker', () => {
+    const sessionId = `term-close-${randomUUID()}`;
+    markSessionTermination(sessionId, 'chat_interrupt');
+    const resolved = resolveChatTerminationOnClose(sessionId, null, 'SIGTERM');
+    expect(resolved).toEqual({ terminated: true, reason: 'chat_interrupt' });
+    expect(consumeSessionTermination(sessionId)).toBeNull();
+  });
+
+  it('resolveChatTerminationOnClose falls back to unknown_signal', () => {
+    const sessionId = `term-unknown-${randomUUID()}`;
+    const resolved = resolveChatTerminationOnClose(sessionId, 143, null);
+    expect(resolved).toEqual({ terminated: true, reason: 'unknown_signal' });
+  });
+
+  it('formatChatExitLog includes source when reason is known', () => {
+    const line = formatChatExitLog({
+      engine: 'claude-code',
+      sessionId: 'sess-1',
+      code: 143,
+      signal: null,
+      reason: 'user_cancel',
+    });
+    expect(line).toContain('source=user_cancel');
+    expect(line).toContain('code=143');
+  });
+
+  it('buildRunCancelledSystemMessage uses the required prefix', () => {
+    expect(buildRunCancelledSystemMessage('user_cancel')).toBe(
+      'Run cancelled — reason: you cancelled the run (Stop / Cancel)',
+    );
+  });
+
+  it('cancel pipeline: mark user_cancel → SIGTERM close → system message in transcript', () => {
+    const stmts = getStmts();
+    const agentId = `term-pipe-${randomUUID().slice(0, 8)}`;
+    const sessionId = `term-pipe-${randomUUID().slice(0, 8)}`;
+    stmts.createSession.run(
+      sessionId,
+      agentId,
+      'cancel pipeline test',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+      1,
+    );
+
+    markSessionTermination(sessionId, 'user_cancel');
+    const termination = resolveChatTerminationOnClose(sessionId, null, 'SIGTERM');
+    expect(termination?.reason).toBe('user_cancel');
+
+    appendRunCancelledSystemMessage(
+      { stmts, broadcast: () => undefined },
+      sessionId,
+      termination!.reason,
+    );
+
+    const messages = stmts.getMessages.all(sessionId) as Array<{ role: string; content: string }>;
+    expect(
+      messages.some(
+        (m) =>
+          m.role === 'system' &&
+          m.content === 'Run cancelled — reason: you cancelled the run (Stop / Cancel)',
+      ),
+    ).toBe(true);
+  });
+
+  it('appendRunCancelledSystemMessage persists a system role row', () => {
+    const stmts = getStmts();
+    const agentId = `term-agent-${randomUUID().slice(0, 8)}`;
+    const sessionId = `term-sess-${randomUUID().slice(0, 8)}`;
+    stmts.createSession.run(
+      sessionId,
+      agentId,
+      'termination test',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+      1,
+    );
+
+    const broadcasts: Array<Record<string, unknown>> = [];
+    appendRunCancelledSystemMessage(
+      {
+        stmts,
+        broadcast: (msg) => {
+          broadcasts.push(msg as Record<string, unknown>);
+        },
+      },
+      sessionId,
+      'user_cancel',
+    );
+
+    const messages = stmts.getMessages.all(sessionId) as Array<{ role: string; content: string }>;
+    const system = messages.find((m) => m.role === 'system');
+    expect(system?.content).toContain('Run cancelled — reason:');
+    expect(system?.content).toContain('Stop / Cancel');
+    expect(broadcasts.some((b) => b.type === 'message')).toBe(true);
+  });
+});
+
+describe('handleCancel contract', () => {
+  it('marks user_cancel before killProcessGroup in index.ts', async () => {
+    const { readFile } = await import('fs/promises');
+    const src = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(
+      /markSessionTermination\(sessionId,\s*'user_cancel'\)[\s\S]*killProcessGroup\(proc,\s*'SIGTERM'\)/,
+    );
+  });
+});
