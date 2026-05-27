@@ -16,7 +16,7 @@ describe('listUserFacingReleases', () => {
     execFileSyncMock.mockReset();
   });
 
-  it('throws a clear error when GitHub fetch fails and local tags are unavailable', async () => {
+  it('returns an empty git-sourced list when GitHub fetch fails and local tags are unavailable', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -29,8 +29,10 @@ describe('listUserFacingReleases', () => {
       throw new Error('git unavailable');
     });
 
-    await expect(listUserFacingReleases({ forceRefresh: true })).rejects.toThrow(
-      /failed to load releases from github and no local tags/i,
-    );
+    await expect(listUserFacingReleases({ forceRefresh: true })).resolves.toEqual({
+      repo: 'Speakman-ai/agent-hub',
+      releases: [],
+      source: 'git',
+    });
   });
 });

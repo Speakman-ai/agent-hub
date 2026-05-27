@@ -26,13 +26,6 @@ type GhReleaseRow = {
   prerelease?: boolean;
 };
 
-class ReleasesUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ReleasesUnavailableError';
-  }
-}
-
 type GithubFetchResult = {
   ok: boolean;
   releases: GhReleaseRow[] | null;
@@ -190,12 +183,8 @@ export async function listUserFacingReleases(opts?: {
   } else {
     releases = releasesFromGitTags(repo, limit);
     source = 'git';
-    if (releases.length === 0) {
-      const suffix = gh.status ? ` (GitHub status ${gh.status})` : '';
-      throw new ReleasesUnavailableError(
-        `Failed to load releases from GitHub and no local tags were available${suffix}`,
-      );
-    }
+    // If both GitHub and local tags are unavailable, degrade gracefully.
+    // The UI can still render the current version and an empty list state.
   }
 
   cache = { at: Date.now(), repo, limit, releases, source };
