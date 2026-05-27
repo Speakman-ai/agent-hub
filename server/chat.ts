@@ -2521,10 +2521,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // Optional named profile from `~/.codex/config.toml` — when
         // operators configure `codexProfile` we forward it as `--profile <name>`
         // so Codex applies the profile's model/provider/sandbox overrides on
-        // top of the flags we've already set. Empty / whitespace is normalized
-        // to null in config.ts.
-        if (config.codexProfile) {
-          args.push('--profile', config.codexProfile);
+        // top of the flags we've already set. `config.ts` normalizes empty /
+        // whitespace to null on load; the `?.trim()` guard here is belt-and-
+        // braces in case a future `PATCH /api/config` path bypasses it (else
+        // codex sees `--profile ""` and errors with a confusing CLI message).
+        const codexProfileVal = config.codexProfile?.trim();
+        if (codexProfileVal) {
+          args.push('--profile', codexProfileVal);
         }
         // Pass the prompt via stdin using the documented `-` sentinel.
         // Per `codex exec` docs: "If you omit the prompt argument, Codex

@@ -203,8 +203,13 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
           `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
       );
     }
-    if (codexProfile) {
-      args.push('--profile', codexProfile);
+    // `?.trim()` guards against an in-memory PATCH config value that wasn't
+    // run through the load-time normalizer in `config.ts`. Must come BEFORE
+    // the positional prompt push below — codex would otherwise treat the
+    // profile name as the start of the prompt.
+    const codexProfileVal = codexProfile?.trim();
+    if (codexProfileVal) {
+      args.push('--profile', codexProfileVal);
     }
     args.push(prompt);
     return { bin: bins.codex, args };

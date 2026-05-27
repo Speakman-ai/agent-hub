@@ -228,8 +228,11 @@ function buildDelegateCliSpec(
       if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
       }
-      if (cfg.codexProfile) {
-        args.push('--profile', cfg.codexProfile);
+      // `?.trim()` guards against an in-memory PATCH config value that wasn't
+      // run through the load-time normalizer in `config.ts`.
+      const codexProfile = cfg.codexProfile?.trim();
+      if (codexProfile) {
+        args.push('--profile', codexProfile);
       }
       args.push(combined);
       return { bin: bins.codex, args, engine, parseStream: true };
@@ -1058,8 +1061,11 @@ export async function synthesizeResults(
         if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
           args.push('--model', sessionModel);
         }
-        if (cfg.codexProfile) {
-          args.push('--profile', cfg.codexProfile);
+        // `?.trim()` guards against an in-memory PATCH config value that wasn't
+        // run through the load-time normalizer in `config.ts`.
+        const synthCodexProfile = cfg.codexProfile?.trim();
+        if (synthCodexProfile) {
+          args.push('--profile', synthCodexProfile);
         }
         args.push(engineSessionId ? synthesisPrompt : `${enriched}\n\n${synthesisPrompt}`);
       } else {

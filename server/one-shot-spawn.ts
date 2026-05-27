@@ -117,8 +117,12 @@ export function buildOneShotSpawnArgs(
     if (trimmedModel && shouldPassModelFlag(auth.mode, trimmedModel)) {
       args.push('--model', trimmedModel);
     }
-    if (cfg.codexProfile) {
-      args.push('--profile', cfg.codexProfile);
+    // `?.trim()` guards against an in-memory PATCH config value that wasn't
+    // run through the load-time normalizer in `config.ts`. Must come BEFORE
+    // the positional body push below.
+    const codexProfile = cfg.codexProfile?.trim();
+    if (codexProfile) {
+      args.push('--profile', codexProfile);
     }
     args.push(body);
     return { bin: cfg.codexBin, args };
