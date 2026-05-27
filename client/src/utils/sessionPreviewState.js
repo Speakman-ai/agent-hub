@@ -56,6 +56,7 @@ export function previewIframeSrc(url, bustToken) {
  */
 export function previewProxySessionIdFromUrl(url) {
   if (!url || typeof url !== 'string') return null;
+  // Path-prefix mode: /api/sessions/<sid>/preview/proxy/...
   let pathname;
   try {
     pathname = url.startsWith('/') ? url.split('?')[0] : new URL(url).pathname;
@@ -63,12 +64,27 @@ export function previewProxySessionIdFromUrl(url) {
     return null;
   }
   const m = pathname.match(/^\/api\/sessions\/([^/]+)\/preview\/proxy(?:\/|$)/);
-  if (!m?.[1]) return null;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch {
-    return null;
+  if (m?.[1]) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return null;
+    }
   }
+  // Subdomain mode: https://<sid>.preview.<base>/...
+  // The session id is the first DNS label (a UUID). Parse it from the
+  // hostname so the ticket-mint flow knows which session to POST to.
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const label = host.split('.')[0];
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(label)) {
+      return label;
+    }
+  } catch {
+    // not a valid URL
+  }
+  return null;
 }
 
 /**
@@ -134,7 +150,10 @@ const SESSION_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 export function buildSubdomainPreviewUrl(pathPrefixUrl, sessionId, subdomainBase) {
   if (!subdomainBase) return null;
   if (!sessionId || !SESSION_ID_UUID_RE.test(sessionId)) return null;
-  const cleanBase = subdomainBase.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  const cleanBase = subdomainBase
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+|\.+$/g, '');
   if (!cleanBase) return null;
   let pathname = '/';
   let search = '';

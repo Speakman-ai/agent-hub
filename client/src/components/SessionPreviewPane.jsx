@@ -95,7 +95,14 @@ export default function SessionPreviewPane({
   // while loading or when the server has it unset (path-prefix mode).
   // Used to decide whether resolvePreviewBrowserUrl returns a
   // subdomain URL or a Hub-origin path-prefix URL.
-  const [previewSubdomainBase, setPreviewSubdomainBase] = useState(null);
+  // Sentinel distinguishing "still loading" from "server says no subdomain
+  // mode". Without this the browserPreviewUrl memo fires with null on the
+  // first render, computes the path-prefix URL, the ticket-mint effect
+  // consumes a single-use ticket on the path-prefix origin, and by the time
+  // the fetch resolves and previewSubdomainBase flips to the real value the
+  // ticket is gone and the cookie lives on the wrong origin → white screen.
+  const SUBDOMAIN_LOADING = 'loading';
+  const [previewSubdomainBase, setPreviewSubdomainBase] = useState(SUBDOMAIN_LOADING);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -103,7 +110,10 @@ export default function SessionPreviewPane({
         const r = await fetch(`${getApiBase()}/api/config`, {
           headers: getAuthHeaders(),
         });
-        if (!r.ok) return;
+        if (!r.ok) {
+          if (!cancelled) setPreviewSubdomainBase(null);
+          return;
+        }
         const cfg = await r.json();
         if (cancelled) return;
         setPreviewSubdomainBase(
@@ -112,10 +122,7 @@ export default function SessionPreviewPane({
             : null,
         );
       } catch {
-        // Best-effort — on failure we just fall back to path-prefix
-        // mode, which is the safe default. No UI banner needed; the
-        // operator sees the path-prefix URL render correctly via
-        // the existing AGENT_HUB_PREVIEW_BASE_PATH wiring.
+        if (!cancelled) setPreviewSubdomainBase(null);
       }
     })();
     return () => {
@@ -209,6 +216,10 @@ export default function SessionPreviewPane({
   const refreshAt = event?.refreshAt;
   const browserPreviewUrl = useMemo(() => {
     if (state.status !== 'ready' || !state.url) return '';
+    // Block until the /api/config fetch resolves so we don't race — see
+    // the SUBDOMAIN_LOADING comment above. '' suppresses the iframe and
+    // the ticket-mint effect until we know which origin to use.
+    if (previewSubdomainBase === SUBDOMAIN_LOADING) return '';
     return resolvePreviewBrowserUrl(state.url, {
       subdomainBase: previewSubdomainBase,
     });
