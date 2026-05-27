@@ -132,6 +132,53 @@ describe('buildComposeOverrideYaml', () => {
     const volLines = body.split('\n').filter((l) => l.trim().startsWith('- "'));
     expect(volLines.length).toBe(2); // ports line + one volume bind
   });
+
+  it('injects AGENT_HUB_PREVIEW_BASE_PATH into the entry service environment', () => {
+    // The path-prefix proxy mounts every preview under
+    // /api/sessions/<sid>/preview/proxy/. Dev servers that default to
+    // base "/" emit asset URLs (JS modules, HMR WebSocket, manifest)
+    // that resolve at the Hub root, producing the "white screen with
+    // manifest syntax error" failure mode. Apps that map this env var
+    // to their framework's base-URL knob (Angular's --serve-path,
+    // Vite's `base`, Next's basePath, CRA's PUBLIC_URL) get correct
+    // paths; apps that ignore it are unaffected.
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      previewBasePath: '/api/sessions/sess-abc/preview/proxy/',
+    });
+    expect(body).toContain('    environment:');
+    expect(body).toContain(
+      '      AGENT_HUB_PREVIEW_BASE_PATH: "/api/sessions/sess-abc/preview/proxy/"',
+    );
+  });
+
+  it('omits the environment block when previewBasePath is not set (back-compat)', () => {
+    const body = buildComposeOverrideYaml({
+      entryService: 'web',
+      hostPort: 4101,
+      entryPort: 8000,
+    });
+    expect(body).not.toContain('environment:');
+    expect(body).not.toContain('AGENT_HUB_PREVIEW_BASE_PATH');
+  });
+
+  it('combines bind-mount + env injection cleanly when both are set', () => {
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      entryWorkdir: '/workspace',
+      shadowDirs: ['node_modules'],
+      previewBasePath: '/api/sessions/sess-xyz/preview/proxy/',
+    });
+    expect(body).toContain('    volumes: !override');
+    expect(body).toContain('      - ".:/workspace"');
+    expect(body).toContain('      - "/workspace/node_modules"');
+    expect(body).toContain('    environment:');
+    expect(body).toContain('AGENT_HUB_PREVIEW_BASE_PATH');
+  });
 });
 
 describe('buildDiskOverrideFileWriter', () => {
