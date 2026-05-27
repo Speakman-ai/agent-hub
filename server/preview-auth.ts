@@ -295,20 +295,39 @@ export function parseCookieHeader(header: string | undefined | null): Record<str
  * (nginx/ALB sets `X-Forwarded-Proto: https`, Express resolves
  * `req.secure` with `trust proxy` set), `false` for plain `http://`
  * dev so the browser actually stores the cookie.
+ *
+ * Path-prefix vs subdomain mode
+ * ─────────────────────────────
+ * In the default path-prefix deployment, the cookie is scoped to
+ * `/api/sessions/<sid>/preview/proxy/` on the main Hub origin — the
+ * cookie is invisible to every other Hub route, so a compromised JS
+ * context on a different page cannot trigger an authenticated fetch
+ * against the preview proxy on the cookie's strength alone.
+ *
+ * Under subdomain mode (`subdomain: true`) the iframe lives at
+ * `<sid>.preview.<base>` — its own origin — and EVERY sub-resource
+ * fetch the dev server makes hits `/<some-path>` on that origin.
+ * Path-scoping to `/api/sessions/.../preview/proxy/` would mean the
+ * browser refuses to send the cookie on any of those, breaking auth
+ * for every JS/CSS/HMR request. Switch to `Path=/` — safe because
+ * the origin itself is per-session (the host label IS the session id),
+ * so the cookie can only ever attach to traffic that already belongs
+ * to that session by URL.
+ *
+ * SameSite stays `Strict` either way: agenthub.example.com and
+ * <sid>.preview.agenthub.example.com share the same eTLD+1, so iframe
+ * loads from the Hub UI count as same-site.
  */
 export function buildPreviewSetCookie(
   sessionId: string,
   token: string,
-  options: { secure: boolean; maxAgeMs?: number } = { secure: false },
+  options: { secure: boolean; maxAgeMs?: number; subdomain?: boolean } = { secure: false },
 ): string {
   const name = previewCookieName(sessionId);
   const maxAgeSec = Math.floor((options.maxAgeMs ?? PREVIEW_COOKIE_TTL_MS) / 1000);
-  // Path scoping is the load-bearing safety property here — the cookie
-  // is invisible to every Hub route outside the proxy mount, so even a
-  // compromised JS context on a different page cannot trigger an
-  // authenticated fetch against the preview proxy on the cookie's
-  // strength alone.
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy/`;
+  const path = options.subdomain
+    ? '/'
+    : `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy/`;
   const parts = [
     `${name}=${encodeURIComponent(token)}`,
     `Path=${path}`,

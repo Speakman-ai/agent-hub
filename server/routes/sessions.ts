@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import { buildSpawnEnv } from '../config.js';
+import config, { buildSpawnEnv } from '../config.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from '../effective-model.js';
 import {
   CreateSessionRequestSchema,
@@ -1217,6 +1217,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           | undefined,
       }),
     userOwnsSession,
+    // CSP frame-ancestors source for cross-origin iframe loads in
+    // subdomain mode. `config.publicUrl` is normally
+    // `https://agenthub.example.com`; the proxy uses its origin
+    // (scheme + host) and falls back to 'self' when unset.
+    parentPublicUrl: config.publicUrl,
   });
   router.all('/api/sessions/:sessionId/preview/proxy', requireRole('User'), previewProxyHandler);
   router.all('/api/sessions/:sessionId/preview/proxy/*', requireRole('User'), previewProxyHandler);

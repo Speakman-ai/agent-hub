@@ -117,6 +117,16 @@ export interface AuthenticatedRequest extends Request {
    * per the App Manifest spec; see `isPreviewManifestAssetPath`.
    */
   authPreviewManifestBypass?: boolean;
+  /**
+   * True when the subdomain-dispatch middleware in `server/index.ts`
+   * rewrote `req.url` from `<sid>.preview.<base>/<path>` to the
+   * path-prefix mount. The auth code uses this to decide the cookie
+   * `Path` scope: under subdomain mode the iframe lives at a per-
+   * session origin and the cookie must be `Path=/`; under path-prefix
+   * mode it stays scoped to `/api/sessions/<sid>/preview/proxy/`.
+   * Defaults to undefined / false for path-prefix requests.
+   */
+  authPreviewArrivedViaSubdomain?: boolean;
 }
 
 function extractBearerToken(req: Request): string | null {
@@ -250,9 +260,13 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       if (ctx) {
         // Issue a path-scoped cookie so sub-resources (.js, .css, …)
         // can authenticate without each one needing a fresh ticket.
+        // Under subdomain mode the iframe lives at a per-session
+        // origin and the cookie must be `Path=/`; see
+        // `buildPreviewSetCookie` for the rationale.
         const cookieToken = issuePreviewCookieToken(previewSessionId, ctx);
         const setCookie = buildPreviewSetCookie(previewSessionId, cookieToken, {
           secure: req.secure,
+          subdomain: !!authedReq.authPreviewArrivedViaSubdomain,
         });
         // append rather than set — handlers downstream may add their
         // own cookies, and Express' `res.append('Set-Cookie', …)` is

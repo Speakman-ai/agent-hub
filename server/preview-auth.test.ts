@@ -176,6 +176,36 @@ describe('preview-auth cookie helpers', () => {
     expect(v).toContain('Secure');
   });
 
+  it('buildPreviewSetCookie scopes Path=/ under subdomain mode', () => {
+    // Under subdomain dispatch the iframe lives at a per-session
+    // origin (`<sid>.preview.<base>`) and EVERY sub-resource request
+    // it makes hits `/<some-path>` on that origin. Path-scoping to
+    // `/api/sessions/.../preview/proxy/` would mean the browser
+    // refuses to send the cookie on any of those, breaking auth for
+    // every JS/CSS/HMR request. Path=/ is safe because the origin
+    // itself is per-session (the host label IS the session id).
+    const v = buildPreviewSetCookie('sess-1', 'ahpc_xyz', {
+      secure: true,
+      subdomain: true,
+    });
+    expect(v).toContain('Path=/');
+    expect(v).not.toContain('Path=/api/sessions');
+    // SameSite stays Strict — the parent origin and the subdomain
+    // origin share an eTLD+1 so iframe loads are same-site.
+    expect(v).toContain('SameSite=Strict');
+    expect(v).toContain('HttpOnly');
+    expect(v).toContain('Secure');
+  });
+
+  it('buildPreviewSetCookie default (no subdomain opt) keeps path-prefix scope', () => {
+    // Back-compat: callers that haven't been updated for subdomain
+    // mode get the old path-scoped cookie. Critical — local Hub /
+    // Electron / dev installs MUST keep working unchanged.
+    const v = buildPreviewSetCookie('sess-1', 'ahpc_xyz', { secure: true });
+    expect(v).toContain('Path=/api/sessions/sess-1/preview/proxy/');
+    expect(v).not.toBe('Path=/');
+  });
+
   it('readPreviewCookie pulls the right key by sessionId', () => {
     const req = {
       headers: { cookie: 'ah_preview_sess-1=tok-a; ah_preview_sess-2=tok-b' },

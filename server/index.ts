@@ -630,6 +630,12 @@ app.use((req, _res, next) => {
   const original = req.url || '/';
   const suffix = original.startsWith('/') ? original : `/${original}`;
   req.url = `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy${suffix}`;
+  // Mark so `authMiddleware` can choose the right cookie Path scope
+  // (Path=/ on the subdomain origin vs. the proxy mount path on the
+  // main Hub origin) and downstream handlers can pick the right CSP
+  // / postMessage origin for cross-origin iframe behaviour.
+  (req as unknown as { authPreviewArrivedViaSubdomain?: boolean }).authPreviewArrivedViaSubdomain =
+    true;
   return next();
 });
 

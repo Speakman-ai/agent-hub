@@ -25,6 +25,16 @@ import {
 export type PreviewProxyDeps = {
   getSessionPreviewPort: (sessionId: string) => number | null;
   userOwnsSession: (req: AuthenticatedRequest, sessionId: string) => boolean;
+  /**
+   * Public URL of the Hub UI that's expected to iframe the preview
+   * (e.g. `https://agenthub.dev.surveytracker.io`). Injected into
+   * the CSP `frame-ancestors` directive on proxy responses so a
+   * cross-origin iframe load (subdomain mode) succeeds while
+   * unrelated origins are still refused. `null`/missing falls back
+   * to `frame-ancestors 'self'`, which works for the same-origin
+   * path-prefix deployment.
+   */
+  parentPublicUrl?: string | null;
 };
 
 const HOP_BY_HOP = new Set([
@@ -95,7 +105,72 @@ function upstreamRequestHeaders(
   return headers;
 }
 
-function proxyHttp(req: Request, res: Response, sessionId: string, port: number): void {
+/**
+ * Compute the `Content-Security-Policy: frame-ancestors` value that
+ * lets the Hub UI iframe the preview. `'self'` covers the path-prefix
+ * deployment (parent and iframe share an origin); when subdomain mode
+ * is on, the parent (Hub UI) and iframe (`<sid>.preview.<base>`) are
+ * different origins, so the parent origin must be listed explicitly
+ * via the configured `AGENT_HUB_PUBLIC_URL`.
+ *
+ * Returned value is suitable for `res.setHeader('Content-Security-Policy', ...)`.
+ * Frame-ancestors is the modern replacement for `X-Frame-Options`; per
+ * spec the latter is ignored when CSP frame-ancestors is present, so
+ * we also strip any upstream-set XFO to avoid clients honouring an
+ * upstream `DENY`/`SAMEORIGIN` ahead of our explicit allowlist.
+ */
+export function buildFrameAncestorsCsp(parentPublicUrl: string | null | undefined): string {
+  const sources = ["'self'"];
+  if (parentPublicUrl) {
+    try {
+      const u = new URL(parentPublicUrl);
+      // Use the origin (scheme + host + port) — CSP doesn't honour
+      // paths in frame-ancestors anyway.
+      const origin = `${u.protocol}//${u.host}`;
+      if (!sources.includes(origin)) sources.push(origin);
+    } catch {
+      // Bad publicUrl — fail closed; same-origin only.
+    }
+  }
+  return `frame-ancestors ${sources.join(' ')}`;
+}
+
+export function applyIframeEmbedHeaders(
+  responseHeaders: Record<string, string | string[]>,
+  parentPublicUrl: string | null | undefined,
+): void {
+  // Drop any upstream X-Frame-Options so it doesn't take precedence
+  // over our CSP frame-ancestors on older browsers that honour XFO
+  // even when CSP is present (Safari has historically been lax here).
+  delete responseHeaders['x-frame-options'];
+  delete responseHeaders['X-Frame-Options'];
+  // Merge into any existing CSP rather than clobber — upstream may
+  // set other directives we want to preserve. If no upstream CSP,
+  // create one. Header names are normalised to lowercase by node http.
+  const existing = responseHeaders['content-security-policy'];
+  const ancestors = buildFrameAncestorsCsp(parentPublicUrl);
+  if (typeof existing === 'string' && existing.length > 0) {
+    // Strip any existing frame-ancestors directive — ours wins.
+    const trimmed = existing
+      .split(';')
+      .map((d) => d.trim())
+      .filter((d) => d && !/^frame-ancestors\b/i.test(d))
+      .join('; ');
+    responseHeaders['content-security-policy'] = trimmed
+      ? `${trimmed}; ${ancestors}`
+      : ancestors;
+  } else {
+    responseHeaders['content-security-policy'] = ancestors;
+  }
+}
+
+function proxyHttp(
+  req: Request,
+  res: Response,
+  sessionId: string,
+  port: number,
+  parentPublicUrl?: string | null,
+): void {
   const upstreamHost = resolvePreviewUpstreamHost();
   const path = previewUpstreamPath(req.originalUrl, sessionId);
   const headers = upstreamRequestHeaders(req, port);
@@ -112,6 +187,14 @@ function proxyHttp(req: Request, res: Response, sessionId: string, port: number)
       const responseHeaders = copyHeaders(proxyRes);
       const contentType = String(proxyRes.headers['content-type'] ?? '');
       const shouldRewriteHtml = contentType.includes('text/html');
+
+      // CSP frame-ancestors so the iframe is embeddable by the Hub UI.
+      // Applied to ALL response types (HTML, JS, CSS, images) so the
+      // browser sees the policy on every sub-resource fetch — frame-
+      // ancestors only matters on the document, but setting it
+      // uniformly is cheap and avoids surprising behaviour if some
+      // upstream type ever becomes the iframe document.
+      applyIframeEmbedHeaders(responseHeaders, parentPublicUrl);
 
       if (!shouldRewriteHtml) {
         if (!res.headersSent) {
@@ -269,7 +352,7 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
       res.status(503).send('No active preview for this session');
       return;
     }
-    proxyHttp(req, res, sessionId, port);
+    proxyHttp(req, res, sessionId, port, deps.parentPublicUrl);
   };
 }
 
