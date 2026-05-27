@@ -90,6 +90,39 @@ export default function SessionPreviewPane({
   const [isResizing, setIsResizing] = useState(false);
   const poppedWindowRef = useRef(null);
 
+  // Wildcard subdomain base for "subdomain preview" mode (Phase 4 of
+  // the session-previews RFC). Fetched once from /api/config; null
+  // while loading or when the server has it unset (path-prefix mode).
+  // Used to decide whether resolvePreviewBrowserUrl returns a
+  // subdomain URL or a Hub-origin path-prefix URL.
+  const [previewSubdomainBase, setPreviewSubdomainBase] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${getApiBase()}/api/config`, {
+          headers: getAuthHeaders(),
+        });
+        if (!r.ok) return;
+        const cfg = await r.json();
+        if (cancelled) return;
+        setPreviewSubdomainBase(
+          typeof cfg.previewSubdomainBase === 'string' && cfg.previewSubdomainBase
+            ? cfg.previewSubdomainBase
+            : null,
+        );
+      } catch {
+        // Best-effort — on failure we just fall back to path-prefix
+        // mode, which is the safe default. No UI banner needed; the
+        // operator sees the path-prefix URL render correctly via
+        // the existing AGENT_HUB_PREVIEW_BASE_PATH wiring.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Resizable width — persisted per session in localStorage.
   const widthKey = paneWidthStorageKey(sessionId);
   const [width, setWidth] = useState(() => {
@@ -176,8 +209,10 @@ export default function SessionPreviewPane({
   const refreshAt = event?.refreshAt;
   const browserPreviewUrl = useMemo(() => {
     if (state.status !== 'ready' || !state.url) return '';
-    return resolvePreviewBrowserUrl(state.url);
-  }, [state.status, state.url]);
+    return resolvePreviewBrowserUrl(state.url, {
+      subdomainBase: previewSubdomainBase,
+    });
+  }, [state.status, state.url, previewSubdomainBase]);
 
   const baseIframeSrc = useMemo(() => {
     if (!browserPreviewUrl) return '';

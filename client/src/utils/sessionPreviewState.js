@@ -110,14 +110,89 @@ export function resolvePreviewBrowsingOrigin(originOverride) {
 }
 
 /**
- * Turn a Hub preview-proxy URL (relative or absolute) into an absolute URL
- * on the origin the user actually loaded the app from. Fixes iframe DNS errors
- * when `publicUrl` in server config does not match the browsing host.
+ * UUID label check for subdomain-mode session ids — mirror of the server-
+ * side `SESSION_ID_LABEL_RE` in `server/preview/preview-subdomain-host.ts`.
+ * Kept in sync so a session id the server WILL parse out of the Host is
+ * the same shape this client builds into the URL. Diverging would mean
+ * the iframe loads at a host the server refuses to dispatch.
  */
-export function resolvePreviewBrowserUrl(url, { origin } = {}) {
+const SESSION_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Build the subdomain iframe URL `https://<sid>.<base>/<original-path>`
+ * for subdomain-mode previews. Returns `null` when `subdomainBase` is
+ * unset (subdomain mode off) or when `sessionId` doesn't match the
+ * UUID shape the server requires.
+ *
+ * The "original-path" is what's after `/api/sessions/<sid>/preview/proxy`
+ * in the path-prefix URL — we strip that prefix so the dev server
+ * sees `/` (its default base) and emits asset URLs accordingly.
+ *
+ * Exported for testability; the higher-level `resolvePreviewBrowserUrl`
+ * decides whether to call it based on the per-server config.
+ */
+export function buildSubdomainPreviewUrl(pathPrefixUrl, sessionId, subdomainBase) {
+  if (!subdomainBase) return null;
+  if (!sessionId || !SESSION_ID_UUID_RE.test(sessionId)) return null;
+  const cleanBase = subdomainBase.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (!cleanBase) return null;
+  let pathname = '/';
+  let search = '';
+  let hash = '';
+  try {
+    const u = new URL(pathPrefixUrl, 'https://placeholder.invalid');
+    pathname = u.pathname;
+    search = u.search;
+    hash = u.hash;
+  } catch {
+    // Relative URL with no base — pull pieces out by hand.
+    const [pathPart, rest] = pathPrefixUrl.split('?', 2);
+    pathname = pathPart;
+    if (rest) {
+      const [q, h] = rest.split('#', 2);
+      search = `?${q}`;
+      if (h) hash = `#${h}`;
+    }
+  }
+  // Strip the path-prefix mount (`/api/sessions/<sid>/preview/proxy`)
+  // from the start of the pathname; what remains is what the dev
+  // server should see.
+  const mountRe = new RegExp(`^/api/sessions/[^/]+/preview/proxy(?=/|$)`);
+  const innerPath = pathname.replace(mountRe, '') || '/';
+  const normalisedInner = innerPath.startsWith('/') ? innerPath : `/${innerPath}`;
+  // Browser scheme: protocols other than https usually mean the
+  // operator is testing locally without a wildcard cert; if HTTPS
+  // isn't already in use on the parent, subdomain mode won't work
+  // anyway (cookie Secure flag, ALB listener), so we hardcode https.
+  return `https://${sessionId.toLowerCase()}.${cleanBase}${normalisedInner}${search}${hash}`;
+}
+
+/**
+ * Turn a Hub preview-proxy URL (relative or absolute) into an absolute URL
+ * the iframe should actually load. Two outcomes:
+ *
+ *   - When `subdomainBase` is set (server has the wildcard cert + Route 53
+ *     wired), return the subdomain URL `https://<sid>.<base>/<inner-path>`.
+ *     The app sees itself at `/` and every dev-server framework renders
+ *     correctly with zero per-app config (Phase 4 of the session-previews
+ *     RFC).
+ *
+ *   - Otherwise, return the same Hub-origin path-prefix URL the server
+ *     emitted, normalised to the browsing origin so it works even when
+ *     server `publicUrl` doesn't match the host the user loaded the SPA
+ *     from. This is the back-compat default.
+ */
+export function resolvePreviewBrowserUrl(url, { origin, subdomainBase } = {}) {
   if (!url || typeof url !== 'string') return url;
   const sessionId = previewProxySessionIdFromUrl(url);
   if (!sessionId) return url;
+
+  // Subdomain mode wins when configured. Falls back to path-prefix if
+  // the helper refuses to build (non-UUID session id, bad base, etc.).
+  if (subdomainBase) {
+    const subUrl = buildSubdomainPreviewUrl(url, sessionId, subdomainBase);
+    if (subUrl) return subUrl;
+  }
 
   const browsingOrigin = resolvePreviewBrowsingOrigin(origin);
   if (!browsingOrigin) return url;

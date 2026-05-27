@@ -244,6 +244,52 @@ describe('resolvePreviewBrowserUrl', () => {
       }),
     ).toBe('http://localhost:4101/board');
   });
+
+  it('returns a subdomain URL when subdomainBase is configured and sessionId is a UUID', () => {
+    // Subdomain mode hides the path-prefix mount from the dev server
+    // entirely — the iframe loads at `<sid>.<base>/...` and the app
+    // sees itself at `/`, so any framework's default base config
+    // works. Inner path (`/some/page`) is preserved.
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/some/page?foo=1`, {
+        subdomainBase: 'preview.agenthub.dev.surveytracker.io',
+      }),
+    ).toBe(`https://${sid}.preview.agenthub.dev.surveytracker.io/some/page?foo=1`);
+  });
+
+  it('falls back to path-prefix when subdomainBase is set but sessionId is not a UUID', () => {
+    // Non-UUID sessionId means the server-side dispatcher would
+    // refuse to parse the Host even if we built it. Falling back to
+    // the path-prefix URL keeps the iframe load reaching the proxy
+    // via the existing route, instead of producing a guaranteed-
+    // DNS-failure subdomain URL.
+    expect(
+      resolvePreviewBrowserUrl('/api/sessions/non-uuid-id/preview/proxy/', {
+        origin: 'https://hub.example.com',
+        subdomainBase: 'preview.example.com',
+      }),
+    ).toBe('https://hub.example.com/api/sessions/non-uuid-id/preview/proxy/');
+  });
+
+  it('ignores subdomainBase when unset (back-compat with the path-prefix deployment)', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'https://hub.example.com',
+      }),
+    ).toBe(`https://hub.example.com/api/sessions/${sid}/preview/proxy/`);
+  });
+
+  it('preserves query and hash when emitting subdomain URL', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(
+        `https://hub.test/api/sessions/${sid}/preview/proxy/orders?status=open#row=42`,
+        { subdomainBase: 'preview.example.com' },
+      ),
+    ).toBe(`https://${sid}.preview.example.com/orders?status=open#row=42`);
+  });
 });
 
 describe('withPreviewTicket', () => {

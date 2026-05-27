@@ -274,6 +274,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       publicUrl: config.publicUrl || '',
       apiKey: config.apiKey || '',
       authRequired: !!config.apiKey,
+      // Wildcard subdomain base for "subdomain preview" mode (Phase 4
+      // of the session-previews RFC). When non-empty, the UI builds
+      // iframe URLs as `<sessionId>.<base>` so the app sees itself at
+      // `/` and renders correctly without per-app base-path config.
+      // Empty = subdomain mode off; UI falls back to the path-prefix
+      // iframe URL.
+      previewSubdomainBase: config.previewSubdomainBase || '',
       githubApp: config.githubApp
         ? {
             appId: config.githubApp.appId,
