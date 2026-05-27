@@ -4,6 +4,8 @@ import {
   buildAuthenticatedUrl,
   redactToken,
   redactAuthHeader,
+  normalizeGitCloneAuthError,
+  isGitAuthCloneFailure,
   SSH_NOT_SUPPORTED_MESSAGE,
 } from './clone-url-auth.js';
 
@@ -181,6 +183,38 @@ describe('redactAuthHeader', () => {
     expect(out).not.toContain(base64);
     expect(out).toContain('attempt with ***');
     expect(out).toContain('Authorization: basic ***');
+  });
+});
+
+describe('normalizeGitCloneAuthError', () => {
+  it('rewrites flush-after-ref-listing when an auth header was sent', () => {
+    const raw = 'fatal: expected flush after ref listing';
+    const out = normalizeGitCloneAuthError(raw, true);
+    expect(out).toContain('HTTP 401');
+    expect(out).toContain('expected flush after ref listing');
+  });
+
+  it('leaves the message unchanged when no auth header was sent', () => {
+    const raw = 'fatal: expected flush after ref listing';
+    expect(normalizeGitCloneAuthError(raw, false)).toBe(raw);
+  });
+
+  it('does not double-prefix when HTTP 401 is already present', () => {
+    const raw =
+      "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 401";
+    expect(normalizeGitCloneAuthError(raw, true)).toBe(raw);
+  });
+});
+
+describe('isGitAuthCloneFailure', () => {
+  it('detects terminal-prompt and flush-after-ref auth failures', () => {
+    expect(
+      isGitAuthCloneFailure(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      ),
+    ).toBe(true);
+    expect(isGitAuthCloneFailure('fatal: expected flush after ref listing')).toBe(true);
+    expect(isGitAuthCloneFailure('fatal: early EOF')).toBe(false);
   });
 });
 

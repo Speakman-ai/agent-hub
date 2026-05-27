@@ -368,7 +368,16 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
   const logId = logEntry.lastInsertRowid;
 
   try {
-    const heartbeatCwd = await getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
+    const hbProject = getProjects().find((p) => p.id === agent.projectId);
+    const heartbeatCwd = await getOrCreateProcessWorktree(
+      agent.cwd,
+      `heartbeat-${agent.id}`,
+      undefined,
+      undefined,
+      hbProject?.repoUrl ?? null,
+      hbProject?.id,
+      hbProject?.githubRepo ?? null,
+    );
     const isDocsAgent = agent.role === 'docs';
     const timeoutMs =
       (agent.heartbeat as EnrichedAgent['heartbeat'] & { timeoutMs?: number })?.timeoutMs ||
@@ -377,7 +386,6 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       typeof agent.heartbeat.model === 'string' && agent.heartbeat.model.trim()
         ? agent.heartbeat.model.trim()
         : undefined;
-    const hbProject = getProjects().find((p) => p.id === agent.projectId);
     // Resolve the engine just-in-time so a heartbeat run can fall back to
     // any other authenticated CLI when Claude is unavailable. Throws
     // NoEnginesAvailableError when nothing is configured — caught below
@@ -567,8 +575,16 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
 
   try {
     const resolvedCwd = resolveCronCwd(cronJob);
-    const cronCwd = await getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
     const cronProject = findProjectForCron(cronJob);
+    const cronCwd = await getOrCreateProcessWorktree(
+      resolvedCwd,
+      `cron-${cronJob.id}`,
+      undefined,
+      undefined,
+      cronProject?.repoUrl ?? null,
+      cronProject?.id,
+      cronProject?.githubRepo ?? null,
+    );
     const cronSkillAgentId = cronProject
       ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
       : undefined;

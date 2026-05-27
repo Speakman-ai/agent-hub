@@ -424,6 +424,28 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
   // `ensureSessionWorkspace` path with the real-world argv echo + GitHub
   // 403 body so any future regression of the layered redaction shows up
   // here, not in production logs.
+  it('normalizes flush-after-ref-listing to HTTP 401 when auth header was sent', async () => {
+    const USER_PAT = 'ghp_flush_to_401_test';
+    mockGetGithubPatForUser.mockReturnValue(USER_PAT);
+    currentRemoteUrl = 'https://github.com/owner/private-repo.git';
+    cloneFailMessage = 'fatal: expected flush after ref listing';
+
+    const onFailure = vi.fn();
+    await ensureSessionWorkspace(
+      makeSession(uniqueSessionId(), 'user-1'),
+      sourceDir,
+      'agent-1',
+      vi.fn(),
+      undefined,
+      onFailure,
+    );
+
+    expect(onFailure).toHaveBeenCalledOnce();
+    const surfacedMessage: string = onFailure.mock.calls[0][1];
+    expect(surfacedMessage).toContain('HTTP 401');
+    expect(surfacedMessage).toContain('expected flush after ref listing');
+  });
+
   it('redacts the base64 Authorization header from real-world argv-echo errors', async () => {
     const USER_PAT = 'gho_REAL_user_oauth_token_MUST_NOT_LEAK_xyz';
     mockGetGithubPatForUser.mockReturnValue(USER_PAT);

@@ -141,3 +141,30 @@ export function redactAuthHeader(text: string): string {
  */
 export const SSH_NOT_SUPPORTED_MESSAGE =
   'SSH cloning is not supported in this deployment — paste the HTTPS URL form (https://github.com/owner/repo.git) and connect your GitHub account in Settings → GitHub for private repos.';
+
+/**
+ * Git sometimes surfaces opaque transport errors when an `http.extraheader`
+ * Authorization basic header was sent but GitHub rejected the credential —
+ * e.g. `fatal: expected flush after ref listing` instead of a plain
+ * `HTTP 401`. When we know auth headers were attached, rewrite those lines
+ * so operators see an explicit 401 rather than chasing git internals.
+ */
+export function normalizeGitCloneAuthError(message: string, hadAuthHeader: boolean): string {
+  if (!hadAuthHeader || !message) return message;
+  if (/HTTP\s+40[13]\b/i.test(message)) return message;
+  if (!/expected flush after ref listing/i.test(message)) return message;
+  return `GitHub returned HTTP 401 (authentication failed). ${message}`;
+}
+
+/** True when git failed because no credentials were available or were rejected. */
+export function isGitAuthCloneFailure(message: string): boolean {
+  const haystack = message;
+  return (
+    /could not read Username/i.test(haystack) ||
+    /Authentication failed/i.test(haystack) ||
+    /HTTP\s+40[13]\b/i.test(haystack) ||
+    /access denied/i.test(haystack) ||
+    /expected flush after ref listing/i.test(haystack) ||
+    /terminal prompts disabled/i.test(haystack)
+  );
+}

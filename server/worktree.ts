@@ -21,6 +21,8 @@ import {
   buildAuthenticatedUrl,
   redactToken,
   redactAuthHeader,
+  normalizeGitCloneAuthError,
+  isGitAuthCloneFailure,
 } from './clone-url-auth.js';
 import { getInstallationToken, resolveInstallationId } from './github-app.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
@@ -230,6 +232,20 @@ interface CloneRetryOptions extends RetryOptions {
  *      a `githubRepo` (the rare project that does not point at a
  *      GitHub remote, plus tests that don't seed memberships).
  */
+/** Shared PAT/OAuth resolution for session and process (heartbeat/cron) clones. */
+async function resolveProcessWorktreeAuth(githubRepo?: string | null): Promise<{
+  userToken: string | null;
+  authArgs: string[];
+  tokenOwnerId: string | null;
+}> {
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(null, githubRepo ?? null);
+  const userToken: string | null = await resolveUserGithubToken(tokenOwnerId, {
+    oauthCredentials: resolveOAuthAppCredentials(config),
+  });
+  const authArgs: string[] = userToken ? gitAuthArgsForGithubPat(userToken) : [];
+  return { userToken, authArgs, tokenOwnerId };
+}
+
 async function resolveWorktreeTokenOwnerId(
   sessionOwnerId: string | null,
   githubRepo?: string | null,
@@ -979,22 +995,34 @@ export async function getOrCreateProcessWorktree(
   repoUrl?: string | null,
   /** Project id for error attribution; opaque to the worktree code. */
   projectId?: string,
+  /**
+   * `Project.githubRepo` (e.g. `Speakman-ai/agent-hub`). Drives the same
+   * repo-aware Owner token resolution used by session clones so heartbeat
+   * and cron process worktrees authenticate private GitHub HTTPS remotes.
+   */
+  githubRepo?: string | null,
 ): Promise<string> {
+  const { userToken, authArgs, tokenOwnerId } = await resolveProcessWorktreeAuth(githubRepo);
+
   // Self-heal: if the project has a `repoUrl` and the cwd is missing or
   // not a git repo, auto-clone before falling through to the legacy
   // existsSync fallback. Public-repo / no-token cases are tolerated.
   if (repoUrl) {
     try {
-      // No requestingUserId here: getOrCreateProcessWorktree has no session
-      // owner identity (it's called for heartbeats / cron jobs, not for a
-      // specific user session). The user-PAT fallback path in
-      // ensureProjectRepoCloned is therefore intentionally absent — if the
-      // GitHub App installation token isn't available this path uses only
-      // unauthenticated access (public repos) or fails gracefully.
-      await ensureProjectRepoCloned(projectCwd, repoUrl, { projectId });
+      await ensureProjectRepoCloned(projectCwd, repoUrl, {
+        projectId,
+        requestingUserId: tokenOwnerId,
+      });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Workspace] ${message}`);
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = redactAuthHeader(redactToken(raw, userToken));
+      if (!userToken && isGitAuthCloneFailure(message)) {
+        console.info(
+          `[Workspace] Skipping project auto-clone for ${projectId ?? '<unknown>'}: no GitHub credential (connect Settings → GitHub or set GH_TOKEN)`,
+        );
+      } else {
+        console.error(`[Workspace] ${message}`);
+      }
       // Fall through — the existing isGitRepo check below will return
       // projectCwd as-is (legacy non-git fallback) so the session can
       // still spawn against an empty workspace if that's all we have.
@@ -1019,13 +1047,20 @@ export async function getOrCreateProcessWorktree(
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
     try {
-      await fetchWithRetry(['fetch', 'origin', '--quiet'], {
+      await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
       const syncBranch = await resolveSyncBranch(projectCwd, syncBaseBranch);
       await fetchWithRetry(
-        ['fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`, '--depth', '1'],
+        [
+          ...authArgs,
+          'fetch',
+          'origin',
+          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+          '--depth',
+          '1',
+        ],
         {
           cwd: cloneDir,
           timeoutMs: FETCH_TIMEOUT_MS,
@@ -1052,8 +1087,26 @@ export async function getOrCreateProcessWorktree(
   try {
     const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
+      let canonRemoteUrl = remoteUrl;
+      try {
+        const u = new URL(remoteUrl);
+        if (u.password || (u.username && u.username !== 'git')) {
+          u.username = '';
+          u.password = '';
+          canonRemoteUrl = u.toString();
+        }
+      } catch {
+        /* SCP / non-hierarchical URLs — leave as-is */
+      }
+      const parsedRemote = classifyCloneUrl(canonRemoteUrl);
+      const cloneSourceUrl =
+        parsedRemote.kind === 'github-https' && parsedRemote.owner && parsedRemote.repo
+          ? `https://github.com/${parsedRemote.owner}/${parsedRemote.repo}.git`
+          : canonRemoteUrl;
+      const cloneAuthArgs = parsedRemote.kind === 'github-https' ? authArgs : [];
+
       await cloneWithRetry(
-        ['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir],
+        [...cloneAuthArgs, 'clone', '--depth', '1', '--quiet', cloneSourceUrl, cloneDir],
         { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
         cloneDir,
       );
@@ -1068,7 +1121,14 @@ export async function getOrCreateProcessWorktree(
     const syncBranch = await resolveSyncBranch(projectCwd, syncBaseBranch);
     try {
       await fetchWithRetry(
-        ['fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`, '--depth', '1'],
+        [
+          ...authArgs,
+          'fetch',
+          'origin',
+          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+          '--depth',
+          '1',
+        ],
         {
           cwd: cloneDir,
           timeoutMs: FETCH_TIMEOUT_MS,
@@ -1087,11 +1147,19 @@ export async function getOrCreateProcessWorktree(
       awaitInstall: false,
       preferInstallAllScript: false,
     });
-    console.log(`[Workspace] Created clone: ${cloneDir}`);
+    console.log(`[Workspace] Created clone: ${cloneDir}${userToken ? ' (user token)' : ''}`);
     return cloneDir;
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[Workspace] Failed to create clone "${safeName}":`, message);
+    const raw = err instanceof Error ? err.message : String(err);
+    const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+    const message = redactAuthHeader(redactToken(normalized, userToken));
+    if (!userToken && isGitAuthCloneFailure(message)) {
+      console.info(
+        `[Workspace] Skipping process clone "${safeName}": no GitHub credential (${message.split('\n')[0]})`,
+      );
+    } else {
+      console.error(`[Workspace] Failed to create clone "${safeName}":`, message);
+    }
     return copyFallback(projectCwd, cloneDir);
   }
 }
@@ -1622,7 +1690,8 @@ export async function ensureSessionWorkspace(
       );
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
-      const message = redactAuthHeader(redactToken(raw, userToken));
+      const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+      const message = redactAuthHeader(redactToken(normalized, userToken));
       console.error(
         `[Workspace] Failed to position session clone on origin/${syncBranch}:`,
         message,
@@ -1651,6 +1720,7 @@ export async function ensureSessionWorkspace(
     return cloneDir;
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
+    const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
     // Triple-pass redaction: strip the user token and any installation token
     // that was embedded in the project repo's remote.origin.url so neither
     // secret reaches the WebSocket log or the onFailure callback. The final
@@ -1659,7 +1729,7 @@ export async function ensureSessionWorkspace(
     // .extraheader=Authorization: basic …` argv echoes — that shape contains
     // none of the raw token's characters, so value-based redaction can't
     // reach it on its own.
-    const once = redactToken(raw, userToken);
+    const once = redactToken(normalized, userToken);
     const twice = redactToken(once, embeddedToken);
     const message = redactAuthHeader(twice);
     console.error(`[Workspace] Failed to create session clone:`, message);
