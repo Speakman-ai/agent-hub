@@ -110,6 +110,38 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     };
   }
 
+  it('fetches origin when session.worktree_path is already persisted (resume path)', async () => {
+    const persist = vi.fn();
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = clonePath;
+
+    const initialOriginTip = git(clonePath, 'rev-parse origin/main');
+
+    writeFileSync(path.join(sourceRepo, 'RESUME.md'), 'after first ensure\n');
+    git(sourceRepo, 'add RESUME.md');
+    git(sourceRepo, 'commit -m "resume path upstream"');
+    git(sourceRepo, 'push origin main');
+    const newOriginTip = git(sourceRepo, 'rev-parse HEAD');
+    expect(newOriginTip).not.toBe(initialOriginTip);
+
+    const resumedPath = await ensureSessionWorkspace(
+      makeSession(clonePath),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    expect(resumedPath).toBe(clonePath);
+
+    const refreshedOriginTip = git(clonePath, 'rev-parse origin/main');
+    expect(refreshedOriginTip).toBe(newOriginTip);
+  });
+
   it('fetches origin on reuse so origin/main reflects new upstream commits', async () => {
     const persist = vi.fn();
 
@@ -294,6 +326,44 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     );
     createdWorkspace = clonePath;
     expect(existsSync(path.join(clonePath, '.git'))).toBe(true);
+  });
+
+  it('cuts a fresh feature branch from the latest origin/main when default branch advances before second spawn', async () => {
+    const persist = vi.fn();
+
+    const firstPath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = firstPath;
+    const firstOriginMain = git(firstPath, 'rev-parse origin/main');
+
+    writeFileSync(path.join(sourceRepo, 'BETWEEN-SPAWNS.md'), 'landed between spawns\n');
+    git(sourceRepo, 'add BETWEEN-SPAWNS.md');
+    git(sourceRepo, 'commit -m "between spawns"');
+    git(sourceRepo, 'push origin main');
+    const advancedMain = git(sourceRepo, 'rev-parse HEAD');
+    expect(advancedMain).not.toBe(firstOriginMain);
+
+    const secondSessionId = `bbbbbbbb-${Date.now().toString(36)}-spawn2`;
+    const secondSession = {
+      ...makeSession(null),
+      id: secondSessionId,
+    };
+    const secondPath = await ensureSessionWorkspace(
+      secondSession,
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+
+    expect(git(secondPath, 'rev-parse origin/main')).toBe(advancedMain);
+    const featureTip = git(secondPath, 'rev-parse HEAD');
+    expect(featureTip).toBe(advancedMain);
+    expect(existsSync(path.join(secondPath, 'BETWEEN-SPAWNS.md'))).toBe(true);
+    removeWorkspace(secondPath);
   });
 
   it('positions a fresh session clone on kanban pr_base_branch when set', async () => {

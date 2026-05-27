@@ -1276,6 +1276,116 @@ async function detectAndHandleBaseBranchDrift(
   }
 }
 
+interface RefreshSessionCloneRemotesOpts {
+  cloneDir: string;
+  projectCwd: string;
+  sessionId: string;
+  safeName: string;
+  authArgs: string[];
+  userToken: string | null;
+  prBaseBranch?: string | null;
+  onBaseBranchAdvanced?: OnBaseBranchAdvancedFn;
+}
+
+/**
+ * Refresh remote-tracking refs for an existing session clone. Updates
+ * `origin/<default>` and, when configured, `origin/<pr_base_branch>` without
+ * resetting the checked-out feature branch (in-progress work must survive).
+ * Logs when the sync branch tip moves so operators can audit freshness.
+ */
+async function refreshSessionCloneRemotes(opts: RefreshSessionCloneRemotesOpts): Promise<void> {
+  const {
+    cloneDir,
+    projectCwd,
+    sessionId,
+    safeName,
+    authArgs,
+    userToken,
+    prBaseBranch,
+    onBaseBranchAdvanced,
+  } = opts;
+
+  const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
+  let priorTip: string | null = null;
+  try {
+    priorTip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
+  } catch {
+    /* first fetch — no remote-tracking ref yet */
+  }
+
+  let fetchSucceeded = false;
+  try {
+    await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
+      cwd: cloneDir,
+      timeoutMs: FETCH_TIMEOUT_MS,
+    });
+    fetchSucceeded = true;
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const message = redactAuthHeader(redactToken(raw, userToken));
+    console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
+  }
+
+  let baseRefRefreshed = false;
+  try {
+    await fetchWithRetry(
+      [...authArgs, 'fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`],
+      { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+    );
+    baseRefRefreshed = true;
+    const newTip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
+    if (priorTip && priorTip !== newTip) {
+      console.log(
+        `[Workspace] Refreshed origin/${syncBranch} for session ${safeName}: ${priorTip.slice(0, 7)} → ${newTip.slice(0, 7)}`,
+      );
+    } else if (!priorTip) {
+      console.log(
+        `[Workspace] Fetched origin/${syncBranch} for session ${safeName} at ${newTip.slice(0, 7)}`,
+      );
+    }
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const message = redactAuthHeader(redactToken(raw, userToken));
+    console.warn(
+      `[Workspace] Could not refresh origin/${syncBranch} for session "${safeName}":`,
+      message,
+    );
+  }
+
+  const trimmedBase = prBaseBranch?.trim();
+  if (fetchSucceeded && baseRefRefreshed && trimmedBase && onBaseBranchAdvanced) {
+    try {
+      const drift = await detectAndHandleBaseBranchDrift(cloneDir, sessionId, trimmedBase);
+      if (drift) {
+        try {
+          onBaseBranchAdvanced(drift);
+        } catch (cbErr: unknown) {
+          const message = cbErr instanceof Error ? cbErr.message : String(cbErr);
+          console.warn(
+            `[Workspace] onBaseBranchAdvanced callback threw for session "${safeName}":`,
+            message,
+          );
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Workspace] Drift detection failed for session "${safeName}", continuing:`,
+        message,
+      );
+    }
+  }
+}
+
+/**
+ * Provision or reuse the per-session git clone under `~/.agent-hub/workspaces/`.
+ *
+ * All chat/autonomous/reviewer/webhook spawn paths converge on `ensureWorktree`
+ * in `index.ts`, which calls this function. Remote refs are refreshed on every
+ * call when the clone already exists (persisted `worktree_path`, on-disk reuse,
+ * or resume). Fresh clones sync to `origin/<default>` or `origin/<pr_base_branch>`
+ * before cutting `agent-hub/<agentId>/session-<id>`.
+ */
 export async function ensureSessionWorkspace(
   session: SessionRow,
   projectCwd: string,
@@ -1309,18 +1419,6 @@ export async function ensureSessionWorkspace(
 ): Promise<string> {
   if (Number(session.use_worktree) !== 1) {
     return projectCwd;
-  }
-  if (session.worktree_path && existsSync(session.worktree_path)) {
-    try {
-      await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
-        ...sessionWorkspaceDependencyInstallOpts(),
-      });
-    } catch (err: unknown) {
-      if (!(err instanceof SessionDependencyInstallError)) throw err;
-      onFailure?.(session.id, err.message);
-      return projectCwd;
-    }
-    return session.worktree_path;
   }
 
   // Per-session GitHub token resolution. Pulled once at the top (before
@@ -1370,88 +1468,50 @@ export async function ensureSessionWorkspace(
     return projectCwd;
   }
 
-  const wsDir = ensureWorkspaceDir(projectCwd);
   const shortId = session.id.slice(0, 8);
   const safeName = `session-${shortId}`;
+
+  // Persisted worktree_path (resume, kanban dispatch, webhook autofix, etc.).
+  // Must refresh remotes on every ensure — previously this path returned early
+  // without fetching, so origin/main stayed stale after merges landed.
+  if (session.worktree_path && existsSync(session.worktree_path)) {
+    await refreshSessionCloneRemotes({
+      cloneDir: session.worktree_path,
+      projectCwd,
+      sessionId: session.id,
+      safeName,
+      authArgs,
+      userToken,
+      prBaseBranch,
+      onBaseBranchAdvanced,
+    });
+    try {
+      await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
+        ...sessionWorkspaceDependencyInstallOpts(),
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof SessionDependencyInstallError)) throw err;
+      onFailure?.(session.id, err.message);
+      return projectCwd;
+    }
+    return session.worktree_path;
+  }
+
+  const wsDir = ensureWorkspaceDir(projectCwd);
   const cloneDir = path.join(wsDir, safeName);
   const branchName = `agent-hub/${agentId}/${safeName}`;
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
-    // Refresh remote-tracking refs so origin/<default> reflects current main.
-    // Do NOT reset the checked-out feature branch — it may carry in-progress
-    // work. Agents that want to see merged PRs can `git log origin/<default>`
-    // or rebase explicitly.
-    let fetchSucceeded = false;
-    try {
-      await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
-        cwd: cloneDir,
-        timeoutMs: FETCH_TIMEOUT_MS,
-      });
-      fetchSucceeded = true;
-    } catch (err: unknown) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const message = redactAuthHeader(redactToken(raw, userToken));
-      console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
-    }
-
-    // Umbrella-branch drift detection. Only meaningful when:
-    //   (a) we have a `pr_base_branch` to compare against (epic / stacked PR),
-    //   (b) the fetch above actually landed (otherwise origin/<base> is stale
-    //       and any comparison would be against the old tip — false negative).
-    // For long-running cards under an epic, siblings merging into the umbrella
-    // between feedback rounds means the iterating card's branch is N commits
-    // behind base on resume → guaranteed conflict on next push. Two-tier fix:
-    // clean tree gets auto-rebased; dirty tree gets a notice via the callback.
-    //
-    // The generic `fetch origin --quiet` above only updates branches in the
-    // clone's `remote.origin.fetch` refspec. `git clone --depth 1` implies
-    // `--single-branch`, so the clone's fetch refspec lists ONLY the default
-    // branch. We must therefore explicitly refresh `origin/<base>` before
-    // comparing — otherwise a stale remote-tracking ref produces a false
-    // "no drift" result and the rebase opportunity is missed.
-    const trimmedBase = prBaseBranch?.trim();
-    if (fetchSucceeded && trimmedBase && onBaseBranchAdvanced) {
-      let baseRefRefreshed = true;
-      try {
-        await fetchWithRetry(
-          [...authArgs, 'fetch', 'origin', `${trimmedBase}:refs/remotes/origin/${trimmedBase}`],
-          { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
-        );
-      } catch (err: unknown) {
-        const raw = err instanceof Error ? err.message : String(err);
-        const message = redactAuthHeader(redactToken(raw, userToken));
-        console.warn(
-          `[Workspace] Could not refresh origin/${trimmedBase} for drift check on session "${safeName}":`,
-          message,
-        );
-        baseRefRefreshed = false;
-      }
-
-      if (baseRefRefreshed) {
-        try {
-          const drift = await detectAndHandleBaseBranchDrift(cloneDir, session.id, trimmedBase);
-          if (drift) {
-            try {
-              onBaseBranchAdvanced(drift);
-            } catch (cbErr: unknown) {
-              // A callback failure must not poison the reuse path — the
-              // worktree is still healthy, we just couldn't surface the notice.
-              const message = cbErr instanceof Error ? cbErr.message : String(cbErr);
-              console.warn(
-                `[Workspace] onBaseBranchAdvanced callback threw for session "${safeName}":`,
-                message,
-              );
-            }
-          }
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[Workspace] Drift detection failed for session "${safeName}", continuing:`,
-            message,
-          );
-        }
-      }
-    }
+    await refreshSessionCloneRemotes({
+      cloneDir,
+      projectCwd,
+      sessionId: session.id,
+      safeName,
+      authArgs,
+      userToken,
+      prBaseBranch,
+      onBaseBranchAdvanced,
+    });
 
     await enableHuskyHooks(cloneDir);
     try {
@@ -1535,24 +1595,40 @@ export async function ensureSessionWorkspace(
       );
     }
 
-    const base = prBaseBranch?.trim();
-    if (base) {
-      try {
-        await fetchWithRetry(
-          [...authArgs, 'fetch', 'origin', `${base}:refs/remotes/origin/${base}`, '--depth', '1'],
-          {
-            cwd: cloneDir,
-            timeoutMs: FETCH_TIMEOUT_MS,
-          },
-        );
-        await runGit(['reset', '--hard', `origin/${base}`], { cwd: cloneDir });
-      } catch (err: unknown) {
-        const raw = err instanceof Error ? err.message : String(err);
-        const message = redactAuthHeader(redactToken(raw, userToken));
-        console.error(`[Workspace] Failed to position session clone on origin/${base}:`, message);
-        onFailure?.(session.id, message);
-        return projectCwd;
-      }
+    const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
+    try {
+      await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
+        cwd: cloneDir,
+        timeoutMs: FETCH_TIMEOUT_MS,
+      });
+      await fetchWithRetry(
+        [
+          ...authArgs,
+          'fetch',
+          'origin',
+          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+          '--depth',
+          '1',
+        ],
+        {
+          cwd: cloneDir,
+          timeoutMs: FETCH_TIMEOUT_MS,
+        },
+      );
+      await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
+      const tip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
+      console.log(
+        `[Workspace] Fresh session clone synced to origin/${syncBranch} at ${tip.slice(0, 7)} before branching (${branchName})`,
+      );
+    } catch (err: unknown) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = redactAuthHeader(redactToken(raw, userToken));
+      console.error(
+        `[Workspace] Failed to position session clone on origin/${syncBranch}:`,
+        message,
+      );
+      onFailure?.(session.id, message);
+      return projectCwd;
     }
 
     await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
