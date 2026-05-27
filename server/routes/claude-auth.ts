@@ -473,14 +473,9 @@ export function parseCallbackPortFromLsofLine(line: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-/** Log-friendly description of how the CLI subprocess ended (Node passes `signal` when killed). */
-export function formatChildExitInfo(code: number | null, signal: NodeJS.Signals | null): string {
-  if (signal) {
-    return code != null && code !== 0 ? `signal=${signal} code=${code}` : `signal=${signal}`;
-  }
-  if (code === null) return 'code=null';
-  return `code=${code}`;
-}
+import { formatChildExitInfo } from '../process-termination.js';
+
+export { formatChildExitInfo };
 
 async function detectCallbackPortLsof(pid: number): Promise<number | null> {
   try {

@@ -76,6 +76,13 @@ import {
   logArgvCapTruncation,
 } from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import {
+  appendRunCancelledSystemMessage,
+  finalizeChatRunAfterTermination,
+  formatChatExitLog,
+  markSessionTermination,
+  resolveChatTerminationOnClose,
+} from './process-termination.js';
 import { ensureSpawnCwd } from './spawn-cwd.js';
 import {
   detectSessionIdInUseError,
@@ -1624,6 +1631,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
           const proc = activeProcesses.get(sessionId);
           if (proc) {
+            markSessionTermination(sessionId, 'chat_interrupt_queued');
+            console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
           }
           if (activeDelegationSessions.has(sessionId)) {
@@ -1703,6 +1712,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           console.log(`[chat] Interrupt received for session ${sessionId} — stopping current task`);
           const proc = activeProcesses.get(sessionId);
           if (proc) {
+            markSessionTermination(sessionId, 'chat_interrupt');
+            console.info(`[chat] chat_interrupt: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
           }
           if (activeDelegationSessions.has(sessionId)) {
@@ -3102,7 +3113,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         errorOutput += chunk.toString();
       });
 
-      proc.on('close', async (code: number | null) => {
+      proc.on('close', async (code: number | null, signal: NodeJS.Signals | null) => {
         activeProcesses.delete(sessionId);
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
@@ -3157,6 +3168,40 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         for (const event of parser.flush()) handleEvent(event);
 
         const assembled = (finalText || partialFallback).trim();
+
+        const termination = resolveChatTerminationOnClose(sessionId, code, signal);
+        if (termination) {
+          console.info(
+            formatChatExitLog({
+              engine,
+              sessionId,
+              code,
+              signal,
+              reason: termination.reason,
+            }),
+          );
+          appendRunCancelledSystemMessage({ stmts: S, broadcast }, sessionId, termination.reason);
+        }
+
+        if (termination) {
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
+          finalizeChatRunAfterTermination({
+            stmts: S,
+            broadcast,
+            sessionId,
+            assistantMsgId,
+            engine,
+            model,
+            agentId: agent.id,
+            agentName: agent.name,
+            assembled,
+          });
+          drainQueue(sessionId);
+          return;
+        }
 
         if (code !== 0 && !assembled) {
           // Node reports `-errno` on the close event when spawn fails without
@@ -3260,7 +3305,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               errorMsg = buildNoConversationFoundRecoveryMessage(missing.sessionId);
             }
           }
-          console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
+          if (!termination) {
+            console.error(
+              formatChatExitLog({
+                engine,
+                sessionId,
+                code,
+                signal,
+                reason: null,
+              }),
+            );
+          }
           console.error(`  bin: ${bin}`);
           console.error(`  cwd: ${effectiveCwd}`);
           console.error(`  args: ${JSON.stringify(args)}`);
