@@ -1,3 +1,7 @@
+/**
+ * Legacy streaming bubble — not mounted in the web chat path. Live assistant
+ * streaming renders via SessionTail (see App.jsx). Kept for reference only.
+ */
 import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';

@@ -52,6 +52,7 @@ export default function ChatScreen() {
     eventsByMessage,
     browserScreensBySession,
     handleDequeue,
+    handleInterruptQueuedMessage,
     handleEditQueuedMessage,
     handleDelegationCancel,
     handleEventsLoaded,
@@ -167,7 +168,7 @@ export default function ChatScreen() {
               agentColor={activeAgent?.color}
               onDequeue={isQueued ? handleDequeue : undefined}
               onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
-              onInterrupt={isQueued && isProcessing ? handleCancel : undefined}
+              onInterrupt={isQueued && isProcessing ? handleInterruptQueuedMessage : undefined}
               inFlightWhileStreaming={isQueued && isProcessing}
               fromAgent={activeAgent}
               agents={agents}

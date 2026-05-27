@@ -795,7 +795,9 @@ export default function MessageInput({
           className="flex items-center justify-between gap-2 mb-2 px-2 py-1.5 bg-amber-900/20 border border-amber-800/40 rounded-lg text-xs text-amber-200/90"
           data-testid="composer-edit-queued-banner"
         >
-          <span>Editing queued message (text only — attachments disabled)</span>
+          <span>
+            Editing queued message (text only — your queue slot is kept until you send or cancel)
+          </span>
           <button
             type="button"
             onClick={() => {

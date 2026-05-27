@@ -57,6 +57,7 @@ import { api } from './utils/api.js';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom, forcePinChatTailScroll } from './utils/chatScroll.js';
+import { attachmentsFromQueuedMessage } from '../../shared/utils/queuedMessageAttachments.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
@@ -2198,12 +2199,13 @@ export default function App() {
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
       const tailId = streamingMsgIdRef.current;
+      isNearBottomRef.current = true;
+      pinChatTail(tailId);
       send({ type: 'cancel', sessionId: activeSessionId });
       setThinking(false);
       setStreamingContent('');
       setStreamingMsgId(null);
       setStreamingEngine(null);
-      pinChatTail(tailId);
     }
   }, [activeSessionId, send, pinChatTail]);
 
@@ -3302,6 +3304,19 @@ export default function App() {
     });
   };
 
+  /** Send a queued user message now and interrupt the in-flight assistant turn. */
+  const handleInterruptQueuedMessage = useCallback(
+    async (message) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId || !message?.id) return;
+      send({ type: 'dequeue', sessionId, messageId: message.id });
+      setMessages((prev) => prev.filter((m) => m.id !== message.id));
+      const images = attachmentsFromQueuedMessage(message);
+      await handleSend(message.content || '', images, { interrupt: true });
+    },
+    [send, handleSend],
+  );
+
   const isProcessing = thinking || !!streamingContent;
   const activeSession = useMemo(
     () =>
@@ -4206,7 +4221,7 @@ export default function App() {
                                     onDequeue={handleDequeue}
                                     onEditQueued={handleEditQueuedMessage}
                                     onEditInComposer={handleEditInComposer}
-                                    onInterrupt={handleCancel}
+                                    onInterrupt={handleInterruptQueuedMessage}
                                     inFlightWhileStreaming={isProcessing}
                                   />
                                 ))}
@@ -4218,7 +4233,7 @@ export default function App() {
                         {/* Scroll to bottom button */}
                         {showScrollBtn && (
                           <button
-                            onClick={() => scrollToBottom(false)}
+                            onClick={() => scrollToBottom()}
                             className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
                             style={{ width: 'fit-content', display: 'flex' }}
                           >

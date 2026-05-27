@@ -592,7 +592,7 @@ function ChatMessage({
                   <Text style={styles.queuedActionText}>Edit</Text>
                 </TouchableOpacity>
                 {showInFlightActions && onInterrupt && (
-                  <TouchableOpacity onPress={() => onInterrupt()}>
+                  <TouchableOpacity onPress={() => onInterrupt(message)}>
                     <Text style={[styles.queuedActionText, { color: '#fbbf24' }]}>Interrupt</Text>
                   </TouchableOpacity>
                 )}
