@@ -9,7 +9,7 @@ import AgentSwitcher from './components/AgentSwitcher.jsx';
 import ForwardSessionModal, { filterForwardTargets } from './components/ForwardSessionModal.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
-import RoomChat from './components/RoomChat.jsx';
+import SessionAgentsPanel from './components/SessionAgentsPanel.jsx';
 import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
@@ -185,14 +185,11 @@ export default function App() {
   const [eventsByMessage, setEventsByMessage] = useState({});
   // Message queue state: sessionId -> [{id, content, position}]
   const [messageQueues, setMessageQueues] = useState({});
-  // Conference room state
-  const [rooms, setRooms] = useState([]);
-  const [activeRoomId, setActiveRoomId] = useState(null);
-  const [roomMessages, setRoomMessages] = useState([]);
-  const [roomStreaming, setRoomStreaming] = useState(null);
-  const [roomThinking, setRoomThinking] = useState(null);
-  const [roomProcessing, setRoomProcessing] = useState(false);
-  const [roomQueueLength, setRoomQueueLength] = useState(0);
+  // Multi-agent session roster for the active session (executor + advisors).
+  const [sessionAgents, setSessionAgents] = useState([]);
+  const [sessionRoundProcessing, setSessionRoundProcessing] = useState(false);
+  /** When set, the in-flight stream/thinking bubble is from this agent (advisor turn). */
+  const [streamingAgent, setStreamingAgent] = useState(null);
   // Claude Design (Phase 1) — top-level, not project-scoped
   const [designs, setDesigns] = useState([]);
   const [activeDesignId, setActiveDesignId] = useState(null);
@@ -320,8 +317,6 @@ export default function App() {
   const { notify } = useDesktopNotifications();
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
-  const activeRoomIdRef = useRef(activeRoomId);
-  activeRoomIdRef.current = activeRoomId;
   const activeDesignIdRef = useRef(activeDesignId);
   activeDesignIdRef.current = activeDesignId;
 
@@ -775,8 +770,24 @@ export default function App() {
           break;
         }
         case 'message':
-          if (data.message.role === 'user' && msgForActiveSession) {
-            setMessages((prev) => [...prev, data.message]);
+          if (msgForActiveSession && data.message?.id) {
+            if (data.message.role === 'user') {
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === data.message.id)) return prev;
+                return [...prev, data.message];
+              });
+            } else if (data.message.role === 'assistant' && data.message.agent_id) {
+              // Advisor turn — executor messages arrive on `done` instead.
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === data.message.id)) return prev;
+                return [...prev, data.message];
+              });
+              setThinking(false);
+              setStreamingContent('');
+              setStreamingMsgId(null);
+              setStreamingEngine(null);
+              setStreamingAgent(null);
+            }
           }
           break;
         case 'thinking':
@@ -798,6 +809,15 @@ export default function App() {
             setStreamingMsgId(data.messageId);
             setStreamingEngine(data.engine || null);
             setStreamingContent('');
+            if (data.agentId) {
+              setStreamingAgent({
+                agentId: data.agentId,
+                agentName: data.agentName,
+                agentColor: data.agentColor,
+              });
+            } else {
+              setStreamingAgent(null);
+            }
           }
           break;
         case 'stream':
@@ -814,6 +834,13 @@ export default function App() {
             setThinking(false);
             setStreamingContent(data.content);
             setStreamingEngine(data.engine || null);
+            if (data.agentId) {
+              setStreamingAgent({
+                agentId: data.agentId,
+                agentName: data.agentName,
+                agentColor: data.agentColor,
+              });
+            }
           }
           break;
         case 'session-event': {
@@ -962,8 +989,12 @@ export default function App() {
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
             if (data.message) {
-              setMessages((prev) => [...prev, data.message]);
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === data.message.id)) return prev;
+                return [...prev, data.message];
+              });
             }
           }
           // Desktop notification + toast for completed background sessions
@@ -1139,6 +1170,12 @@ export default function App() {
           setSessions((prev) =>
             prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
           );
+          if (
+            data.session?.id === activeSessionIdRef.current &&
+            Array.isArray(data.session.agents)
+          ) {
+            setSessionAgents(data.session.agents);
+          }
           break;
         case 'session-worktree-detected':
           // Worktree-only mode: keep the session-row flag in sync for any
@@ -1161,34 +1198,6 @@ export default function App() {
           }
           break;
         }
-        case 'active-room-tasks-snapshot': {
-          const rid = activeRoomIdRef.current;
-          if (!rid) break;
-          const task = (data.tasks || []).find(
-            (t) => (t.room_id || t.roomId) === rid && (t.status || 'running') === 'running',
-          );
-          if (!task) break;
-          setRoomProcessing(true);
-          const agentId = task.agent_id ?? task.agentId;
-          const agentName = task.agent_name ?? task.agentName;
-          const agentColor = task.agent_color ?? task.agentColor;
-          const messageId = task.message_id ?? task.messageId;
-          const output = task.streamed_output ?? task.streamedOutput ?? '';
-          if (output) {
-            setRoomThinking(null);
-            setRoomStreaming({
-              agentId,
-              agentName,
-              agentColor,
-              messageId,
-              content: output,
-            });
-          } else {
-            setRoomStreaming(null);
-            setRoomThinking({ agentId, agentName, agentColor });
-          }
-          break;
-        }
         case 'error':
           if (data.sessionId) {
             setActiveTasks((prev) => {
@@ -1202,6 +1211,7 @@ export default function App() {
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
             if (data.error) {
               setMessages((prev) => [
                 ...prev,
@@ -1222,6 +1232,7 @@ export default function App() {
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
           }
           // Defensive cleanup: a cancelled turn may have persisted a partial
           // assistant message containing an ask block. The user explicitly
@@ -1231,82 +1242,11 @@ export default function App() {
           // the indicator returns naturally.
           setAwaitingInputBySession((prev) => clearAwaitingInputForSession(prev, data.sessionId));
           break;
-
-        // ─── Conference Room events ─────────────────────────────
-        case 'room_message':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomMessages((prev) => [...prev, data.message]);
-          }
+        case 'session_round_start':
+          if (forActiveSession) setSessionRoundProcessing(true);
           break;
-        case 'room_round_start':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomProcessing(true);
-          }
-          break;
-        case 'room_thinking':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomStreaming(null);
-            setRoomThinking({
-              agentId: data.agentId,
-              agentName: data.agentName,
-              agentColor: data.agentColor,
-            });
-          }
-          break;
-        case 'room_stream':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomThinking(null);
-            setRoomStreaming({
-              agentId: data.agentId,
-              agentName: data.agentName,
-              agentColor: data.agentColor,
-              messageId: data.messageId,
-              content: data.content,
-            });
-          }
-          break;
-        case 'room_agent_done':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomThinking(null);
-            setRoomStreaming(null);
-            setRoomMessages((prev) => [...prev, data.message]);
-          }
-          break;
-        case 'room_agent_error':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomThinking(null);
-            setRoomStreaming(null);
-            setRoomMessages((prev) => [
-              ...prev,
-              {
-                id: data.messageId || `err-${Date.now()}`,
-                room_id: data.roomId,
-                role: 'assistant',
-                agent_id: data.agentId,
-                agent_name: data.agentName,
-                agent_color: null,
-                content: `Error: ${data.error}`,
-                created_at: new Date().toISOString(),
-              },
-            ]);
-          }
-          break;
-        case 'room_queue_updated':
-          if (data.roomId === activeRoomIdRef.current) {
-            setRoomQueueLength(data.queue?.length || data.queueLength || 0);
-          }
-          break;
-        case 'room_round_done':
-        case 'room_cancelled':
-          if (data.roomId === activeRoomIdRef.current) {
-            // Don't reset roomProcessing if there are queued messages about to drain —
-            // prevents UI flicker between queued message rounds (Bugbot fix)
-            if (!data.queueLength) {
-              setRoomProcessing(false);
-            }
-            setRoomThinking(null);
-            setRoomStreaming(null);
-          }
+        case 'session_round_done':
+          if (forActiveSession) setSessionRoundProcessing(false);
           break;
 
         // ─── Claude Design events ────────────────────────────────
@@ -2630,7 +2570,6 @@ export default function App() {
       } else {
         setActiveSessionId(sessionId);
       }
-      setActiveRoomId(null);
       setCurrentView('chat');
       setSidebarOpen(false);
     },
@@ -2720,15 +2659,27 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showSwitcher, thinking, streamingContent, handleCancel]);
 
-  // ─── Room data loading ───────────────────────────────────
-  const refreshRooms = useCallback(() => {
-    api.getRooms().then(setRooms).catch(console.error);
-  }, []);
-
-  // Load rooms on mount
+  // Load session agents when active session changes.
   useEffect(() => {
-    refreshRooms();
-  }, [refreshRooms]);
+    if (!activeSessionId) {
+      setSessionAgents([]);
+      setSessionRoundProcessing(false);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getSessionDetail(activeSessionId)
+      .then((detail) => {
+        if (cancelled) return;
+        setSessionAgents(detail.agents || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionAgents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
 
   // ─── Cron sessions (scheduled tasks) ───────────────────
   const refreshCronSessions = useCallback(() => {
@@ -2742,45 +2693,11 @@ export default function App() {
     refreshCronSessions();
   }, [refreshCronSessions]);
 
-  // Load room messages when active room changes
-  useEffect(() => {
-    if (!activeRoomId) {
-      setRoomMessages([]);
-      setRoomQueueLength(0);
-      setRoomProcessing(false);
-      return;
-    }
-    api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(console.error);
-  }, [activeRoomId]);
-
-  const handleNewRoom = async (name) => {
-    if (!name?.trim()) return;
-    const room = await api.createRoom(name.trim());
-    setRooms((prev) => [room, ...prev]);
-    setActiveRoomId(room.id);
-    setCurrentView('room');
-  };
-
-  const handleDeleteRoom = async (roomId) => {
-    await api.deleteRoom(roomId);
-    setRooms((prev) => prev.filter((r) => r.id !== roomId));
-    if (activeRoomId === roomId) {
-      setActiveRoomId(null);
-      setCurrentView('chat');
-    }
-  };
-
-  const handleRoomUpdated = useCallback(() => {
-    refreshRooms();
-    // Also refresh the active room's detail
-    if (activeRoomIdRef.current) {
-      api.getRoom(activeRoomIdRef.current).then((room) => {
-        setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
-      });
-    }
-  }, [refreshRooms]);
-
-  const activeRoom = rooms.find((r) => r.id === activeRoomId);
+  const handleSessionAgentsUpdated = useCallback((detail) => {
+    if (!detail?.id) return;
+    setSessionAgents(detail.agents || []);
+    setSessions((prev) => prev.map((s) => (s.id === detail.id ? { ...s, ...detail } : s)));
+  }, []);
 
   // ─── Designs data loading ───────────────────────────────────
   const refreshDesigns = useCallback(() => {
@@ -3322,7 +3239,7 @@ export default function App() {
     [send, activeAgentId],
   );
 
-  const isProcessing = thinking || !!streamingContent;
+  const isProcessing = thinking || !!streamingContent || sessionRoundProcessing;
   const activeSession = useMemo(
     () =>
       sessions.find((s) => s.id === activeSessionId) ||
@@ -3517,14 +3434,6 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'pulls') setPullsOpenPrNumber(null);
   }, [currentView]);
-  const newConferenceRoom = () => {
-    // MVP: prompt for name. A richer inline picker is tracked separately.
-    const name =
-      typeof window !== 'undefined' && typeof window.prompt === 'function'
-        ? window.prompt('Conference room name')
-        : null;
-    if (name && name.trim()) handleNewRoom(name.trim());
-  };
 
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI?.isElectron;
   const keyboardShortcutList = useMemo(() => getDefaultShortcuts(isElectron), [isElectron]);
@@ -3542,7 +3451,6 @@ export default function App() {
         handleNewSession();
         goToWiki();
       },
-      'new-conference-room': newConferenceRoom,
       'go-to-board': goToBoard,
       'go-to-wiki': goToWiki,
       'go-to-notes': goToNotes,
@@ -3728,15 +3636,6 @@ export default function App() {
             awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
             changesReadyBySession={changesReady}
-            rooms={rooms}
-            activeRoomId={activeRoomId}
-            onSelectRoom={(id) => {
-              setActiveRoomId(id);
-              setActiveSessionId(null);
-              setSidebarOpen(false);
-            }}
-            onNewRoom={handleNewRoom}
-            onDeleteRoom={handleDeleteRoom}
             onOpenProject={openAdaptiveProjectWizard}
             onImportProject={openImportProjectWizard}
             onReorderProjects={handleReorderProjects}
@@ -3753,7 +3652,6 @@ export default function App() {
             onSelectDesign={(id) => {
               setActiveDesignId(id);
               setActiveSessionId(null);
-              setActiveRoomId(null);
               setSidebarOpen(false);
             }}
             electronSuppressHealthFetch={isElectron}
@@ -3945,18 +3843,6 @@ export default function App() {
                       : undefined
                   }
                 />
-              ) : currentView === 'room' && activeRoom ? (
-                <RoomChat
-                  room={activeRoom}
-                  agents={agents}
-                  send={send}
-                  roomMessages={roomMessages}
-                  roomStreaming={roomStreaming}
-                  roomThinking={roomThinking}
-                  roomProcessing={roomProcessing}
-                  roomQueueLength={roomQueueLength}
-                  onRoomUpdated={handleRoomUpdated}
-                />
               ) : currentView === 'designs' ? (
                 <DesignsList
                   designs={designs}
@@ -3999,6 +3885,15 @@ export default function App() {
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+                  {activeSessionId && (
+                    <SessionAgentsPanel
+                      sessionId={activeSessionId}
+                      sessionAgents={sessionAgents}
+                      maxTurns={activeSession?.max_turns}
+                      agents={agents}
+                      onUpdated={handleSessionAgentsUpdated}
+                    />
+                  )}
                   <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden lg:flex-row">
                     <div className="flex-1 flex flex-col min-w-0 min-h-0">
                       {/* Messages */}
@@ -4108,7 +4003,7 @@ export default function App() {
                                       key={msg.id}
                                       message={msg}
                                       events={eventsByMessage[msg.id]}
-                                      agentColor={chatAccentColor}
+                                      agentColor={msg.agent_color || chatAccentColor}
                                       onEventsLoaded={handleEventsLoaded}
                                       onAskSubmit={handleAskSubmit}
                                       askSubmittedIds={askSubmitted}
@@ -4132,41 +4027,76 @@ export default function App() {
                                     />
                                   ),
                                 )}
-                                {thinking && !streamingMsgId && (
-                                  <ThinkingIndicator agentColor={chatAccentColor} />
+                                {sessionRoundProcessing && (
+                                  <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                                    <div className="text-xs text-amber-400/90 bg-amber-950/20 border border-amber-800/40 rounded-lg px-3 py-2">
+                                      Multi-agent round in progress…
+                                    </div>
+                                  </div>
                                 )}
-                                {streamingMsgId && (
-                                  <SessionTail
-                                    key={streamingMsgId}
-                                    message={{
-                                      id: streamingMsgId,
-                                      role: 'assistant',
-                                      engine: streamingEngine,
-                                      model: sessionModel,
-                                      content: streamingContent,
-                                    }}
-                                    events={eventsByMessage[streamingMsgId]}
-                                    agentColor={chatAccentColor}
-                                    streaming
-                                    onInterrupt={handleCancel}
-                                    onAskSubmit={handleAskSubmit}
-                                    askSubmittedIds={askSubmitted}
-                                    fromAgent={activeAgent}
-                                    agents={agents}
-                                    sessionHandoffs={sessionHandoffs}
-                                    sessionDelegations={delegations[activeSessionId]}
-                                    delegationDispatchError={
-                                      delegationDispatchErrors[activeSessionId]
-                                    }
-                                    onOpenSession={handleOpenHandoffSession}
-                                    browserScreenshots={
-                                      activeSessionId
-                                        ? (browserScreensBySession[activeSessionId]?.[
-                                            streamingMsgId
-                                          ] ?? {})
-                                        : {}
-                                    }
+                                {thinking && !streamingMsgId && (
+                                  <ThinkingIndicator
+                                    agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                    agentName={streamingAgent?.agentName}
                                   />
+                                )}
+                                {streamingMsgId &&
+                                streamingAgent &&
+                                streamingAgent.agentId !== activeAgentId ? (
+                                  <div className="flex justify-start mb-4">
+                                    <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span
+                                          className="w-2 h-2 rounded-full"
+                                          style={{ backgroundColor: streamingAgent.agentColor }}
+                                        />
+                                        <span className="text-xs text-gray-500 font-medium">
+                                          {streamingAgent.agentName}
+                                        </span>
+                                        <span className="text-xs text-gray-600 animate-pulse">
+                                          streaming…
+                                        </span>
+                                      </div>
+                                      <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                                        {streamingContent}
+                                        <span className="inline-block w-2 h-4 bg-gray-500 animate-pulse ml-0.5" />
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  streamingMsgId && (
+                                    <SessionTail
+                                      key={streamingMsgId}
+                                      message={{
+                                        id: streamingMsgId,
+                                        role: 'assistant',
+                                        engine: streamingEngine,
+                                        model: sessionModel,
+                                        content: streamingContent,
+                                      }}
+                                      events={eventsByMessage[streamingMsgId]}
+                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                      streaming
+                                      onInterrupt={handleCancel}
+                                      onAskSubmit={handleAskSubmit}
+                                      askSubmittedIds={askSubmitted}
+                                      fromAgent={activeAgent}
+                                      agents={agents}
+                                      sessionHandoffs={sessionHandoffs}
+                                      sessionDelegations={delegations[activeSessionId]}
+                                      delegationDispatchError={
+                                        delegationDispatchErrors[activeSessionId]
+                                      }
+                                      onOpenSession={handleOpenHandoffSession}
+                                      browserScreenshots={
+                                        activeSessionId
+                                          ? (browserScreensBySession[activeSessionId]?.[
+                                              streamingMsgId
+                                            ] ?? {})
+                                          : {}
+                                      }
+                                    />
+                                  )
                                 )}
                                 {doneVerifyLogBySession[activeSessionId] && (
                                   <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
@@ -4394,6 +4324,8 @@ export default function App() {
                         composerPrefill={composerPrefill}
                         onComposerPrefillClear={() => setComposerPrefill(null)}
                         onReplaceQueuedMessage={handleEditQueuedMessage}
+                        sessionAgents={sessionAgents}
+                        enableMentions={sessionAgents.length > 1}
                       />
                     </div>
                     {showSessionPreviewPane && (

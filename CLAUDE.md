@@ -75,7 +75,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 3. **Enriched System Prompts**: Automatically builds prompts from agent config + workspace context files + skills + memory
 4. **Real-time Streaming**: WebSocket-based chat with live response streaming
 5. **SQLite-Backed Persistence**: All sessions, messages, and agent data stored in local SQLite database
-6. **Flat Agent Model**: Agents are dedicated ("full-stack" or specialist) and coordinate via plain chat or conference rooms — there is **no** `<delegate>` / `<handoff>` sub-agent dispatch system. The CLI engines (Claude Code, Cursor) handle their own internal sub-agent orchestration.
+6. **Flat Agent Model**: Agents are dedicated ("full-stack" or specialist) and coordinate via plain chat or optional multi-agent sessions — there is **no** `<delegate>` / `<handoff>` sub-agent dispatch system. The CLI engines (Claude Code, Cursor) handle their own internal sub-agent orchestration.
 
 ### Database Schema
 

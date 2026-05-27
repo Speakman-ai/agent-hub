@@ -31,7 +31,6 @@ import {
   ensureIntakeAgents,
   ensureReviewerAgents,
   ensureContextFiles,
-  ensureProjectRoom,
 } from './project-model.js';
 import {
   scheduleAll,
@@ -63,7 +62,7 @@ import { sessionUsesWorktree } from './project-mode.js';
 import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
-import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
+import { installShutdownHandlers } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
 
@@ -75,7 +74,6 @@ import createWikiRoutes from './routes/wiki.js';
 import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
-import createRoomRoutes from './routes/rooms.js';
 import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
 import createClawhubRoutes from './routes/clawhub.js';
@@ -143,13 +141,7 @@ import { drainIdleQueuedSessions } from './session-chat-busy.js';
 
 import { initHandoff } from './handoff.js';
 
-import {
-  initRoomChat,
-  activeRoomProcesses,
-  handleRoomChat,
-  handleRoomCancel,
-  handleRoomDequeue,
-} from './room-chat.js';
+import { handleMultiAgentCancel } from './session-multi-agent.js';
 
 import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
 import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
@@ -186,7 +178,6 @@ import type {
   BroadcastFn,
   RouteDeps,
   ChatMessage,
-  RoomChatMessage,
   DesignChatMessage,
   SessionRow,
   ActiveTaskRow,
@@ -534,24 +525,6 @@ initHandoff({
   getHandleChat: () => handleChat,
 });
 
-initRoomChat({
-  stmts: stmts!,
-  broadcast,
-  getEnrichedAgent,
-  buildEnrichedPrompt,
-  getClaudeBin: () => CLAUDE_BIN,
-  getCursorBin: () => CURSOR_BIN,
-  getGeminiBin: () => GEMINI_BIN,
-  getCodexBin: () => CODEX_BIN,
-  getDefaultModel: () => DEFAULT_MODEL,
-  getConfig: () => config,
-  getMaxQueueSize: () => MAX_QUEUE_SIZE,
-});
-
-// Designs live under `<activeDataDir>/designs/`. We ensure the root exists
-// at boot so the artifact-dir creation inside createDesign() doesn't race
-// against a first-time deploy, and so the static mount can serve its own
-// 404s rather than throwing at registration time.
 function getDesignsRoot(): string {
   return path.join(_activeDataDir, 'designs');
 }
@@ -829,7 +802,6 @@ export const routeDeps: RouteDeps = {
   getEnrichedAgent,
   allAgents,
   saveProjects,
-  ensureProjectRoom,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
   pendingReviewComments,
   lastDispatchedReviewId,
@@ -922,7 +894,6 @@ app.use(createToolErrorRoutes(routeDeps));
 app.use(createWikiRoutes(routeDeps));
 app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
-app.use(createRoomRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
 app.use(createClawhubRoutes(routeDeps));
@@ -1002,14 +973,10 @@ const MAX_QUEUE_SIZE = 10;
 const { broadcast: _wsBroadcast } = createWebSocket(server, {
   getProjects,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws as WebSocketLike | null, msg),
-  handleRoomChat: (ws: unknown, msg: RoomChatMessage) =>
-    handleRoomChat(ws as WebSocketLike | null, msg),
   handleCancel,
-  handleRoomCancel,
   handleDelegationCancel,
   handleDequeue,
   handleEditQueueItem,
-  handleRoomDequeue,
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
     handleDesignChat(ws as WebSocketLike | null, msg),
   handleDesignCancel,
@@ -1062,9 +1029,11 @@ const chatHandler = createChatHandler({
 } as ChatHandlerDeps);
 handleChat = chatHandler.handleChat as (ws: unknown, msg: ChatMessage) => Promise<void>;
 saveErrorMessage = chatHandler.saveErrorMessage;
+chatHandler.initMultiAgent();
 
 function handleCancel(sessionId: string): void {
   cancelSessionChatRun({ sessionId, activeProcesses });
+  handleMultiAgentCancel(sessionId);
   handleDelegationCancel(sessionId);
   stmts!.clearSessionQueue.run(sessionId);
   broadcast({ type: 'queue_updated', sessionId, queue: [] });
@@ -1232,6 +1201,9 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
         t.model,
         null,
         null,
+        null,
+        null,
+        null,
       );
       stmts!.touchSession.run(t.session_id);
     } catch (err) {
@@ -1263,10 +1235,6 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
 
   try {
     stmts!.deleteAllActiveTasks.run();
-  } catch {}
-
-  try {
-    stmts!.deleteAllActiveRoomTasks.run();
   } catch {}
 
   return toResume;
@@ -1349,14 +1317,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
 
     const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();
-
-    for (const project of getProjects()) {
-      try {
-        ensureProjectRoom(project);
-      } catch (err) {
-        console.error(`Failed to ensure room for project ${project.id}:`, (err as Error).message);
-      }
-    }
 
     try {
       const drained = drainIdleQueuedSessions({

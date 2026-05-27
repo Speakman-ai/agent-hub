@@ -106,13 +106,10 @@ function makeDeps(
   return {
     getProjects: () => [],
     handleChat: vi.fn().mockResolvedValue(undefined),
-    handleRoomChat: vi.fn().mockResolvedValue(undefined),
     handleCancel: vi.fn(),
-    handleRoomCancel: vi.fn(),
     handleDelegationCancel: vi.fn(),
     handleDequeue: vi.fn(),
     handleEditQueueItem: vi.fn(),
-    handleRoomDequeue: vi.fn(),
     handleDesignChat: vi.fn().mockResolvedValue(undefined),
     handleDesignCancel: vi.fn(),
     ...(getPreviewSnapshotRuntime ? { getPreviewSnapshotRuntime } : {}),

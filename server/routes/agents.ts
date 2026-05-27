@@ -90,15 +90,7 @@ function applyOptionalAgentNumeric(
 }
 
 export default function createAgentRoutes(deps: RouteDeps): Router {
-  const {
-    stmts,
-    findProject,
-    findAgent,
-    getEnrichedAgent,
-    allAgents,
-    saveProjects,
-    ensureProjectRoom,
-  } = deps;
+  const { stmts, findProject, findAgent, getEnrichedAgent, allAgents, saveProjects } = deps;
 
   /**
    * Agent-scoped equivalent of the `/api/projects/:projectId` visibility
@@ -330,7 +322,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
     saveProjects();
-    ensureProjectRoom(project);
     res.status(201).json(getEnrichedAgent(agent.id));
   });
 
@@ -362,7 +353,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
         stmts.deleteSessionsByAgent.run(agentId);
         stmts.deleteHeartbeatLogsByAgent.run(agentId);
         stmts.deleteSlackMessagesByAgent.run(agentId);
-        stmts.deleteRoomAgentsByAgent.run(agentId);
+        stmts.deleteSessionAgentsByAgent.run(agentId);
         stmts.deleteActiveTasksByAgent.run(agentId);
         stmts.deleteAgentSkillOverridesByAgent.run(agentId);
       })();
@@ -381,7 +372,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     saveProjects();
 
     // 4. Refresh the project room so the participant list drops the agent.
-    ensureProjectRoom(project);
 
     // 5. Best-effort: remove the on-disk agent workspace. Failure here
     //    shouldn't block the delete — log and continue.

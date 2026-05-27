@@ -1937,6 +1937,9 @@ async function commitPushAndCreatePR(
           null,
           null,
           metadata,
+          null,
+          null,
+          null,
         );
         const insertedMessage = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
           id: msgId,
@@ -2265,7 +2268,19 @@ async function persistAndBroadcastPrFailure(args: {
     let inserted: MessageRow | undefined;
     try {
       const msgId = crypto.randomUUID();
-      d.stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+      d.stmts.addMessage.run(
+        msgId,
+        sessionId,
+        'system',
+        content,
+        null,
+        null,
+        null,
+        metadata,
+        null,
+        null,
+        null,
+      );
       inserted = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
         id: msgId,
         session_id: sessionId,

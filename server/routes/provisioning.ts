@@ -215,15 +215,7 @@ function resolveWsBase(req: Request): string {
 }
 
 export default function createProvisioningRoutes(deps: RouteDeps): Router {
-  const {
-    stmts,
-    broadcast,
-    findProject,
-    getProjects,
-    saveProjects,
-    getProjectDataDir,
-    ensureProjectRoom,
-  } = deps;
+  const { stmts, broadcast, findProject, getProjects, saveProjects, getProjectDataDir } = deps;
   const router = Router();
 
   router.post('/api/projects/provision', (req: Request, res: Response) => {
@@ -291,7 +283,6 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
     }
 
     try {
-      ensureProjectRoom(project);
     } catch {
       /* best-effort — projects without a room still work. */
     }

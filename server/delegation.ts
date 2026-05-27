@@ -392,7 +392,19 @@ function persistDelegationSkipSystemMessage(
   });
   const msgId = uuidv4();
   try {
-    stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+    stmts.addMessage.run(
+      msgId,
+      sessionId,
+      'system',
+      content,
+      null,
+      null,
+      null,
+      metadata,
+      null,
+      null,
+      null,
+    );
     stmts.touchSession.run(sessionId);
     let insertedMessage: unknown;
     try {
@@ -1157,6 +1169,9 @@ export async function synthesizeResults(
       finalOutput,
       sessionEngine,
       sessionModel,
+      null,
+      null,
+      null,
       null,
       null,
     );

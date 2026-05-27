@@ -345,11 +345,7 @@ const config: AppConfig = {
   // subdomain mode OFF; only the path-prefix proxy is active. Requires
   // a wildcard ACM cert + Route 53 alias + ALB listener cert
   // attachment in the operator's stack; see the session-previews RFC.
-  previewSubdomainBase: resolve(
-    'AGENT_HUB_PREVIEW_SUBDOMAIN_BASE',
-    'previewSubdomainBase',
-    null,
-  ),
+  previewSubdomainBase: resolve('AGENT_HUB_PREVIEW_SUBDOMAIN_BASE', 'previewSubdomainBase', null),
 
   // ── GitHub ─────────────────────────────────────────────────────
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),

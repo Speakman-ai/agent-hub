@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.33.5
+  version: 1.34.4
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -855,6 +855,38 @@ components:
         orchestration_meta:
           type: string
           nullable: true
+        max_turns:
+          type: integer
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              color:
+                type: string
+              position:
+                type: integer
+              role:
+                type: string
+                enum:
+                  - executor
+                  - advisor
+              projectId:
+                type: string
+              projectName:
+                type: string
+            required:
+              - id
+              - name
+              - color
+              - position
+              - role
+        advisor_count:
+          type: integer
       required:
         - id
         - agent_id
@@ -6326,8 +6358,8 @@ paths:
     patch:
       tags:
         - Sessions
-      summary: Rename a session
-      description: Currently only `name` is updated; unknown keys are silently ignored.
+      summary: Update session fields
+      description: Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.
       parameters:
         - schema:
             type: string
@@ -6344,6 +6376,9 @@ paths:
               properties:
                 name:
                   type: string
+                max_turns:
+                  type: integer
+                  minimum: 0
       responses:
         "200":
           description: Updated session.
@@ -6425,6 +6460,96 @@ paths:
                   $ref: "#/components/schemas/Message"
         "404":
           description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents:
+    post:
+      tags:
+        - Sessions
+      summary: Add a read-only advisor agent to a multi-agent session
+      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+              required:
+                - agentId
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or primary agent cannot be added as advisor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Reviewer agents cannot join multi-agent sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents/{agentId}:
+    delete:
+      tags:
+        - Sessions
+      summary: Remove an advisor from a multi-agent session
+      description: Session owner only. Cannot remove the primary executor.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Advisor agent ID to remove.
+          required: true
+          description: Advisor agent ID to remove.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Cannot remove the primary executor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
           content:
             application/json:
               schema:

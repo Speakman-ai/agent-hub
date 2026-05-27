@@ -20,7 +20,7 @@ import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 import ChangesReadyBox from '../components/ChangesReadyBox';
-import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
+import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import { resolveAutoMergeDefault } from '../utils/changesReady';
 import { isWorkflowProject } from '../utils/project-mode';
 import {
@@ -68,8 +68,13 @@ export default function ChatScreen() {
     askSubmitted,
     handleAskSubmit,
     reloadMessages,
+    sessionAgents,
+    sessionRoundProcessing,
+    handleSessionAgentsUpdated,
     sessions,
   } = useApp();
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
 
   const flatListRef = useRef(null);
   const [showSwitcher, setShowSwitcher] = useState(false);
@@ -285,6 +290,20 @@ export default function ChatScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <TopBar />
+      {activeSessionId ? (
+        <SessionAgentsPanel
+          sessionId={activeSessionId}
+          sessionAgents={sessionAgents}
+          maxTurns={activeSession?.max_turns}
+          agents={agents}
+          onUpdated={handleSessionAgentsUpdated}
+        />
+      ) : null}
+      {sessionRoundProcessing ? (
+        <View style={styles.roundBanner}>
+          <Text style={styles.roundBannerText}>Multi-agent round in progress…</Text>
+        </View>
+      ) : null}
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -339,6 +358,14 @@ const styles = StyleSheet.create({
   flex: {
     flex: 1,
   },
+  roundBanner: {
+    backgroundColor: 'rgba(120, 53, 15, 0.25)',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  roundBannerText: { color: colors.amber400 || '#fbbf24', fontSize: 12 },
   listContent: {
     paddingVertical: 12,
   },

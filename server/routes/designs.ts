@@ -429,6 +429,9 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
           null,
           null,
           null,
+          null,
+          null,
+          null,
         );
         stmts.touchSession.run(newSessionId);
       }

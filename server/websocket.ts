@@ -15,13 +15,7 @@ import {
 import { handleBroadcastForPush } from './push.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
-import type {
-  WebSocketDeps,
-  BroadcastFn,
-  ActiveRoomTaskRow,
-  MessageQueueRow,
-  RoomMessageQueueRow,
-} from './types.js';
+import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
 import { buildPreviewSnapshotEvents } from './preview/preview-snapshot.js';
@@ -87,13 +81,10 @@ export default function createWebSocket(
   const {
     getProjects,
     handleChat,
-    handleRoomChat,
     handleCancel,
-    handleRoomCancel,
     handleDelegationCancel,
     handleDequeue,
     handleEditQueueItem,
-    handleRoomDequeue,
     handleDesignChat,
     handleDesignCancel,
     getPreviewSnapshotRuntime,
@@ -205,13 +196,6 @@ export default function createWebSocket(
     }
 
     try {
-      const roomTasks = stmts!.getAllActiveRoomTasks.all() as ActiveRoomTaskRow[];
-      if (roomTasks.length > 0) {
-        ws.send(JSON.stringify({ type: 'active-room-tasks-snapshot', tasks: roomTasks }));
-      }
-    } catch {}
-
-    try {
       const queuedSessions = stmts!.getAllQueuedSessions.all() as Array<{ session_id: string }>;
       for (const { session_id } of queuedSessions) {
         ws.send(
@@ -219,19 +203,6 @@ export default function createWebSocket(
             type: 'queue_updated',
             sessionId: session_id,
             queue: stmts!.getQueuedMessages.all(session_id) as MessageQueueRow[],
-          }),
-        );
-      }
-    } catch {}
-
-    try {
-      const queuedRooms = stmts!.getAllQueuedRooms.all() as Array<{ room_id: string }>;
-      for (const { room_id } of queuedRooms) {
-        ws.send(
-          JSON.stringify({
-            type: 'room_queue_updated',
-            roomId: room_id,
-            queue: stmts!.getQueuedRoomMessages.all(room_id) as RoomMessageQueueRow[],
           }),
         );
       }
@@ -310,23 +281,9 @@ export default function createWebSocket(
         // — is a legitimate producer of extraEnv.
         const { extraEnv: _drop, ...safeMsg } = msg;
         handleChat(ws, safeMsg as unknown as import('./types.js').ChatMessage);
-      } else if (
-        type === 'room_chat' &&
-        typeof msg.roomId === 'string' &&
-        typeof msg.content === 'string'
-      ) {
-        handleRoomChat(ws, msg as unknown as import('./types.js').RoomChatMessage);
       } else if (type === 'cancel' && typeof msg.sessionId === 'string') {
         if (!mayActOnSession(msg.sessionId)) return;
         handleCancel(msg.sessionId);
-      } else if (type === 'room_cancel' && typeof msg.roomId === 'string') {
-        handleRoomCancel(msg.roomId);
-      } else if (
-        type === 'room_dequeue' &&
-        typeof msg.roomId === 'string' &&
-        typeof msg.messageId === 'string'
-      ) {
-        handleRoomDequeue(msg.roomId, msg.messageId);
       } else if (
         type === 'design_chat' &&
         typeof msg.designId === 'string' &&

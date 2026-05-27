@@ -256,7 +256,6 @@ describe.each([
       'new-session',
       'new-ticket-chat',
       'new-doc-chat',
-      'new-conference-room',
       'go-to-board',
       'go-to-wiki',
       'go-to-notes',

@@ -27,6 +27,7 @@ import type {
   AppConfig,
   MessageRow,
   SessionRow,
+  SessionAgentRow,
   BackgroundTaskRow,
   SessionEventRow,
   SessionProgressRow,
@@ -79,7 +80,10 @@ import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
 } from '../session-checkpoint-rewind.js';
+import { enrichSessionWithAgents } from '../session-agents.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { canViewProject } from '../project-visibility.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -445,7 +449,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json({
-      ...enrichSessionForClient(session),
+      ...enrichSessionWithAgents(session, stmts, getEnrichedAgent),
       orchestrationMeta: parseOrchestrationMetaJson(session.orchestration_meta ?? null),
     });
   });
@@ -808,8 +812,52 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (parsed.name) {
       stmts.updateSessionName.run(parsed.name, req.params.sessionId);
     }
+    if (parsed.max_turns !== undefined) {
+      stmts.updateSessionMaxTurns.run(parsed.max_turns, req.params.sessionId);
+    }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(session));
+    res.json(enrichSessionWithAgents(session, stmts, getEnrichedAgent));
+  });
+
+  router.post('/api/sessions/:sessionId/agents', (req: Request, res: Response) => {
+    const { agentId } = req.body as { agentId?: string };
+    if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (agentId === session.agent_id) {
+      return res.status(400).json({ error: 'Cannot add the primary agent as an advisor' });
+    }
+    const found = findAgent(agentId);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const caller = resolveVisibilityCaller(req);
+    if (!canViewProject(found.project, caller)) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    if (found.agent?.role === 'reviewer') {
+      return res.status(403).json({ error: 'Reviewer agents cannot join multi-agent sessions' });
+    }
+    stmts.addSessionAgent.run(req.params.sessionId, agentId, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    deps.broadcast({
+      type: 'session-updated',
+      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+    });
+    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
+  });
+
+  router.delete('/api/sessions/:sessionId/agents/:agentId', (req: Request, res: Response) => {
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (req.params.agentId === session.agent_id) {
+      return res.status(400).json({ error: 'Cannot remove the primary executor agent' });
+    }
+    stmts.removeSessionAgent.run(req.params.sessionId, req.params.agentId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    deps.broadcast({
+      type: 'session-updated',
+      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+    });
+    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
   });
 
   router.put('/api/sessions/:sessionId/engine', (req: Request, res: Response) => {
@@ -1588,6 +1636,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           newSessionId,
           'user',
           forwardedContent,
+          null,
+          null,
+          null,
           null,
           null,
           null,

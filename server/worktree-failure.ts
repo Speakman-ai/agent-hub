@@ -83,7 +83,19 @@ export function handleWorktreeFailure(
   //    the chat UI both see the failure.
   try {
     const msgId = uuidv4();
-    stmts.addMessage.run(msgId, sessionId, 'system', body, null, null, null, null);
+    stmts.addMessage.run(
+      msgId,
+      sessionId,
+      'system',
+      body,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
     try {
       stmts.touchSession.run(sessionId);
     } catch {

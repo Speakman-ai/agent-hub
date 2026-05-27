@@ -27,7 +27,7 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     expect(ids).not.toContain(agent.id);
   });
 
-  it('cascades child rows in sessions/messages/heartbeat_logs/slack_messages/room_agents/active_tasks/heartbeat_state/agent_skill_overrides', async () => {
+  it('cascades child rows in sessions/messages/heartbeat_logs/slack_messages/session_agents/active_tasks/heartbeat_state/agent_skill_overrides', async () => {
     const { stmts, db } = await import('./db.js');
     if (!stmts || !db) throw new Error('Database not initialized');
 
@@ -40,18 +40,27 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     const sessionId = session.id as string;
 
     // Seed: a message, a heartbeat_log, a heartbeat_state row, a slack_message,
-    // a room_agent (the project room is created by ensureProjectRoom), an
-    // active_task, and an agent_skill_override.
-    stmts.addMessage.run('msg-1', sessionId, 'user', 'hi', null, null, null, null);
+    // a session_agent advisor row, an active_task, and an agent_skill_override.
+    stmts.addMessage.run(
+      'msg-1',
+      sessionId,
+      'user',
+      'hi',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
     stmts.addHeartbeatLog.run(agentId, 'tick', 'success');
     stmts.upsertHeartbeatState.run(agentId, '2030-01-01T00:00:00Z', null);
     stmts.addSlackMessage.run(agentId, 'C123', null, 'U1', 'hello', 'hi back');
     stmts.insertActiveTask.run(sessionId, 'msg-1', agentId, 1234, 'p', 'claude-code', 'sonnet');
     stmts.upsertAgentSkillOverride.run(agentId, 'kanban', 0);
 
-    // Project room membership: look the room up and add the agent explicitly.
-    const room = stmts.getRoomByProjectId.get(project.id as string) as { id: string } | undefined;
-    if (room) stmts.addRoomAgent.run(room.id, agentId, room.id);
+    stmts.addSessionAgent.run(sessionId, agentId, sessionId);
 
     // Sanity — every store has a row before deletion.
     const beforeSessions = (
@@ -79,8 +88,8 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
         c: number;
       }
     ).c;
-    const beforeRoom = (
-      db.prepare('SELECT COUNT(*) as c FROM room_agents WHERE agent_id = ?').get(agentId) as {
+    const beforeSessionAgents = (
+      db.prepare('SELECT COUNT(*) as c FROM session_agents WHERE agent_id = ?').get(agentId) as {
         c: number;
       }
     ).c;
@@ -102,9 +111,7 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     expect(beforeSlack).toBeGreaterThan(0);
     expect(beforeActive).toBe(1);
     expect(beforeOverrides).toBe(1);
-    // room_agent membership depends on whether ensureProjectRoom seeded the
-    // agent; either way our explicit addRoomAgent guarantees at least one.
-    expect(beforeRoom).toBeGreaterThan(0);
+    expect(beforeSessionAgents).toBeGreaterThan(0);
 
     await request.delete(`/api/agents/${agentId}`).expect(204);
 
@@ -146,7 +153,7 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     ).toBe(0);
     expect(
       (
-        db.prepare('SELECT COUNT(*) as c FROM room_agents WHERE agent_id = ?').get(agentId) as {
+        db.prepare('SELECT COUNT(*) as c FROM session_agents WHERE agent_id = ?').get(agentId) as {
           c: number;
         }
       ).c,

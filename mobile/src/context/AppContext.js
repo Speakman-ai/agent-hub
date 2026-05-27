@@ -69,15 +69,10 @@ export function AppProvider({ children }) {
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState([]);
 
-  // Conference rooms state
-  const [rooms, setRooms] = useState([]);
-  const [activeRoomId, setActiveRoomId] = useState(null);
-  const [roomMessages, setRoomMessages] = useState([]);
-  const [roomStreaming, setRoomStreaming] = useState(null); // { agentId, agentName, agentColor, messageId, content }
-  const [roomThinking, setRoomThinking] = useState(null);  // { agentId, agentName, agentColor }
-  const [roomProcessing, setRoomProcessing] = useState(false);
-  // Ordered list of queued user messages for the active room: [{ id, content, position }]
-  const [roomQueue, setRoomQueue] = useState([]);
+  // Multi-agent session roster for the active chat session.
+  const [sessionAgents, setSessionAgents] = useState([]);
+  const [sessionRoundProcessing, setSessionRoundProcessing] = useState(false);
+  const [streamingAgent, setStreamingAgent] = useState(null);
 
   // Delegation state: { [sessionId]: { parentMessageId, tasks: [...] } }
   const [delegations, setDelegations] = useState({});
@@ -146,8 +141,6 @@ export function AppProvider({ children }) {
   const implicitSessionCreateByKeyRef = useRef(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
-  const activeRoomIdRef = useRef(activeRoomId);
-  activeRoomIdRef.current = activeRoomId;
   // Track when a session was explicitly navigated to (e.g. from a handoff
   // "Open session" tap) so the agent-change sessions-load effect doesn't
   // clobber it by defaulting to `data[0].id`. Mirror of the web client's
@@ -228,8 +221,23 @@ export function AppProvider({ children }) {
         break;
       }
       case 'message':
-        if (data.message.role === 'user' && msgForActiveSession) {
-          setMessages((prev) => [...prev, data.message]);
+        if (msgForActiveSession && data.message?.id) {
+          if (data.message.role === 'user') {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
+          } else if (data.message.role === 'assistant' && data.message.agent_id) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
+            setThinking(false);
+            setStreamingContent('');
+            setStreamingMsgId(null);
+            setStreamingEngine(null);
+            setStreamingAgent(null);
+          }
         }
         break;
       case 'thinking':
@@ -247,6 +255,15 @@ export function AppProvider({ children }) {
           setStreamingMsgId(data.messageId);
           setStreamingEngine(data.engine || null);
           setStreamingContent('');
+          if (data.agentId) {
+            setStreamingAgent({
+              agentId: data.agentId,
+              agentName: data.agentName,
+              agentColor: data.agentColor,
+            });
+          } else {
+            setStreamingAgent(null);
+          }
         }
         break;
       case 'stream':
@@ -263,6 +280,13 @@ export function AppProvider({ children }) {
           setThinking(false);
           setStreamingContent(data.content);
           setStreamingEngine(data.engine || null);
+          if (data.agentId) {
+            setStreamingAgent({
+              agentId: data.agentId,
+              agentName: data.agentName,
+              agentColor: data.agentColor,
+            });
+          }
         }
         break;
       case 'interrupted':
@@ -285,7 +309,13 @@ export function AppProvider({ children }) {
           setStreamingContent('');
           setStreamingMsgId(null);
           setStreamingEngine(null);
-          setMessages((prev) => [...prev, data.message]);
+          setStreamingAgent(null);
+          if (data.message) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
+          }
         }
         break;
       case 'session-updated':
@@ -293,6 +323,9 @@ export function AppProvider({ children }) {
         setSessions((prev) =>
           prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
         );
+        if (data.session?.id === activeSessionIdRef.current && Array.isArray(data.session.agents)) {
+          setSessionAgents(data.session.agents);
+        }
         break;
       case 'session-worktree-detected':
         // Keep the per-session row flag in sync for debugging / future
@@ -326,76 +359,11 @@ export function AppProvider({ children }) {
           }
         }
         break;
-      case 'room_message':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomMessages((prev) => [...prev, data.message]);
-        }
+      case 'session_round_start':
+        if (forActiveSession) setSessionRoundProcessing(true);
         break;
-      case 'room_round_start':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomProcessing(true);
-        }
-        break;
-      case 'room_thinking':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking({ agentId: data.agentId, agentName: data.agentName, agentColor: data.agentColor });
-          setRoomStreaming(null);
-        }
-        break;
-      case 'room_stream':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming({
-            agentId: data.agentId,
-            agentName: data.agentName,
-            agentColor: data.agentColor,
-            messageId: data.messageId,
-            content: data.content,
-          });
-        }
-        break;
-      case 'room_agent_done':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming(null);
-          setRoomMessages((prev) => [...prev, data.message]);
-        }
-        break;
-      case 'room_agent_error':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming(null);
-          setRoomMessages((prev) => [
-            ...prev,
-            {
-              id: data.messageId || `err-${Date.now()}`,
-              role: 'assistant',
-              content: `Error from ${data.agentName}: ${data.error}`,
-              agent_name: data.agentName,
-              created_at: new Date().toISOString(),
-            },
-          ]);
-        }
-        break;
-      case 'room_round_done':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomProcessing(false);
-          setRoomThinking(null);
-          setRoomStreaming(null);
-        }
-        break;
-      case 'room_cancelled':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomProcessing(false);
-          setRoomThinking(null);
-          setRoomStreaming(null);
-          setRoomQueue([]);
-        }
-        break;
-      case 'room_queue_updated':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomQueue(Array.isArray(data.queue) ? data.queue : []);
-        }
+      case 'session_round_done':
+        if (forActiveSession) setSessionRoundProcessing(false);
         break;
 
       // Delegation events
@@ -934,15 +902,13 @@ export function AppProvider({ children }) {
     if (!getApiBaseUrl()) return; // No server configured yet
     (async () => {
       try {
-        const [agentData, projectData, roomData, cronSessionData] = await Promise.all([
+        const [agentData, projectData, cronSessionData] = await Promise.all([
           api.getAgents(),
           api.getProjects().catch(() => []),
-          api.getRooms().catch(() => []),
           api.getCronSessions().catch(() => []),
         ]);
         setAgents(agentData);
         setProjects(projectData);
-        setRooms(roomData);
         setCronSessions(cronSessionData);
         if (agentData.length > 0) setActiveAgentId(agentData[0].id);
       } catch (err) {
@@ -1170,13 +1136,8 @@ export function AppProvider({ children }) {
     setThinking(false);
     setStreamingContent('');
     setActiveTasks({});
-    setRooms([]);
-    setActiveRoomId(null);
-    setRoomMessages([]);
-    setRoomThinking(null);
-    setRoomStreaming(null);
-    setRoomProcessing(false);
-    setRoomQueue([]);
+    setSessionAgents([]);
+    setSessionRoundProcessing(false);
     setDelegations({});
     setMessageQueues({});
     setEventsByMessage({});
@@ -1188,15 +1149,13 @@ export function AppProvider({ children }) {
     reconnect();
     // Reload data
     try {
-      const [agentData, projectData, roomData, cronSessionData] = await Promise.all([
+      const [agentData, projectData, cronSessionData] = await Promise.all([
         api.getAgents(),
         api.getProjects().catch(() => []),
-        api.getRooms().catch(() => []),
         api.getCronSessions().catch(() => []),
       ]);
       setAgents(agentData);
       setProjects(projectData);
-      setRooms(roomData);
       setCronSessions(cronSessionData);
       if (agentData.length > 0) setActiveAgentId(agentData[0].id);
     } catch (err) {
@@ -1477,39 +1436,31 @@ export function AppProvider({ children }) {
     [handleSend],
   );
 
-  // Load room messages when active room changes
+  // Load session agents when active session changes.
   useEffect(() => {
-    if (!activeRoomId) {
-      setRoomMessages([]);
-      setRoomThinking(null);
-      setRoomStreaming(null);
-      setRoomProcessing(false);
-      setRoomQueue([]);
+    if (!activeSessionId) {
+      setSessionAgents([]);
+      setSessionRoundProcessing(false);
       return;
     }
-    api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(() => setRoomMessages([]));
-    // Reset queue until the server pushes a `room_queue_updated` snapshot.
-    setRoomQueue([]);
-  }, [activeRoomId]);
+    let cancelled = false;
+    api
+      .getSessionDetail(activeSessionId)
+      .then((detail) => {
+        if (!cancelled) setSessionAgents(detail.agents || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionAgents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
 
-  const handleRoomSend = useCallback((content) => {
-    if (!activeRoomId) return;
-    send({ type: 'room_chat', roomId: activeRoomId, content });
-  }, [activeRoomId, send]);
-
-  const handleRoomCancel = useCallback(() => {
-    if (!activeRoomId) return;
-    send({ type: 'room_cancel', roomId: activeRoomId });
-  }, [activeRoomId, send]);
-
-  const handleRoomDequeue = useCallback((messageId) => {
-    if (!activeRoomId) return;
-    send({ type: 'room_dequeue', roomId: activeRoomId, messageId });
-    setRoomQueue((prev) => prev.filter((item) => item.id !== messageId));
-  }, [activeRoomId, send]);
-
-  const refreshRooms = useCallback(() => {
-    api.getRooms().then(setRooms).catch(() => setRooms([]));
+  const handleSessionAgentsUpdated = useCallback((detail) => {
+    if (!detail?.id) return;
+    setSessionAgents(detail.agents || []);
+    setSessions((prev) => prev.map((s) => (s.id === detail.id ? { ...s, ...detail } : s)));
   }, []);
 
   const handleDequeue = useCallback(
@@ -1600,7 +1551,7 @@ export function AppProvider({ children }) {
     });
   }, []);
 
-  const isProcessing = thinking || !!streamingContent;
+  const isProcessing = thinking || !!streamingContent || sessionRoundProcessing;
 
   const value = {
     configReady,
@@ -1645,19 +1596,9 @@ export function AppProvider({ children }) {
     refreshAgents,
     refreshProjects,
     skills,
-    rooms,
-    activeRoomId,
-    setActiveRoomId,
-    roomMessages,
-    roomStreaming,
-    roomThinking,
-    roomProcessing,
-    roomQueue,
-    roomQueueLength: roomQueue.length,
-    handleRoomSend,
-    handleRoomCancel,
-    handleRoomDequeue,
-    refreshRooms,
+    sessionAgents,
+    sessionRoundProcessing,
+    handleSessionAgentsUpdated,
     delegations,
     sessionHandoffs,
     handleOpenHandoffSession,

@@ -29,13 +29,10 @@ describe('WebSocket — extraEnv stripping', () => {
     createWebSocket(server, {
       getProjects: () => [],
       handleChat,
-      handleRoomChat: vi.fn().mockResolvedValue(undefined),
       handleCancel: vi.fn(),
-      handleRoomCancel: vi.fn(),
       handleDelegationCancel: vi.fn(),
       handleDequeue: vi.fn(),
       handleEditQueueItem: vi.fn(),
-      handleRoomDequeue: vi.fn(),
       handleDesignChat: vi.fn().mockResolvedValue(undefined),
       handleDesignCancel: vi.fn(),
     } as WebSocketDeps);

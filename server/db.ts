@@ -129,39 +129,16 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 
-    -- Conference rooms: multi-agent group chats
-    CREATE TABLE IF NOT EXISTS rooms (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      project_id TEXT,
-      max_turns INTEGER NOT NULL DEFAULT 10,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS room_agents (
-      room_id TEXT NOT NULL,
+    -- Multi-agent sessions: advisors beyond sessions.agent_id (primary executor)
+    CREATE TABLE IF NOT EXISTS session_agents (
+      session_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       position INTEGER NOT NULL DEFAULT 0,
       added_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (room_id, agent_id),
-      FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+      PRIMARY KEY (session_id, agent_id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
-
-    CREATE TABLE IF NOT EXISTS room_messages (
-      id TEXT PRIMARY KEY,
-      room_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-      agent_id TEXT,
-      agent_name TEXT,
-      agent_color TEXT,
-      content TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id);
-    CREATE INDEX IF NOT EXISTS idx_room_agents_room ON room_agents(room_id);
+    CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
 
     CREATE TABLE IF NOT EXISTS active_tasks (
       session_id TEXT PRIMARY KEY,
@@ -863,27 +840,9 @@ function initDb(dataDir: string): void {
   }
 
   try {
-    db.prepare('SELECT max_turns FROM rooms LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE rooms ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
-  }
-
-  try {
-    db.prepare('SELECT project_id FROM rooms LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE rooms ADD COLUMN project_id TEXT');
-  }
-
-  try {
     db.prepare('SELECT attachments FROM messages LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
-  }
-
-  try {
-    db.prepare('SELECT attachments FROM room_messages LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE room_messages ADD COLUMN attachments TEXT');
   }
 
   // Nullable metadata column for system-role messages (e.g. PR-created markers).
@@ -1034,6 +993,70 @@ function initDb(dataDir: string): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_user_id)');
   } catch (_e) {
     /* already exists */
+  }
+
+  // Multi-agent sessions: max advisor turns per user message round
+  try {
+    db.prepare('SELECT max_turns FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
+  }
+
+  // Message attribution for multi-agent assistant turns
+  try {
+    db.prepare('SELECT agent_id FROM messages LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE messages ADD COLUMN agent_id TEXT');
+    db.exec('ALTER TABLE messages ADD COLUMN agent_name TEXT');
+    db.exec('ALTER TABLE messages ADD COLUMN agent_color TEXT');
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_agents (
+      session_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (session_id, agent_id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
+  `);
+
+  // Drop legacy conference room tables (replaced by multi-agent sessions).
+  const legacyRoomTables = [
+    'room_message_queue',
+    'active_room_tasks',
+    'room_messages',
+    'room_agents',
+    'rooms',
+  ] as const;
+  let legacyRoomRows = 0;
+  for (const table of legacyRoomTables) {
+    try {
+      const row = db
+        .prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name=?`)
+        .get(table) as { c: number };
+      if (row.c > 0) {
+        const countRow = db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number };
+        legacyRoomRows += countRow.c;
+      }
+    } catch {
+      /* table missing or unreadable */
+    }
+  }
+  if (legacyRoomRows > 0) {
+    console.warn(
+      `[db] Dropping legacy conference-room tables (${legacyRoomRows} row(s) will be discarded). ` +
+        'Export room history before upgrading if you need to keep it.',
+    );
+  }
+  for (const table of legacyRoomTables) {
+    try {
+      db.exec(`DROP TABLE IF EXISTS ${table}`);
+    } catch (_e) {
+      /* best-effort */
+    }
   }
 
   try {
@@ -1310,30 +1333,6 @@ function initDb(dataDir: string): void {
   }
 
   db.exec(`
-    CREATE TABLE IF NOT EXISTS active_room_tasks (
-      room_id TEXT PRIMARY KEY,
-      agent_id TEXT,
-      agent_name TEXT,
-      agent_color TEXT,
-      message_id TEXT,
-      streamed_output TEXT NOT NULL DEFAULT '',
-      queue_json TEXT,
-      turn_count INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','error','cancelled')),
-      started_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS room_message_queue (
-      id TEXT PRIMARY KEY,
-      room_id TEXT NOT NULL,
-      content TEXT NOT NULL,
-      position INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_room_message_queue ON room_message_queue(room_id, position ASC);
-
     -- Designs: Claude-Design-style canvas. Each design is a singleton-agent
     -- chat with an artifact directory on disk rendered in an iframe.
     CREATE TABLE IF NOT EXISTS designs (
@@ -1858,6 +1857,9 @@ function initDb(dataDir: string): void {
     updateSessionName: db.prepare(
       "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateSessionMaxTurns: db.prepare(
+      "UPDATE sessions SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     // Soft-delete: mark the row archived. Worktree is intentionally preserved
     // until hard-delete so restore can reattach the same branch/checkout.
@@ -2028,7 +2030,7 @@ function initDb(dataDir: string): void {
 
     // Messages
     addMessage: db.prepare(
-      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata, agent_id, agent_name, agent_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     getMessages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
@@ -2156,72 +2158,17 @@ function initDb(dataDir: string): void {
     getHeartbeatState: db.prepare('SELECT * FROM heartbeat_state WHERE agent_id = ?'),
     deleteHeartbeatState: db.prepare('DELETE FROM heartbeat_state WHERE agent_id = ?'),
 
-    // Rooms
-    getRooms: db.prepare('SELECT * FROM rooms ORDER BY updated_at DESC'),
-    getRoom: db.prepare('SELECT * FROM rooms WHERE id = ?'),
-    createRoom: db.prepare('INSERT INTO rooms (id, name) VALUES (?, ?)'),
-    createProjectRoom: db.prepare('INSERT INTO rooms (id, name, project_id) VALUES (?, ?, ?)'),
-    getRoomByProjectId: db.prepare('SELECT * FROM rooms WHERE project_id = ? LIMIT 1'),
-    updateRoomName: db.prepare(
-      "UPDATE rooms SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    // Session advisors (multi-agent sessions)
+    getSessionAgents: db.prepare(
+      'SELECT * FROM session_agents WHERE session_id = ? ORDER BY position ASC',
     ),
-    updateRoomMaxTurns: db.prepare(
-      "UPDATE rooms SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",
+    addSessionAgent: db.prepare(
+      `INSERT OR IGNORE INTO session_agents (session_id, agent_id, position)
+       VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_agents WHERE session_id = ?))`,
     ),
-    touchRoom: db.prepare("UPDATE rooms SET updated_at = datetime('now') WHERE id = ?"),
-    deleteRoom: db.prepare('DELETE FROM rooms WHERE id = ?'),
-
-    // Room agents
-    getRoomAgents: db.prepare('SELECT * FROM room_agents WHERE room_id = ? ORDER BY position ASC'),
-    addRoomAgent: db.prepare(
-      `INSERT OR IGNORE INTO room_agents (room_id, agent_id, position)
-       VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM room_agents WHERE room_id = ?))`,
+    removeSessionAgent: db.prepare(
+      'DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?',
     ),
-    removeRoomAgent: db.prepare('DELETE FROM room_agents WHERE room_id = ? AND agent_id = ?'),
-
-    // Room messages
-    getRoomMessages: db.prepare(
-      'SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC',
-    ),
-    addRoomMessage: db.prepare(
-      'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    ),
-
-    // Active room tasks (DB-backed persistence for reconnection)
-    getActiveRoomTask: db.prepare('SELECT * FROM active_room_tasks WHERE room_id = ?'),
-    getAllActiveRoomTasks: db.prepare(
-      "SELECT * FROM active_room_tasks WHERE status = 'running' ORDER BY started_at ASC",
-    ),
-    insertActiveRoomTask: db.prepare(
-      `INSERT OR REPLACE INTO active_room_tasks
-        (room_id, agent_id, agent_name, agent_color, message_id, queue_json, turn_count, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`,
-    ),
-    updateActiveRoomTaskAgent: db.prepare(
-      "UPDATE active_room_tasks SET agent_id = ?, agent_name = ?, agent_color = ?, message_id = ?, streamed_output = '', turn_count = ?, updated_at = datetime('now') WHERE room_id = ?",
-    ),
-    appendActiveRoomTaskOutput: db.prepare(
-      "UPDATE active_room_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE room_id = ?",
-    ),
-    deleteActiveRoomTask: db.prepare('DELETE FROM active_room_tasks WHERE room_id = ?'),
-    deleteAllActiveRoomTasks: db.prepare('DELETE FROM active_room_tasks'),
-
-    // Room message queue
-    enqueueRoomMessage: db.prepare(
-      'INSERT INTO room_message_queue (id, room_id, content, position) VALUES (?, ?, ?, ?)',
-    ),
-    getQueuedRoomMessages: db.prepare(
-      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC',
-    ),
-    getNextQueuedRoomMessage: db.prepare(
-      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC LIMIT 1',
-    ),
-    dequeueRoomMessage: db.prepare('DELETE FROM room_message_queue WHERE id = ?'),
-    clearRoomQueue: db.prepare('DELETE FROM room_message_queue WHERE room_id = ?'),
-    getMaxRoomQueuePosition: db.prepare(
-      'SELECT MAX(position) as max_pos FROM room_message_queue WHERE room_id = ?',
-    ),
-    getAllQueuedRooms: db.prepare('SELECT DISTINCT room_id FROM room_message_queue'),
 
     // Designs
     listDesigns: db.prepare('SELECT * FROM designs WHERE org_id = ? ORDER BY updated_at DESC'),
@@ -3072,7 +3019,7 @@ function initDb(dataDir: string): void {
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
     deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
-    deleteRoomsByProject: db.prepare('DELETE FROM rooms WHERE project_id = ?'),
+    deleteSessionAgentsByAgent: db.prepare('DELETE FROM session_agents WHERE agent_id = ?'),
     deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),
     deleteSessionsByAgent: db.prepare('DELETE FROM sessions WHERE agent_id = ?'),
     // Hard-delete: agent is not a DB table, so each child row store needs an
@@ -3080,7 +3027,6 @@ function initDb(dataDir: string): void {
     // skill_invocations/background_tasks/message_queue automatically.
     deleteHeartbeatLogsByAgent: db.prepare('DELETE FROM heartbeat_logs WHERE agent_id = ?'),
     deleteSlackMessagesByAgent: db.prepare('DELETE FROM slack_messages WHERE agent_id = ?'),
-    deleteRoomAgentsByAgent: db.prepare('DELETE FROM room_agents WHERE agent_id = ?'),
     deleteActiveTasksByAgent: db.prepare('DELETE FROM active_tasks WHERE agent_id = ?'),
     deleteAgentSkillOverridesByAgent: db.prepare(
       'DELETE FROM agent_skill_overrides WHERE agent_id = ?',

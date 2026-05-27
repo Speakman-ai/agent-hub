@@ -401,7 +401,6 @@ export default function createAuditRoutes(deps: RouteDeps): Router {
     if (agentsChanged) {
       deps.saveProjects();
       try {
-        deps.ensureProjectRoom(project);
       } catch {
         /* non-fatal */
       }

@@ -65,7 +65,6 @@ const buildProps = (overrides = {}) => {
     onNavigate,
     currentView: 'chat',
     activeTaskSessionIds: { 's-running': true },
-    rooms: [],
     changesReadyBySession: { 's-pr': { branch: 'feat/foo' } },
     ...overrides,
   };

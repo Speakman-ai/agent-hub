@@ -65,6 +65,21 @@ export const SessionComponent = registerComponent(
       owner_user_id: z.string().nullable().optional(),
       orchestration_phase: z.string().nullable().optional(),
       orchestration_meta: z.string().nullable().optional(),
+      max_turns: z.number().int().optional(),
+      agents: z
+        .array(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            color: z.string(),
+            position: z.number().int(),
+            role: z.enum(['executor', 'advisor']),
+            projectId: z.string().optional(),
+            projectName: z.string().optional(),
+          }),
+        )
+        .optional(),
+      advisor_count: z.number().int().optional(),
     })
     .openapi({
       description:
@@ -131,13 +146,14 @@ export const CreateSessionRequestSchema = z.object({
   ask_mode: z.boolean().optional(),
 });
 
-/**
- * PATCH /api/sessions/:sessionId — currently only `name` is updated.
- * Extra keys are silently ignored by the handler (mirrors the pre-Zod
- * behaviour).
- */
+/** PATCH /api/sessions/:sessionId — `name` and/or `max_turns`. */
 export const PatchSessionRequestSchema = z.object({
   name: z.string().optional(),
+  max_turns: z.number().int().min(0).optional(),
+});
+
+export const AddSessionAgentRequestSchema = z.object({
+  agentId: z.string().min(1, 'agentId is required'),
 });
 
 export const PutSessionEngineRequestSchema = z.object({
@@ -166,6 +182,10 @@ const agentIdParams = z.object({
 
 const sessionIdParams = z.object({
   sessionId: z.string().openapi({ description: 'Session UUID.' }),
+});
+
+const sessionAgentIdParams = sessionIdParams.extend({
+  agentId: z.string().openapi({ description: 'Advisor agent ID to remove.' }),
 });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -275,8 +295,9 @@ registerPath({
   method: 'patch',
   path: '/api/sessions/{sessionId}',
   tags: ['Sessions'],
-  summary: 'Rename a session',
-  description: 'Currently only `name` is updated; unknown keys are silently ignored.',
+  summary: 'Update session fields',
+  description:
+    'Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(PatchSessionRequestSchema) },
@@ -284,6 +305,41 @@ registerPath({
   responses: {
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
+    404: errorResponse('Session not found.'),
+  },
+});
+
+// POST /api/sessions/:sessionId/agents
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/agents',
+  tags: ['Sessions'],
+  summary: 'Add a read-only advisor agent to a multi-agent session',
+  description:
+    'Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(AddSessionAgentRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed or primary agent cannot be added as advisor.'),
+    403: errorResponse('Reviewer agents cannot join multi-agent sessions.'),
+    404: errorResponse('Session or agent not found.'),
+  },
+});
+
+// DELETE /api/sessions/:sessionId/agents/:agentId
+registerPath({
+  method: 'delete',
+  path: '/api/sessions/{sessionId}/agents/{agentId}',
+  tags: ['Sessions'],
+  summary: 'Remove an advisor from a multi-agent session',
+  description: 'Session owner only. Cannot remove the primary executor.',
+  request: { params: sessionAgentIdParams },
+  responses: {
+    200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Cannot remove the primary executor.'),
     404: errorResponse('Session not found.'),
   },
 });

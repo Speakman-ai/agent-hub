@@ -64,6 +64,19 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
+  getSessionDetail: (sessionId) => fetchJSON(`/sessions/${sessionId}`),
+  updateSession: (sessionId, data) =>
+    fetchJSON(`/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  addSessionAgent: (sessionId, agentId) =>
+    fetchJSON(`/sessions/${sessionId}/agents`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
+  removeSessionAgent: (sessionId, agentId) =>
+    fetchJSON(`/sessions/${sessionId}/agents/${agentId}`, { method: 'DELETE' }),
   setSessionEngine: (sessionId, engine) =>
     fetchJSON(`/sessions/${sessionId}/engine`, {
       method: 'PUT',
@@ -166,22 +179,6 @@ export const api = {
     fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCron: (id) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
   runCron: (id) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
-
-  // Rooms
-  getRooms: () => fetchJSON('/rooms'),
-  getRoom: (id) => fetchJSON(`/rooms/${id}`),
-  createRoom: (name) => fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
-  deleteRoom: (id) => fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
-  renameRoom: (id, name) =>
-    fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
-  updateRoom: (id, data) =>
-    fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  addRoomAgent: (roomId, agentId) =>
-    fetchJSON(`/rooms/${roomId}/agents`, { method: 'POST', body: JSON.stringify({ agentId }) }),
-  removeRoomAgent: (roomId, agentId) =>
-    fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
-  getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
-  summarizeRoom: (roomId) => fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
 
   // Skills & Context
   getSkills: (agentId) => fetchJSON(`/agents/${agentId}/skills`),

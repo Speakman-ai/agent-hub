@@ -337,6 +337,8 @@ function ChatMessage({
   const isQueued = message.queued;
   const isInterrupted = message.interrupted;
   const showInFlightActions = inFlightWhileStreaming && isUser && (isQueued || isInterrupted);
+  const displayAgentColor = message.agent_color || agentColor;
+  const displayAgentName = message.agent_name || 'Assistant';
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
@@ -401,8 +403,8 @@ function ChatMessage({
       >
         {!isUser && (
           <div className="flex items-center gap-2 mb-1">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: agentColor }} />
-            <span className="text-xs text-gray-500 font-medium">Assistant</span>
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: displayAgentColor }} />
+            <span className="text-xs text-gray-500 font-medium">{displayAgentName}</span>
             {engineBadge && (
               <span
                 className="text-xs text-gray-600 flex items-center gap-1"

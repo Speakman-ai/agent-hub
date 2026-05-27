@@ -35,6 +35,13 @@ import { resolveGithubSpawnToken } from './github-spawn-token-resolver.js';
 import { getRepoOwnerForCwd } from './github-remote-owner.js';
 import type { DelegationResult } from './delegation.js';
 import {
+  handleMultiAgentChat,
+  initSessionMultiAgent,
+  sessionHasAdvisors,
+  activeMultiAgentRounds,
+  handleMultiAgentCancel,
+} from './session-multi-agent.js';
+import {
   detectHandoffBlock,
   recordMalformedHandoff,
   handoffHasTrailingContent,
@@ -357,6 +364,7 @@ export interface ChatHandlerResult {
     errorText: string,
   ) => string;
   createCursorChat: (cwd: string, env: NodeJS.ProcessEnv) => Promise<string>;
+  initMultiAgent: () => void;
 }
 
 /** Minimal socket shape used by chat handlers (matches `ws` from the `ws` package). */
@@ -478,7 +486,7 @@ export type ProjectAgentRosterPeer = { id: string; name: string; role?: string }
  * The `delegateAllowlist` parameter is retained for source compatibility but
  * is intentionally ignored — the `<delegate>`/`<handoff>` sub-agent system
  * has been removed. Peers are listed neutrally; agents coordinate via plain
- * chat or conference rooms, not via dispatched blocks.
+ * chat or multi-agent sessions, not via dispatched blocks.
  */
 export function formatProjectAgentRosterSection(
   peers: ProjectAgentRosterPeer[],
@@ -491,7 +499,7 @@ export function formatProjectAgentRosterSection(
     const roleBit = p.role ? ` · Role: ${p.role}` : '';
     return `- **${display}** (\`${p.id}\`)${roleBit}`;
   });
-  return `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat and conference rooms:\n${lines.join('\n')}`;
+  return `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat and multi-agent sessions:\n${lines.join('\n')}`;
 }
 
 function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgentRosterPeer[] {
@@ -1312,7 +1320,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
   ): string {
     const content = `⚠️ Error: ${errorText}`;
     try {
-      stmts.addMessage.run(messageId, sessionId, 'assistant', content, engine, model, null, null);
+      stmts.addMessage.run(
+        messageId,
+        sessionId,
+        'assistant',
+        content,
+        engine,
+        model,
+        null,
+        null,
+        null,
+        null,
+        null,
+      );
       stmts.touchSession.run(sessionId);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1333,7 +1353,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const msgId = uuidv4();
     const metadata = JSON.stringify(meta);
     try {
-      stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+      stmts.addMessage.run(
+        msgId,
+        sessionId,
+        'system',
+        content,
+        null,
+        null,
+        null,
+        metadata,
+        null,
+        null,
+        null,
+      );
       stmts.touchSession.run(sessionId);
       const insertedMessage = (stmts.getMessageById.get(msgId) as MessageRow | undefined) ?? {
         id: msgId,
@@ -1573,15 +1605,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         persistLegacyWikiHybridGateIfNeeded(session, sessionId);
       }
 
-      const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
-      const sessionBusy = isSessionChatBusy(
-        sessionId,
-        activeProcesses,
-        activeDelegationSessions,
-        existingTask,
-      );
+      if (session && !msg._multiAgentInternal && sessionHasAdvisors(stmts!, sessionId)) {
+        await handleMultiAgentChat(ws, msg);
+        return;
+      }
 
-      if (sessionBusy && !msg._fromQueue) {
+      const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
+      const sessionBusy =
+        isSessionChatBusy(sessionId, activeProcesses, activeDelegationSessions, existingTask) ||
+        activeMultiAgentRounds.has(sessionId);
+
+      if (sessionBusy && !msg._fromQueue && !msg._multiAgentInternal) {
         if (isAutoContinuation) {
           const retries = msg._continuationRetry ?? 0;
           const plan = planAutoContinuationRetry({ retries });
@@ -1681,7 +1715,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           position = (maxPos?.max_pos ?? -1) + 1;
         }
 
-        stmts.addMessage.run(queueMsgId, sessionId, 'user', content, null, null, attachments, null);
+        stmts.addMessage.run(
+          queueMsgId,
+          sessionId,
+          'user',
+          content,
+          null,
+          null,
+          attachments,
+          null,
+          null,
+          null,
+          null,
+        );
         stmts.touchSession.run(sessionId);
 
         stmts.enqueueMessage.run(queueMsgId, sessionId, agentId, content, attachments, position);
@@ -1735,9 +1781,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         userMsgId = msg._existingMsgId!;
         broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
         reportUserMessagePersisted(true);
-      } else if (!isAutoContinuation) {
+      } else if (!isAutoContinuation && !msg._skipUserMessagePersist) {
         userMsgId = uuidv4();
-        stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
+        stmts.addMessage.run(
+          userMsgId,
+          sessionId,
+          'user',
+          content,
+          null,
+          null,
+          attachments,
+          null,
+          null,
+          null,
+          null,
+        );
         stmts.touchSession.run(sessionId);
 
         broadcast({
@@ -3197,6 +3255,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             model,
             agentId: agent.id,
             agentName: agent.name,
+            agentColor: agent.color ?? null,
             assembled,
           });
           drainQueue(sessionId);
@@ -3874,6 +3933,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             model,
             null,
             null,
+            null,
+            null,
+            null,
           );
           S.touchSession.run(sessionId);
         } catch (err: unknown) {
@@ -3936,7 +3998,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const sysId = uuidv4();
           const body = `**ReAct chain halted**\n\nContext was loaded for a follow-up model turn, but orchestration budgets blocked auto-continuation:\n- ${budgetResult.reasons.join('\n- ')}`;
           try {
-            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.addMessage.run(
+              sysId,
+              sessionId,
+              'system',
+              body,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+            );
             stmts.touchSession.run(sessionId);
             const inserted = stmts.getMessageById.get(sysId) as MessageRow | undefined;
             if (inserted) {
@@ -4225,10 +4299,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
           const sysId = uuidv4();
           const body = delegationGloballyOff
-            ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use conference rooms or direct chat to coordinate with other agents.'
+            ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use direct chat or multi-agent sessions to coordinate with other agents.'
             : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
           try {
-            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.addMessage.run(
+              sysId,
+              sessionId,
+              'system',
+              body,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+            );
             stmts.touchSession.run(sessionId);
             const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
               id: sysId,
@@ -4280,7 +4366,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const body =
             '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
           try {
-            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.addMessage.run(
+              sysId,
+              sessionId,
+              'system',
+              body,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+            );
             stmts.touchSession.run(sessionId);
             const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
               id: sysId,
@@ -4432,5 +4530,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
   }
 
-  return { handleChat, saveErrorMessage, createCursorChat };
+  return {
+    handleChat,
+    saveErrorMessage,
+    createCursorChat,
+    initMultiAgent: () =>
+      initSessionMultiAgent({
+        stmts: stmts!,
+        broadcast,
+        getEnrichedAgent,
+        buildEnrichedPrompt: (agent) =>
+          buildEnrichedPrompt(
+            findAgent(agent.id)!.project as ProjectWithCommands,
+            agent as AgentWithModel,
+            { useWorktree: false, isFirstMessage: false, _getEnrichedAgent: getEnrichedAgent },
+          ),
+        getClaudeBin,
+        getCursorBin,
+        getGeminiBin,
+        getCodexBin,
+        getConfig: () => config,
+        getMaxQueueSize: () => MAX_QUEUE_SIZE,
+        runExecutorTurn: (ws, internalMsg) => handleChat(ws, internalMsg),
+      }),
+  };
 }

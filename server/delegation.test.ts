@@ -806,6 +806,9 @@ describe('synthesizeResults — engine routing', () => {
       'opus',
       null,
       null,
+      null,
+      null,
+      null,
     );
     const doneEv = broadcast.mock.calls.map((c) => c[0]).find((e) => e.type === 'done');
     expect(doneEv?.message?.content).toContain('Here is the unified summary.');

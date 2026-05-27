@@ -116,7 +116,19 @@ export function appendRunCancelledSystemMessage(
   const body = buildRunCancelledSystemMessage(reason);
   try {
     const msgId = uuidv4();
-    stmts.addMessage.run(msgId, sessionId, 'system', body, null, null, null, null);
+    stmts.addMessage.run(
+      msgId,
+      sessionId,
+      'system',
+      body,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
     try {
       stmts.touchSession.run(sessionId);
     } catch {
@@ -153,6 +165,8 @@ export interface FinalizeTerminatedChatTurnParams {
   model: string | null;
   agentId: string;
   agentName: string;
+  /** Hex color (e.g. `#fff`) for per-agent message attribution in multi-agent sessions. */
+  agentColor?: string | null;
   /** Streamed assistant text accumulated before SIGTERM (may be empty). */
   assembled: string;
 }
@@ -166,7 +180,17 @@ export function finalizeChatRunAfterTermination(params: FinalizeTerminatedChatTu
   const partialContent = stripAssistantControlBlocks(params.assembled).trim();
   if (!partialContent) return;
 
-  const { stmts, broadcast, sessionId, assistantMsgId, engine, model, agentId, agentName } = params;
+  const {
+    stmts,
+    broadcast,
+    sessionId,
+    assistantMsgId,
+    engine,
+    model,
+    agentId,
+    agentName,
+    agentColor,
+  } = params;
   try {
     stmts.addMessage.run(
       assistantMsgId,
@@ -177,6 +201,9 @@ export function finalizeChatRunAfterTermination(params: FinalizeTerminatedChatTu
       model,
       null,
       null,
+      agentId,
+      agentName,
+      agentColor ?? null,
     );
     stmts.touchSession.run(sessionId);
   } catch (err: unknown) {

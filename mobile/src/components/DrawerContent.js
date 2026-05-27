@@ -31,10 +31,6 @@ export default function DrawerContent({ navigation }) {
     handleRestoreSession,
     restoringSessionIds,
     handleSwitchOrg,
-    rooms,
-    activeRoomId,
-    setActiveRoomId,
-    refreshRooms,
     refreshProjects,
     refreshAgents,
     cronSessions,
@@ -489,76 +485,6 @@ export default function DrawerContent({ navigation }) {
           </View>
         )}
 
-        {/* Conference Rooms */}
-        <View style={{ marginTop: 16 }}>
-          <Text style={styles.sectionLabel}>CONFERENCE ROOMS</Text>
-          {rooms.map((rm) => (
-            <TouchableOpacity
-              key={rm.id}
-              style={[styles.agentItem, activeRoomId === rm.id && styles.agentItemActive]}
-              onPress={() => {
-                setActiveRoomId(rm.id);
-                navigation.navigate('Rooms');
-                navigation.closeDrawer();
-              }}
-              onLongPress={() => {
-                Alert.alert('Delete Room', `Delete "${rm.name}"?`, [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        await api.deleteRoom(rm.id);
-                        refreshRooms();
-                        if (activeRoomId === rm.id) setActiveRoomId(null);
-                      } catch {}
-                    },
-                  },
-                ]);
-              }}
-            >
-              <Text style={{ fontSize: 14 }}>{'\uD83C\uDFE2'}</Text>
-              <Text style={[styles.agentName, activeRoomId === rm.id && styles.agentNameActive]} numberOfLines={1}>
-                {rm.name}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 3 }}>
-                {(rm.agents || []).slice(0, 4).map((agentRef, i) => {
-                  const a = agents.find(ag => ag.id === (typeof agentRef === 'string' ? agentRef : agentRef?.id));
-                  return <View key={i} style={[styles.miniDot, { backgroundColor: a?.color || colors.gray500 }]} />;
-                })}
-              </View>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity
-            style={styles.newSessionButton}
-            onPress={() => {
-              Alert.prompt?.('New Room', 'Room name:', async (name) => {
-                if (!name?.trim()) return;
-                try {
-                  const room = await api.createRoom(name.trim());
-                  refreshRooms();
-                  setActiveRoomId(room.id);
-                  navigation.navigate('Rooms');
-                  navigation.closeDrawer();
-                } catch {}
-              }) || (() => {
-                // Fallback for Android (no Alert.prompt)
-                navigation.closeDrawer();
-                // Use a simple approach - create with default name
-                (async () => {
-                  try {
-                    const room = await api.createRoom('New Room');
-                    refreshRooms();
-                    setActiveRoomId(room.id);
-                  } catch {}
-                })();
-              })();
-            }}
-          >
-            <Text style={styles.newSessionText}>+ New Room</Text>
-          </TouchableOpacity>
-        </View>
       </ScrollView>
 
       {/* Bottom Nav */}

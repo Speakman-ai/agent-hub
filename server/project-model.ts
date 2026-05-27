@@ -9,10 +9,6 @@ import type {
   Agent,
   EnrichedAgent,
   AgentLookup,
-  RoomWithAgents,
-  RoomRow,
-  RoomAgentRow,
-  RoomAgentDetail,
   WebhookConfigRow,
   Stmts,
 } from './types.js';
@@ -559,48 +555,6 @@ function ensureContextFiles(): void {
   }
 }
 
-// ─── Conference Room helpers ────────────────────────────────────────
-
-function ensureProjectRoom(project: Project): RoomWithAgents | null {
-  if (!project.agents || project.agents.length === 0) return null;
-
-  const typedStmts = stmts as Stmts;
-
-  let room = typedStmts.getRoomByProjectId.get(project.id) as RoomRow | undefined;
-  if (!room) {
-    const roomId = uuidv4();
-    typedStmts.createProjectRoom.run(roomId, `${project.name} Room`, project.id);
-    room = typedStmts.getRoom.get(roomId) as RoomRow | undefined;
-  }
-
-  if (!room) return null;
-
-  const existingAgents = new Set(
-    (typedStmts.getRoomAgents.all(room.id) as RoomAgentRow[]).map((ra) => ra.agent_id),
-  );
-  for (const agent of project.agents) {
-    if (!existingAgents.has(agent.id)) {
-      typedStmts.addRoomAgent.run(room.id, agent.id, room.id);
-    }
-  }
-
-  const projectAgentIds = new Set(project.agents.map((a) => a.id));
-  for (const agentId of existingAgents) {
-    if (!projectAgentIds.has(agentId)) {
-      typedStmts.removeRoomAgent.run(room.id, agentId);
-    }
-  }
-
-  const roomAgents = typedStmts.getRoomAgents.all(room.id) as RoomAgentRow[];
-  const agentDetails: RoomAgentDetail[] = roomAgents.map((ra) => {
-    const agent = getEnrichedAgent(ra.agent_id);
-    return agent
-      ? { id: agent.id, name: agent.name, color: agent.color || '#666', position: ra.position }
-      : { id: ra.agent_id, name: 'Unknown', color: '#666', position: ra.position };
-  });
-  return { ...room, agents: agentDetails };
-}
-
 // ─── Exports ────────────────────────────────────────────────────────
 export {
   // Bootstrap
@@ -626,6 +580,4 @@ export {
   ensureIntakeAgents,
   ensureReviewerAgents,
   ensureContextFiles,
-  // Conference room
-  ensureProjectRoom,
 };

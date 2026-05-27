@@ -1063,7 +1063,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     findProject,
     findAgent,
     saveProjects,
-    ensureProjectRoom,
     config,
     getProjects,
     getProjectDataDir,
@@ -2202,7 +2201,6 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
         // 5. Create the project's conference room now that we have an
         //    anchor agent.
-        ensureProjectRoom(project);
 
         // 6. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
         //    USER.md, TOOLS.md, MEMORY.md). Without this, a freshly-scaffolded
@@ -2981,8 +2979,6 @@ This workspace has no git repo and no PR automation — your job is planning, or
         message,
       });
     }
-
-    ensureProjectRoom(project);
 
     // Notify any connected clients so their sidebar picks up the new
     // project without requiring a full page refresh.

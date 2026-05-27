@@ -10,7 +10,6 @@ import { SidebarContext } from './src/context/SidebarContext';
 import ChatScreen from './src/screens/ChatScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
-import RoomsScreen from './src/screens/RoomsScreen';
 import KanbanScreen from './src/screens/KanbanScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import WikiScreen from './src/screens/WikiScreen';
@@ -164,7 +163,6 @@ function AppContent() {
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="Skills" component={SkillsScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
-            <Stack.Screen name="Rooms" component={RoomsScreen} />
             <Stack.Screen name="Kanban" component={KanbanScreen} />
             <Stack.Screen name="Wiki" component={WikiScreen} />
             <Stack.Screen name="Notes" component={NotesScreen} />

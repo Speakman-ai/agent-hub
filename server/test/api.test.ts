@@ -147,7 +147,7 @@ describe('Projects', () => {
       expect(res.body.githubRepo).toBeUndefined();
     });
 
-    it('scaffolds a workflow project with board, primary agent + docs + intake, conference room, and context files', async () => {
+    it('scaffolds a workflow project with board, primary agent + docs + intake, and context files', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
@@ -155,7 +155,6 @@ describe('Projects', () => {
       //   - the primary "<Project> Agent" (role: 'dev', id: '<id>-agent')
       //   - a Docs agent (role: 'docs') — seeded for every project
       //   - a Ticket Intake agent (role: 'intake') — seeded for every project
-      //   - the project's conference room (containing the seeded agents)
       //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
       // and explicitly NOT seed a Reviewer agent — Reviewer is GitHub-only
       // (`ensureReviewerAgents()` gates on `githubRepo` / webhook configs).
@@ -196,16 +195,6 @@ describe('Projects', () => {
       expect(primary?.name).toBe('WF Scaffold Agent');
       // Default engine when no override is supplied = claude-code.
       expect(primary?.engine).toBe('claude-code');
-
-      // Conference room exists for the workspace and contains the primary
-      // agent (Docs/Intake are auto-added to the room by ensureProjectRoom's
-      // subsequent refresh logic when invoked — at minimum the primary
-      // anchor must be present).
-      const room = await request.get(`/api/projects/${projectId}/room`).expect(200);
-      expect(room.body).toBeTruthy();
-      expect(room.body.project_id).toBe(projectId);
-      const roomAgentIds = (room.body.agents as Array<{ id: string }>).map((a) => a.id);
-      expect(roomAgentIds).toContain(`${projectId}-agent`);
 
       // Top-level context files (`ensureContextFiles`) are seeded immediately,
       // not deferred to the next server restart.
@@ -286,9 +275,6 @@ describe('Projects', () => {
         .expect(201);
       const proj = await request.get(`/api/projects/${devId}`).expect(200);
       expect((proj.body.agents as unknown[]).length).toBe(0);
-      // No conference room (would 404 since `ensureProjectRoom` early-returns
-      // without agents — and we didn't call it).
-      await request.get(`/api/projects/${devId}/room`).expect(404);
     });
 
     it('rejects POST with an invalid mode value', async () => {
@@ -1157,6 +1143,9 @@ describe('Sessions', () => {
           null,
           null,
           null,
+          null,
+          null,
+          null,
         );
 
         const insertOverCap = db.transaction(() => {
@@ -1689,57 +1678,80 @@ describe('Heartbeats', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Conference Rooms
+// Multi-agent sessions
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Rooms', () => {
-  describe('GET /api/rooms', () => {
-    it('lists all rooms', async () => {
-      const res = await request.get('/api/rooms').expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
+describe('Session advisors', () => {
+  it('adds advisor from a different project than the session executor', async () => {
+    const projA = await createProject({ name: 'Project A' });
+    const projB = await createProject({ name: 'Project B' });
+    const executor = await createAgent({ projectId: projA.id as string, name: 'Exec A' });
+    const advisor = await createAgent({ projectId: projB.id as string, name: 'Advisor B' });
+
+    const sessionRes = await request
+      .post(`/api/agents/${executor.id}/sessions`)
+      .send({ name: 'Cross-project multi' })
+      .expect(200);
+    const sessionId = sessionRes.body.id as string;
+
+    await request
+      .post(`/api/sessions/${sessionId}/agents`)
+      .send({ agentId: advisor.id })
+      .expect(200);
+
+    const detail = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    const advisorRow = (
+      detail.body.agents as Array<{ id: string; role: string; projectId?: string }>
+    ).find((a) => a.id === advisor.id);
+    expect(advisorRow?.role).toBe('advisor');
+    expect(advisorRow?.projectId).toBe(projB.id);
   });
 
-  describe('CRUD lifecycle', () => {
-    it('creates and gets a room', async () => {
-      const createRes = await request.post('/api/rooms').send({ name: 'Test Room' }).expect(200);
+  it('adds and removes advisor agents on a session', async () => {
+    const agent = await createAgent();
+    const advisor = await createAgent();
 
-      expect(createRes.body).toHaveProperty('id');
-      const id = createRes.body.id as string;
+    const sessionRes = await request
+      .post(`/api/agents/${agent.id}/sessions`)
+      .send({ name: 'Multi test' })
+      .expect(200);
+    const sessionId = sessionRes.body.id as string;
 
-      const getRes = await request.get(`/api/rooms/${id}`).expect(200);
-      expect(getRes.body.name).toBe('Test Room');
+    const detail = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    expect(detail.body.agents).toBeTruthy();
+    expect((detail.body.agents as Array<{ role: string }>).some((a) => a.role === 'executor')).toBe(
+      true,
+    );
 
-      const updateRes = await request
-        .patch(`/api/rooms/${id}`)
-        .send({ name: 'Renamed Room' })
-        .expect(200);
-      expect(updateRes.body.name).toBe('Renamed Room');
+    await request
+      .post(`/api/sessions/${sessionId}/agents`)
+      .send({ agentId: advisor.id })
+      .expect(200);
 
-      const msgRes = await request.get(`/api/rooms/${id}/messages`).expect(200);
-      expect(Array.isArray(msgRes.body)).toBe(true);
+    const withAdvisor = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    const agentIds = (withAdvisor.body.agents as Array<{ id: string }>).map((a) => a.id);
+    expect(agentIds).toContain(advisor.id);
 
-      await request.delete(`/api/rooms/${id}`).expect(200);
-    });
+    await request.delete(`/api/sessions/${sessionId}/agents/${advisor.id}`).expect(200);
+
+    const afterRemove = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    const afterIds = (afterRemove.body.agents as Array<{ id: string }>).map((a) => a.id);
+    expect(afterIds).not.toContain(advisor.id);
   });
 
-  describe('Room agents', () => {
-    it('adds and removes agents from a room', async () => {
-      const room = await request.post('/api/rooms').send({ name: 'Agent Room' }).expect(200);
-      const agent = await createAgent();
+  it('PATCH accepts max_turns', async () => {
+    const agent = await createAgent();
+    const sessionRes = await request
+      .post(`/api/agents/${agent.id}/sessions`)
+      .send({ name: 'Turns test' })
+      .expect(200);
+    const sessionId = sessionRes.body.id as string;
 
-      await request
-        .post(`/api/rooms/${room.body.id}/agents`)
-        .send({ agentId: agent.id })
-        .expect(200);
-
-      const getRes = await request.get(`/api/rooms/${room.body.id}`).expect(200);
-      expect((getRes.body.agents as Array<{ id: string }>).some((a) => a.id === agent.id)).toBe(
-        true,
-      );
-
-      await request.delete(`/api/rooms/${room.body.id}/agents/${agent.id}`).expect(200);
-    });
+    const patched = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ max_turns: 3 })
+      .expect(200);
+    expect(patched.body.max_turns).toBe(3);
   });
 });
 

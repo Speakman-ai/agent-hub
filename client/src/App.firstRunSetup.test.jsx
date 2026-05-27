@@ -108,7 +108,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       getSessions: vi.fn().mockResolvedValue([]),
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
-      getRooms: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
       getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn().mockResolvedValue([]),

@@ -145,6 +145,9 @@ describe('handleHandoff — end-to-end', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
     );
     stmts.addMessage.run(
       randomUUID(),
@@ -153,6 +156,9 @@ describe('handleHandoff — end-to-end', () => {
       'Line 234 needs fast-ack before the SQLite write.',
       'claude-code',
       'claude-opus-4-7',
+      null,
+      null,
+      null,
       null,
       null,
     );

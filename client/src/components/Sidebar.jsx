@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Building2,
   BookOpen,
   Settings,
   Clock,
@@ -64,11 +63,6 @@ export default function Sidebar({
    * from `activeTaskSessionIds` (which is "working", rendered subdued).
    */
   awaitingInputBySession = {},
-  rooms = [],
-  activeRoomId,
-  onSelectRoom,
-  onNewRoom,
-  onDeleteRoom,
   onOpenProject,
   onImportProject,
   /**
@@ -104,9 +98,6 @@ export default function Sidebar({
   electronHealthSnapshot = null,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
-  const [hoveredRoom, setHoveredRoom] = useState(null);
-  const [newRoomName, setNewRoomName] = useState('');
-  const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
   // Project drag-and-drop state. `draggedProjectId` is the row the user
@@ -735,6 +726,14 @@ export default function Sidebar({
                                                   </span>
                                                 )}
                                                 <span className="truncate">{session.name}</span>
+                                                {session.advisor_count > 0 && (
+                                                  <span
+                                                    className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50"
+                                                    title={`${session.advisor_count} advisor${session.advisor_count !== 1 ? 's' : ''}`}
+                                                  >
+                                                    +{session.advisor_count}
+                                                  </span>
+                                                )}
                                               </button>
                                             </>
                                           )}
@@ -931,31 +930,6 @@ export default function Sidebar({
                       };
 
                       return topLevel.map((agent) => renderAgent(agent, 0));
-                    })()}
-
-                    {/* Project conference room */}
-                    {(() => {
-                      const projectRoom = rooms.find((r) => r.project_id === project.id);
-                      if (!projectRoom) return null;
-                      return (
-                        <button
-                          onClick={() => {
-                            onSelectRoom(projectRoom.id);
-                            onNavigate('room');
-                          }}
-                          className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                            activeRoomId === projectRoom.id && currentView === 'room'
-                              ? 'bg-gray-800 text-white'
-                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                          }`}
-                        >
-                          <Building2 size={14} className="flex-shrink-0" />
-                          <span className="truncate">Conference Room</span>
-                          <span className="text-gray-600 text-xs ml-auto">
-                            {projectRoom.agents?.length || 0}
-                          </span>
-                        </button>
-                      );
                     })()}
 
                     {/* Project wiki */}
@@ -1163,99 +1137,6 @@ export default function Sidebar({
               }}
             />
           )}
-
-          {/* Ad-hoc Conference Rooms (not tied to a project) */}
-          {(() => {
-            const adHocRooms = rooms.filter((r) => !r.project_id);
-            if (adHocRooms.length === 0 && !onNewRoom) return null;
-            return (
-              <div className="mt-4">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-                  Conference Rooms
-                </div>
-                {adHocRooms.map((room) => (
-                  <div
-                    key={room.id}
-                    onMouseEnter={() => setHoveredRoom(room.id)}
-                    onMouseLeave={() => setHoveredRoom(null)}
-                    className={`group flex items-center rounded-lg mb-0.5 transition-colors ${
-                      activeRoomId === room.id && currentView === 'room'
-                        ? 'bg-gray-800 text-white'
-                        : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-                    }`}
-                  >
-                    <button
-                      onClick={() => {
-                        onSelectRoom(room.id);
-                        onNavigate('room');
-                      }}
-                      className="flex-1 text-left px-3 py-2.5 flex items-center gap-2 min-w-0"
-                    >
-                      <Building2 size={14} className="flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <span className="truncate text-sm font-medium block">{room.name}</span>
-                        <div className="flex items-center gap-1 mt-0.5">
-                          {room.agents?.slice(0, 5).map((a) => (
-                            <span
-                              key={a.id}
-                              className="w-2 h-2 rounded-full"
-                              style={{ backgroundColor: a.color }}
-                              title={a.name}
-                            />
-                          ))}
-                          {room.agents?.length > 5 && (
-                            <span className="text-xs text-gray-600">+{room.agents.length - 5}</span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                    {hoveredRoom === room.id && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteRoom(room.id);
-                        }}
-                        className="pr-2 text-gray-600 hover:text-red-400 text-xs"
-                        title="Delete room"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {showNewRoomInput ? (
-                  <input
-                    autoFocus
-                    value={newRoomName}
-                    onChange={(e) => setNewRoomName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newRoomName.trim()) {
-                        onNewRoom(newRoomName.trim());
-                        setNewRoomName('');
-                        setShowNewRoomInput(false);
-                      } else if (e.key === 'Escape') {
-                        setNewRoomName('');
-                        setShowNewRoomInput(false);
-                      }
-                    }}
-                    onBlur={() => {
-                      setNewRoomName('');
-                      setShowNewRoomInput(false);
-                    }}
-                    placeholder="Room name..."
-                    className="w-full text-xs bg-gray-800 text-gray-200 px-3 py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
-                ) : (
-                  <button
-                    onClick={() => setShowNewRoomInput(true)}
-                    className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
-                  >
-                    + New Room
-                  </button>
-                )}
-              </div>
-            );
-          })()}
 
           {/* Designs — top-level nav section (not project-scoped).
               Entry point for the Claude Design canvas; clicking opens the

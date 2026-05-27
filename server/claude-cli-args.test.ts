@@ -97,10 +97,9 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
   const spawnSites: Array<{ file: string; reason: string }> = [
     { file: 'chat.ts', reason: 'main interactive chat session' },
     { file: 'delegation.ts', reason: '<delegate> sub-agent + synthesis' },
-    // room-chat.ts now delegates its spawn-arg planning to room-multi-engine.ts
-    // (same pattern as design-chat.ts → design-multi-engine.ts). Pin the
-    // wiring at its new home.
-    { file: 'room-multi-engine.ts', reason: 'conference room replies (via room-chat)' },
+    // Multi-agent session advisor/executor spawns delegate spawn-arg planning to
+    // session-multi-engine.ts (same pattern as design-chat.ts → design-multi-engine.ts).
+    { file: 'session-multi-engine.ts', reason: 'multi-agent session advisor/executor spawns' },
     { file: 'heartbeat.ts', reason: 'runClaude — heartbeats / crons / workflow' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
     // memory.ts used to spawn Claude directly; it now delegates to the
@@ -145,9 +144,9 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
     // (and project analyze fallback). Pin the separator there instead.
     { file: 'one-shot-spawn.ts', reason: 'unified one-shot spawner (memory / analyze / etc.)' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
-    // room-chat.ts's claude-code branch was extracted into
-    // room-multi-engine.ts (same pattern as design-multi-engine.ts).
-    { file: 'room-multi-engine.ts', reason: 'conference room replies (via room-chat)' },
+    // session-multi-agent.ts delegates Claude spawns to session-multi-engine.ts
+    // (same pattern as design-multi-engine.ts).
+    { file: 'session-multi-engine.ts', reason: 'multi-agent session advisor/executor spawns' },
     { file: 'delegation.ts', reason: '<delegate> sub-agent fan-out (claude-code default)' },
   ];
 

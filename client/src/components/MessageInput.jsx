@@ -65,6 +65,8 @@ export default function MessageInput({
   composerPrefill,
   onComposerPrefillClear,
   onReplaceQueuedMessage,
+  sessionAgents = [],
+  enableMentions = false,
 }) {
   // Per-session (per-draftKey) draft store. Lives for the component's lifetime
   // so switching agents/sessions preserves each composer's unsent text.
@@ -104,6 +106,14 @@ export default function MessageInput({
   const [slashIndex, setSlashIndex] = useState(0); // highlighted item
   const [slashStart, setSlashStart] = useState(null); // cursor pos of the '/'
   const popupRef = useRef(null);
+  const mentionPopupRef = useRef(null);
+
+  // @mention autocomplete (multi-agent sessions)
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionStart, setMentionStart] = useState(null);
+
+  const mentionsEnabled = enableMentions && sessionAgents.length > 1;
 
   // Swap draft when draftKey changes (during render, before any effects run)
   if (activeKey !== draftKey) {
@@ -114,7 +124,10 @@ export default function MessageInput({
     setSlashQuery(null);
     setSlashStart(null);
     setSlashIndex(0);
-    // Clear media attachments on session switch. Per-session image stashing is
+    setMentionQuery(null);
+    setMentionStart(null);
+    setMentionIndex(0);
+    // Clear media attachments on session switch.
     // deferred (blob URLs complicate it); for now keep the composer's attach
     // state in lockstep with the text draft so A's thumbnails don't bleed into
     // B's composer. Revoke any active blob URLs first to avoid leaks.
@@ -213,6 +226,38 @@ export default function MessageInput({
     setSlashStart(null);
     setSlashIndex(0);
   }, []);
+
+  const closeMention = useCallback(() => {
+    setMentionQuery(null);
+    setMentionStart(null);
+    setMentionIndex(0);
+  }, []);
+
+  const mentionAgents =
+    sessionAgents.filter((a) =>
+      mentionQuery === null ? false : a.name.toLowerCase().includes(mentionQuery.toLowerCase()),
+    ) || [];
+
+  useEffect(() => {
+    setMentionIndex(0);
+  }, [mentionQuery]);
+
+  const insertMention = useCallback(
+    (agentName) => {
+      if (mentionStart === null) return;
+      const before = value.slice(0, mentionStart);
+      const after = value.slice(textareaRef.current?.selectionStart || value.length);
+      const newValue = `${before}@${agentName} ${after}`;
+      setValue(newValue);
+      closeMention();
+      requestAnimationFrame(() => {
+        const pos = before.length + agentName.length + 2;
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(pos, pos);
+      });
+    },
+    [value, mentionStart, closeMention],
+  );
 
   const insertSkill = useCallback(
     (skillId) => {
@@ -593,8 +638,22 @@ export default function MessageInput({
       const slashPos = textBeforeCursor.length - slashMatch[0].length + slashMatch[1].length;
       setSlashQuery(query);
       setSlashStart(slashPos);
+      closeMention();
     } else {
       closeSlash();
+      if (mentionsEnabled) {
+        const atMatch = textBeforeCursor.match(/(^|[\s])@([^\s]*)$/);
+        if (atMatch) {
+          const query = atMatch[2];
+          const atPos = textBeforeCursor.length - atMatch[0].length + (atMatch[1] ? 1 : 0);
+          setMentionQuery(query);
+          setMentionStart(atPos);
+        } else {
+          closeMention();
+        }
+      } else {
+        closeMention();
+      }
     }
   };
 
@@ -656,9 +715,33 @@ export default function MessageInput({
     });
     setImages([]);
     closeSlash();
+    closeMention();
   };
 
   const handleKeyDown = (e) => {
+    if (mentionQuery !== null && mentionAgents.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % mentionAgents.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((i) => (i - 1 + mentionAgents.length) % mentionAgents.length);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        insertMention(mentionAgents[mentionIndex].name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMention();
+        return;
+      }
+    }
+
     // Slash-command autocomplete navigation
     if (slashQuery !== null && filteredSkills.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -937,6 +1020,38 @@ export default function MessageInput({
                     <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{skill.description}</p>
                   )}
                 </div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mentionQuery !== null && mentionAgents.length > 0 && (
+          <div
+            ref={mentionPopupRef}
+            className="absolute bottom-full mb-1 left-0 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10"
+          >
+            <div className="px-2 py-1.5 text-xs text-gray-500 border-b border-gray-700">
+              Agents — type to filter, ↑↓ navigate, Enter to select
+            </div>
+            {mentionAgents.map((a, i) => (
+              <button
+                key={a.id}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertMention(a.name);
+                }}
+                onMouseEnter={() => setMentionIndex(i)}
+                className={`w-full text-left px-3 py-2 flex items-center gap-2.5 text-sm transition-colors ${
+                  i === mentionIndex
+                    ? 'bg-blue-600/30 text-white'
+                    : 'text-gray-300 hover:bg-gray-700/50'
+                }`}
+              >
+                <span
+                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: a.color }}
+                />
+                <span className="font-medium">{a.name}</span>
               </button>
             ))}
           </div>

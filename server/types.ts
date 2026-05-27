@@ -58,6 +58,8 @@ export interface SessionRow {
    * routes hide rows the caller doesn't own.
    */
   owner_user_id?: string | null;
+  /** Max advisor turns per user message round in multi-agent sessions (0 = unlimited). */
+  max_turns?: number;
 }
 
 export interface MessageRow {
@@ -69,7 +71,17 @@ export interface MessageRow {
   model: string | null;
   attachments: string | null;
   metadata: string | null;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  agent_color?: string | null;
   created_at: string;
+}
+
+export interface SessionAgentRow {
+  session_id: string;
+  agent_id: string;
+  position: number;
+  added_at: string;
 }
 
 export interface HeartbeatLogRow {
@@ -146,32 +158,14 @@ export interface CronLogRow {
   duration_ms: number | null;
 }
 
-export interface RoomRow {
+export interface SessionAgentDetail {
   id: string;
   name: string;
-  project_id: string | null;
-  max_turns: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface RoomAgentRow {
-  room_id: string;
-  agent_id: string;
+  color: string;
   position: number;
-  added_at: string;
-}
-
-export interface RoomMessageRow {
-  id: string;
-  room_id: string;
-  role: 'user' | 'assistant';
-  agent_id: string | null;
-  agent_name: string | null;
-  agent_color: string | null;
-  content: string;
-  attachments: string | null;
-  created_at: string;
+  role: 'executor' | 'advisor';
+  projectId?: string;
+  projectName?: string;
 }
 
 export interface DesignRow {
@@ -681,28 +675,6 @@ export interface EscalationRow {
   created_at: string;
 }
 
-export interface ActiveRoomTaskRow {
-  room_id: string;
-  agent_id: string | null;
-  agent_name: string | null;
-  agent_color: string | null;
-  message_id: string | null;
-  streamed_output: string;
-  queue_json: string | null;
-  turn_count: number;
-  status: 'running' | 'done' | 'error' | 'cancelled';
-  started_at: string;
-  updated_at: string;
-}
-
-export interface RoomMessageQueueRow {
-  id: string;
-  room_id: string;
-  content: string;
-  position: number;
-  created_at: string;
-}
-
 export interface NoteRow {
   id: string;
   project_id: string;
@@ -788,6 +760,7 @@ export interface Stmts {
   getSession: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
+  updateSessionMaxTurns: Stmt;
   deleteSession: Stmt;
   softDeleteSession: Stmt;
   restoreArchivedSession: Stmt;
@@ -893,43 +866,10 @@ export interface Stmts {
   getHeartbeatState: Stmt;
   deleteHeartbeatState: Stmt;
 
-  // Rooms
-  getRooms: Stmt;
-  getRoom: Stmt;
-  createRoom: Stmt;
-  createProjectRoom: Stmt;
-  getRoomByProjectId: Stmt;
-  updateRoomName: Stmt;
-  updateRoomMaxTurns: Stmt;
-  touchRoom: Stmt;
-  deleteRoom: Stmt;
-
-  // Room agents
-  getRoomAgents: Stmt;
-  addRoomAgent: Stmt;
-  removeRoomAgent: Stmt;
-
-  // Room messages
-  getRoomMessages: Stmt;
-  addRoomMessage: Stmt;
-
-  // Active room tasks
-  getActiveRoomTask: Stmt;
-  getAllActiveRoomTasks: Stmt;
-  insertActiveRoomTask: Stmt;
-  updateActiveRoomTaskAgent: Stmt;
-  appendActiveRoomTaskOutput: Stmt;
-  deleteActiveRoomTask: Stmt;
-  deleteAllActiveRoomTasks: Stmt;
-
-  // Room message queue
-  enqueueRoomMessage: Stmt;
-  getQueuedRoomMessages: Stmt;
-  getNextQueuedRoomMessage: Stmt;
-  dequeueRoomMessage: Stmt;
-  clearRoomQueue: Stmt;
-  getMaxRoomQueuePosition: Stmt;
-  getAllQueuedRooms: Stmt;
+  // Session advisors (multi-agent)
+  getSessionAgents: Stmt;
+  addSessionAgent: Stmt;
+  removeSessionAgent: Stmt;
 
   // Designs
   listDesigns: Stmt;
@@ -1176,12 +1116,11 @@ export interface Stmts {
   deleteBoardsByProject: Stmt;
   deleteWorkflowsByProject: Stmt;
   deleteThreadsByProject: Stmt;
-  deleteRoomsByProject: Stmt;
+  deleteSessionAgentsByAgent: Stmt;
   deleteCronsByProject: Stmt;
   deleteSessionsByAgent: Stmt;
   deleteHeartbeatLogsByAgent: Stmt;
   deleteSlackMessagesByAgent: Stmt;
-  deleteRoomAgentsByAgent: Stmt;
   deleteActiveTasksByAgent: Stmt;
   deleteAgentSkillOverridesByAgent: Stmt;
   getRecentEscalationByTypeAndPr: Stmt;
@@ -2207,23 +2146,17 @@ export interface ChatMessage {
    * webhook dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
    */
   _onUserMessagePersisted?: (accepted: boolean) => void;
-}
-
-export interface RoomChatMessage {
-  type: 'room_chat';
-  roomId: string;
-  content: string;
-  images?: string[];
+  /** Internal: skip multi-agent routing and run a single executor/advisor turn. */
+  _multiAgentInternal?: boolean;
+  /** Internal: do not persist a user message (follow-up executor turns). */
+  _skipUserMessagePersist?: boolean;
+  /** Internal: advisor feedback content for executor follow-up prompt. */
+  _advisorFeedback?: { name: string; content: string };
 }
 
 export interface CancelMessage {
   type: 'cancel';
   sessionId: string;
-}
-
-export interface RoomCancelMessage {
-  type: 'room_cancel';
-  roomId: string;
 }
 
 export interface DesignChatMessage {
@@ -2239,15 +2172,12 @@ export interface DesignCancelMessage {
 
 export type WSIncomingMessage =
   | ChatMessage
-  | RoomChatMessage
   | CancelMessage
-  | RoomCancelMessage
   | DesignChatMessage
   | DesignCancelMessage
   | { type: 'delegation_cancel'; sessionId: string }
   | { type: 'dequeue'; sessionId: string; messageId: string }
   | { type: 'edit_queue_item'; sessionId: string; messageId: string; content: string }
-  | { type: 'room_dequeue'; roomId: string; messageId: string }
   | { type: 'ping' };
 
 export interface BroadcastFn {
@@ -2259,13 +2189,10 @@ export interface BroadcastFn {
 export interface WebSocketDeps {
   getProjects: () => Project[];
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
-  handleRoomChat: (ws: unknown, msg: RoomChatMessage) => Promise<void>;
   handleCancel: (sessionId: string) => void;
-  handleRoomCancel: (roomId: string) => void;
   handleDelegationCancel: (sessionId: string) => void;
   handleDequeue: (sessionId: string, messageId: string) => void;
   handleEditQueueItem: (sessionId: string, messageId: string, content: string) => void;
-  handleRoomDequeue: (roomId: string, messageId: string) => void;
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) => Promise<void>;
   handleDesignCancel: (designId: string) => void;
   /**
@@ -2290,7 +2217,6 @@ export interface RouteDeps {
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
   allAgents: () => EnrichedAgent[];
   saveProjects: () => void;
-  ensureProjectRoom: (project: Project) => RoomWithAgents | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
   pendingReviewComments: Map<string, unknown>;
   lastDispatchedReviewId: Map<string, number>;
@@ -2307,7 +2233,7 @@ export interface RouteDeps {
   serverDir: string;
   buildTranscript: (
     messages: Array<{ role: string; content: string; agent_name?: string | null }>,
-    options: { agentName?: string; isRoom?: boolean },
+    options: { agentName?: string; isMultiAgent?: boolean },
   ) => string;
   summarizeTranscript: (
     transcript: string,
@@ -2359,19 +2285,6 @@ export interface RouteDeps {
    * immediately after opening a session.
    */
   provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
-}
-
-// ─── Room with Agents ────────────────────────────────────────────
-
-export interface RoomAgentDetail {
-  id: string;
-  name: string;
-  color: string;
-  position: number;
-}
-
-export interface RoomWithAgents extends RoomRow {
-  agents: RoomAgentDetail[];
 }
 
 // ─── Design with linked projects ─────────────────────────────────

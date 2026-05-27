@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { formatElapsed } from '../utils/time.js';
 
-export default function ThinkingIndicator({ agentColor }) {
+export default function ThinkingIndicator({ agentColor, agentName }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -16,7 +16,7 @@ export default function ThinkingIndicator({ agentColor }) {
       <div className="bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <div className="flex items-center gap-2 mb-1">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: agentColor }} />
-          <span className="text-xs text-gray-500 font-medium">Assistant</span>
+          <span className="text-xs text-gray-500 font-medium">{agentName || 'Assistant'}</span>
         </div>
         <div className="flex items-center gap-2 py-1">
           <div className="flex items-center gap-1.5">

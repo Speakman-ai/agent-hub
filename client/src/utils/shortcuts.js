@@ -75,13 +75,6 @@ export const WEB_DEFAULT_SHORTCUTS = [
     binding: 'Mod+Alt+D',
     group: 'Create',
   },
-  {
-    id: 'new-conference-room',
-    label: 'New conference room',
-    description: 'Create a multi-agent conference room',
-    binding: 'Mod+Alt+R',
-    group: 'Create',
-  },
   GO_TO_BOARD,
   {
     id: 'go-to-wiki',

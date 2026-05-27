@@ -182,7 +182,7 @@ describe('formatProjectAgentRosterSection', () => {
     );
     expect(s).not.toContain('<handoff>');
     expect(s).not.toContain('<delegate>');
-    expect(s).toContain('chat and conference rooms');
+    expect(s).toContain('chat and multi-agent sessions');
   });
 });
 

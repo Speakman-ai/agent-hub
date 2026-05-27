@@ -727,6 +727,9 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         null,
         null,
         null,
+        null,
+        null,
+        null,
       );
       stmts.touchSession.run(session!.id);
 

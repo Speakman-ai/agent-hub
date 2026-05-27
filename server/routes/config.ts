@@ -112,13 +112,6 @@ function cronImportSkillPrincipal(raw: unknown, project: Project | null): string
   }
 }
 
-interface RoomImportData {
-  id?: string;
-  name: string;
-  max_turns?: number;
-  agents?: Array<{ agentId?: string; agent_id?: string }>;
-}
-
 interface WebhookImportData {
   repo_url: string;
   secret?: string;
@@ -189,7 +182,6 @@ interface ProjectExportData {
     [key: string]: unknown;
   };
   crons?: CronImportData[];
-  rooms?: RoomImportData[];
   webhooks?: WebhookImportData[];
   wiki?: WikiImportData[];
   kanban?: KanbanImportData;
@@ -212,7 +204,6 @@ interface LegacyExportData {
   projects?: Project[];
   agents?: LegacyAgent[];
   crons?: CronImportData[];
-  rooms?: RoomImportData[];
   slack?: {
     accounts?: Array<{
       botToken?: string;
@@ -1154,21 +1145,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           }) => rest,
         );
 
-      const allRooms = stmts.getRooms.all() as Array<
-        Record<string, unknown> & { id: string; project_id: string | null }
-      >;
-      const projectRooms = allRooms
-        .filter((r) => r.project_id === project.id)
-        .map((room) => {
-          const roomAgents = (
-            stmts.getRoomAgents.all(room.id) as Array<{ agent_id: string; position: number }>
-          ).map((ra) => ({
-            agentId: ra.agent_id,
-            position: ra.position,
-          }));
-          return { ...room, agents: roomAgents };
-        });
-
       const webhooks = (
         stmts.getWebhookConfigsByProject.all(project.id) as Array<
           Record<string, unknown> & { secret: string }
@@ -1208,7 +1184,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         exportedAt: new Date().toISOString(),
         project,
         crons: projectCrons,
-        rooms: projectRooms,
         webhooks,
         wiki: wikiPages,
         kanban,
@@ -1247,7 +1222,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     const results: Record<string, string | boolean> = {
       project: false,
       crons: false,
-      rooms: false,
       webhooks: false,
       wiki: false,
       kanban: false,
@@ -1339,28 +1313,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           imported++;
         }
         results.crons = `${imported} new, ${crons.length - imported} skipped`;
-      });
-    }
-
-    if (Array.isArray(data.rooms)) {
-      const rooms = data.rooms;
-      runSection('rooms', () => {
-        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingRooms.map((r) => r.name));
-        let imported = 0;
-        for (const r of rooms) {
-          if (existingNames.has(r.name)) continue;
-          const roomId = uuidv4();
-          stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
-          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
-          if (Array.isArray(r.agents)) {
-            for (const ra of r.agents) {
-              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
-            }
-          }
-          imported++;
-        }
-        results.rooms = `${imported} new, ${rooms.length - imported} skipped`;
       });
     }
 
@@ -1808,18 +1760,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           rest,
       );
 
-      const rooms = (stmts.getRooms.all() as Array<Record<string, unknown> & { id: string }>).map(
-        (room) => {
-          const roomAgents = (
-            stmts.getRoomAgents.all(room.id) as Array<{ agent_id: string; position: number }>
-          ).map((ra) => ({
-            agentId: ra.agent_id,
-            position: ra.position,
-          }));
-          return { ...room, agents: roomAgents };
-        },
-      );
-
       let slackConfig: SlackConfigData = { accounts: [] };
       try {
         slackConfig = JSON.parse(readFileSync(path.join(serverDir, 'slack-config.json'), 'utf-8'));
@@ -1841,7 +1781,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         config: fileConfig,
         projects,
         crons,
-        rooms,
         slack: slackConfig,
       };
 
@@ -1864,7 +1803,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         config: false,
         projects: false,
         crons: false,
-        rooms: false,
         slack: false,
       };
 
@@ -1958,25 +1896,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           imported++;
         }
         results.crons = `${imported} new, ${data.crons.length - imported} skipped (duplicate names)`;
-      }
-
-      if (Array.isArray(data.rooms)) {
-        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingRooms.map((r) => r.name));
-        let imported = 0;
-        for (const r of data.rooms) {
-          if (existingNames.has(r.name)) continue;
-          const roomId = r.id || uuidv4();
-          stmts.createRoom.run(roomId, r.name);
-          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
-          if (Array.isArray(r.agents)) {
-            for (const ra of r.agents) {
-              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
-            }
-          }
-          imported++;
-        }
-        results.rooms = `${imported} new, ${data.rooms.length - imported} skipped (duplicate names)`;
       }
 
       if (data.slack && Array.isArray(data.slack.accounts)) {
