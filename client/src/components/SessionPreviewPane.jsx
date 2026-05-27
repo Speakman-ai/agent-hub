@@ -111,7 +111,7 @@ export default function SessionPreviewPane({
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(`${getApiBase()}/api/config`, {
+        const r = await fetch(`${getApiBase()}/config`, {
           headers: getAuthHeaders(),
         });
         if (!r.ok) {
