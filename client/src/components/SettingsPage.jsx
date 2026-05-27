@@ -3358,7 +3358,7 @@ function HeartbeatSection({ onNavigate, showToast }) {
   );
 }
 
-function CronSection({ projects = [], onNavigate, showToast }) {
+export function CronSection({ projects = [], onNavigate, showToast }) {
   const defaultCwd = projects[0]?.cwd || '';
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
@@ -3368,11 +3368,10 @@ function CronSection({ projects = [], onNavigate, showToast }) {
   const [expandedLog, setExpandedLog] = useState(null); // "cronId:logId"
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
-  // Model allowlist for the cron's claude-code engine. Fetched once from
-  // /api/config/models so the dropdown stays in sync with the server's
-  // engineValidModels (config.ts) without us hardcoding the list here. The
-  // dropdown stays hidden until the fetch resolves so we never present an
-  // empty <select>.
+  // Model + engine allowlist fetched once from /api/config/models so the
+  // dropdowns stay in sync with the server's engineValidModels (config.ts)
+  // without us hardcoding the list here. The dropdowns stay hidden until
+  // the fetch resolves so we never present an empty <select>.
   const [modelConfig, setModelConfig] = useState(null);
   const [form, setForm] = useState({
     name: '',
@@ -3388,11 +3387,16 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     // which mobile users complained about. Users explicitly enable on the
     // crons they actually want notifications for.
     notify_on_run: false,
-    // Empty string = "use engine default" (resolved server-side via
-    // defaultModelForEngine('claude-code')). The blank option is the first
+    // Empty string = "use the resolved engine's default" (see
+    // resolveCronEngine on the server). The blank option is the first
     // entry in the model dropdown so existing crons don't auto-pin to a
     // specific id when an operator opens the form.
     model: '',
+    // Empty string = "inherit from skill principal agent at run time,
+    // falling back to claude-code". Per-row engine override lets a
+    // Codex/Cursor/Gemini cron run under its real engine instead of the
+    // historical claude-code default.
+    engine: '',
   });
 
   /** Fetch last-3 logs for every cron */
@@ -3440,13 +3444,97 @@ function CronSection({ projects = [], onNavigate, showToast }) {
   }, []);
 
   /**
-   * The list of models we render in the dropdown. Driven by the server's
-   * `engineValidModels['claude-code']` so a config update propagates without
-   * a client redeploy. Returns [] when the config hasn't loaded yet (or
-   * comes back empty), in which case the caller hides the dropdown.
+   * Default engine for a cron with `engine = ''` (blank/null in DB).
+   * Mirrors `DEFAULT_CRON_ENGINE` on the server (`server/cron-engine.ts`)
+   * — historically every cron targeted Claude Code, so the model
+   * dropdown also falls back to claude-code's allowlist when the engine
+   * picker is left blank.
    */
-  const modelOptions = modelConfig?.engineValidModels?.['claude-code'] || [];
-  const defaultModel = modelConfig?.engineDefaultModels?.['claude-code'];
+  const DEFAULT_ENGINE = 'claude-code';
+
+  /**
+   * Engines surfaced in the picker — sourced from the server's
+   * `engineValidModels` keys so new engines appear automatically (same
+   * pattern as the bulk agent engine picker in `AgentConfigSection`).
+   * Filters out engines with no configured models so we don't present an
+   * empty model dropdown after the engine switch.
+   */
+  const engineChoices = useMemo(() => {
+    if (!modelConfig?.engineValidModels) return [];
+    return Object.keys(modelConfig.engineValidModels).filter(
+      (e) => (modelConfig.engineValidModels[e]?.length ?? 0) > 0,
+    );
+  }, [modelConfig]);
+
+  /**
+   * Model allowlist for the engine the cron will run under. When the
+   * picker is left blank we render claude-code's allowlist — that's the
+   * engine the server resolves to when neither an explicit engine nor a
+   * skill principal is set (`resolveCronEngine`).
+   */
+  const modelsForEngine = (engine) => {
+    const key = engine || DEFAULT_ENGINE;
+    return modelConfig?.engineValidModels?.[key] || [];
+  };
+
+  const defaultModelForEngine = (engine) => {
+    const key = engine || DEFAULT_ENGINE;
+    return modelConfig?.engineDefaultModels?.[key] || '';
+  };
+
+  /**
+   * Raw skill-principal lookup that returns the agent's engine even when it
+   * matches `DEFAULT_ENGINE`. `inheritedEngineFromPrincipal` suppresses
+   * claude-code matches so the helper text only fires for non-default
+   * inheritance, but the model-dropdown filter must still use the real
+   * engine in both cases (otherwise switching the project's principal to a
+   * claude-code agent would expose every engine's models in the dropdown).
+   */
+  const resolvedSkillPrincipalEngine = (formState) => {
+    const project = projects.find((p) => p.id === formState?.project_id);
+    if (!project) return null;
+    const principalId =
+      (formState?.skill_principal_agent_id || '').trim() ||
+      (project.cronSkillPrincipalAgentId || '').trim() ||
+      (project.agents?.length === 1 ? project.agents[0].id : '');
+    if (!principalId) return null;
+    const agent = (project.agents || []).find((a) => a.id === principalId);
+    return agent?.engine || null;
+  };
+
+  /**
+   * Engine the cron will actually run under given the form state — the
+   * explicit picker value when set, otherwise the inherited engine from
+   * the skill principal, finally falling back to claude-code. The model
+   * dropdown filters on this so the operator can't accidentally save a
+   * Cursor id under a cron whose project resolves to Codex.
+   */
+  const effectiveEngineForModels = (formState) =>
+    formState?.engine || resolvedSkillPrincipalEngine(formState) || DEFAULT_ENGINE;
+
+  /**
+   * When the engine is left blank, the server resolves it via the cron's
+   * skill principal agent (`resolveCronEngine` → `resolveCronSkillPrincipalAgentId`).
+   * Mirror that resolution order so the operator sees the same engine
+   * the server would actually pick at run time:
+   *   1. cron.skill_principal_agent_id
+   *   2. project.cronSkillPrincipalAgentId
+   *   3. project.agents (sole-agent fallback)
+   * Returns null when nothing resolves — the dropdown then advertises the
+   * historical claude-code default.
+   */
+  const inheritedEngineFromPrincipal = (formState) => {
+    if (formState?.engine) return null;
+    const project = projects.find((p) => p.id === formState?.project_id);
+    if (!project) return null;
+    const principalId =
+      (formState.skill_principal_agent_id || '').trim() ||
+      (project.cronSkillPrincipalAgentId || '').trim() ||
+      (project.agents?.length === 1 ? project.agents[0].id : '');
+    if (!principalId) return null;
+    const agent = (project.agents || []).find((a) => a.id === principalId);
+    return agent?.engine && agent.engine !== DEFAULT_ENGINE ? agent.engine : null;
+  };
 
   const viewThread = async (cronJob) => {
     if (!onNavigate) return;
@@ -3508,10 +3596,11 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     }
     const payload = { ...form, timeout_ms };
     delete payload.timeoutMinutes;
-    // The API's normalizeModel treats '' as null (= "use engine default").
-    // Passing the empty string explicitly keeps the round-trip stable: the
-    // row stores NULL, the dropdown stays on "Default" when the cron is
-    // re-opened for editing.
+    // The API's normalizeModel / normalizeCronEngine treat '' as null (=
+    // "use engine default" / "inherit from skill principal"). Passing the
+    // empty string explicitly keeps the round-trip stable: the row stores
+    // NULL, the dropdown stays on "Default" when the cron is re-opened
+    // for editing.
     const created = await api.createCron(payload);
     setCrons((prev) => [...prev, created]);
     setShowForm(false);
@@ -3525,6 +3614,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       timeoutMinutes: '',
       notify_on_run: false,
       model: '',
+      engine: '',
     });
   };
 
@@ -3540,6 +3630,12 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       notify_on_run: !!cronJob.notify_on_run,
       // Null in the DB = "use engine default" — render as the empty option.
       model: cronJob.model || '',
+      engine: cronJob.engine || '',
+      // Preserve the skill principal id so the helper text can compute
+      // the inherited engine. The form itself doesn't expose this field
+      // (it's set via the project's principal agent), but PUT /api/crons
+      // preserves the field when it's omitted from the payload.
+      skill_principal_agent_id: cronJob.skill_principal_agent_id || '',
     });
   };
 
@@ -3552,6 +3648,11 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     }
     const payload = { ...editForm, timeout_ms };
     delete payload.timeoutMinutes;
+    // skill_principal_agent_id is stashed in editForm purely so the helper
+    // text can compute inherited-engine display — it's not editable from
+    // the cron form. Omitting it from the PUT payload preserves the
+    // existing DB value (the server's present-key tristate).
+    delete payload.skill_principal_agent_id;
     const updated = await api.updateCron(editingId, payload);
     setCrons((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     setEditingId(null);
@@ -3628,22 +3729,68 @@ function CronSection({ projects = [], onNavigate, showToast }) {
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
             />
           </div>
-          {modelOptions.length > 0 && (
+          {engineChoices.length > 0 && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Engine{' '}
+                <span className="text-gray-600">
+                  — blank inherits from skill principal or falls back to claude-code
+                </span>
+              </label>
+              <select
+                value={form.engine}
+                onChange={(e) =>
+                  // Switching engines clears any stale model so we never
+                  // POST a Claude id under a Cursor engine (and vice
+                  // versa). The server would reject it; clearing here
+                  // makes the intent obvious in the dropdown.
+                  setForm({ ...form, engine: e.target.value, model: '' })
+                }
+                data-testid="cron-engine-select"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+              >
+                <option value="">Default (claude-code)</option>
+                {engineChoices.map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
+              </select>
+              {(() => {
+                const inherited = inheritedEngineFromPrincipal(form);
+                if (!inherited) return null;
+                return (
+                  <p className="text-xs text-amber-400/80 mt-1">
+                    Will run as {inherited} — inherited from skill principal.
+                  </p>
+                );
+              })()}
+            </div>
+          )}
+          {modelsForEngine(effectiveEngineForModels(form)).length > 0 && (
             <div>
               <label className="block text-xs text-gray-400 mb-1">
                 Model{' '}
                 <span className="text-gray-600">
                   — blank uses the engine default
-                  {defaultModel ? ` (${defaultModel})` : ''}
+                  {defaultModelForEngine(effectiveEngineForModels(form))
+                    ? ` (${defaultModelForEngine(effectiveEngineForModels(form))})`
+                    : ''}
                 </span>
               </label>
               <select
                 value={form.model}
                 onChange={(e) => setForm({ ...form, model: e.target.value })}
+                data-testid="cron-model-select"
                 className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
               >
-                <option value="">Default{defaultModel ? ` (${defaultModel})` : ''}</option>
-                {modelOptions.map((m) => (
+                <option value="">
+                  Default
+                  {defaultModelForEngine(effectiveEngineForModels(form))
+                    ? ` (${defaultModelForEngine(effectiveEngineForModels(form))})`
+                    : ''}
+                </option>
+                {modelsForEngine(effectiveEngineForModels(form)).map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
@@ -3740,22 +3887,64 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                   />
                 </div>
-                {modelOptions.length > 0 && (
+                {engineChoices.length > 0 && (
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Engine{' '}
+                      <span className="text-gray-600">
+                        — blank inherits from skill principal or falls back to claude-code
+                      </span>
+                    </label>
+                    <select
+                      value={editForm.engine ?? ''}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, engine: e.target.value, model: '' })
+                      }
+                      data-testid="cron-engine-select-edit"
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                    >
+                      <option value="">Default (claude-code)</option>
+                      {engineChoices.map((e) => (
+                        <option key={e} value={e}>
+                          {e}
+                        </option>
+                      ))}
+                    </select>
+                    {(() => {
+                      const inherited = inheritedEngineFromPrincipal(editForm);
+                      if (!inherited) return null;
+                      return (
+                        <p className="text-xs text-amber-400/80 mt-1">
+                          Will run as {inherited} — inherited from skill principal.
+                        </p>
+                      );
+                    })()}
+                  </div>
+                )}
+                {modelsForEngine(effectiveEngineForModels(editForm)).length > 0 && (
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">
                       Model{' '}
                       <span className="text-gray-600">
                         — blank uses the engine default
-                        {defaultModel ? ` (${defaultModel})` : ''}
+                        {defaultModelForEngine(effectiveEngineForModels(editForm))
+                          ? ` (${defaultModelForEngine(effectiveEngineForModels(editForm))})`
+                          : ''}
                       </span>
                     </label>
                     <select
                       value={editForm.model ?? ''}
                       onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
+                      data-testid="cron-model-select-edit"
                       className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                     >
-                      <option value="">Default{defaultModel ? ` (${defaultModel})` : ''}</option>
-                      {modelOptions.map((m) => (
+                      <option value="">
+                        Default
+                        {defaultModelForEngine(effectiveEngineForModels(editForm))
+                          ? ` (${defaultModelForEngine(effectiveEngineForModels(editForm))})`
+                          : ''}
+                      </option>
+                      {modelsForEngine(effectiveEngineForModels(editForm)).map((m) => (
                         <option key={m} value={m}>
                           {m}
                         </option>
@@ -3825,6 +4014,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     {cronJob.timeout_ms ? (
                       <> · Timeout: {Math.round(cronJob.timeout_ms / 60_000)}m</>
                     ) : null}
+                    {cronJob.engine ? <> · Engine: {cronJob.engine}</> : null}
                     {cronJob.model ? <> · Model: {cronJob.model}</> : null}
                     {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}

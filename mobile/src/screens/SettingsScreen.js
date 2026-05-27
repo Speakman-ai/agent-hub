@@ -17,6 +17,13 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
 import humanCron from '../utils/humanCron';
+import {
+  cronEngineChoices,
+  defaultModelForCronEngine,
+  effectiveCronEngine,
+  inheritedCronEngineForHelper,
+  modelsForCronEngine,
+} from '../utils/cronEngine';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
 import { parseAllowlist, serializeAllowlist, parseAllowlistFromBackend } from '../utils/authorAllowlist';
 import * as FileSystem from 'expo-file-system';
@@ -833,7 +840,12 @@ function minutesToTimeoutMs(minutes) {
   return Math.round(n * 60_000);
 }
 
-function CronFormFields({ form, setForm, projects, modelOptions = [], defaultModel = '' }) {
+function CronFormFields({ form, setForm, projects, modelConfig }) {
+  const engineChoices = cronEngineChoices(modelConfig);
+  const effEngine = effectiveCronEngine(form, projects);
+  const modelOptions = modelsForCronEngine(modelConfig, effEngine);
+  const defaultModel = defaultModelForCronEngine(modelConfig, effEngine);
+  const inheritedHelper = inheritedCronEngineForHelper(form, projects);
   return (
     <>
       <TextInput
@@ -936,6 +948,67 @@ function CronFormFields({ form, setForm, projects, modelOptions = [], defaultMod
         style={styles.formInput}
         keyboardType="number-pad"
       />
+      {engineChoices.length > 0 && (
+        <>
+          <Text style={styles.fieldLabel}>
+            Engine{' '}
+            <Text style={{ color: colors.gray600 }}>
+              — blank inherits from skill principal or falls back to claude-code
+            </Text>
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 6 }}
+          >
+            <TouchableOpacity
+              onPress={() => setForm({ ...form, engine: '', model: '' })}
+              style={[
+                styles.projectChip,
+                !form.engine && styles.projectChipActive,
+              ]}
+              accessibilityLabel="Use default cron engine"
+            >
+              <Text
+                style={[
+                  styles.projectChipText,
+                  !form.engine && styles.projectChipTextActive,
+                ]}
+              >
+                Default
+              </Text>
+            </TouchableOpacity>
+            {engineChoices.map((eng) => {
+              const active = form.engine === eng;
+              return (
+                <TouchableOpacity
+                  key={eng}
+                  // Switching engines clears any stale model so we never
+                  // POST a Claude id under a Cursor engine. The server
+                  // would reject it; clearing here makes the intent
+                  // obvious in the chip selection.
+                  onPress={() => setForm({ ...form, engine: eng, model: '' })}
+                  style={[styles.projectChip, active && styles.projectChipActive]}
+                >
+                  <Text
+                    style={[
+                      styles.projectChipText,
+                      active && styles.projectChipTextActive,
+                    ]}
+                  >
+                    {eng}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+          {inheritedHelper ? (
+            <Text style={{ color: '#fbbf24', fontSize: 11, marginTop: 4 }}>
+              Will run as {inheritedHelper} — inherited from skill principal.
+            </Text>
+          ) : null}
+        </>
+      )}
       {modelOptions.length > 0 && (
         <>
           <Text style={styles.fieldLabel}>
@@ -1037,6 +1110,11 @@ function CronSection() {
     // which mobile users complained about. Toggled per-cron from the form.
     notify_on_run: false,
     model: '',
+    // Empty string = "inherit from skill principal agent at run time,
+    // falling back to claude-code". Per-row engine override lets a
+    // Codex/Cursor/Gemini cron run under its real engine instead of the
+    // historical claude-code default.
+    engine: '',
   });
 
   const refreshLogs = async (cronList) => {
@@ -1147,6 +1225,7 @@ function CronSection() {
         timeoutMinutes: '',
         notify_on_run: false,
         model: '',
+        engine: '',
       });
     } catch (e) {
       Alert.alert('Create failed', e?.message || 'Could not create cron.');
@@ -1165,7 +1244,13 @@ function CronSection() {
         ? String(Math.round(cronJob.timeout_ms / 60_000))
         : '',
       notify_on_run: !!cronJob.notify_on_run,
+      // Null in the DB = "use engine default" — render as the empty option.
       model: cronJob.model || '',
+      engine: cronJob.engine || '',
+      // Stash the principal id so the helper text can compute the
+      // inherited engine. Stripped from the PUT payload in saveEdit so
+      // the server preserves the existing value (present-key tristate).
+      skill_principal_agent_id: cronJob.skill_principal_agent_id || '',
     });
   };
 
@@ -1181,6 +1266,11 @@ function CronSection() {
     }
     const payload = { ...editForm, timeout_ms };
     delete payload.timeoutMinutes;
+    // skill_principal_agent_id is stashed in editForm purely so the helper
+    // text can compute inherited-engine display — it's not editable from
+    // the cron form. Omitting it from the PUT payload preserves the
+    // existing DB value (the server's present-key tristate).
+    delete payload.skill_principal_agent_id;
     try {
       const updated = await api.updateCron(editingId, payload);
       setCrons((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -1190,9 +1280,6 @@ function CronSection() {
       Alert.alert('Save failed', e?.message || 'Could not save cron.');
     }
   };
-
-  const modelOptions = modelConfig?.engineValidModels?.['claude-code'] || [];
-  const defaultModel = modelConfig?.engineDefaultModels?.['claude-code'] || '';
 
   const renderNextRunBadge = (cronJob) => {
     if (!cronJob.enabled || !cronJob.next_run_at) return null;
@@ -1218,7 +1305,7 @@ function CronSection() {
 
       {showForm && (
         <View style={styles.formCard}>
-          <CronFormFields form={form} setForm={setForm} projects={projects} modelOptions={modelOptions} defaultModel={defaultModel} />
+          <CronFormFields form={form} setForm={setForm} projects={projects} modelConfig={modelConfig} />
           <TouchableOpacity style={styles.createButton} onPress={createCron}>
             <Text style={styles.createButtonText}>Create</Text>
           </TouchableOpacity>
@@ -1234,8 +1321,7 @@ function CronSection() {
                   form={editForm}
                   setForm={setEditForm}
                   projects={projects}
-                  modelOptions={modelOptions}
-                  defaultModel={defaultModel}
+                  modelConfig={modelConfig}
                 />
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
@@ -1268,6 +1354,7 @@ function CronSection() {
                   {cronJob.timeout_ms
                     ? ` · Timeout: ${Math.round(cronJob.timeout_ms / 60_000)}m`
                     : ''}
+                  {cronJob.engine ? ` · Engine: ${cronJob.engine}` : ''}
                   {cronJob.model ? ` · Model: ${cronJob.model}` : ''}
                   {cronJob.notify_on_run ? ' · 🔔 Notifies on run' : ''}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
