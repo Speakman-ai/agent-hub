@@ -160,6 +160,7 @@ export async function syncPreviewAfterWorktreeTurnIfDirty(
 ): Promise<void> {
   if (!(await isWorktreeDirty(worktreePath, deps))) return;
   broadcastPreviewRefreshIfReady(sessionId, deps, {
+    force: true,
     reason: 'Turn finished — reloading preview',
   });
 }
