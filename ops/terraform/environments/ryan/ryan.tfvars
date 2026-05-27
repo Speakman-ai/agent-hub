@@ -55,10 +55,20 @@ ci_ssm_deploy_instance_id           = "i-066e44ff85ec24d8e"
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
-# Compute / storage sizing — bumped 2026-05-13.
-# - 4 vCPU / 16 GB for sustained workloads (Postgres restore, ng serve)
-# - 200 GB root for surveytracker stack + Hub artifacts on a single disk.
-#   200 GB was first applied via `aws ec2 modify-volume` on 2026-05-13 to
-#   recover from the disk-full incident; codifying here reconciles the drift.
-instance_type    = "m7i-flex.xlarge"
-root_volume_size = 200
+# Compute / storage sizing — keep in lockstep with cloud reality.
+# A plan that wants to revert these would attempt to (a) downsize the
+# instance and (b) shrink/recreate the root volume, destroying
+# /home/agenthub/.agent-hub (sessions, workspaces, preview DBs).
+# History:
+# - 2026-05-13: bumped from defaults (t3.medium / 30 GB) to m7i-flex.xlarge /
+#   200 GB via aws ec2 modify-volume after a disk-full incident; codified
+#   here to reconcile the drift.
+# - 2026-05-26: bumped to m7i-flex.2xlarge after sustained CPU pressure
+#   (hourly maxes hitting 95-100% for hours daily) and grew the root volume
+#   to 500 GB online (aws ec2 modify-volume + growpart + xfs_growfs) after
+#   the disk hit 96% from accumulated docker images / preview-postgres
+#   volumes. EIP eipalloc-0b6bbb9e2511c2ff7 (3.13.171.6) was allocated and
+#   attached out-of-band at the same time so the public IP survives stop/
+#   start; it is NOT in this state (yet — separate import follow-up).
+instance_type    = "m7i-flex.2xlarge"
+root_volume_size = 500
