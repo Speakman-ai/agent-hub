@@ -258,7 +258,7 @@ describe('buildDesignSpawnArgs', () => {
     });
     expect(args).toContain('danger-full-access');
     expect(args).not.toContain('--full-auto');
-    expect(args).toContain('--add-dir');
+    expect(args).not.toContain('--add-dir');
   });
 
   it('codex-cli: resume inserts thread id', () => {

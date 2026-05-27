@@ -60,7 +60,7 @@ export interface BuildRoomSpawnArgsInput {
    * instead of `--full-auto` for room turns (parity with chat.ts).
    */
   codexDangerBypass?: boolean;
-  /** When set, widen Codex sandbox / add dirs for Hub AWS SSO (parity with chat.ts). */
+  /** When set, widen Codex sandbox for Hub AWS SSO (parity with chat.ts). */
   awsSsoEnabled?: boolean;
   /** Spawn env fragment for `appendCodexAwsAccessDirs` (HOME + AWS_CONFIG_FILE). */
   awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;

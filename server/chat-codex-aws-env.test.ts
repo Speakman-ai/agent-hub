@@ -54,7 +54,7 @@ describe('codex chat AWS SSO spawn contract', () => {
     expect(env.AGENT_HUB_AWS_PROFILE_NAMES).toBe('dev');
   });
 
-  it('codex argv uses danger-full-access + add-dir when AWS SSO is on and dangerBypass is off', () => {
+  it('codex argv uses danger-full-access without --add-dir when AWS SSO is on and dangerBypass is off', () => {
     const home = path.join(tmpDataDir, 'u1', 'home');
     const awsConfig = path.join(tmpDataDir, 'project-aws-config', 'p1', 'config');
     const args: string[] = ['exec', '--json', '--skip-git-repo-check'];
@@ -70,8 +70,6 @@ describe('codex chat AWS SSO spawn contract', () => {
     expect(args).toContain('danger-full-access');
     expect(args).not.toContain('--full-auto');
     expect(args).not.toContain('-c');
-    expect(args).toContain('--add-dir');
-    expect(args).toContain(path.dirname(awsConfig));
-    expect(args).toContain(path.join(home, '.aws'));
+    expect(args).not.toContain('--add-dir');
   });
 });

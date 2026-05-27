@@ -1,5 +1,3 @@
-import path from 'path';
-
 /**
  * Codex `exec` sandbox flags for Agent Hub spawns (interactive chat, rooms,
  * design). Mirrors branches in `chat.ts`.
@@ -43,29 +41,23 @@ export function appendCodexExecSandboxFlags(args: string[], opts: CodexExecSandb
 }
 
 /**
- * Grant Codex read/write to AWS config + SSO token cache dirs that live outside
- * the agent workspace. No-op when paths are missing.
+ * Legacy hook for AWS config dirs outside the agent workspace.
+ *
+ * Previously pushed `--add-dir` (a Claude Code flag that Codex only accepts on
+ * top-level `codex exec`, not `codex exec resume`). Resume turns failed with
+ * clap exit code 2: `unexpected argument '--add-dir' found`.
+ *
+ * AWS access for Codex is handled elsewhere:
+ * - `appendCodexExecSandboxFlags` → `--sandbox danger-full-access` when
+ *   `awsSsoEnabled` (or full bypass when `dangerBypass`)
+ * - spawn env from `mergeProjectAwsSpawnEnv` (`AWS_CONFIG_FILE`, linked
+ *   `HOME/.aws` SSO cache)
+ *
+ * Intentionally a no-op; kept so call sites and tests document the contract.
  */
 export function appendCodexAwsAccessDirs(
-  args: string[],
-  env: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>,
+  _args: string[],
+  _env: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>,
 ): void {
-  const seen = new Set<string>();
-  const configFile = env.AWS_CONFIG_FILE?.trim();
-  if (configFile) {
-    const configDir = path.dirname(configFile);
-    if (configDir && configDir !== '/' && configDir !== '.') {
-      seen.add(path.resolve(configDir));
-    }
-  }
-  const home = env.HOME?.trim();
-  if (home) {
-    const awsDir = path.join(home, '.aws');
-    if (awsDir && awsDir !== '/' && awsDir !== '.') {
-      seen.add(path.resolve(awsDir));
-    }
-  }
-  for (const dir of seen) {
-    args.push('--add-dir', dir);
-  }
+  // no-op — see docstring
 }

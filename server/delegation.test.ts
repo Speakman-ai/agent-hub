@@ -646,7 +646,7 @@ describe('handleDelegation — retry logic', () => {
     expect(argv).toContain('danger-full-access');
     expect(argv).not.toContain('--full-auto');
     expect(argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
-    expect(argv).toContain('--add-dir');
+    expect(argv).not.toContain('--add-dir');
 
     fakeProcs[0].finish(0, {
       stdout:

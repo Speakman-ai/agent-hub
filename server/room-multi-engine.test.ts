@@ -158,7 +158,7 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('codex-cli: uses danger-full-access + add-dir when AWS SSO and codexDangerBypass is false', () => {
+  it('codex-cli: uses danger-full-access without --add-dir when AWS SSO and codexDangerBypass is false', () => {
     const home = '/data/per-user/home';
     const awsConfig = '/data/project-aws-config/p1/config';
     const plan = buildRoomSpawnArgs({
@@ -172,9 +172,7 @@ describe('buildRoomSpawnArgs', () => {
     expect(plan.args).toContain('--sandbox');
     expect(plan.args).toContain('danger-full-access');
     expect(plan.args).not.toContain('--full-auto');
-    expect(plan.args).toContain('--add-dir');
-    expect(plan.args).toContain(path.dirname(awsConfig));
-    expect(plan.args).toContain(`${home}/.aws`);
+    expect(plan.args).not.toContain('--add-dir');
   });
 
   it('codex-cli: uses danger bypass flag when codexDangerBypass is true', () => {
