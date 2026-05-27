@@ -156,9 +156,7 @@ export function applyIframeEmbedHeaders(
       .map((d) => d.trim())
       .filter((d) => d && !/^frame-ancestors\b/i.test(d))
       .join('; ');
-    responseHeaders['content-security-policy'] = trimmed
-      ? `${trimmed}; ${ancestors}`
-      : ancestors;
+    responseHeaders['content-security-policy'] = trimmed ? `${trimmed}; ${ancestors}` : ancestors;
   } else {
     responseHeaders['content-security-policy'] = ancestors;
   }
@@ -231,7 +229,27 @@ function proxyHttp(
     res.end();
   });
 
-  req.pipe(proxyReq);
+  // Express's body-parsing middleware (express.json / express.urlencoded)
+  // consumes the raw request stream before this handler runs. For GET/HEAD
+  // (no body) req.pipe() works because there's nothing to pipe. For POST/
+  // PUT/PATCH with a body, the raw stream is already drained — pipe() writes
+  // nothing, the upstream waits for the body forever, and the request hangs.
+  //
+  // When req.body is populated (body was parsed), serialise it back and
+  // write it explicitly. When req.body is absent (no body parser matched,
+  // e.g. multipart or unknown content-type), fall back to pipe — the raw
+  // stream is still intact in that case.
+  if (
+    req.body !== undefined &&
+    req.body !== null &&
+    req.method !== 'GET' &&
+    req.method !== 'HEAD'
+  ) {
+    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    proxyReq.end(bodyStr);
+  } else {
+    req.pipe(proxyReq);
+  }
 }
 
 function denyUpgrade(socket: Duplex, statusLine: string): void {
