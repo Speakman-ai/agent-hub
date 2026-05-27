@@ -287,6 +287,36 @@ describe('buildDesignSpawnArgs', () => {
     ).toThrow('codex-cli resume requires engine_session_id');
   });
 
+  it('codex-cli: appends --profile when codexProfile is set', () => {
+    const { args } = buildDesignSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      engineSessionId: null,
+      isNewEngineSession: true,
+      codexProfile: 'design-strict',
+    });
+    const idx = args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('design-strict');
+    // Profile flag must precede the prompt (last positional argv element).
+    expect(idx).toBeLessThan(args.length - 1);
+  });
+
+  it('codex-cli: omits --profile when codexProfile is null/empty', () => {
+    for (const profile of [null, undefined, '']) {
+      const { args } = buildDesignSpawnArgs({
+        ...baseInput,
+        engine: 'codex-cli',
+        model: 'gpt-5.3-codex',
+        engineSessionId: null,
+        isNewEngineSession: true,
+        codexProfile: profile,
+      });
+      expect(args).not.toContain('--profile');
+    }
+  });
+
   it('bootstraps prior messages on first engine session', () => {
     const prior = [
       userMsg('first'),

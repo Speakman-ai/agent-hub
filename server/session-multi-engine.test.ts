@@ -32,6 +32,38 @@ describe('buildSessionMultiSpawnArgs', () => {
     });
     expect(plan.args).toContain('bypassPermissions');
   });
+
+  it('codex-cli appends --profile when codexProfile is set', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      codexProfile: 'sandbox-strict',
+      advisory: true,
+    });
+    const idx = plan.args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(plan.args[idx + 1]).toBe('sandbox-strict');
+    // `--profile` must come before the `-` stdin sentinel.
+    expect(idx).toBeLessThan(plan.args.indexOf('-'));
+  });
+
+  it('codex-cli omits --profile when codexProfile is null/empty', () => {
+    for (const profile of [null, undefined, '']) {
+      const plan = buildSessionMultiSpawnArgs({
+        engine: 'codex-cli',
+        model: 'gpt-5.3-codex',
+        systemPrompt: 'sys',
+        userPrompt: 'user',
+        bins,
+        codexProfile: profile,
+        advisory: true,
+      });
+      expect(plan.args).not.toContain('--profile');
+    }
+  });
 });
 
 describe('normalizeSessionMultiEngine', () => {

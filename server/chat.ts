@@ -2516,6 +2516,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
           );
         }
+        // Optional named profile from `~/.codex/config.toml` — when
+        // operators configure `codexProfile` we forward it as `--profile <name>`
+        // so Codex applies the profile's model/provider/sandbox overrides on
+        // top of the flags we've already set. Empty / whitespace is normalized
+        // to null in config.ts.
+        if (config.codexProfile) {
+          args.push('--profile', config.codexProfile);
+        }
         // Pass the prompt via stdin using the documented `-` sentinel.
         // Per `codex exec` docs: "If you omit the prompt argument, Codex
         // reads the prompt from stdin. Use `codex exec -` when you want

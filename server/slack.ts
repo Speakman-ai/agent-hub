@@ -230,7 +230,11 @@ function runAgent(
       // Codex exec has no --system-prompt flag either — concatenate. We stay
       // read-only here since Slack one-shots shouldn't mutate the workspace.
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
-      args = ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', combinedPrompt];
+      args = ['exec', '--skip-git-repo-check', '--sandbox', 'read-only'];
+      if (config.codexProfile) {
+        args.push('--profile', config.codexProfile);
+      }
+      args.push(combinedPrompt);
       bin = CODEX_BIN;
     } else {
       args = ['--print', '--permission-mode', claudePermissionModeForSpawn('bypassPermissions')];

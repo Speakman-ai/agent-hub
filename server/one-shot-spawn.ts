@@ -117,6 +117,9 @@ export function buildOneShotSpawnArgs(
     if (trimmedModel && shouldPassModelFlag(auth.mode, trimmedModel)) {
       args.push('--model', trimmedModel);
     }
+    if (cfg.codexProfile) {
+      args.push('--profile', cfg.codexProfile);
+    }
     args.push(body);
     return { bin: cfg.codexBin, args };
   }

@@ -100,6 +100,11 @@ export interface BuildDesignSpawnArgsInput {
    * Host setting: Codex full bypass instead of `--full-auto` (matches chat).
    */
   codexDangerBypass?: boolean;
+  /**
+   * Host setting: optional Codex CLI profile name. Forwarded as
+   * `--profile <name>` on the codex-cli branch only. Empty / unset = no flag.
+   */
+  codexProfile?: string | null;
   awsSsoEnabled?: boolean;
   awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;
 }
@@ -123,6 +128,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     isNewEngineSession,
     bins,
     codexDangerBypass,
+    codexProfile,
     awsSsoEnabled,
     awsAccessEnv,
   } = input;
@@ -196,6 +202,9 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
         `[design] Dropping --model ${model} for codex-cli design ${designId}: ` +
           `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
       );
+    }
+    if (codexProfile) {
+      args.push('--profile', codexProfile);
     }
     args.push(prompt);
     return { bin: bins.codex, args };

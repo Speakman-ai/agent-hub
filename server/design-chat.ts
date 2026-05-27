@@ -322,6 +322,7 @@ export async function handleDesignChat(
           codex: d.getCodexBin(),
         },
         codexDangerBypass: !!config.codexDangerBypass,
+        codexProfile: config.codexProfile,
         awsSsoEnabled: designAwsSsoEnabled,
         awsAccessEnv: designAwsSsoEnabled
           ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
