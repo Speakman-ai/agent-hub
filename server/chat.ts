@@ -818,16 +818,16 @@ ${lifecycleStep1}
 2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
-5. **Commit**: Commit your changes to the feature branch. **Do NOT push or run \`gh pr create\`** — PR creation is owned by the server. If your session is linked to a kanban card, the server will push, open the PR, and move the card to "Review" automatically when your session ends. If your session is ad-hoc (no card), the user will get a "Create PR" button after your session ends and decide from there.
+5. **Ship**: Rebase on latest \`origin/main\`, run tests/lint, commit, push, and open the PR with \`gh pr create\` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and move the card to "Review" with a comment containing the PR URL. Never merge your own PR.
 
-**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit. No new cards/branches/PRs. Do NOT push or merge.
+**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit, and push to the same branch. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
     } else if (isGitHubConnected && projectMode === 'workflow') {
       prompt += `\n\n## Development — Workflow mode
 This project is in **workflow** mode (not the default dev/kanban automation profile). Prioritize workflow definitions, runs, and step outcomes. Work in the project checkout — **per-session git worktrees are off**, and the autonomous kanban→server-PR lifecycle described elsewhere does not apply. Use Git, tests, and the wiki as usual; coordinate shipping through the product's workflow surfaces rather than Agent Hub session PR automation.`;
     } else if (promptWorktree) {
       prompt += `\n\n## Git Workflow
-You are in a git worktree. Never commit to main. Commit to the current feature branch. Do NOT push or run \`gh pr create\` — the server owns PR creation.`;
+You are in a git worktree. Never commit to main. Commit to the current feature branch, then ship by rebasing on \`origin/main\`, pushing, and opening/updating a PR with \`gh\`. Do not merge your own PR.`;
     }
 
     // Bias to Action — single block, parameterized over the three modes
@@ -842,16 +842,18 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
           ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
 2. Implement on a feature branch.
-3. Commit. The server handles push + PR creation.`
+3. Rebase, test, commit, push, and open/update the PR.
+4. Move card to Review and comment with PR URL.`
           : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
 3. Implement on a feature branch.
-4. Commit. The server handles push + PR creation.`;
+4. Rebase, test, commit, push, and open the PR.
+5. Move card to Review and comment with PR URL.`;
     const biasToActionScope =
       projectMode === 'workflow'
         ? 'starting implementation'
-        : 'creating a card, opening a PR, or starting implementation';
+        : 'creating a card, shipping a PR, or starting implementation';
     prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
 When a user describes a problem, feature, or change, **do not ask permission for ${biasToActionScope}.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) lets you act now and be corrected cheaply later. Skip prompts like "Should I implement this?", "Want me to open a PR?", "Should I add a test?", "Do you want me to create a card?".
 
