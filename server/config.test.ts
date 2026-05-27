@@ -552,3 +552,74 @@ describe('config.ts — previewComposeReadyTimeoutMs', () => {
     }
   });
 });
+
+describe('config.ts — codexProfile resolution', () => {
+  // codexProfile threads `--profile <name>` onto every codex spawn so operators
+  // can pin a `~/.codex/config.toml` profile without per-call wiring. Empty /
+  // whitespace must normalize to null so the chat-spawn site can skip the flag
+  // with a single truthiness check.
+  function freshDataDir(label: string): string {
+    return path.join(
+      os.tmpdir(),
+      `agent-hub-codex-profile-${label}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+  }
+
+  function writeConfig(dir: string, body: Record<string, unknown>): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body), 'utf8');
+  }
+
+  it('defaults to null when neither env nor config.json sets it', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('default');
+    delete process.env.CODEX_PROFILE;
+    const mod = await import('./config.js');
+    expect(mod.default.codexProfile).toBeNull();
+  });
+
+  it('reads CODEX_PROFILE env when set (env wins over config.json)', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('env-wins');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    process.env.CODEX_PROFILE = 'env-profile';
+    writeConfig(dir, { codexProfile: 'file-profile' });
+    const mod = await import('./config.js');
+    expect(mod.default.codexProfile).toBe('env-profile');
+  });
+
+  it('reads codexProfile from config.json when env is unset', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('file');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    delete process.env.CODEX_PROFILE;
+    writeConfig(dir, { codexProfile: 'file-profile' });
+    const mod = await import('./config.js');
+    expect(mod.default.codexProfile).toBe('file-profile');
+  });
+
+  it('normalizes whitespace-only / empty to null', async () => {
+    for (const raw of ['   ', '', '\t\n']) {
+      vi.resetModules();
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      const dir = freshDataDir(`empty-${Math.random().toString(36).slice(2)}`);
+      process.env.AGENT_HUB_DATA_DIR = dir;
+      process.env.CODEX_PROFILE = raw;
+      const mod = await import('./config.js');
+      expect(mod.default.codexProfile).toBeNull();
+    }
+  });
+
+  it('trims surrounding whitespace', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('trim');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    process.env.CODEX_PROFILE = '  my-profile  ';
+    const mod = await import('./config.js');
+    expect(mod.default.codexProfile).toBe('my-profile');
+  });
+});

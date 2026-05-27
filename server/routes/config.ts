@@ -293,6 +293,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
       anthropicApiKeySet: !!config.anthropicApiKey,
       codexDangerBypass: !!config.codexDangerBypass,
+      codexProfile: config.codexProfile || null,
       // LAN mode flag (poll-only PR workflow, no webhooks). Surfaced so the
       // client can render a banner / hide the "configure webhook" prompts.
       lanMode: !!config.lanMode,
@@ -350,6 +351,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'apiKey',
       'publicUrl',
       'codexDangerBypass',
+      'codexProfile',
       'lanMode',
     ] as const;
     const updates: Record<string, unknown> = {};
@@ -359,6 +361,18 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
+    }
+    if (updates.codexProfile !== undefined) {
+      // Normalize: empty / whitespace / null → null (unset). Otherwise trim.
+      const raw = updates.codexProfile;
+      if (raw == null) {
+        updates.codexProfile = null;
+      } else if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        updates.codexProfile = trimmed.length > 0 ? trimmed : null;
+      } else {
+        delete updates.codexProfile;
+      }
     }
     if (updates.lanMode !== undefined) {
       // Accept boolean or common string forms ("true"/"on"/"1") so the

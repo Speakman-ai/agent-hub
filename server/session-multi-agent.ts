@@ -442,6 +442,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
           },
           logTag: `session ${sessionId} advisor ${advisor.id}`,
           codexDangerBypass: !!config.codexDangerBypass,
+          codexProfile: config.codexProfile,
           advisory: true,
         });
         bin = plan.bin;

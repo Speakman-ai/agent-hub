@@ -41,6 +41,12 @@ export interface BuildSessionMultiSpawnArgsInput {
   bins: SessionSpawnBins;
   logTag?: string;
   codexDangerBypass?: boolean;
+  /**
+   * Optional Codex CLI profile name. When set, advisor turns on the
+   * codex-cli engine get `--profile <name>` appended so the CLI loads the
+   * matching profile from `~/.codex/config.toml`. Empty / unset = no flag.
+   */
+  codexProfile?: string | null;
   /** When true, force read-only / ask-mode spawn (advisor turns). */
   advisory?: boolean;
 }
@@ -63,6 +69,7 @@ export function buildSessionMultiSpawnArgs(
     bins,
     logTag,
     codexDangerBypass,
+    codexProfile,
     advisory = false,
   } = input;
 
@@ -117,6 +124,9 @@ export function buildSessionMultiSpawnArgs(
         `[session-multi] Dropping --model ${model} for codex-cli ${logTag ?? 'turn'}: ` +
           `auth_mode=${codexAuth.mode} does not accept it.`,
       );
+    }
+    if (codexProfile) {
+      args.push('--profile', codexProfile);
     }
     args.push('-');
     const prompt = `${systemPrompt}\n\n${userPrompt}`;

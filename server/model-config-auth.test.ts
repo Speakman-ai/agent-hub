@@ -43,6 +43,7 @@ function makeConfig(): AppConfig {
     openaiApiKey: null,
     geminiApiKey: null,
     codexApiKey: null,
+    codexProfile: null,
     codexDangerBypass: true,
     lanMode: false,
     cursorApiKey: null,

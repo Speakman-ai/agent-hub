@@ -1866,6 +1866,18 @@ export interface AppConfig {
   geminiApiKey: string | null;
   codexApiKey: string | null;
   /**
+   * Optional Codex CLI profile name. When set, every `codex exec` spawn
+   * (chat, room, design, delegation) gets `--profile <name>` appended so
+   * the CLI loads the matching profile from `~/.codex/config.toml`
+   * (model / provider / approval / sandbox overrides). Empty / whitespace
+   * is treated as unset. Configure via `codexProfile` in config.json,
+   * `PATCH /api/config`, or env `CODEX_PROFILE`.
+   *
+   * See https://developers.openai.com/codex/cli/reference for the
+   * profile semantics.
+   */
+  codexProfile: string | null;
+  /**
    * When true (the default), interactive Codex spawns (chat, rooms, design,
    * delegation) outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
    * instead of `--full-auto`, so Codex works in environments where Linux

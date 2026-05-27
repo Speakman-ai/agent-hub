@@ -80,6 +80,10 @@ export const AppConfigComponent = registerComponent(
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
       codexDangerBypass: z.boolean().optional(),
+      codexProfile: z.string().nullable().optional().openapi({
+        description:
+          'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
+      }),
       lanMode: z.boolean().optional().openapi({
         description:
           'When true, Agent Hub skips webhook auto-registration (suitable for LAN / air-gapped installs that cannot receive inbound webhooks) and relies on the polling fallback for PR state and reviewer dispatch.',
@@ -350,6 +354,10 @@ export const PatchConfigRequestSchema = z
     publicUrl: z.string().optional(),
     botGithubToken: z.string().nullable().optional(),
     codexDangerBypass: z.boolean().optional(),
+    codexProfile: z.string().nullable().optional().openapi({
+      description:
+        'Codex CLI profile name. Pass null / empty string to clear. Forwarded as `--profile <name>` on every codex spawn.',
+    }),
     lanMode: z.boolean().optional(),
   })
   .passthrough()
@@ -436,7 +444,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

@@ -366,6 +366,16 @@ const config: AppConfig = {
   // independently of the existing `openaiApiKey` (which we leave untouched for
   // forward-compat with any future OpenAI SDK integrations).
   codexApiKey: resolve('CODEX_API_KEY', 'codexApiKey', null),
+  // Optional Codex CLI profile name — when set, every `codex exec` spawn
+  // gets `--profile <name>` appended so the CLI loads the matching profile
+  // from `~/.codex/config.toml`. Empty / whitespace is treated as unset by
+  // the spawn site. See https://developers.openai.com/codex/cli/reference.
+  codexProfile: (() => {
+    const raw = resolve('CODEX_PROFILE', 'codexProfile', null);
+    if (raw == null) return null;
+    const trimmed = String(raw).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  })(),
   // Cursor Agent CLI reads its API key from CURSOR_API_KEY. The binary is named
   // `agent` (not `cursor`). See https://docs.cursor.com/en/cli/reference/authentication.
   cursorApiKey: resolve('CURSOR_API_KEY', 'cursorApiKey', null),

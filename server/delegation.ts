@@ -228,6 +228,9 @@ function buildDelegateCliSpec(
       if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
       }
+      if (cfg.codexProfile) {
+        args.push('--profile', cfg.codexProfile);
+      }
       args.push(combined);
       return { bin: bins.codex, args, engine, parseStream: true };
     }
@@ -1054,6 +1057,9 @@ export async function synthesizeResults(
         }
         if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
           args.push('--model', sessionModel);
+        }
+        if (cfg.codexProfile) {
+          args.push('--profile', cfg.codexProfile);
         }
         args.push(engineSessionId ? synthesisPrompt : `${enriched}\n\n${synthesisPrompt}`);
       } else {

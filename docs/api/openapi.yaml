@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 1.34.4
+  version: 1.35.3
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -187,6 +187,451 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        name:
+          type: string
+        engine:
+          type: string
+        checkpoint_rewind_supported:
+          type: boolean
+          description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
+        model:
+          type: string
+        use_worktree:
+          type: integer
+        ask_mode:
+          type: integer
+        react_loop_enabled:
+          type: integer
+          nullable: true
+        worktree_path:
+          type: string
+          nullable: true
+        worktree_branch:
+          type: string
+          nullable: true
+        engine_session_id:
+          type: string
+          nullable: true
+        cron_id:
+          type: integer
+          nullable: true
+        deleted_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        owner_user_id:
+          type: string
+          nullable: true
+        orchestration_phase:
+          type: string
+          nullable: true
+        orchestration_meta:
+          type: string
+          nullable: true
+        max_turns:
+          type: integer
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              color:
+                type: string
+              position:
+                type: integer
+              role:
+                type: string
+                enum:
+                  - executor
+                  - advisor
+              projectId:
+                type: string
+              projectName:
+                type: string
+            required:
+              - id
+              - name
+              - color
+              - position
+              - role
+        advisor_count:
+          type: integer
+      required:
+        - id
+        - agent_id
+        - name
+        - engine
+        - checkpoint_rewind_supported
+        - model
+        - use_worktree
+        - ask_mode
+        - created_at
+        - updated_at
+      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+            - system
+        content:
+          type: string
+        engine:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        attachments:
+          type: string
+          nullable: true
+        metadata:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - session_id
+        - role
+        - content
+        - created_at
+      description: A single message row inside a session.
+    SessionErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    KanbanBoard:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - name
+        - created_at
+      description: A project kanban board (one per project).
+    KanbanColumn:
+      type: object
+      properties:
+        id:
+          type: string
+        board_id:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        color:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - board_id
+        - name
+        - position
+        - color
+        - created_at
+      description: A column on a kanban board (To Do, In Progress, …).
+    KanbanCard:
+      type: object
+      properties:
+        id:
+          type: string
+        column_id:
+          type: string
+        board_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        priority:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - urgent
+        assignee:
+          type: string
+          nullable: true
+        labels:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+        github_issue_url:
+          type: string
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+        review_status:
+          type: string
+          nullable: true
+          enum:
+            - awaiting_review
+            - reviewing
+            - approved
+            - changes_requested
+            - null
+        created_by:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        epic_id:
+          type: string
+          nullable: true
+        documented:
+          type: integer
+        dispatched_by_autonomous:
+          type: integer
+        assign_model:
+          type: string
+          nullable: true
+        assign_engine:
+          type: string
+          nullable: true
+          description: Optional engine override pinned at assign / update time. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". Overrides the assignee agent's shared engine at session spawn.
+        pr_base_branch:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - column_id
+        - board_id
+        - title
+        - description
+        - priority
+        - assignee
+        - labels
+        - session_id
+        - github_issue_url
+        - pr_url
+        - review_status
+        - created_by
+        - position
+        - epic_id
+        - documented
+        - dispatched_by_autonomous
+        - created_at
+        - updated_at
+      description: A kanban card (task / ticket).
+    KanbanBlockerLink:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        column_id:
+          type: string
+        done:
+          type: boolean
+      required:
+        - id
+        - title
+        - column_id
+        - done
+      description: A blocker / blocked-by relationship view. `done` is derived from the referenced card's column ("Done"-ish columns resolve the link).
+    KanbanCardEnriched:
+      allOf:
+        - $ref: "#/components/schemas/KanbanCard"
+        - type: object
+          properties:
+            blockers:
+              type: array
+              items:
+                $ref: "#/components/schemas/KanbanBlockerLink"
+            blocks:
+              type: array
+              items:
+                $ref: "#/components/schemas/KanbanBlockerLink"
+          required:
+            - blockers
+            - blocks
+      description: A card with its blocker graph attached (used by GET /board).
+    KanbanEpic:
+      type: object
+      properties:
+        id:
+          type: string
+        board_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+        autonomous:
+          type: integer
+        autonomous_interval:
+          type: integer
+        autonomous_max_concurrent:
+          type: integer
+        autonomous_model:
+          type: string
+          nullable: true
+        orchestration_budgets_json:
+          type: string
+          nullable: true
+        pr_base_branch:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - board_id
+        - name
+        - description
+        - color
+        - autonomous
+        - autonomous_interval
+        - autonomous_max_concurrent
+        - autonomous_model
+        - position
+        - created_at
+        - updated_at
+      description: A kanban epic — a group of related cards.
+    KanbanCardComment:
+      type: object
+      properties:
+        id:
+          type: string
+        card_id:
+          type: string
+        author:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+      required:
+        - id
+        - card_id
+        - author
+        - content
+        - created_at
+      description: A comment posted to a kanban card.
+    BoardResponse:
+      type: object
+      properties:
+        board:
+          $ref: "#/components/schemas/KanbanBoard"
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanColumn"
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanCardEnriched"
+        epics:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanEpic"
+      required:
+        - board
+        - columns
+        - cards
+        - epics
+      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics."
+    BoardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+        path:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
     AuditErrorResponse:
       type: object
       properties:
@@ -517,451 +962,6 @@ components:
           minLength: 1
       required:
         - token
-    KanbanBoard:
-      type: object
-      properties:
-        id:
-          type: string
-        project_id:
-          type: string
-        name:
-          type: string
-        created_at:
-          type: string
-      required:
-        - id
-        - project_id
-        - name
-        - created_at
-      description: A project kanban board (one per project).
-    KanbanColumn:
-      type: object
-      properties:
-        id:
-          type: string
-        board_id:
-          type: string
-        name:
-          type: string
-        position:
-          type: integer
-        color:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-      required:
-        - id
-        - board_id
-        - name
-        - position
-        - color
-        - created_at
-      description: A column on a kanban board (To Do, In Progress, …).
-    KanbanCard:
-      type: object
-      properties:
-        id:
-          type: string
-        column_id:
-          type: string
-        board_id:
-          type: string
-        title:
-          type: string
-        description:
-          type: string
-          nullable: true
-        priority:
-          type: string
-          enum:
-            - low
-            - medium
-            - high
-            - urgent
-        assignee:
-          type: string
-          nullable: true
-        labels:
-          type: string
-          nullable: true
-        session_id:
-          type: string
-          nullable: true
-        github_issue_url:
-          type: string
-          nullable: true
-        pr_url:
-          type: string
-          nullable: true
-        review_status:
-          type: string
-          nullable: true
-          enum:
-            - awaiting_review
-            - reviewing
-            - approved
-            - changes_requested
-            - null
-        created_by:
-          type: string
-          nullable: true
-        position:
-          type: integer
-        epic_id:
-          type: string
-          nullable: true
-        documented:
-          type: integer
-        dispatched_by_autonomous:
-          type: integer
-        assign_model:
-          type: string
-          nullable: true
-        assign_engine:
-          type: string
-          nullable: true
-          description: Optional engine override pinned at assign / update time. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". Overrides the assignee agent's shared engine at session spawn.
-        pr_base_branch:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-        updated_at:
-          type: string
-      required:
-        - id
-        - column_id
-        - board_id
-        - title
-        - description
-        - priority
-        - assignee
-        - labels
-        - session_id
-        - github_issue_url
-        - pr_url
-        - review_status
-        - created_by
-        - position
-        - epic_id
-        - documented
-        - dispatched_by_autonomous
-        - created_at
-        - updated_at
-      description: A kanban card (task / ticket).
-    KanbanBlockerLink:
-      type: object
-      properties:
-        id:
-          type: string
-        title:
-          type: string
-        column_id:
-          type: string
-        done:
-          type: boolean
-      required:
-        - id
-        - title
-        - column_id
-        - done
-      description: A blocker / blocked-by relationship view. `done` is derived from the referenced card's column ("Done"-ish columns resolve the link).
-    KanbanCardEnriched:
-      allOf:
-        - $ref: "#/components/schemas/KanbanCard"
-        - type: object
-          properties:
-            blockers:
-              type: array
-              items:
-                $ref: "#/components/schemas/KanbanBlockerLink"
-            blocks:
-              type: array
-              items:
-                $ref: "#/components/schemas/KanbanBlockerLink"
-          required:
-            - blockers
-            - blocks
-      description: A card with its blocker graph attached (used by GET /board).
-    KanbanEpic:
-      type: object
-      properties:
-        id:
-          type: string
-        board_id:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-          nullable: true
-        color:
-          type: string
-        autonomous:
-          type: integer
-        autonomous_interval:
-          type: integer
-        autonomous_max_concurrent:
-          type: integer
-        autonomous_model:
-          type: string
-          nullable: true
-        orchestration_budgets_json:
-          type: string
-          nullable: true
-        pr_base_branch:
-          type: string
-          nullable: true
-        position:
-          type: integer
-        created_at:
-          type: string
-        updated_at:
-          type: string
-      required:
-        - id
-        - board_id
-        - name
-        - description
-        - color
-        - autonomous
-        - autonomous_interval
-        - autonomous_max_concurrent
-        - autonomous_model
-        - position
-        - created_at
-        - updated_at
-      description: A kanban epic — a group of related cards.
-    KanbanCardComment:
-      type: object
-      properties:
-        id:
-          type: string
-        card_id:
-          type: string
-        author:
-          type: string
-        content:
-          type: string
-        created_at:
-          type: string
-      required:
-        - id
-        - card_id
-        - author
-        - content
-        - created_at
-      description: A comment posted to a kanban card.
-    BoardResponse:
-      type: object
-      properties:
-        board:
-          $ref: "#/components/schemas/KanbanBoard"
-        columns:
-          type: array
-          items:
-            $ref: "#/components/schemas/KanbanColumn"
-        cards:
-          type: array
-          items:
-            $ref: "#/components/schemas/KanbanCardEnriched"
-        epics:
-          type: array
-          items:
-            $ref: "#/components/schemas/KanbanEpic"
-      required:
-        - board
-        - columns
-        - cards
-        - epics
-      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics."
-    BoardErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-        details:
-          type: array
-          items:
-            type: object
-            properties:
-              path:
-                type: array
-                items:
-                  anyOf:
-                    - type: string
-                    - type: number
-              message:
-                type: string
-            required:
-              - path
-              - message
-        path:
-          type: array
-          items:
-            type: string
-      required:
-        - error
-      description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
-    Session:
-      type: object
-      properties:
-        id:
-          type: string
-        agent_id:
-          type: string
-        name:
-          type: string
-        engine:
-          type: string
-        checkpoint_rewind_supported:
-          type: boolean
-          description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
-        model:
-          type: string
-        use_worktree:
-          type: integer
-        ask_mode:
-          type: integer
-        react_loop_enabled:
-          type: integer
-          nullable: true
-        worktree_path:
-          type: string
-          nullable: true
-        worktree_branch:
-          type: string
-          nullable: true
-        engine_session_id:
-          type: string
-          nullable: true
-        cron_id:
-          type: integer
-          nullable: true
-        deleted_at:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-        updated_at:
-          type: string
-        owner_user_id:
-          type: string
-          nullable: true
-        orchestration_phase:
-          type: string
-          nullable: true
-        orchestration_meta:
-          type: string
-          nullable: true
-        max_turns:
-          type: integer
-        agents:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              name:
-                type: string
-              color:
-                type: string
-              position:
-                type: integer
-              role:
-                type: string
-                enum:
-                  - executor
-                  - advisor
-              projectId:
-                type: string
-              projectName:
-                type: string
-            required:
-              - id
-              - name
-              - color
-              - position
-              - role
-        advisor_count:
-          type: integer
-      required:
-        - id
-        - agent_id
-        - name
-        - engine
-        - checkpoint_rewind_supported
-        - model
-        - use_worktree
-        - ask_mode
-        - created_at
-        - updated_at
-      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
-    Message:
-      type: object
-      properties:
-        id:
-          type: string
-        session_id:
-          type: string
-        role:
-          type: string
-          enum:
-            - user
-            - assistant
-            - system
-        content:
-          type: string
-        engine:
-          type: string
-          nullable: true
-        model:
-          type: string
-          nullable: true
-        attachments:
-          type: string
-          nullable: true
-        metadata:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-      required:
-        - id
-        - session_id
-        - role
-        - content
-        - created_at
-      description: A single message row inside a session.
-    SessionErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-        code:
-          type: string
-          description: Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).
-        details:
-          type: array
-          items:
-            type: object
-            properties:
-              path:
-                type: array
-                items:
-                  anyOf:
-                    - type: string
-                    - type: number
-              message:
-                type: string
-            required:
-              - path
-              - message
-      required:
-        - error
-      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
     BugReportsErrorResponse:
       type: object
       properties:
@@ -1112,6 +1112,10 @@ components:
           type: boolean
         codexDangerBypass:
           type: boolean
+        codexProfile:
+          type: string
+          nullable: true
+          description: Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.
         lanMode:
           type: boolean
           description: When true, Agent Hub skips webhook auto-registration (suitable for LAN / air-gapped installs that cannot receive inbound webhooks) and relies on the polling fallback for PR state and reviewer dispatch.
@@ -3567,6 +3571,1805 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentErrorResponse"
+  /api/agents/{agentId}/sessions:
+    get:
+      tags:
+        - Sessions
+      summary: List sessions for an agent (owner-filtered)
+      description: Returns only sessions the caller owns. Pre-Phase-4 NULL-owner rows fall through to org-owner ownership.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Array of sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      tags:
+        - Sessions
+      summary: Create a new session for an agent
+      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                engine:
+                  type: string
+                model:
+                  type: string
+                ask_mode:
+                  type: boolean
+      responses:
+        "200":
+          description: New session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every session for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/agents/{agentId}/sessions/inactive:
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every *inactive* session for an agent
+      description: Skips sessions with an active in-flight CLI process.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get a single session by id
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Session row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    patch:
+      tags:
+        - Sessions
+      summary: Update session fields
+      description: Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                max_turns:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Archive (soft-delete) a single session
+      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Archive ack.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - archived
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/messages:
+    get:
+      tags:
+        - Sessions
+      summary: List every message in a session (oldest first)
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Array of messages.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents:
+    post:
+      tags:
+        - Sessions
+      summary: Add a read-only advisor agent to a multi-agent session
+      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+              required:
+                - agentId
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or primary agent cannot be added as advisor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Reviewer agents cannot join multi-agent sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents/{agentId}:
+    delete:
+      tags:
+        - Sessions
+      summary: Remove an advisor from a multi-agent session
+      description: Session owner only. Cannot remove the primary executor.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Advisor agent ID to remove.
+          required: true
+          description: Advisor agent ID to remove.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Cannot remove the primary executor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/restore:
+    post:
+      tags:
+        - Sessions
+      summary: Restore an archived session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Restored session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is not archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/engine:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the engine for a session
+      description: Resets the model to the new engine's default if the current model isn't valid for the chosen engine. Clears the `engine_session_id` so the next chat starts a fresh CLI side.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - gemini-cli
+                    - codex-cli
+              required:
+                - engine
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or invalid engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/model:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the model for a session
+      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+              required:
+                - model
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or model not valid for the current engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/ask-mode:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle ask-mode (read-only / plan-mode) on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/react-loop:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle the host-mediated ReAct loop on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/rewind:
+    post:
+      tags:
+        - Sessions
+      summary: Rewind a Claude Code session to a checkpoint UUID
+      description: "Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                uuid:
+                  type: string
+                  minLength: 1
+              required:
+                - uuid
+      responses:
+        "200":
+          description: Rewind kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - rewind_started
+                  uuid:
+                    type: string
+                  sessionId:
+                    type: string
+                required:
+                  - status
+                  - uuid
+                  - sessionId
+        "400":
+          description: Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is actively running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/checkpoints/{uuid}:
+    patch:
+      tags:
+        - Sessions
+      summary: Rename a checkpoint label
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Checkpoint UUID.
+          required: true
+          description: Checkpoint UUID.
+          name: uuid
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+              required:
+                - label
+      responses:
+        "200":
+          description: Updated checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  uuid:
+                    type: string
+                  label:
+                    type: string
+                required:
+                  - session_id
+                  - uuid
+                  - label
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/ticket:
+    post:
+      tags:
+        - Sessions
+      summary: Mint a single-use preview iframe ticket
+      description: "Returns a short-lived single-use ticket the SPA appends to the preview iframe `src` as `?ticket=…`. Browsers cannot attach `Authorization: Bearer …` to an iframe top-level navigation, so this endpoint is the bridge between the SPA's JWT session and the preview proxy. The ticket is bound to (sessionId, caller) and ~60 s TTL; on first hit the proxy consumes the ticket and writes a path-scoped HttpOnly cookie so sub-resources (.js/.css/images) authenticate automatically."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Ticket minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ticket:
+                    type: string
+                    description: Single-use opaque token (prefixed `ahpt_`). Append as `?ticket=…`.
+                  ttlSeconds:
+                    type: integer
+                    description: Seconds the ticket remains valid before it must be re-minted.
+                required:
+                  - ticket
+                  - ttlSeconds
+        "404":
+          description: Session not found or not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/stop:
+    post:
+      tags:
+        - Sessions
+      summary: Stop worktree preview for a chat session
+      description: Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Preview teardown requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - stopped
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/workspace/ensure:
+    post:
+      tags:
+        - Sessions
+      summary: Provision session git worktree
+      description: Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Worktree ready (or skipped for workflow / wizard sessions).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  skipped:
+                    type: boolean
+                  worktreePath:
+                    type: string
+                  session:
+                    $ref: "#/components/schemas/Session"
+                required:
+                  - ok
+                  - skipped
+                  - worktreePath
+                  - session
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Provisioning not wired on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/start:
+    post:
+      tags:
+        - Sessions
+      summary: Start worktree preview for a chat session
+      description: Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: string
+                  description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
+                reason:
+                  type: string
+              description: Optional preview task overrides.
+      responses:
+        "200":
+          description: Preview boot kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  started:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - started
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/projects/{projectId}/board:
+    get:
+      tags:
+        - Board
+      summary: Get full board state
+      description: Returns the project board, all columns, all cards (with blocker graph attached), and all epics. Idempotently creates the board and the four default columns on first call.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Board state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards:
+    get:
+      tags:
+        - Board
+      summary: List cards on a project board
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Array of cards.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCard"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    post:
+      tags:
+        - Board
+      summary: Create a kanban card
+      description: "Creates a card in the given column. When `sessionId` is omitted from the body, the server auto-links from `X-Agent-Hub-Session-Id` or a per-session spawn-creds API key (`spawn:<sessionId>`). Pass `sessionId: null` to opt out. Returns the existing card unchanged if (a) a card with the same case-insensitive title already exists on this board, or (b) `sessionId` is already linked to a card on this board."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                columnId:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                assignee:
+                  type: string
+                  nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                sessionId:
+                  type: string
+                  nullable: true
+                githubIssueUrl:
+                  type: string
+                  nullable: true
+                createdBy:
+                  type: string
+                  nullable: true
+              required:
+                - title
+                - columnId
+      responses:
+        "200":
+          description: Card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project or column not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}:
+    put:
+      tags:
+        - Board
+      summary: Update a kanban card
+      description: Partial update. Fields omitted from the body keep their current value. Nullable fields can be cleared by sending `null` explicitly.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                assignee:
+                  type: string
+                  nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                sessionId:
+                  type: string
+                  nullable: true
+                githubIssueUrl:
+                  type: string
+                  nullable: true
+                prUrl:
+                  type: string
+                  nullable: true
+                epicId:
+                  type: string
+                  nullable: true
+                assignModel:
+                  type: string
+                  nullable: true
+                assignEngine:
+                  type: string
+                  nullable: true
+                  description: Optional engine override for the session spawn. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, overrides the assignee agent's shared engine.
+                prBaseBranch:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card, project, or referenced epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/move:
+    post:
+      tags:
+        - Board
+      summary: Move a card to another column / position
+      description: "Soft-enforced: blocker state does NOT gate the move. Clients should consult `blockers` on the GET /board response and warn before issuing the move."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                columnId:
+                  type: string
+                  minLength: 1
+                position:
+                  type: integer
+              required:
+                - columnId
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found, or target column not on this card's board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/assign:
+    post:
+      tags:
+        - Board
+      summary: Assign a card to an agent and spawn a session
+      description: Picks the agent, mints a new session linked to the card, optionally overrides the model (must be valid for the agent's engine), moves the card to "In Progress", and dispatches the agent with a task-context prompt.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                  nullable: true
+                engine:
+                  type: string
+                  nullable: true
+                  description: Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent's shared engine. Validated against the server's engineValidModels — unknown engines yield 400.
+              required:
+                - agentId
+      responses:
+        "200":
+          description: Session id + updated card.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  card:
+                    $ref: "#/components/schemas/KanbanCard"
+                required:
+                  - sessionId
+                  - card
+        "400":
+          description: Validation failed or model invalid for engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card, agent, or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/comments:
+    get:
+      tags:
+        - Board
+      summary: List comments on a card
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      responses:
+        "200":
+          description: Array of comments (oldest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCardComment"
+    post:
+      tags:
+        - Board
+      summary: Post a comment to a card
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                author:
+                  type: string
+                  minLength: 1
+                content:
+                  type: string
+                  minLength: 1
+              required:
+                - author
+                - content
+      responses:
+        "200":
+          description: Updated comment list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCardComment"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/comments/{commentId}:
+    delete:
+      tags:
+        - Board
+      summary: Delete a card comment
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+        - schema:
+            type: string
+            description: Comment UUID.
+          required: true
+          description: Comment UUID.
+          name: commentId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+  /api/projects/{projectId}/board/cards/{cardId}/blockers:
+    post:
+      tags:
+        - Board
+      summary: Declare that this card is blocked by another card
+      description: Both cards must live on the same project board. Adding the edge is rejected when it would close a cycle (`409 cycle`, with `path` naming the cycle) or when the edge already exists (`409 duplicate`).
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                blockedByCardId:
+                  type: string
+                  minLength: 1
+              required:
+                - blockedByCardId
+      responses:
+        "201":
+          description: New blocker link.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  card_id:
+                    type: string
+                  blocked_by_card_id:
+                    type: string
+                required:
+                  - id
+                  - card_id
+                  - blocked_by_card_id
+        "400":
+          description: Validation failed or self-block attempted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card not found (either side).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "409":
+          description: Duplicate edge or cycle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/blockers/{blockedByCardId}:
+    delete:
+      tags:
+        - Board
+      summary: Remove a blocker edge
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+        - schema:
+            type: string
+            description: The blocker card UUID to remove.
+          required: true
+          description: The blocker card UUID to remove.
+          name: blockedByCardId
+          in: path
+      responses:
+        "204":
+          description: Edge removed.
+        "404":
+          description: Blocker link not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics:
+    get:
+      tags:
+        - Board
+      summary: List epics on a project board
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Array of epics.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanEpic"
+    post:
+      tags:
+        - Board
+      summary: Create an epic
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                color:
+                  type: string
+                prBaseBranch:
+                  type: string
+                  nullable: true
+              required:
+                - name
+      responses:
+        "200":
+          description: New epic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}:
+    put:
+      tags:
+        - Board
+      summary: Update an epic
+      description: Partial update. Setting `autonomous` to 1 on this epic clears the autonomous flag on any other autonomous epic on the same board (only one epic can be autonomous at a time).
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                color:
+                  type: string
+                autonomous:
+                  type: integer
+                autonomousInterval:
+                  type: integer
+                autonomousMaxConcurrent:
+                  type: integer
+                autonomousModel:
+                  type: string
+                  nullable: true
+                orchestrationBudgets:
+                  type: object
+                  description: Optional partial overrides merged onto the project orchestrationBudgets at run time.
+                prBaseBranch:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated epic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete an epic
+      description: Unlinks every card that belonged to the epic, then removes the epic row.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+  /api/projects/{projectId}/board/cards/{cardId}/epic:
+    post:
+      tags:
+        - Board
+      summary: Link or unlink a card to an epic
+      description: 'Pass `{ epicId: "<id>" }` to link. Pass an empty body or `{ epicId: null }` to unlink.'
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Card or epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/columns:
+    post:
+      tags:
+        - Board
+      summary: Create a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                color:
+                  type: string
+                  nullable: true
+              required:
+                - name
+      responses:
+        "200":
+          description: Updated columns list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanColumn"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/columns/{columnId}:
+    put:
+      tags:
+        - Board
+      summary: Update a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban column UUID.
+          required: true
+          description: Kanban column UUID.
+          name: columnId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                position:
+                  type: integer
+                color:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete a column
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban column UUID.
+          required: true
+          description: Kanban column UUID.
+          name: columnId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
   /api/projects/{projectId}/audit:
     get:
       tags:
@@ -5280,1805 +7083,6 @@ paths:
                       - true
                 required:
                   - ok
-  /api/projects/{projectId}/board:
-    get:
-      tags:
-        - Board
-      summary: Get full board state
-      description: Returns the project board, all columns, all cards (with blocker graph attached), and all epics. Idempotently creates the board and the four default columns on first call.
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Board state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardResponse"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards:
-    get:
-      tags:
-        - Board
-      summary: List cards on a project board
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Array of cards.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/KanbanCard"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-    post:
-      tags:
-        - Board
-      summary: Create a kanban card
-      description: "Creates a card in the given column. When `sessionId` is omitted from the body, the server auto-links from `X-Agent-Hub-Session-Id` or a per-session spawn-creds API key (`spawn:<sessionId>`). Pass `sessionId: null` to opt out. Returns the existing card unchanged if (a) a card with the same case-insensitive title already exists on this board, or (b) `sessionId` is already linked to a card on this board."
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                  minLength: 1
-                columnId:
-                  type: string
-                  minLength: 1
-                description:
-                  type: string
-                  nullable: true
-                priority:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - urgent
-                assignee:
-                  type: string
-                  nullable: true
-                labels:
-                  type: string
-                  nullable: true
-                sessionId:
-                  type: string
-                  nullable: true
-                githubIssueUrl:
-                  type: string
-                  nullable: true
-                createdBy:
-                  type: string
-                  nullable: true
-              required:
-                - title
-                - columnId
-      responses:
-        "200":
-          description: Card.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanCard"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Project or column not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}:
-    put:
-      tags:
-        - Board
-      summary: Update a kanban card
-      description: Partial update. Fields omitted from the body keep their current value. Nullable fields can be cleared by sending `null` explicitly.
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                  minLength: 1
-                description:
-                  type: string
-                  nullable: true
-                priority:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - urgent
-                assignee:
-                  type: string
-                  nullable: true
-                labels:
-                  type: string
-                  nullable: true
-                sessionId:
-                  type: string
-                  nullable: true
-                githubIssueUrl:
-                  type: string
-                  nullable: true
-                prUrl:
-                  type: string
-                  nullable: true
-                epicId:
-                  type: string
-                  nullable: true
-                assignModel:
-                  type: string
-                  nullable: true
-                assignEngine:
-                  type: string
-                  nullable: true
-                  description: Optional engine override for the session spawn. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, overrides the assignee agent's shared engine.
-                prBaseBranch:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Updated card.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanCard"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card, project, or referenced epic not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}/move:
-    post:
-      tags:
-        - Board
-      summary: Move a card to another column / position
-      description: "Soft-enforced: blocker state does NOT gate the move. Clients should consult `blockers` on the GET /board response and warn before issuing the move."
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                columnId:
-                  type: string
-                  minLength: 1
-                position:
-                  type: integer
-              required:
-                - columnId
-      responses:
-        "200":
-          description: Updated card.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanCard"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card not found, or target column not on this card's board.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}/assign:
-    post:
-      tags:
-        - Board
-      summary: Assign a card to an agent and spawn a session
-      description: Picks the agent, mints a new session linked to the card, optionally overrides the model (must be valid for the agent's engine), moves the card to "In Progress", and dispatches the agent with a task-context prompt.
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                agentId:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                  nullable: true
-                engine:
-                  type: string
-                  nullable: true
-                  description: Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent's shared engine. Validated against the server's engineValidModels — unknown engines yield 400.
-              required:
-                - agentId
-      responses:
-        "200":
-          description: Session id + updated card.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessionId:
-                    type: string
-                  card:
-                    $ref: "#/components/schemas/KanbanCard"
-                required:
-                  - sessionId
-                  - card
-        "400":
-          description: Validation failed or model invalid for engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card, agent, or project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}/comments:
-    get:
-      tags:
-        - Board
-      summary: List comments on a card
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      responses:
-        "200":
-          description: Array of comments (oldest first).
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/KanbanCardComment"
-    post:
-      tags:
-        - Board
-      summary: Post a comment to a card
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                author:
-                  type: string
-                  minLength: 1
-                content:
-                  type: string
-                  minLength: 1
-              required:
-                - author
-                - content
-      responses:
-        "200":
-          description: Updated comment list.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/KanbanCardComment"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}/comments/{commentId}:
-    delete:
-      tags:
-        - Board
-      summary: Delete a card comment
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-        - schema:
-            type: string
-            description: Comment UUID.
-          required: true
-          description: Comment UUID.
-          name: commentId
-          in: path
-      responses:
-        "200":
-          description: Acknowledgment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-  /api/projects/{projectId}/board/cards/{cardId}/blockers:
-    post:
-      tags:
-        - Board
-      summary: Declare that this card is blocked by another card
-      description: Both cards must live on the same project board. Adding the edge is rejected when it would close a cycle (`409 cycle`, with `path` naming the cycle) or when the edge already exists (`409 duplicate`).
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                blockedByCardId:
-                  type: string
-                  minLength: 1
-              required:
-                - blockedByCardId
-      responses:
-        "201":
-          description: New blocker link.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  card_id:
-                    type: string
-                  blocked_by_card_id:
-                    type: string
-                required:
-                  - id
-                  - card_id
-                  - blocked_by_card_id
-        "400":
-          description: Validation failed or self-block attempted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card not found (either side).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "409":
-          description: Duplicate edge or cycle.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/cards/{cardId}/blockers/{blockedByCardId}:
-    delete:
-      tags:
-        - Board
-      summary: Remove a blocker edge
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-        - schema:
-            type: string
-            description: The blocker card UUID to remove.
-          required: true
-          description: The blocker card UUID to remove.
-          name: blockedByCardId
-          in: path
-      responses:
-        "204":
-          description: Edge removed.
-        "404":
-          description: Blocker link not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/epics:
-    get:
-      tags:
-        - Board
-      summary: List epics on a project board
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Array of epics.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/KanbanEpic"
-    post:
-      tags:
-        - Board
-      summary: Create an epic
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                description:
-                  type: string
-                  nullable: true
-                color:
-                  type: string
-                prBaseBranch:
-                  type: string
-                  nullable: true
-              required:
-                - name
-      responses:
-        "200":
-          description: New epic.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanEpic"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/epics/{epicId}:
-    put:
-      tags:
-        - Board
-      summary: Update an epic
-      description: Partial update. Setting `autonomous` to 1 on this epic clears the autonomous flag on any other autonomous epic on the same board (only one epic can be autonomous at a time).
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban epic UUID.
-          required: true
-          description: Kanban epic UUID.
-          name: epicId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                description:
-                  type: string
-                  nullable: true
-                color:
-                  type: string
-                autonomous:
-                  type: integer
-                autonomousInterval:
-                  type: integer
-                autonomousMaxConcurrent:
-                  type: integer
-                autonomousModel:
-                  type: string
-                  nullable: true
-                orchestrationBudgets:
-                  type: object
-                  description: Optional partial overrides merged onto the project orchestrationBudgets at run time.
-                prBaseBranch:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Updated epic.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanEpic"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Epic not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-    delete:
-      tags:
-        - Board
-      summary: Delete an epic
-      description: Unlinks every card that belonged to the epic, then removes the epic row.
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban epic UUID.
-          required: true
-          description: Kanban epic UUID.
-          name: epicId
-          in: path
-      responses:
-        "200":
-          description: Acknowledgment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-  /api/projects/{projectId}/board/cards/{cardId}/epic:
-    post:
-      tags:
-        - Board
-      summary: Link or unlink a card to an epic
-      description: 'Pass `{ epicId: "<id>" }` to link. Pass an empty body or `{ epicId: null }` to unlink.'
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban card UUID.
-          required: true
-          description: Kanban card UUID.
-          name: cardId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                epicId:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Updated card.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KanbanCard"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Card or epic not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/columns:
-    post:
-      tags:
-        - Board
-      summary: Create a column
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                color:
-                  type: string
-                  nullable: true
-              required:
-                - name
-      responses:
-        "200":
-          description: Updated columns list.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/KanbanColumn"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-  /api/projects/{projectId}/board/columns/{columnId}:
-    put:
-      tags:
-        - Board
-      summary: Update a column
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban column UUID.
-          required: true
-          description: Kanban column UUID.
-          name: columnId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                position:
-                  type: integer
-                color:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Acknowledgment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardErrorResponse"
-    delete:
-      tags:
-        - Board
-      summary: Delete a column
-      parameters:
-        - schema:
-            type: string
-            description: Project ID (slug).
-          required: true
-          description: Project ID (slug).
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Kanban column UUID.
-          required: true
-          description: Kanban column UUID.
-          name: columnId
-          in: path
-      responses:
-        "200":
-          description: Acknowledgment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-  /api/agents/{agentId}/sessions:
-    get:
-      tags:
-        - Sessions
-      summary: List sessions for an agent (owner-filtered)
-      description: Returns only sessions the caller owns. Pre-Phase-4 NULL-owner rows fall through to org-owner ownership.
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Array of sessions.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Session"
-    post:
-      tags:
-        - Sessions
-      summary: Create a new session for an agent
-      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                engine:
-                  type: string
-                model:
-                  type: string
-                ask_mode:
-                  type: boolean
-      responses:
-        "200":
-          description: New session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    delete:
-      tags:
-        - Sessions
-      summary: Bulk soft-delete (archive) every session for an agent
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Archive counts.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: integer
-                  deleted:
-                    type: integer
-                required:
-                  - ok
-                  - archived
-                  - deleted
-  /api/agents/{agentId}/sessions/inactive:
-    delete:
-      tags:
-        - Sessions
-      summary: Bulk soft-delete (archive) every *inactive* session for an agent
-      description: Skips sessions with an active in-flight CLI process.
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Archive counts.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: integer
-                  deleted:
-                    type: integer
-                required:
-                  - ok
-                  - archived
-                  - deleted
-  /api/sessions/{sessionId}:
-    get:
-      tags:
-        - Sessions
-      summary: Get a single session by id
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Session row.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "404":
-          description: Session not found (or hidden by ownership).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    patch:
-      tags:
-        - Sessions
-      summary: Update session fields
-      description: Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                max_turns:
-                  type: integer
-                  minimum: 0
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    delete:
-      tags:
-        - Sessions
-      summary: Archive (soft-delete) a single session
-      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Archive ack.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-                  - archived
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/messages:
-    get:
-      tags:
-        - Sessions
-      summary: List every message in a session (oldest first)
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Array of messages.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Message"
-        "404":
-          description: Session not found (or hidden by ownership).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/agents:
-    post:
-      tags:
-        - Sessions
-      summary: Add a read-only advisor agent to a multi-agent session
-      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                agentId:
-                  type: string
-                  minLength: 1
-              required:
-                - agentId
-      responses:
-        "200":
-          description: Updated session with roster.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or primary agent cannot be added as advisor.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "403":
-          description: Reviewer agents cannot join multi-agent sessions.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session or agent not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/agents/{agentId}:
-    delete:
-      tags:
-        - Sessions
-      summary: Remove an advisor from a multi-agent session
-      description: Session owner only. Cannot remove the primary executor.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-        - schema:
-            type: string
-            description: Advisor agent ID to remove.
-          required: true
-          description: Advisor agent ID to remove.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Updated session with roster.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Cannot remove the primary executor.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/restore:
-    post:
-      tags:
-        - Sessions
-      summary: Restore an archived session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Restored session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "409":
-          description: Session is not archived.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/engine:
-    put:
-      tags:
-        - Sessions
-      summary: Switch the engine for a session
-      description: Resets the model to the new engine's default if the current model isn't valid for the chosen engine. Clears the `engine_session_id` so the next chat starts a fresh CLI side.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                engine:
-                  type: string
-                  enum:
-                    - claude-code
-                    - cursor-agent
-                    - gemini-cli
-                    - codex-cli
-              required:
-                - engine
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or invalid engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/model:
-    put:
-      tags:
-        - Sessions
-      summary: Switch the model for a session
-      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                model:
-                  type: string
-                  minLength: 1
-              required:
-                - model
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or model not valid for the current engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/ask-mode:
-    put:
-      tags:
-        - Sessions
-      summary: Toggle ask-mode (read-only / plan-mode) on a session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/react-loop:
-    put:
-      tags:
-        - Sessions
-      summary: Toggle the host-mediated ReAct loop on a session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/rewind:
-    post:
-      tags:
-        - Sessions
-      summary: Rewind a Claude Code session to a checkpoint UUID
-      description: "Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                uuid:
-                  type: string
-                  minLength: 1
-              required:
-                - uuid
-      responses:
-        "200":
-          description: Rewind kicked off.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum:
-                      - rewind_started
-                  uuid:
-                    type: string
-                  sessionId:
-                    type: string
-                required:
-                  - status
-                  - uuid
-                  - sessionId
-        "400":
-          description: Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session or checkpoint not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "409":
-          description: Session is actively running.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/checkpoints/{uuid}:
-    patch:
-      tags:
-        - Sessions
-      summary: Rename a checkpoint label
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-        - schema:
-            type: string
-            description: Checkpoint UUID.
-          required: true
-          description: Checkpoint UUID.
-          name: uuid
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                label:
-                  type: string
-              required:
-                - label
-      responses:
-        "200":
-          description: Updated checkpoint.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  session_id:
-                    type: string
-                  uuid:
-                    type: string
-                  label:
-                    type: string
-                required:
-                  - session_id
-                  - uuid
-                  - label
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Checkpoint not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/ticket:
-    post:
-      tags:
-        - Sessions
-      summary: Mint a single-use preview iframe ticket
-      description: "Returns a short-lived single-use ticket the SPA appends to the preview iframe `src` as `?ticket=…`. Browsers cannot attach `Authorization: Bearer …` to an iframe top-level navigation, so this endpoint is the bridge between the SPA's JWT session and the preview proxy. The ticket is bound to (sessionId, caller) and ~60 s TTL; on first hit the proxy consumes the ticket and writes a path-scoped HttpOnly cookie so sub-resources (.js/.css/images) authenticate automatically."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Ticket minted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ticket:
-                    type: string
-                    description: Single-use opaque token (prefixed `ahpt_`). Append as `?ticket=…`.
-                  ttlSeconds:
-                    type: integer
-                    description: Seconds the ticket remains valid before it must be re-minted.
-                required:
-                  - ticket
-                  - ttlSeconds
-        "404":
-          description: Session not found or not owned by the caller.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/stop:
-    post:
-      tags:
-        - Sessions
-      summary: Stop worktree preview for a chat session
-      description: Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Preview teardown requested.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  stopped:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-                  - stopped
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "500":
-          description: Unexpected server error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/workspace/ensure:
-    post:
-      tags:
-        - Sessions
-      summary: Provision session git worktree
-      description: Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Worktree ready (or skipped for workflow / wizard sessions).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  skipped:
-                    type: boolean
-                  worktreePath:
-                    type: string
-                  session:
-                    $ref: "#/components/schemas/Session"
-                required:
-                  - ok
-                  - skipped
-                  - worktreePath
-                  - session
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "500":
-          description: Unexpected server error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "503":
-          description: Provisioning not wired on this server.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/start:
-    post:
-      tags:
-        - Sessions
-      summary: Start worktree preview for a chat session
-      description: Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                route:
-                  type: string
-                  description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
-                reason:
-                  type: string
-              description: Optional preview task overrides.
-      responses:
-        "200":
-          description: Preview boot kicked off.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  started:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-                  - started
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "500":
-          description: Unexpected server error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
   /api/bug-reports:
     options:
       tags:
@@ -7686,7 +7690,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
       requestBody:
         content:
           application/json:
@@ -7717,6 +7721,10 @@ paths:
                   nullable: true
                 codexDangerBypass:
                   type: boolean
+                codexProfile:
+                  type: string
+                  nullable: true
+                  description: Codex CLI profile name. Pass null / empty string to clear. Forwarded as `--profile <name>` on every codex spawn.
                 lanMode:
                   type: boolean
               additionalProperties:

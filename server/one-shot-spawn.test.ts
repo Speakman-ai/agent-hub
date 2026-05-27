@@ -107,4 +107,28 @@ describe('buildOneShotSpawnArgs — codex-cli', () => {
     // Body is the last positional and includes the system prompt.
     expect(out.args[out.args.length - 1]).toBe('S\n\nP');
   });
+
+  it('appends --profile when cfg.codexProfile is set', () => {
+    const cfgWithProfile = { ...CFG, codexProfile: 'oneshot-profile' } as AppConfig;
+    const out = buildOneShotSpawnArgs(
+      { engine: 'codex-cli', model: '', prompt: 'P', systemPrompt: 'S' },
+      cfgWithProfile,
+    );
+    const idx = out.args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(out.args[idx + 1]).toBe('oneshot-profile');
+    // Must precede the prompt body (last positional).
+    expect(idx).toBeLessThan(out.args.length - 1);
+  });
+
+  it('omits --profile when cfg.codexProfile is null/empty', () => {
+    for (const profile of [null, undefined, '']) {
+      const cfg = { ...CFG, codexProfile: profile } as AppConfig;
+      const out = buildOneShotSpawnArgs(
+        { engine: 'codex-cli', model: '', prompt: 'P', systemPrompt: 'S' },
+        cfg,
+      );
+      expect(out.args).not.toContain('--profile');
+    }
+  });
 });
