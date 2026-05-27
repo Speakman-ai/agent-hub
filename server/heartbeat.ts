@@ -20,6 +20,11 @@ import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { resolveCronEngine } from './cron-engine.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
+import {
+  buildSyntheticResolvedForLinearSync,
+  executeLinearKanbanSyncCron,
+  isLinearKanbanSyncCron,
+} from './linear-kanban-sync-cron.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -591,49 +596,64 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const cronSkillAgentId = cronProject
       ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
       : undefined;
-    // Resolve the engine the cron actually wants to run under: the row's
-    // explicit `engine` first, then the skill principal agent's `engine`,
-    // then the historical `claude-code` fallback. The resolver will still
-    // walk its own fallback chain if that engine isn't authed locally —
-    // NoEnginesAvailableError bubbles into the outer catch block where
-    // it's surfaced verbatim.
-    const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
-    const resolved = await resolveOneShotEngine(config, {
-      preferred: preferredCronEngine,
-      preferredModel: requestedModel,
-    });
-    const cronOwnerId = getOrgOwnerUserId();
-    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
-    if (cronProject && cronSkillAgentId) {
-      mergeSkillCredentialSpawnEnv(cronEnv, {
-        ownerId: cronOwnerId,
-        agentId: cronSkillAgentId,
-        project: cronProject,
+
+    let detailed: OneShotDetailed;
+    let resolved: Awaited<ReturnType<typeof resolveOneShotEngine>>;
+
+    if (isLinearKanbanSyncCron(cronJob)) {
+      const summary = await executeLinearKanbanSyncCron(cronJob, {
+        stmts,
+        timeoutMs,
+        cronProject: cronProject ?? null,
+        cronSkillAgentId,
       });
-      // sessionId: null — crons are scheduled, not driven by an interactive
-      // chat session; decrypt-failure audit entries attribute to
-      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-      mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
-      mergeProjectAwsSpawnEnv(cronEnv, cronProject);
-    }
-    if (resolved.fallbackUsed) {
-      console.warn(
-        `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
+      detailed = { stdout: summary, stderr: '', code: 0, timedOut: false };
+      resolved = buildSyntheticResolvedForLinearSync(requestedModel);
+    } else {
+      // Resolve the engine the cron actually wants to run under: the row's
+      // explicit `engine` first, then the skill principal agent's `engine`,
+      // then the historical `claude-code` fallback. The resolver will still
+      // walk its own fallback chain if that engine isn't authed locally —
+      // NoEnginesAvailableError bubbles into the outer catch block where
+      // it's surfaced verbatim.
+      const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
+      resolved = await resolveOneShotEngine(config, {
+        preferred: preferredCronEngine,
+        preferredModel: requestedModel,
+      });
+      const cronOwnerId = getOrgOwnerUserId();
+      const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
+      if (cronProject && cronSkillAgentId) {
+        mergeSkillCredentialSpawnEnv(cronEnv, {
+          ownerId: cronOwnerId,
+          agentId: cronSkillAgentId,
+          project: cronProject,
+        });
+        // sessionId: null — crons are scheduled, not driven by an interactive
+        // chat session; decrypt-failure audit entries attribute to
+        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+        mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+        mergeProjectAwsSpawnEnv(cronEnv, cronProject);
+      }
+      if (resolved.fallbackUsed) {
+        console.warn(
+          `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
+        );
+      }
+      detailed = await runOneShotPrompt(
+        {
+          engine: resolved.engine,
+          model: resolved.model,
+          prompt: cronJob.prompt,
+          cwd: cronCwd,
+          timeoutMs,
+          env: cronEnv,
+          detailed: true,
+        },
+        config,
       );
     }
     const cronModel = resolved.model;
-    const detailed: OneShotDetailed = await runOneShotPrompt(
-      {
-        engine: resolved.engine,
-        model: resolved.model,
-        prompt: cronJob.prompt,
-        cwd: cronCwd,
-        timeoutMs,
-        env: cronEnv,
-        detailed: true,
-      },
-      config,
-    );
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';
     stmts.updateCronResult.run(result, cronJob.id);

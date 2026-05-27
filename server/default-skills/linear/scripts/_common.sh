@@ -79,6 +79,7 @@ linear_gql() {
     # Both are inspected before the file is removed.
     local raw_out
     raw_out=$(curl -sS \
+      --max-time 30 \
       -X POST \
       -H "Content-Type: application/json" \
       -H "Authorization: ${LINEAR_API_KEY}" \
