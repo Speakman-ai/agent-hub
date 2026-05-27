@@ -1613,6 +1613,26 @@ export interface PreviewComposeConfig {
    * has room. Bounded 5000..1800000 (5 s – 30 min) at config save time.
    */
   readyTimeoutMs?: number;
+  /**
+   * Live-edit binding. When set, the runtime bind-mounts the host
+   * worktree onto this absolute path inside the `entryService`
+   * container so the dev server's file watcher sees agent edits
+   * directly — no `docker compose up --build` per change. Must start
+   * with `/`. Common values: `/workspace`, `/app`, `/srv`. When unset
+   * the runtime behaves as before (image-baked source, no bind).
+   */
+  entryWorkdir?: string;
+  /**
+   * Paths under `entryWorkdir` that should remain image-provided
+   * rather than coming from the host bind mount. Compose anonymous
+   * volumes "punch holes" in the parent bind — without this,
+   * `<entryWorkdir>/node_modules` from the host shadows the image's
+   * pre-installed deps and `ng serve` / `vite dev` fail immediately.
+   * Empty list = no shadows (bind covers everything; usually wrong).
+   * Conventional defaults if you don't override: `["node_modules"]`.
+   * Ignored when `entryWorkdir` is unset.
+   */
+  shadowDirs?: string[];
 }
 
 /**

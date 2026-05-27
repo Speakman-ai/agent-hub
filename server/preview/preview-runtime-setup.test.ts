@@ -52,6 +52,86 @@ describe('buildComposeOverrideYaml', () => {
     expect(body).toContain('      - "4101:8000"');
     expect(body.endsWith('\n')).toBe(true);
   });
+
+  it('omits the volumes block when entryWorkdir is not set (back-compat)', () => {
+    // Existing projects that have not opted into live-edit previews
+    // must keep getting the image-baked source — no bind mount, no
+    // volumes block at all.
+    const body = buildComposeOverrideYaml({
+      entryService: 'web',
+      hostPort: 4101,
+      entryPort: 8000,
+    });
+    expect(body).not.toContain('volumes:');
+    expect(body).not.toContain('.:');
+  });
+
+  it('emits a bind-mount + anonymous-volume shadows when entryWorkdir is set', () => {
+    // The bind source is `.` because compose resolves it against
+    // `--project-directory`, which the runtime sets to the host-
+    // translated worktree path. The shadow entries are anonymous
+    // volumes that prevent the host bind from clobbering image-
+    // baked artifacts like node_modules — without them, `vite dev`
+    // / `ng serve` fail on the first import resolution.
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      entryWorkdir: '/workspace',
+      shadowDirs: ['node_modules', 'dist'],
+    });
+    expect(body).toContain('    volumes: !override');
+    expect(body).toContain('      - ".:/workspace"');
+    expect(body).toContain('      - "/workspace/node_modules"');
+    expect(body).toContain('      - "/workspace/dist"');
+  });
+
+  it('strips leading/trailing slashes from shadowDirs entries before emit', () => {
+    // Defensive normalisation — operators sometimes write
+    // ["/node_modules"] or ["node_modules/"], which would otherwise
+    // produce "//node_modules" or "/workspace/node_modules/" in the
+    // override and surprise the docker volume parser.
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      entryWorkdir: '/workspace',
+      shadowDirs: ['/node_modules/', 'dist/'],
+    });
+    expect(body).toContain('      - "/workspace/node_modules"');
+    expect(body).toContain('      - "/workspace/dist"');
+    expect(body).not.toContain('//');
+  });
+
+  it('handles entryWorkdir with trailing slash without doubling it', () => {
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      entryWorkdir: '/workspace/',
+      shadowDirs: ['node_modules'],
+    });
+    expect(body).toContain('      - "/workspace/node_modules"');
+    expect(body).not.toContain('//');
+  });
+
+  it('emits the bind mount even when shadowDirs is empty (caller opted in explicitly)', () => {
+    // Empty shadowDirs is "I really mean: no shadows, the bind
+    // covers everything." Usually wrong (the image's node_modules
+    // gets clobbered) but the validator allowed it, so the writer
+    // honours it.
+    const body = buildComposeOverrideYaml({
+      entryService: 'frontend',
+      hostPort: 4123,
+      entryPort: 4200,
+      entryWorkdir: '/workspace',
+      shadowDirs: [],
+    });
+    expect(body).toContain('      - ".:/workspace"');
+    // Only the bind itself — no anonymous volumes.
+    const volLines = body.split('\n').filter((l) => l.trim().startsWith('- "'));
+    expect(volLines.length).toBe(2); // ports line + one volume bind
+  });
 });
 
 describe('buildDiskOverrideFileWriter', () => {

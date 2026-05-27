@@ -329,6 +329,8 @@ export interface ValidatedPreviewComposeConfig {
   healthPath?: string;
   hostPortRange?: { min: number; max: number };
   readyTimeoutMs?: number;
+  entryWorkdir?: string;
+  shadowDirs?: string[];
 }
 
 // Caps for the `env` map. The builder ultimately translates these into
@@ -632,12 +634,107 @@ function validatePreviewCompose(
     readyTimeoutMs = parsed;
   }
 
+  // entryWorkdir — optional absolute path inside the entry container.
+  // When set, the runtime bind-mounts the host worktree there for
+  // live-edit previews. We require absolute (must start with `/`) to
+  // disambiguate from compose-relative volume sources, length-cap it
+  // so a misconfigured value can't blow past kernel ARG_MAX, and
+  // reject `..` segments to avoid surprising compose-side resolution.
+  let entryWorkdir: string | undefined;
+  if (obj.entryWorkdir !== undefined && obj.entryWorkdir !== null && obj.entryWorkdir !== '') {
+    if (typeof obj.entryWorkdir !== 'string') {
+      return { ok: false, error: 'prEnv.preview.compose.entryWorkdir must be a string' };
+    }
+    const ew = obj.entryWorkdir.trim();
+    if (ew) {
+      if (!ew.startsWith('/')) {
+        return {
+          ok: false,
+          error: 'prEnv.preview.compose.entryWorkdir must be an absolute path inside the container',
+        };
+      }
+      if (ew.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.entryWorkdir exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
+        };
+      }
+      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(ew)) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.entryWorkdir must not contain '..' path segments`,
+        };
+      }
+      entryWorkdir = ew;
+    }
+  }
+
+  // shadowDirs — optional list of relative paths under entryWorkdir
+  // that should remain image-provided (anonymous-volume "holes" in the
+  // parent bind). Without these, the host bind shadows the image's
+  // pre-installed deps (node_modules etc.) and the entry process fails
+  // on import resolution. Each entry must be a non-empty relative path
+  // without `..`. Capped at PR_ENV_MAX_VARS to bound the override size.
+  let shadowDirs: string[] | undefined;
+  if (obj.shadowDirs !== undefined && obj.shadowDirs !== null) {
+    if (!Array.isArray(obj.shadowDirs)) {
+      return {
+        ok: false,
+        error: 'prEnv.preview.compose.shadowDirs must be an array of relative paths',
+      };
+    }
+    if (obj.shadowDirs.length > PR_ENV_MAX_VARS) {
+      return {
+        ok: false,
+        error: `prEnv.preview.compose.shadowDirs exceeds ${PR_ENV_MAX_VARS} entries`,
+      };
+    }
+    if (obj.shadowDirs.length > 0 && !entryWorkdir) {
+      return {
+        ok: false,
+        error: 'prEnv.preview.compose.shadowDirs is only valid when entryWorkdir is set',
+      };
+    }
+    const normalised: string[] = [];
+    for (const raw of obj.shadowDirs) {
+      if (typeof raw !== 'string') {
+        return {
+          ok: false,
+          error: 'prEnv.preview.compose.shadowDirs entries must be strings',
+        };
+      }
+      const s = raw.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+      if (!s) {
+        return {
+          ok: false,
+          error: 'prEnv.preview.compose.shadowDirs entries must be non-empty',
+        };
+      }
+      if (s.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.shadowDirs entry exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
+        };
+      }
+      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(s)) {
+        return {
+          ok: false,
+          error: `prEnv.preview.compose.shadowDirs entries must not contain '..' segments`,
+        };
+      }
+      normalised.push(s);
+    }
+    if (normalised.length > 0) shadowDirs = normalised;
+  }
+
   const value: ValidatedPreviewComposeConfig = { entryService, entryPort };
   if (fileResult.value) value.file = fileResult.value;
   if (envFileResult.value) value.envFile = envFileResult.value;
   if (healthPath) value.healthPath = healthPath;
   if (hostPortRange) value.hostPortRange = hostPortRange;
   if (readyTimeoutMs !== undefined) value.readyTimeoutMs = readyTimeoutMs;
+  if (entryWorkdir) value.entryWorkdir = entryWorkdir;
+  if (shadowDirs) value.shadowDirs = shadowDirs;
   return { ok: true, value };
 }
 

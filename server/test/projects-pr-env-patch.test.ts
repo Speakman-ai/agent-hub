@@ -430,6 +430,95 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect((res.body as { error: string }).error).toMatch(/\.\./);
   });
 
+  it('rejects with 400 when preview.compose.entryWorkdir is not an absolute path', async () => {
+    // entryWorkdir is the in-container mount target for the host
+    // worktree bind. Relative paths are ambiguous (compose would try
+    // to resolve them against --project-directory and we'd silently
+    // mount the wrong thing); reject up front.
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            compose: {
+              entryService: 'web',
+              entryPort: 8000,
+              entryWorkdir: 'workspace',
+            },
+          },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/entryWorkdir.*absolute/);
+  });
+
+  it('rejects with 400 when preview.compose.shadowDirs is set without entryWorkdir', async () => {
+    // shadowDirs is only meaningful as anonymous-volume "holes" in
+    // the bind defined by entryWorkdir — without the bind there is
+    // nothing to shadow. Surface the misconfig at save time.
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            compose: {
+              entryService: 'web',
+              entryPort: 8000,
+              shadowDirs: ['node_modules'],
+            },
+          },
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/shadowDirs.*entryWorkdir/);
+  });
+
+  it('persists preview.compose with entryWorkdir + shadowDirs for live-edit previews', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: false,
+          preview: {
+            enabled: true,
+            compose: {
+              entryService: 'frontend',
+              entryPort: 4200,
+              // Operator wrote shadow paths with leading slash and
+              // trailing slash on the way in; the validator normalises
+              // them to bare relative segments before persist.
+              entryWorkdir: '/workspace',
+              shadowDirs: ['/node_modules/', 'dist'],
+            },
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as {
+      prEnv?: { preview?: { compose?: Record<string, unknown> } };
+    };
+    expect(body.prEnv?.preview?.compose).toMatchObject({
+      entryService: 'frontend',
+      entryPort: 4200,
+      entryWorkdir: '/workspace',
+      shadowDirs: ['node_modules', 'dist'],
+    });
+  });
+
   it('rejects with 400 when preview declares both compose and startScript (mutual exclusivity)', async () => {
     const project = await createProject();
     const projectId = project.id as string;

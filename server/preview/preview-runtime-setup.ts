@@ -88,6 +88,8 @@ type DiskOverrideFileWriter = (opts: {
   entryService: string;
   hostPort: number;
   entryPort: number;
+  entryWorkdir?: string;
+  shadowDirs?: string[];
 }) => string;
 
 /**
@@ -106,7 +108,7 @@ type DiskOverrideFileWriter = (opts: {
  */
 
 export function buildDiskOverrideFileWriter(composeOverrideDir: string): DiskOverrideFileWriter {
-  return ({ groupId, entryService, hostPort, entryPort }) => {
+  return ({ groupId, entryService, hostPort, entryPort, entryWorkdir, shadowDirs }) => {
     const safeId = groupId.replace(/[^A-Za-z0-9_-]/g, '');
     if (!safeId) {
       throw new Error(
@@ -114,7 +116,13 @@ export function buildDiskOverrideFileWriter(composeOverrideDir: string): DiskOve
       );
     }
     const overridePath = path.join(composeOverrideDir, `${safeId}.yml`);
-    const body = buildComposeOverrideYaml({ entryService, hostPort, entryPort });
+    const body = buildComposeOverrideYaml({
+      entryService,
+      hostPort,
+      entryPort,
+      entryWorkdir,
+      shadowDirs,
+    });
     writeFileSync(overridePath, body, { mode: 0o600 });
     return overridePath;
   };
