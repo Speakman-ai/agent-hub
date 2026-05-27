@@ -43,6 +43,11 @@ output "dedicated_alb_zone_id" {
   value       = try(aws_lb.agenthub[0].zone_id, null)
 }
 
+output "preview_subdomain_base" {
+  description = "Wildcard subdomain base (e.g. `preview.agenthub.dev.surveytracker.io`) for 'subdomain preview' mode when `enable_preview_subdomain = true`. Set the matching `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE` env on the agent-hub server to this value to activate the server-side dispatcher. Null when subdomain mode is off."
+  value       = local.preview_subdomain_base
+}
+
 output "agent_hub_bootstrap_enabled" {
   description = "If true, first boot clones the repo. With agent_hub_bootstrap_docker (default), it builds server/Dockerfile and runs a container; otherwise it uses host PM2."
   value       = var.bootstrap_agent_hub

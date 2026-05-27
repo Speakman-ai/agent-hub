@@ -222,6 +222,12 @@ variable "enable_dedicated_alb" {
   default     = false
 }
 
+variable "enable_preview_subdomain" {
+  description = "If true (and enable_dedicated_alb=true with a Route 53 zone), provision a wildcard ACM cert + Route 53 alias + ALB listener cert attachment for `*.preview.<alb_fqdn>`, enabling 'subdomain preview' mode where each session preview lives at <sessionId>.preview.<alb_fqdn>. Lets apps render at base `/` with zero per-app config (no AGENT_HUB_PREVIEW_BASE_PATH wiring needed). Set the matching `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE` env on the agent-hub server to `preview.<alb_fqdn>` to activate the server-side dispatcher (Phase 4b)."
+  type        = bool
+  default     = false
+}
+
 variable "name" {
   description = "When public_fqdn is unset, used to build the hostname: <dns_subdomain>.<name>.<base_domain>. If public_fqdn is set, this is ignored for DNS (but can stay empty for naming elsewhere)."
   type        = string

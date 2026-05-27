@@ -268,3 +268,107 @@ resource "aws_route53_record" "agenthub" {
 # PR-env subsystem (cards #1–#5). Operators must run `terraform apply`
 # against prod state to actually destroy the ACM cert + Route 53
 # records the previous plan provisioned.
+
+# ── Session-preview subdomain mode (RFC Phase 4a) ─────────────────────────
+# Wildcard ACM cert + Route 53 alias + ALB listener cert attachment for
+# `*.preview.<alb_fqdn>`. Lets each session preview live at its own
+# subdomain (<sessionId>.preview.<alb_fqdn>) so the app inside the
+# iframe sees itself at `/` and renders correctly without per-app
+# base-path config. The server-side dispatcher (Phase 4b) reads the
+# matching `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE` env on the agent-hub
+# process; setting one without the other is a no-op (resources idle,
+# dispatcher off).
+#
+# Gated on `enable_preview_subdomain` (default false) AND the same
+# `enable_dedicated_alb` + Route 53 zone preconditions that gate the
+# main ACM resources above, so a partial config can never half-create.
+
+locals {
+  # Subdomain base ("preview.<alb_fqdn>") and wildcard FQDN
+  # ("*.preview.<alb_fqdn>"). Both null when prerequisites are missing
+  # so every conditional downstream collapses cleanly.
+  preview_subdomain_create = var.enable_preview_subdomain && var.enable_dedicated_alb && local.has_route53_zone && local.alb_fqdn != null
+  preview_subdomain_base   = local.preview_subdomain_create ? "preview.${local.alb_fqdn}" : null
+  preview_wildcard_fqdn    = local.preview_subdomain_create ? "*.preview.${local.alb_fqdn}" : null
+  # Relative record name in the zone for the wildcard alias. The FQDN
+  # already starts with `*.`; trimming off `.<base_domain>` yields the
+  # in-zone label (e.g. `*.preview.agenthub`). An earlier version
+  # prepended another `*.` and produced the broken `*.*.preview.agenthub`
+  # record — fixed.
+  preview_r53_name_in_zone = local.preview_wildcard_fqdn == null ? null : trimsuffix(local.preview_wildcard_fqdn, ".${var.base_domain}")
+}
+
+resource "aws_acm_certificate" "preview_wildcard" {
+  count = local.preview_subdomain_create ? 1 : 0
+
+  domain_name       = local.preview_wildcard_fqdn
+  validation_method = "DNS"
+
+  lifecycle {
+    # ACM cert recreation forces an attachment churn but no instance
+    # impact; create_before_destroy keeps the listener serving the old
+    # cert until the new one is fully validated + attached.
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name = "${var.project_name}-preview-wildcard"
+  }
+}
+
+# DNS-01 validation records for the wildcard. Same pattern as the
+# main agenthub cert above — one CNAME per domain_validation_option.
+# For a single wildcard the for_each will have exactly one entry, but
+# keeping the for_each form means a future SAN addition (e.g. a second
+# wildcard) Just Works without restructuring this block.
+resource "aws_route53_record" "preview_wildcard_cert_validation" {
+  for_each = local.preview_subdomain_create ? { for dvo in aws_acm_certificate.preview_wildcard[0].domain_validation_options : dvo.domain_name => dvo } : {}
+
+  zone_id = local.route53_zone_id_effective
+  name    = each.value.resource_record_name
+  type    = each.value.resource_record_type
+  ttl     = 60
+  records = [each.value.resource_record_value]
+}
+
+resource "aws_acm_certificate_validation" "preview_wildcard" {
+  count = local.preview_subdomain_create ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.preview_wildcard[0].arn
+  validation_record_fqdns = [for r in aws_route53_record.preview_wildcard_cert_validation : r.fqdn]
+}
+
+# Attach the wildcard cert to the existing HTTPS listener so the ALB
+# serves both `agenthub.<base>` and `*.preview.<base>` via SNI. The
+# default cert (set on the listener resource) remains the apex cert
+# from earlier in this file; the wildcard piggybacks via SNI.
+resource "aws_lb_listener_certificate" "preview_wildcard" {
+  count = local.preview_subdomain_create ? 1 : 0
+
+  listener_arn    = aws_lb_listener.agenthub_https[0].arn
+  certificate_arn = aws_acm_certificate_validation.preview_wildcard[0].certificate_arn
+}
+
+# Wildcard A alias so any `<label>.preview.<alb_fqdn>` resolves to the
+# ALB. The server-side dispatcher (Phase 4b) then routes by Host
+# header to the right session-preview port. Route 53 alias records
+# don't carry an explicit TTL — propagation follows the underlying
+# ALB DNS TTL (60s).
+resource "aws_route53_record" "preview_wildcard_alias" {
+  count = local.preview_subdomain_create ? 1 : 0
+
+  zone_id = local.route53_zone_id_effective
+  name    = local.preview_r53_name_in_zone
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.agenthub[0].dns_name
+    zone_id                = aws_lb.agenthub[0].zone_id
+    evaluate_target_health = true
+  }
+
+  depends_on = [
+    aws_lb_listener_certificate.preview_wildcard,
+    aws_acm_certificate_validation.preview_wildcard,
+  ]
+}
