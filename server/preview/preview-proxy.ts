@@ -61,11 +61,23 @@ function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
   return out;
 }
 
-/** Inject `<base href>` so SPA asset URLs resolve under the proxy mount. */
+/**
+ * Inject `<base href>` so SPA asset URLs resolve under the proxy mount.
+ *
+ * If the upstream HTML already has a `<base>` tag (Angular/Vite/CRA all
+ * emit `<base href="/">` by default), we REPLACE it. Leaving the upstream
+ * `<base href="/">` would make every relative asset (`main.js`,
+ * `styles.css`, `manifest.webmanifest`) resolve at the Hub root instead
+ * of the proxy mount; the browser then receives the Hub SPA fallback
+ * HTML in place of each asset and the preview iframe goes white with
+ * "Manifest: Line 1, column 1, Syntax error" in the console.
+ */
 export function injectHtmlPreviewBaseHref(html: string, sessionId: string): string {
-  if (/<base\s/i.test(html)) return html;
   const baseHref = `${previewProxyMountPath(sessionId)}/`;
   const baseTag = `<base href="${baseHref}">`;
+  if (/<base\b[^>]*>/i.test(html)) {
+    return html.replace(/<base\b[^>]*>/i, baseTag);
+  }
   if (/<head[\s>]/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
   }

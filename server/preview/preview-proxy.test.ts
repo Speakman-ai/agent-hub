@@ -22,8 +22,25 @@ describe('injectHtmlPreviewBaseHref', () => {
     expect(out.indexOf('<base')).toBeLessThan(out.indexOf('<title'));
   });
 
-  it('does not duplicate an existing base tag', () => {
-    const html = '<html><head><base href="/"></head></html>';
-    expect(injectHtmlPreviewBaseHref(html, 'sess-1')).toBe(html);
+  it('overrides an existing <base href> so relative URLs resolve under the proxy mount', () => {
+    // Angular/Vite/CRA index.html templates ship with <base href="/"> by
+    // default. Leaving that intact behind the path-prefix proxy would
+    // make every relative asset (main.js, styles.css, manifest.webmanifest)
+    // resolve at the Hub root, where the browser receives the Hub SPA
+    // fallback HTML instead of the asset → white-screen preview iframe
+    // with a "Manifest: Line 1, column 1, Syntax error" console entry.
+    const html = '<html><head><base href="/"><title>Preview</title></head></html>';
+    const out = injectHtmlPreviewBaseHref(html, 'sess-1');
+    expect(out).toContain('<base href="/api/sessions/sess-1/preview/proxy/">');
+    expect(out).not.toContain('<base href="/">');
+    expect(out.match(/<base\b/gi)?.length).toBe(1);
+  });
+
+  it('replaces a self-closing base tag with extra attributes too', () => {
+    const html = '<html><head><base href="/" target="_self"/></head></html>';
+    const out = injectHtmlPreviewBaseHref(html, 'sess-1');
+    expect(out).toContain('<base href="/api/sessions/sess-1/preview/proxy/">');
+    expect(out).not.toContain('href="/"');
+    expect(out.match(/<base\b/gi)?.length).toBe(1);
   });
 });
