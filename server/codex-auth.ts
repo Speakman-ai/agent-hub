@@ -52,6 +52,17 @@ export const CODEX_CHATGPT_ALLOWED_MODELS: readonly string[] = [
 /**
  * Read ~/.codex/auth.json and report the active auth mode. Never throws —
  * missing/unreadable/malformed files collapse to `unknown`.
+ *
+ * **Profile awareness.** The reading is intentionally NOT profile-scoped.
+ * `codex exec --profile <name>` selects a named entry from
+ * `$CODEX_HOME/config.toml` that overrides model / provider / sandbox /
+ * approval policy — none of which touch auth mode. The auth_mode (chatgpt
+ * vs. apikey) is global to the codex install and lives in `auth.json`, set
+ * once by the device-login flow or by exporting OPENAI_API_KEY. So a
+ * non-default profile does NOT need to be threaded here; the active
+ * `auth.json` is correct regardless of which profile is active. Revisit
+ * only if a future codex release moves credentials into profile-scoped
+ * files.
  */
 export function detectCodexAuthMode(codexHome?: string): CodexAuthInfo {
   const root = codexHome ?? join(homedir(), '.codex');

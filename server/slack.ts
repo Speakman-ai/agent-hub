@@ -231,8 +231,12 @@ function runAgent(
       // read-only here since Slack one-shots shouldn't mutate the workspace.
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
       args = ['exec', '--skip-git-repo-check', '--sandbox', 'read-only'];
-      if (config.codexProfile) {
-        args.push('--profile', config.codexProfile);
+      // `?.trim()` guards against an in-memory PATCH config value that wasn't
+      // run through the load-time normalizer in `config.ts`. Must come BEFORE
+      // the positional prompt push below.
+      const codexProfile = config.codexProfile?.trim();
+      if (codexProfile) {
+        args.push('--profile', codexProfile);
       }
       args.push(combinedPrompt);
       bin = CODEX_BIN;

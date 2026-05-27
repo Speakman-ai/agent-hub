@@ -303,8 +303,10 @@ describe('buildDesignSpawnArgs', () => {
     expect(idx).toBeLessThan(args.length - 1);
   });
 
-  it('codex-cli: omits --profile when codexProfile is null/empty', () => {
-    for (const profile of [null, undefined, '']) {
+  it('codex-cli: omits --profile when codexProfile is null/empty/whitespace', () => {
+    // Belt-and-braces: covers null, undefined, AND whitespace-only values that
+    // could slip through a future PATCH config path.
+    for (const profile of [null, undefined, '', '   ', '\t']) {
       const { args } = buildDesignSpawnArgs({
         ...baseInput,
         engine: 'codex-cli',
@@ -315,6 +317,20 @@ describe('buildDesignSpawnArgs', () => {
       });
       expect(args).not.toContain('--profile');
     }
+  });
+
+  it('codex-cli: trims surrounding whitespace from codexProfile', () => {
+    const { args } = buildDesignSpawnArgs({
+      ...baseInput,
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      engineSessionId: null,
+      isNewEngineSession: true,
+      codexProfile: '  design-strict  ',
+    });
+    const idx = args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('design-strict');
   });
 
   it('bootstraps prior messages on first engine session', () => {

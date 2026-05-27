@@ -125,8 +125,12 @@ export function buildSessionMultiSpawnArgs(
           `auth_mode=${codexAuth.mode} does not accept it.`,
       );
     }
-    if (codexProfile) {
-      args.push('--profile', codexProfile);
+    // `?.trim()` guards against an in-memory PATCH config value that wasn't
+    // run through the load-time normalizer in `config.ts`. Must come BEFORE
+    // the `-` stdin sentinel push below.
+    const codexProfileVal = codexProfile?.trim();
+    if (codexProfileVal) {
+      args.push('--profile', codexProfileVal);
     }
     args.push('-');
     const prompt = `${systemPrompt}\n\n${userPrompt}`;

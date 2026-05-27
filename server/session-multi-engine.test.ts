@@ -50,8 +50,11 @@ describe('buildSessionMultiSpawnArgs', () => {
     expect(idx).toBeLessThan(plan.args.indexOf('-'));
   });
 
-  it('codex-cli omits --profile when codexProfile is null/empty', () => {
-    for (const profile of [null, undefined, '']) {
+  it('codex-cli omits --profile when codexProfile is null/empty/whitespace', () => {
+    // Belt-and-braces: config.ts normalizes load-time, but a future PATCH path
+    // could leave a whitespace value in memory. The spawn site `?.trim()` guard
+    // must turn each of these into a no-op rather than `--profile ""`.
+    for (const profile of [null, undefined, '', '   ', '\t', '\n']) {
       const plan = buildSessionMultiSpawnArgs({
         engine: 'codex-cli',
         model: 'gpt-5.3-codex',
@@ -63,6 +66,21 @@ describe('buildSessionMultiSpawnArgs', () => {
       });
       expect(plan.args).not.toContain('--profile');
     }
+  });
+
+  it('codex-cli trims surrounding whitespace from codexProfile', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      codexProfile: '  my-profile  ',
+      advisory: true,
+    });
+    const idx = plan.args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(plan.args[idx + 1]).toBe('my-profile');
   });
 });
 

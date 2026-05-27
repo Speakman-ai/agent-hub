@@ -121,8 +121,10 @@ describe('buildOneShotSpawnArgs — codex-cli', () => {
     expect(idx).toBeLessThan(out.args.length - 1);
   });
 
-  it('omits --profile when cfg.codexProfile is null/empty', () => {
-    for (const profile of [null, undefined, '']) {
+  it('omits --profile when cfg.codexProfile is null/empty/whitespace', () => {
+    // Belt-and-braces: covers null, undefined, AND whitespace-only values that
+    // could slip through a future PATCH config path.
+    for (const profile of [null, undefined, '', '   ', '\t']) {
       const cfg = { ...CFG, codexProfile: profile } as AppConfig;
       const out = buildOneShotSpawnArgs(
         { engine: 'codex-cli', model: '', prompt: 'P', systemPrompt: 'S' },
@@ -130,5 +132,16 @@ describe('buildOneShotSpawnArgs — codex-cli', () => {
       );
       expect(out.args).not.toContain('--profile');
     }
+  });
+
+  it('trims surrounding whitespace from cfg.codexProfile', () => {
+    const cfg = { ...CFG, codexProfile: '  oneshot-profile  ' } as AppConfig;
+    const out = buildOneShotSpawnArgs(
+      { engine: 'codex-cli', model: '', prompt: 'P', systemPrompt: 'S' },
+      cfg,
+    );
+    const idx = out.args.indexOf('--profile');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(out.args[idx + 1]).toBe('oneshot-profile');
   });
 });
