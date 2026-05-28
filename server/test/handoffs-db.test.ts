@@ -29,7 +29,7 @@ describe('handoffs — create, link, deliver, fail', () => {
         'agent-test',
         `Test session ${id}`,
         'claude-code',
-        'claude-opus-4-7',
+        'claude-opus-4-8',
         0,
         0,
         1,

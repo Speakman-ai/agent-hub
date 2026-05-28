@@ -77,7 +77,7 @@ describe('Designs API — CRUD', () => {
     const mc = await request.get('/api/config/models').expect(200);
     const allowed = (mc.body as { engineValidModels?: Record<string, string[]> })
       .engineValidModels?.['claude-code'];
-    const pick = Array.isArray(allowed) && allowed.length > 0 ? allowed[0] : 'claude-opus-4-7';
+    const pick = Array.isArray(allowed) && allowed.length > 0 ? allowed[0] : 'claude-opus-4-8';
 
     const created = await request.post('/api/designs').send({ name: 'Model test' }).expect(201);
     const id = (created.body as DesignBody).id;

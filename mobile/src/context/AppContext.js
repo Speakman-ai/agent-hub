@@ -53,7 +53,7 @@ export function AppProvider({ children }) {
   const [chatScrollNonce, setChatScrollNonce] = useState(0);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
+  const [sessionModel, setSessionModel] = useState('claude-opus-4-8');
   const [modelConfig, setModelConfig] = useState(null);
   // The legacy worktree toggle (`sessionWorktree`) and CLI-detection
   // signal (`gitWorktreeDetected`) were removed when Agent Hub locked to
@@ -133,7 +133,7 @@ export function AppProvider({ children }) {
     if (fromConfig) return fromConfig;
     if (engine === 'cursor-agent') return 'composer-2.5';
     if (engine === 'codex-cli') return 'gpt-5.3-codex';
-    return 'claude-opus-4-7';
+    return 'claude-opus-4-8';
   };
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;

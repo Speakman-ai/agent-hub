@@ -384,7 +384,7 @@ describe('runAutonomousLoop — dispatch', () => {
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
     deps.getConfig.mockReturnValue({
-      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-8'] },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
@@ -441,7 +441,7 @@ describe('runAutonomousLoop — dispatch', () => {
     const card = makeCard({ assign_model: 'claude-haiku-4-6' });
     const epicWithModel = {
       ...ACTIVE_EPIC,
-      autonomous_model: 'claude-opus-4-7',
+      autonomous_model: 'claude-opus-4-8',
     } as KanbanEpicRow;
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
@@ -453,7 +453,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.findProject.mockReturnValue(makeProject());
     deps.getConfig.mockReturnValue({
       engineValidModels: {
-        'claude-code': ['claude-haiku-4-6', 'claude-opus-4-7', 'claude-sonnet-4-6'],
+        'claude-code': ['claude-haiku-4-6', 'claude-opus-4-8', 'claude-sonnet-4-6'],
       },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -489,7 +489,7 @@ describe('runAutonomousLoop — dispatch', () => {
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
     deps.getConfig.mockReturnValue({
-      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-8'] },
     } as never);
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
@@ -527,7 +527,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.findProject.mockReturnValue(makeProject());
     deps.getConfig.mockReturnValue({
       engineValidModels: {
-        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
+        'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
         'cursor-agent': ['composer-2.5'],
       },
     } as never);
@@ -563,7 +563,7 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.findProject.mockReturnValue(makeProject());
     deps.getConfig.mockReturnValue({
       engineValidModels: {
-        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
+        'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
         'cursor-agent': ['composer-2.5', 'composer-3'],
       },
     } as never);
@@ -636,7 +636,7 @@ describe('engineForModel', () => {
     const { engineForModel } = await import('./autonomous.js');
     expect(
       engineForModel('composer-2.5', {
-        'claude-code': ['claude-opus-4-7'],
+        'claude-code': ['claude-opus-4-8'],
         'cursor-agent': ['composer-2.5'],
       }),
     ).toBe('cursor-agent');
@@ -646,7 +646,7 @@ describe('engineForModel', () => {
     const { engineForModel } = await import('./autonomous.js');
     expect(
       engineForModel('ghost-model', {
-        'claude-code': ['claude-opus-4-7'],
+        'claude-code': ['claude-opus-4-8'],
         'cursor-agent': ['composer-2.5'],
       }),
     ).toBeNull();

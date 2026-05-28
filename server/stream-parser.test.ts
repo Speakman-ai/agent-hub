@@ -23,7 +23,7 @@ describe('createStreamParser — Claude Code', () => {
         type: 'system',
         subtype: 'init',
         session_id: 'sess-1',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-4-8',
         cwd: '/home/user',
         tools: ['Bash', 'Read'],
       }),
@@ -32,7 +32,7 @@ describe('createStreamParser — Claude Code', () => {
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('system');
     expect((events[0] as { sessionId: string }).sessionId).toBe('sess-1');
-    expect((events[0] as { model: string }).model).toBe('claude-opus-4-7');
+    expect((events[0] as { model: string }).model).toBe('claude-opus-4-8');
     expect((events[0] as { cwd: string }).cwd).toBe('/home/user');
     expect((events[0] as { tools: string[] }).tools).toEqual(['Bash', 'Read']);
   });

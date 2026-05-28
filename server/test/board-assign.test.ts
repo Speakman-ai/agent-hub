@@ -55,7 +55,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
     const projectId = project.id as string;
     const agent = await createAgent({
       projectId,
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
     });
     const agentId = agent.id as string;
     const card = await createCard(projectId, { title: 'Model override card' });
@@ -75,7 +75,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
   it('falls back to agent model when assign body omits model', async () => {
     const project = await createProject();
     const projectId = project.id as string;
-    const fixed = 'claude-opus-4-7';
+    const fixed = 'claude-opus-4-8';
     const agent = await createAgent({ projectId, model: fixed });
     const card = await createCard(projectId, { title: 'Default model card' });
 
@@ -213,7 +213,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
 
     const res = await request
       .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
-      .send({ agentId: agent.id, engine: 'codex-cli', model: 'claude-opus-4-7' })
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'claude-opus-4-8' })
       .expect(400);
 
     expect((res.body as { error?: string }).error).toContain('not valid for engine');

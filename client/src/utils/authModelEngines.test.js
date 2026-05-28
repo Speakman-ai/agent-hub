@@ -20,7 +20,7 @@ describe('authModelEngines', () => {
   it('prefers claude when it is authenticated', () => {
     const mc = {
       engineValidModels: {
-        'claude-code': ['claude-opus-4-7'],
+        'claude-code': ['claude-opus-4-8'],
         'cursor-agent': ['composer-2.5'],
       },
     };
@@ -40,7 +40,7 @@ describe('authModelEngines', () => {
       defaultModelForAuthenticatedEngine(
         {
           engineDefaultModels: { 'claude-code': 'claude-sonnet-4-6' },
-          engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'] },
+          engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'] },
         },
         'claude-code',
       ),

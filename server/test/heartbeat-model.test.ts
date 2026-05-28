@@ -24,11 +24,11 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
         enabled: true,
         interval: '*/30 * * * *',
         prompt: 'check the queue',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-4-8',
       })
       .expect(200);
 
-    expect(putRes.body.model).toBe('claude-opus-4-7');
+    expect(putRes.body.model).toBe('claude-opus-4-8');
     expect(putRes.body.interval).toBe('*/30 * * * *');
     expect(putRes.body.prompt).toBe('check the queue');
     expect(putRes.body.enabled).toBe(true);
@@ -40,7 +40,7 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
     };
     const overview = (listRes.body as HeartbeatOverview[]).find((h) => h.agentId === agent.id);
     expect(overview).toBeDefined();
-    expect(overview!.heartbeat.model).toBe('claude-opus-4-7');
+    expect(overview!.heartbeat.model).toBe('claude-opus-4-8');
   });
 
   it('preserves model when other fields are updated without a model in the payload', async () => {
@@ -81,7 +81,7 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
   it('returns 404 for unknown agent ID', async () => {
     await request
       .put('/api/heartbeats/nonexistent-agent')
-      .send({ model: 'claude-opus-4-7' })
+      .send({ model: 'claude-opus-4-8' })
       .expect(404);
   });
 });

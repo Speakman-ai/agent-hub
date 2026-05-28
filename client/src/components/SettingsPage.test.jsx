@@ -73,7 +73,7 @@ describe('GitHubSection — return from GitHub App auto-setup', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
@@ -86,9 +86,9 @@ describe('GitHubSection — return from GitHub App auto-setup', () => {
     // `/github-app/status` and other GET calls — resolve to empty objects.
     api.get.mockResolvedValue({});
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
   });
 
@@ -162,7 +162,7 @@ describe('SettingsPage — tab labels', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
@@ -174,9 +174,9 @@ describe('SettingsPage — tab labels', () => {
     });
     api.get.mockResolvedValue({});
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
   });
 
@@ -252,7 +252,7 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
@@ -261,9 +261,9 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
     });
     api.get.mockResolvedValue({});
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
     const { hasRole, isLocalMode } = await import('../utils/auth.js');
     // Reset to default (Admin sees everything, not local mode) before each
@@ -449,7 +449,7 @@ describe('SettingsPage — sidebar navigation', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
@@ -458,9 +458,9 @@ describe('SettingsPage — sidebar navigation', () => {
     });
     api.get.mockResolvedValue({});
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
   });
 
@@ -635,9 +635,9 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
 describe('ProjectsSection — visibility toggle', () => {
   beforeEach(() => {
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
     api.updateProject.mockResolvedValue({ ok: true });
   });
@@ -739,7 +739,7 @@ describe('GitHubSection — LAN mode toggle', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
@@ -753,9 +753,9 @@ describe('GitHubSection — LAN mode toggle', () => {
     api.get.mockResolvedValue({});
     api.updateConfig.mockResolvedValue({ ok: true });
     api.getModelConfig?.mockResolvedValue?.({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
   });
 
@@ -767,7 +767,7 @@ describe('GitHubSection — LAN mode toggle', () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
       cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',

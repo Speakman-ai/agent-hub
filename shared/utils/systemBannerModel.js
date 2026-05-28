@@ -13,6 +13,7 @@ const ENGINE_DISPLAY = {
 
 /** Keep in sync with client TopBar.jsx MODEL_LABELS / mobile engineOptions. */
 const MODEL_KNOWN_LABELS = {
+  'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',
   'claude-opus-4-6': 'Opus 4.6',
   'claude-sonnet-4-6': 'Sonnet',

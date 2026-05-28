@@ -101,7 +101,7 @@ describe('handleChat — interrupt-now existing queued row', () => {
       agentId,
       'interrupt-q test',
       'claude-code',
-      'claude-opus-4-7',
+      'claude-opus-4-8',
       0,
       0,
       1,

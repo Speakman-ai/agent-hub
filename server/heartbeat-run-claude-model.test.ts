@@ -69,13 +69,13 @@ beforeEach(() => {
 describe('runClaude — model option', () => {
   it('appends --model <id> when options.model is set', async () => {
     setupSpawnSuccess('ok');
-    await runClaude('hello', tmp, undefined, { model: 'claude-opus-4-7' });
+    await runClaude('hello', tmp, undefined, { model: 'claude-opus-4-8' });
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const args = spawnMock.mock.calls[0][1] as string[];
     const idx = args.indexOf('--model');
     expect(idx).toBeGreaterThanOrEqual(0);
-    expect(args[idx + 1]).toBe('claude-opus-4-7');
+    expect(args[idx + 1]).toBe('claude-opus-4-8');
     // Prompt must remain the final positional arg so the CLI parses it as the
     // user message rather than swallowing it into a flag.
     expect(args[args.length - 1]).toBe('hello');

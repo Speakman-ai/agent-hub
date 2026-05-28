@@ -95,7 +95,7 @@ vi.mock('./hooks/useVersionCheck.js', () => ({
 
 vi.mock('./utils/api.js', async (importOriginal) => {
   const mod = await importOriginal();
-  const empty = { engineDefaultModels: { 'claude-code': 'claude-opus-4-7' } };
+  const empty = { engineDefaultModels: { 'claude-code': 'claude-opus-4-8' } };
   return {
     ...mod,
     api: {

@@ -56,9 +56,9 @@ describe('resolveDesignModelForEngine / resolveDesignStudioModel', () => {
       resolveDesignStudioModel(
         'claude-sonnet-4-6',
         cfg({
-          engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'] },
-          engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
-          defaultModel: 'claude-opus-4-7',
+          engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'] },
+          engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+          defaultModel: 'claude-opus-4-8',
         }),
       ),
     ).toBe('claude-sonnet-4-6');
@@ -110,7 +110,7 @@ describe('buildDesignSpawnArgs', () => {
     const { bin, args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'claude-code',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       engineSessionId: null,
       isNewEngineSession: true,
     });
@@ -127,7 +127,7 @@ describe('buildDesignSpawnArgs', () => {
     const { args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'claude-code',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       engineSessionId: 'design-uuid-1',
       isNewEngineSession: false,
     });
