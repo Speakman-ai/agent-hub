@@ -2865,10 +2865,35 @@ export async function processWebhookEvent(
     { enabled?: boolean; prompt?: string } | undefined
   >;
   const handler = eventConfigs[eventKey] || eventConfigs[event];
+  const handlerPrompt = typeof handler?.prompt === 'string' ? handler.prompt.trim() : '';
 
   if (!handler || !handler.enabled) {
     if (!kanbanHandled) {
       stmts.addWebhookLog.run(webhookConfig.id, eventKey, action, deliveryId, 'skipped');
+    }
+    return { kanbanHandled, handlerRan: false };
+  }
+
+  // `pull_request.opened` / `pull_request.synchronize` are seeded as
+  // enabled-by-default reviewer triggers with no prompt. Treat
+  // enabled-without-prompt as "no custom LLM handler" so we still run
+  // kanban/reviewer lifecycle logic above without spawning Claude with an
+  // empty body.
+  if (!handlerPrompt) {
+    if (!kanbanHandled) {
+      const noPromptLog = stmts.addWebhookLog.run(
+        webhookConfig.id,
+        eventKey,
+        action,
+        deliveryId,
+        'skipped',
+      );
+      stmts.updateWebhookLog.run(
+        'skipped',
+        'handler-enabled-without-prompt',
+        0,
+        noPromptLog.lastInsertRowid,
+      );
     }
     return { kanbanHandled, handlerRan: false };
   }
@@ -2930,7 +2955,7 @@ export async function processWebhookEvent(
   const startTime = Date.now();
 
   const contextPayload = buildWebhookContext(event, action, payload);
-  const fullPrompt = `${handler.prompt}\n\n## Webhook Context\n${contextPayload}`;
+  const fullPrompt = `${handlerPrompt}\n\n## Webhook Context\n${contextPayload}`;
 
   const projects = getProjects();
   const project = projects.find((p) => p.id === webhookConfig.project_id);
