@@ -246,7 +246,7 @@ describe('clearChangesReadyAndNotifyPrCreated', () => {
     clearChangesReadyAndNotifyPrCreated({
       sessionId: 'sess-1',
       agentId: 'agent-1',
-      stmts: { clearSessionChangesReady },
+      stmts: { clearSessionChangesReady } as never,
       broadcast,
       prUrl: 'https://github.com/o/r/pull/1',
       cardTitle: 'My card',
