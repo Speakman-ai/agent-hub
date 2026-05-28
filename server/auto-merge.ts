@@ -11,7 +11,7 @@ export interface GithubWorkflowLike {
  *   3. Default: false (do nothing).
  *
  * This is the single source of truth for the default — used by
- * ad-hoc `manualCommitAndPR` and autonomous `commitPushAndCreatePR` alike.
+ * autonomous `commitPushAndCreatePR` (and ad-hoc push-to-existing-PR paths).
  */
 export function resolveShouldAutoMerge(
   override: boolean | undefined,

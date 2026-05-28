@@ -210,6 +210,23 @@ export async function sessionHasNoPublishableWork(
   }
 }
 
+/** Card-assignment / autonomous sessions: auto-ship only when there is work to publish. */
+export async function shouldTriggerAutoShipAtSessionEnd(
+  sessionId: string,
+  worktreePath: string,
+  stmts: Pick<Stmts, 'getSession'>,
+): Promise<boolean> {
+  if (!(await sessionHasNoPublishableWork(sessionId, worktreePath, stmts))) {
+    return true;
+  }
+  try {
+    const changes = await checkWorktreeChanges(worktreePath);
+    return changes.hasUncommitted || changes.hasUnpushed;
+  } catch {
+    return false;
+  }
+}
+
 /** Lightweight porcelain probe (used by tests and optional backstop). */
 export async function worktreeHasPorcelainChanges(cwd: string): Promise<boolean> {
   const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd });

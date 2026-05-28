@@ -12,8 +12,12 @@ import type {
   AppConfig,
   BroadcastFn,
   MessageRow,
+  SessionRow,
 } from './types.js';
-import { sessionHasNoPublishableWork } from './code-change-tracker.js';
+import {
+  sessionHasNoPublishableWork,
+  shouldTriggerAutoShipAtSessionEnd,
+} from './code-change-tracker.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
@@ -26,6 +30,7 @@ import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
+import { shouldAutoShipSessionAtEnd } from './session-ship.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -756,12 +761,23 @@ async function runGhStreamed(
 
 // ─── Dependency Types ────────────────────────────────────────────────
 
+export type TriggerAutoSessionShipFn = (args: {
+  sessionId: string;
+  agentId: string;
+  project: Project;
+  agent: Agent;
+  session: SessionRow;
+}) => Promise<{ ok: true } | { ok: false; code?: string; error?: string }>;
+
 interface AutoGitDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   getConfig: () => AppConfig;
   DEFAULT_SKILLS_DIR: string;
+  triggerAutoSessionShip?: TriggerAutoSessionShipFn;
 }
+
+let triggerAutoSessionShipImpl: TriggerAutoSessionShipFn | null = null;
 
 interface SlashSkillResult {
   skillName: string;
@@ -785,6 +801,12 @@ function getDeps(): AutoGitDeps {
 
 export function initAutoGit(d: AutoGitDeps): void {
   deps = d;
+  triggerAutoSessionShipImpl = d.triggerAutoSessionShip ?? null;
+}
+
+/** Wire after `handleChat` exists (avoids circular import with chat.ts). */
+export function setTriggerAutoSessionShip(fn: TriggerAutoSessionShipFn): void {
+  triggerAutoSessionShipImpl = fn;
 }
 
 // ─── Slash-command skill resolution ─────────────────────────────────
@@ -1392,11 +1414,6 @@ export type CommitPushPrFailureCode =
   | 'no_diff_vs_base'
   | 'pr_failed'
   | 'rebase_conflict';
-
-/** User-facing outcome of `manualCommitAndPR` (Create PR button / API). */
-export type ManualPrResult =
-  | { ok: true; prUrl: string; cardId: string }
-  | { ok: false; error: string; code: string };
 
 function humanizeCommitPrFailure(r: Extract<CommitPushPrResult, { ok: false }>): string {
   switch (r.code) {
@@ -2375,19 +2392,13 @@ export async function autoCommitAndPR(
     // (via `markCardDispatchedByAutonomous`). Legacy DBs are backfilled from
     // the historical `autonomous_iterations` counter and autonomous epics —
     // not raw `epic_id`.
-    const isAutonomousCard = !!card && Number(card.dispatched_by_autonomous) === 1;
+    const sessionRow = d.stmts.getSession?.get?.(sessionId) as SessionRow | undefined;
+    const autoShipAtEnd = shouldAutoShipSessionAtEnd(sessionRow, card);
 
-    // Ad-hoc sessions (no card, OR a card not dispatched by the autonomous
-    // system): two sub-cases.
-    //   1. Existing PR on this branch → agent was likely fixing CI or a
-    //      reviewer comment. Push (and commit if needed) so GitHub sees the
-    //      fix. No new PR is opened.
-    //   2. No existing PR → broadcast `changes_ready` so the "Create PR"
-    //      button surfaces in the UI for the user to decide.
-    // A manually-linked (non-autonomous) card still goes through this path:
-    // `manualCommitAndPR` (the button handler) re-queries by sessionId and
-    // will attach the PR URL to the card when the user clicks.
-    if (!isAutonomousCard) {
+    // User-initiated sessions (and cards linked mid-stream without assign/dispatch):
+    // never commit/push at session end — surface `changes_ready` so the operator
+    // clicks Create ticket & PR (loads the skill via POST /sessions/:id/ship).
+    if (!autoShipAtEnd) {
       if (await sessionHasNoPublishableWork(sessionId, effectiveCwd, d.stmts)) {
         console.log(
           `[auto-commit] Session ${sessionId} — no code change in session (clean worktree), skipping ad-hoc PR path`,
@@ -2396,62 +2407,6 @@ export async function autoCommitAndPR(
       }
       const changes = await checkWorktreeChanges(effectiveCwd);
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
-        return;
-      }
-
-      // Does an open PR already exist for this branch?
-      let existingPrUrl: string | null = null;
-      const adHocToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
-      try {
-        const { stdout: prOut } = await runGh(
-          ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
-          effectiveCwd,
-          15000,
-          adHocToken,
-        );
-        existingPrUrl = prOut.trim() || null;
-      } catch {
-        // No open PR for this branch — fall through to the banner path.
-      }
-
-      if (existingPrUrl) {
-        console.log(
-          `[auto-commit] Session ${sessionId} — ad-hoc with existing PR (${existingPrUrl}), pushing fix`,
-        );
-        // Reuse the card-driven path with no card: it commits (if needed),
-        // pushes the branch, and gracefully handles "PR already exists" by
-        // broadcasting `auto_pr_created` with the existing URL via the catch
-        // branch in commitPushAndCreatePR. No new PR is opened.
-        const prOutcome = await commitPushAndCreatePR(
-          sessionId,
-          agentId,
-          project,
-          agent,
-          effectiveCwd,
-          undefined,
-        );
-        if (prOutcome.ok) {
-          d.stmts.clearSessionChangesReady.run(sessionId);
-        } else if (prOutcome.code === 'nothing_to_publish') {
-          // Benign no-op: a clean worktree with no open PR is a normal
-          // terminal state for sessions that intentionally do no work
-          // (research/Q&A turns, already-done cards). Log at INFO, not
-          // ERROR, so it stops triggering the tool-error classifier.
-          console.log(
-            `[auto-commit] Ad-hoc push/PR path: nothing to publish (clean worktree, no open PR) — ${prOutcome.error}`,
-          );
-        } else {
-          console.error(
-            `[auto-commit] Ad-hoc push/PR path failed (${prOutcome.code}): ${prOutcome.error}`,
-          );
-          await persistAndBroadcastPrFailure({
-            sessionId,
-            agentId,
-            agentName: agent.name || 'Agent',
-            card: undefined,
-            outcome: prOutcome,
-          });
-        }
         return;
       }
 
@@ -2498,41 +2453,53 @@ export async function autoCommitAndPR(
       return;
     }
 
-    // Autonomous/card-driven sessions (card actually dispatched by the
-    // autonomous system): commit, push, create PR, move card to Review. The
-    // Reviewer agent is dispatched separately by the GitHub webhook handler
-    // when the PR opens or syncs.
-    const autonomousOutcome = await commitPushAndCreatePR(
+    // Card-assignment / autonomous-dispatch: auto-trigger the create-ticket-and-pr
+    // skill so the agent rebases before push (server-side push can fail with
+    // non-fast-forward and surface push_failed).
+    if (!(await shouldTriggerAutoShipAtSessionEnd(sessionId, effectiveCwd, d.stmts))) {
+      console.log(`[auto-commit] Session ${sessionId} — auto-ship skipped (no publishable work)`);
+      return;
+    }
+
+    if (!triggerAutoSessionShipImpl) {
+      console.error(
+        `[auto-commit] Session ${sessionId} — auto-ship not wired (setTriggerAutoSessionShip missing)`,
+      );
+      return;
+    }
+
+    if (!sessionRow) {
+      console.error(`[auto-commit] Session ${sessionId} — auto-ship skipped (session row missing)`);
+      return;
+    }
+
+    try {
+      await ensureSessionWorktreeDependenciesInstalled(
+        project.cwd,
+        effectiveCwd,
+        sessionInstallCommand(project),
+      );
+    } catch (installErr: unknown) {
+      const msg = installErr instanceof Error ? installErr.message : String(installErr);
+      console.error(
+        `[auto-commit] Dependency install failed before auto-ship (session ${sessionId}): ${msg}`,
+      );
+    }
+
+    console.log(
+      `[auto-commit] Session ${sessionId} — auto-triggering create-ticket-and-pr skill (rebase-before-push)`,
+    );
+    const shipResult = await triggerAutoSessionShipImpl({
       sessionId,
       agentId,
       project,
       agent,
-      effectiveCwd,
-      card,
-    );
-    if (!autonomousOutcome.ok) {
-      if (autonomousOutcome.code === 'nothing_to_publish') {
-        // Benign no-op: an autonomous-dispatched session can finish without
-        // producing changes (e.g. picked up a card and discovered the work
-        // was already shipped, then closed it via <agenthub:close-card>;
-        // research/Q&A turns; no-op investigations). The function contract
-        // already distinguishes this case via its own code — log at INFO so
-        // it stops feeding the tool-error classifier as an ERROR.
-        console.log(
-          `[auto-commit] Autonomous PR path: nothing to publish (clean worktree, no open PR) — ${autonomousOutcome.error}`,
-        );
-      } else {
-        console.error(
-          `[auto-commit] Autonomous PR path failed (${autonomousOutcome.code}): ${autonomousOutcome.error}`,
-        );
-        await persistAndBroadcastPrFailure({
-          sessionId,
-          agentId,
-          agentName: agent.name || 'Agent',
-          card,
-          outcome: autonomousOutcome,
-        });
-      }
+      session: sessionRow,
+    });
+    if (!shipResult.ok) {
+      console.error(
+        `[auto-commit] Auto-ship trigger failed for session ${sessionId}: ${shipResult.code ?? shipResult.error ?? 'unknown'}`,
+      );
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2553,169 +2520,4 @@ export function isGarbageTitle(title: string): boolean {
   if (/^#{1,3}\s/.test(title)) return true;
   if (title.length > 120) return true;
   return false;
-}
-
-/**
- * Derive a clean PR title from the git log when the session name is unusable.
- * Falls back to a generic agent-based title.
- */
-async function deriveCleanTitle(cwd: string, agentName: string): Promise<string> {
-  try {
-    // Use the most recent commit message on this branch vs main
-    const { stdout } = await execAsync(
-      'git log main..HEAD --format=%s --reverse 2>/dev/null | head -1',
-      { cwd, timeout: 10000 },
-    );
-    const firstCommitMsg = stdout.trim();
-    if (firstCommitMsg && !isGarbageTitle(firstCommitMsg)) {
-      return firstCommitMsg.length > 70 ? firstCommitMsg.substring(0, 67) + '...' : firstCommitMsg;
-    }
-  } catch {
-    // fall through
-  }
-
-  try {
-    // Fall back to diffstat summary
-    const { stdout } = await execAsync('git diff --stat main...HEAD 2>/dev/null | tail -1', {
-      cwd,
-      timeout: 10000,
-    });
-    const stat = stdout.trim();
-    if (stat) {
-      return `${agentName}: ${stat}`.substring(0, 70);
-    }
-  } catch {
-    // fall through
-  }
-
-  return `${agentName}: ad-hoc changes`;
-}
-
-// ─── Manual commit & PR (triggered by user from UI) ─────────────────
-
-export async function manualCommitAndPR(
-  sessionId: string,
-  agentId: string,
-  project: Project,
-  agent: Agent,
-  effectiveCwd: string,
-  options: { title?: string; autoMerge?: boolean },
-): Promise<ManualPrResult> {
-  const d = getDeps();
-
-  // Tasks-only projects have no GitHub repo and no PR lifecycle. The "Create
-  // PR" button should never reach this code path (the UI hides it), but a
-  // direct API hit must fail fast with a clear reason.
-  if (!project.githubRepo) {
-    return {
-      ok: false,
-      error: 'This project is not connected to a GitHub repository.',
-      code: 'no_github_repo',
-    };
-  }
-
-  const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
-  if (!board) {
-    console.error(`[manual-pr] No kanban board found for project ${project.id}`);
-    return {
-      ok: false,
-      error: 'No kanban board is configured for this project.',
-      code: 'no_board',
-    };
-  }
-
-  // Reuse an existing card already linked to this session, if any. Without
-  // this check we would unconditionally `createKanbanCard.run()` below —
-  // producing a duplicate card in the Review column while the original
-  // (autonomous-dispatched ticket, bug report, or user-linked card) stays
-  // behind in its current column. That's the "two cards per unit of work"
-  // bug users report when their PR enters review.
-  let card = d.stmts.getKanbanCardBySession?.get(sessionId) as KanbanCardRow | undefined;
-  let cardId: string;
-
-  if (card) {
-    cardId = card.id;
-    console.log(
-      `[manual-pr] Reusing existing card "${card.title}" already linked to session ${sessionId} (skipping duplicate create)`,
-    );
-  } else {
-    // Create a kanban card for tracking
-    const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
-    const rawName = options.title || session?.name || '';
-    const cardTitle =
-      rawName && !isGarbageTitle(rawName)
-        ? rawName
-        : await deriveCleanTitle(effectiveCwd, agent.name || 'Agent');
-    cardId = crypto.randomUUID();
-
-    const cols = d.stmts.getKanbanColumns.all(board.id) as Array<{ id: string; name: string }>;
-    const inProgressCol = cols.find((c) => c.name === 'In Progress');
-    const targetCol = inProgressCol || cols[0];
-    if (!targetCol) {
-      console.error(`[manual-pr] No columns found on board`);
-      return {
-        ok: false,
-        error: 'The kanban board has no columns — cannot create a tracking card.',
-        code: 'no_columns',
-      };
-    }
-
-    // Build a rich description from session messages + git diff stat
-    const messages = d.stmts.getMessages.all(sessionId) as MessageRow[];
-    let diffStat = '';
-    try {
-      const { stdout } = await execAsync(
-        'git diff --stat HEAD~1 HEAD 2>/dev/null || git diff --stat main...HEAD',
-        {
-          cwd: effectiveCwd,
-          timeout: 10000,
-        },
-      );
-      diffStat = stdout;
-    } catch {
-      // diff stat is optional — proceed without it
-    }
-    const cardDescription = buildCardDescription(messages, diffStat);
-
-    // createKanbanCard params: (id, column_id, board_id, title, description, priority,
-    //   assignee, labels, session_id, github_issue_url, created_by, assign_model, position)
-    d.stmts.createKanbanCard.run(
-      cardId,
-      targetCol.id,
-      board.id,
-      cardTitle,
-      cardDescription,
-      'medium',
-      agent.name || '',
-      '',
-      sessionId,
-      '',
-      agent.name || '',
-      null,
-      0,
-    );
-    console.log(`[manual-pr] Created card "${cardTitle}" and linked to session ${sessionId}`);
-    card = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-  }
-
-  const result = await commitPushAndCreatePR(
-    sessionId,
-    agentId,
-    project,
-    agent,
-    effectiveCwd,
-    card,
-    { autoMergeOverride: options.autoMerge },
-  );
-
-  if (result.ok) {
-    d.broadcast({ type: 'kanban_update', projectId: project.id });
-    return { ok: true, prUrl: result.prUrl, cardId };
-  }
-
-  return {
-    ok: false,
-    error: humanizeCommitPrFailure(result),
-    code: result.code,
-  };
 }

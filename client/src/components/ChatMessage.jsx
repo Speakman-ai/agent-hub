@@ -12,6 +12,7 @@ import {
   describePrFailureCode,
   shortSha,
 } from '../utils/prMessage.js';
+import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage.js';
 import { stripAskAnswerBlocks } from '../utils/askAnswers.js';
 
 function ImageLightbox({ src, alt, onClose }) {
@@ -224,6 +225,39 @@ const ENGINE_BADGES = {
   'codex-cli': { dotClass: 'bg-sky-500', label: 'Codex' },
 };
 
+function SystemShipRequestedMessage({ message }) {
+  const meta = parseShipRequestedMetadata(message.metadata);
+  if (!meta) {
+    return (
+      <div className="flex justify-center mb-4">
+        <div className="text-xs text-gray-500 italic">{message.content || 'System event'}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex justify-center mb-4">
+      <div className="max-w-[95%] sm:max-w-[80%] w-full bg-purple-950/30 border border-purple-700/50 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2">
+          <GitPullRequest className="w-4 h-4 text-purple-400 shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-purple-200">
+              {meta.auto ? 'Shipping automatically' : 'Create ticket & PR'}
+            </p>
+            <p className="text-xs text-purple-200/70 mt-0.5">
+              {meta.auto
+                ? 'Agent Hub is rebasing on the base branch, then committing, pushing, and opening or updating the pull request.'
+                : 'Agent Hub is creating a kanban ticket, committing, pushing, and opening a pull request.'}
+            </p>
+          </div>
+        </div>
+        {message.created_at && (
+          <div className="text-[11px] text-gray-600 mt-2">{relativeTime(message.created_at)}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SystemPrCreatedMessage({ message }) {
   const meta = parsePrCreatedMetadata(message.metadata);
   if (!meta) {
@@ -358,9 +392,9 @@ function ChatMessage({
   }, [message.content, message.attachments, message.role]);
 
   if (isSystem) {
-    // Dispatch by metadata `kind`. pr_created → green callout; pr_failed →
-    // red callout with recovery hint. Anything else (or malformed metadata)
-    // falls back to the generic system-event render inside SystemPrCreatedMessage.
+    if (parseShipRequestedMetadata(message.metadata)) {
+      return <SystemShipRequestedMessage message={message} />;
+    }
     if (parsePrFailedMetadata(message.metadata)) {
       return <SystemPrFailedMessage message={message} />;
     }

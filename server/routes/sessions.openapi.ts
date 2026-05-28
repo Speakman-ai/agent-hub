@@ -574,6 +574,27 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/sessions/{sessionId}/ship',
+  tags: ['Sessions'],
+  summary: 'Ship session work (Create ticket & PR)',
+  description:
+    'Operator-initiated publish for ad-hoc sessions: injects the `create-ticket-and-pr` skill, records a system callout in chat, and starts an agent turn without persisting a visible user slash-command message.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Ship workflow started.',
+      content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    400: errorResponse('Session has no worktree.'),
+    404: errorResponse('Session, agent, or skill not found.'),
+    409: errorResponse('Session is streaming or is a resolve-PR session.'),
+    403: errorResponse('Disabled in workflow mode.'),
+    500: errorResponse('Unexpected server error.'),
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/sessions/{sessionId}/preview/start',
   tags: ['Sessions'],
   summary: 'Start worktree preview for a chat session',

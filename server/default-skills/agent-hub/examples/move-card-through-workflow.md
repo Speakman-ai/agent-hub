@@ -88,8 +88,9 @@ Expected output:
 
 ### 5. Open a PR → move **In Progress → Review**
 
-If the session is linked to the card, the server auto-pushes and opens the PR
-at session end. If you're opening the PR manually, record it on the card:
+If the session is linked to the card, use the **create-ticket-and-pr** or **ship-pr**
+skill (or the Create ticket & PR button) to commit, push, and open the PR.
+Then record it on the card:
 
 ```bash
 PROJECT_ID=agent-hub scripts/kanban-move-card.sh "$CARD_ID" "Review"

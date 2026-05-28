@@ -243,21 +243,6 @@ describe('api session helpers — URL + method + body parity with web client', (
     expect(body).not.toHaveProperty('use_worktree');
   });
 
-  it('createPrFromSession(id) defaults autoMerge=false and omits title', async () => {
-    await api.createPrFromSession('sess-3');
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/sessions/sess-3/create-pr');
-    expect(init.method).toBe('POST');
-    const body = JSON.parse(init.body);
-    expect(body.autoMerge).toBe(false);
-    expect(body.title).toBeUndefined();
-  });
-
-  it('createPrFromSession(id, { autoMerge, title }) forwards both fields', async () => {
-    await api.createPrFromSession('sess-3', { autoMerge: true, title: 'Fix bug' });
-    const [, init] = lastCall();
-    expect(JSON.parse(init.body)).toEqual({ autoMerge: true, title: 'Fix bug' });
-  });
 });
 
 describe('api updateProject — PATCH parity with web client', () => {

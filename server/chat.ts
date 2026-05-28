@@ -978,7 +978,7 @@ Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking 
     prompt += `\n\n## Active Pull Request
 A pull request is already open for this worktree's branch: ${options.branchPrUrl}${baseSuffix}
 
-Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Push new commits to the existing branch; the server will route them to the existing PR. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
+Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Commit and push to the existing branch instead; GitHub attaches new commits to the open PR automatically. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
   }
 
   logEnrichedPromptSize(prompt, agent.id, isFirstMessage, options.sessionId ?? null);

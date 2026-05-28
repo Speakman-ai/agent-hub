@@ -35,9 +35,8 @@ export function inferPrUrlFromSessionTitle(
 /**
  * Sessions spawned from Pull Requests → Resolve PR push fixes to an
  * existing PR rather than opening a new one. Used to gate
- * `POST /api/sessions/:id/create-pr` so the action does not silently
- * fork a second PR when the user clicks "Create ticket & PR" inside a
- * resolve-PR chat.
+ * resolve-PR chat flows (banner + skill guidance) so agents push fixes to
+ * the existing PR instead of opening a new one.
  *
  * Mirror of `shared/utils/sessionTitlePr.js#isResolvePrSessionTitle`.
  */

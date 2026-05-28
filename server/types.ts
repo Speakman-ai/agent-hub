@@ -60,6 +60,11 @@ export interface SessionRow {
   owner_user_id?: string | null;
   /** Max advisor turns per user message round in multi-agent sessions (0 = unlimited). */
   max_turns?: number;
+  /**
+   * When `1`, session end may commit/push/open a PR without the operator
+   * clicking Create ticket & PR (board assign + autonomous dispatch).
+   */
+  auto_ship_on_complete?: number;
 }
 
 export interface MessageRow {
@@ -866,6 +871,7 @@ export interface Stmts {
   updateSessionModel: Stmt;
   updateSessionEngineSessionId: Stmt;
   updateSessionPendingSkillContext: Stmt;
+  updateSessionAutoShipOnComplete: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;

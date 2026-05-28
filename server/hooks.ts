@@ -64,14 +64,13 @@ const FORMAT_GUARD_MARKER = '[agent-hub-format-guard]';
  * (there is no `CLAUDE_TOOL_INPUT` env var — see
  * https://code.claude.com/docs/en/hooks). We pull `.tool_input.command` out of
  * that payload with `jq`, and only run the format check when the command
- * string contains `git commit`, so every other Bash call (ls, npm test, etc.)
- * is unaffected. Claude Code treats **exit code 2** as a block, so we map
- * `format:check` failure onto `exit 2`. Covers the worktrees-without-husky
- * gap, and also the case where an agent bypasses husky with `--no-verify`.
+ * looks like a real `git commit` invocation (not a substring inside curl -d
+ * text), so every other Bash call is unaffected. Claude Code treats **exit
+ * code 2** as a block, so we map `format:check` failure onto `exit 2`.
  *
- * If `jq` isn't on PATH we fail open (the guard is a no-op) — we don't want
- * to block every Bash call on a tooling gap; Layer 1 (husky in worktrees) is
- * still doing its job.
+ * Fail-open when jq/grep are missing, when the project root has no
+ * package.json, or when package.json does not define a `format:check` script
+ * (monorepos with npm only in subdirs must not ENOENT-block commits).
  */
 function buildFormatGuardCommand(): string {
   return [
@@ -79,8 +78,16 @@ function buildFormatGuardCommand(): string {
     'if command -v jq >/dev/null 2>&1; then ' +
       "cmd=$(printf '%s' \"$input\" | jq -r '.tool_input.command // empty'); " +
       'else cmd=""; fi',
-    `case "$cmd" in *'git commit'*) ` +
-      'cd "$CLAUDE_PROJECT_DIR" && npm run format:check || exit 2 ;; esac',
+    'is_gc=0',
+    'if [ -n "$cmd" ] && command -v grep >/dev/null 2>&1; then ' +
+      "if printf '%s' \"$cmd\" | grep -Eq '(^|[;&|][[:space:]]*)git[[:space:]]+commit([[:space:]]|$|-)'; then is_gc=1; fi; " +
+      'fi',
+    'if [ "$is_gc" = 1 ]; then ' +
+      'root="$CLAUDE_PROJECT_DIR"; ' +
+      'if [ -f "$root/package.json" ] && grep -q \'"format:check"\' "$root/package.json" 2>/dev/null; then ' +
+      'cd "$root" && npm run format:check || exit 2; ' +
+      'fi; ' +
+      'fi',
     `# ${FORMAT_GUARD_MARKER}`,
   ].join('; ');
 }

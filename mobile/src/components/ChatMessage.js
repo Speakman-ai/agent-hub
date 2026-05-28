@@ -24,6 +24,7 @@ import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
 import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
+import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags.js';
 import HandoffCard from './HandoffCard';
@@ -304,6 +305,60 @@ const imageStyles = StyleSheet.create({
   },
 });
 
+function SystemShipRequestedMessage({ message }) {
+  const meta = parseShipRequestedMetadata(message.metadata);
+  if (!meta) {
+    return (
+      <View style={prStyles.fallbackContainer}>
+        <Text style={prStyles.fallbackText}>{message.content || 'System event'}</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={prStyles.container}>
+      <View style={shipStyles.card}>
+        <View style={prStyles.headerRow}>
+          <Ionicons name="git-pull-request" size={16} color={colors.purple400} />
+          <Text style={shipStyles.headerText}>
+            {meta.auto ? 'Shipping automatically' : 'Create ticket & PR'}
+          </Text>
+        </View>
+        <Text style={shipStyles.subtext}>
+          {meta.auto
+            ? 'Agent Hub is rebasing on the base branch, then committing, pushing, and opening or updating the pull request.'
+            : 'Agent Hub is creating a kanban ticket, committing, pushing, and opening a pull request.'}
+        </Text>
+        {message.created_at ? (
+          <Text style={prStyles.timestamp}>{relativeTime(message.created_at)}</Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+const shipStyles = StyleSheet.create({
+  card: {
+    width: '95%',
+    backgroundColor: colors.purple900_40,
+    borderWidth: 1,
+    borderColor: 'rgba(126, 34, 206, 0.5)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  headerText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.purple400,
+  },
+  subtext: {
+    fontSize: 11,
+    color: 'rgba(233, 213, 255, 0.7)',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+});
+
 function SystemPrCreatedMessage({ message }) {
   const meta = parsePrCreatedMetadata(message.metadata);
   const handleOpenPr = useCallback(() => {
@@ -452,6 +507,9 @@ function ChatMessage({
   onOpenSession,
 }) {
   if (message.role === 'system') {
+    if (parseShipRequestedMetadata(message.metadata)) {
+      return <SystemShipRequestedMessage message={message} />;
+    }
     return <SystemPrCreatedMessage message={message} />;
   }
   const { isUser, isQueued, isInterrupted, showInFlightActions } = getUserMessageFlags(

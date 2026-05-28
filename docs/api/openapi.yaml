@@ -187,145 +187,11 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
-    Session:
-      type: object
-      properties:
-        id:
-          type: string
-        agent_id:
-          type: string
-        name:
-          type: string
-        engine:
-          type: string
-        checkpoint_rewind_supported:
-          type: boolean
-          description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
-        model:
-          type: string
-        use_worktree:
-          type: integer
-        ask_mode:
-          type: integer
-        react_loop_enabled:
-          type: integer
-          nullable: true
-        worktree_path:
-          type: string
-          nullable: true
-        worktree_branch:
-          type: string
-          nullable: true
-        engine_session_id:
-          type: string
-          nullable: true
-        cron_id:
-          type: integer
-          nullable: true
-        deleted_at:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-        updated_at:
-          type: string
-        owner_user_id:
-          type: string
-          nullable: true
-        orchestration_phase:
-          type: string
-          nullable: true
-        orchestration_meta:
-          type: string
-          nullable: true
-        max_turns:
-          type: integer
-        agents:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              name:
-                type: string
-              color:
-                type: string
-              position:
-                type: integer
-              role:
-                type: string
-                enum:
-                  - executor
-                  - advisor
-              projectId:
-                type: string
-              projectName:
-                type: string
-            required:
-              - id
-              - name
-              - color
-              - position
-              - role
-        advisor_count:
-          type: integer
-      required:
-        - id
-        - agent_id
-        - name
-        - engine
-        - checkpoint_rewind_supported
-        - model
-        - use_worktree
-        - ask_mode
-        - created_at
-        - updated_at
-      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
-    Message:
-      type: object
-      properties:
-        id:
-          type: string
-        session_id:
-          type: string
-        role:
-          type: string
-          enum:
-            - user
-            - assistant
-            - system
-        content:
-          type: string
-        engine:
-          type: string
-          nullable: true
-        model:
-          type: string
-          nullable: true
-        attachments:
-          type: string
-          nullable: true
-        metadata:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-      required:
-        - id
-        - session_id
-        - role
-        - content
-        - created_at
-      description: A single message row inside a session.
-    SessionErrorResponse:
+    AuditErrorResponse:
       type: object
       properties:
         error:
           type: string
-        code:
-          type: string
-          description: Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).
         details:
           type: array
           items:
@@ -344,7 +210,32 @@ components:
               - message
       required:
         - error
-      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+      description: Error envelope for audit/roster routes.
+    AuditReport:
+      type: object
+      properties: {}
+      additionalProperties:
+        nullable: true
+      description: Post-scaffold audit report. Concrete shape lives in `server/audit/audit-service.ts`.
+    TrackSuggestion:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        agentId:
+          type: string
+          nullable: true
+        score:
+          type: number
+      required:
+        - id
+        - label
+        - agentId
+      additionalProperties:
+        nullable: true
+      description: Keyword-matched track → agent suggestion.
     KanbanBoard:
       type: object
       properties:
@@ -632,55 +523,54 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors; `path` is populated for the 409 cycle error from the blocker endpoint.
-    AuditErrorResponse:
+    BugReportsErrorResponse:
       type: object
       properties:
         error:
           type: string
-        details:
-          type: array
-          items:
-            type: object
-            properties:
-              path:
-                type: array
-                items:
-                  anyOf:
-                    - type: string
-                    - type: number
-              message:
-                type: string
-            required:
-              - path
-              - message
       required:
         - error
-      description: Error envelope for audit/roster routes.
-    AuditReport:
-      type: object
-      properties: {}
-      additionalProperties:
-        nullable: true
-      description: Post-scaffold audit report. Concrete shape lives in `server/audit/audit-service.ts`.
-    TrackSuggestion:
+      description: Error envelope for bug-report intake.
+    BugReportFormFields:
       type: object
       properties:
-        id:
+        title:
           type: string
-        label:
+          minLength: 1
+          maxLength: 200
+        severity:
           type: string
-        agentId:
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          default: medium
+        description:
           type: string
-          nullable: true
-        score:
-          type: number
+        sourceUrl:
+          type: string
+        userAgent:
+          type: string
+        appVersion:
+          type: string
+        clientType:
+          type: string
+          enum:
+            - web
+            - electron
+            - mobile
+        currentProjectId:
+          type: string
+        currentAgentId:
+          type: string
+        screenshot:
+          type: string
+          format: binary
+          description: Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.
       required:
-        - id
-        - label
-        - agentId
-      additionalProperties:
-        nullable: true
-      description: Keyword-matched track → agent suggestion.
+        - title
+      description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
     ErrorResponse:
       type: object
       properties:
@@ -962,54 +852,6 @@ components:
           minLength: 1
       required:
         - token
-    BugReportsErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for bug-report intake.
-    BugReportFormFields:
-      type: object
-      properties:
-        title:
-          type: string
-          minLength: 1
-          maxLength: 200
-        severity:
-          type: string
-          enum:
-            - low
-            - medium
-            - high
-            - critical
-          default: medium
-        description:
-          type: string
-        sourceUrl:
-          type: string
-        userAgent:
-          type: string
-        appVersion:
-          type: string
-        clientType:
-          type: string
-          enum:
-            - web
-            - electron
-            - mobile
-        currentProjectId:
-          type: string
-        currentAgentId:
-          type: string
-        screenshot:
-          type: string
-          format: binary
-          description: Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.
-      required:
-        - title
-      description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
     ConfigErrorResponse:
       type: object
       properties:
@@ -2462,167 +2304,6 @@ components:
       additionalProperties:
         nullable: true
       description: A single note-processing run row.
-    MiscErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for misc routes.
-    HealthResponse:
-      type: object
-      properties:
-        status:
-          type: string
-          enum:
-            - ok
-        version:
-          type: string
-        gitHash:
-          type: string
-        uptime:
-          type: number
-        projects:
-          type: integer
-        agents:
-          type: integer
-        authRequired:
-          type: boolean
-        apiKeyAuthEnabled:
-          type: boolean
-        jwtAuthEnabled:
-          type: boolean
-      required:
-        - status
-        - version
-        - gitHash
-        - uptime
-        - projects
-        - agents
-        - authRequired
-        - apiKeyAuthEnabled
-        - jwtAuthEnabled
-      description: Liveness + runtime info for the server.
-    BrowseResponse:
-      type: object
-      properties:
-        path:
-          type: string
-        parent:
-          type: string
-          nullable: true
-        entries:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-              type:
-                type: string
-                enum:
-                  - directory
-              path:
-                type: string
-            required:
-              - name
-              - type
-              - path
-      required:
-        - path
-        - parent
-        - entries
-      description: Directory listing under $HOME (the only allowed root). Hidden entries sorted last.
-    DeviceTokenResponse:
-      type: object
-      properties:
-        token:
-          type: string
-        platform:
-          type: string
-        enabledEvents:
-          type: array
-          nullable: true
-          items:
-            type: string
-        supportedEvents:
-          type: array
-          items:
-            type: string
-      required:
-        - token
-        - platform
-        - enabledEvents
-        - supportedEvents
-      description: Push-token preferences and supported event list.
-    UsageResponse:
-      type: object
-      properties:
-        totals:
-          type: object
-          properties:
-            sessions:
-              type: integer
-            messages:
-              type: integer
-            tokens:
-              type: integer
-            cost_usd:
-              type: number
-          additionalProperties:
-            nullable: true
-        byAgent:
-          type: array
-          items:
-            type: object
-            properties:
-              agent_id:
-                type: string
-              agent_name:
-                type: string
-              agent_color:
-                type: string
-            required:
-              - agent_id
-              - agent_name
-              - agent_color
-            additionalProperties:
-              nullable: true
-        byDay:
-          type: array
-          items:
-            type: object
-            properties:
-              day:
-                type: string
-            required:
-              - day
-            additionalProperties:
-              nullable: true
-        recentSessions:
-          type: array
-          items:
-            type: object
-            properties:
-              agent_id:
-                type: string
-              agent_name:
-                type: string
-              agent_color:
-                type: string
-            required:
-              - agent_id
-              - agent_name
-              - agent_color
-            additionalProperties:
-              nullable: true
-      required:
-        - totals
-        - byAgent
-        - byDay
-        - recentSessions
-      description: Aggregated usage rollup. Cost de-dup of the Claude CLI cumulative `total_cost_usd` happens in `usage-aggregation.ts`.
     NotesErrorResponse:
       type: object
       properties:
@@ -3239,6 +2920,164 @@ components:
         - selected
         - releases
       description: Release history for the Agent Hub repo.
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        name:
+          type: string
+        engine:
+          type: string
+        checkpoint_rewind_supported:
+          type: boolean
+          description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
+        model:
+          type: string
+        use_worktree:
+          type: integer
+        ask_mode:
+          type: integer
+        react_loop_enabled:
+          type: integer
+          nullable: true
+        worktree_path:
+          type: string
+          nullable: true
+        worktree_branch:
+          type: string
+          nullable: true
+        engine_session_id:
+          type: string
+          nullable: true
+        cron_id:
+          type: integer
+          nullable: true
+        deleted_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        owner_user_id:
+          type: string
+          nullable: true
+        orchestration_phase:
+          type: string
+          nullable: true
+        orchestration_meta:
+          type: string
+          nullable: true
+        max_turns:
+          type: integer
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              color:
+                type: string
+              position:
+                type: integer
+              role:
+                type: string
+                enum:
+                  - executor
+                  - advisor
+              projectId:
+                type: string
+              projectName:
+                type: string
+            required:
+              - id
+              - name
+              - color
+              - position
+              - role
+        advisor_count:
+          type: integer
+      required:
+        - id
+        - agent_id
+        - name
+        - engine
+        - checkpoint_rewind_supported
+        - model
+        - use_worktree
+        - ask_mode
+        - created_at
+        - updated_at
+      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+            - system
+        content:
+          type: string
+        engine:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        attachments:
+          type: string
+          nullable: true
+        metadata:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - session_id
+        - role
+        - content
+        - created_at
+      description: A single message row inside a session.
+    SessionErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: Optional machine-readable code (for example `checkpoint_rewind_unsupported_engine` from `POST .../rewind` when the session is not Claude Code).
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
     WebhookHmacFailureEntry:
       type: object
       properties:
@@ -3756,841 +3595,173 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentErrorResponse"
-  /api/agents/{agentId}/sessions:
+  /api/projects/{projectId}/audit:
     get:
       tags:
-        - Sessions
-      summary: List sessions for an agent (owner-filtered)
-      description: Returns only sessions the caller owns. Pre-Phase-4 NULL-owner rows fall through to org-owner ownership.
+        - Audit
+      summary: Read the latest persisted audit report
       parameters:
         - schema:
             type: string
-            description: Agent ID.
+            description: Project slug or id.
           required: true
-          description: Agent ID.
-          name: agentId
+          description: Project slug or id.
+          name: projectId
           in: path
       responses:
         "200":
-          description: Array of sessions.
+          description: Audit report.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Session"
+                $ref: "#/components/schemas/AuditReport"
+        "404":
+          description: No audit yet — POST /audit/refresh to generate one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "500":
+          description: Stored report is corrupt JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/audit/refresh:
     post:
       tags:
-        - Sessions
-      summary: Create a new session for an agent
-      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
+        - Audit
+      summary: Regenerate the audit report and persist it
       parameters:
         - schema:
             type: string
-            description: Agent ID.
+            description: Project slug or id.
           required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                engine:
-                  type: string
-                model:
-                  type: string
-                ask_mode:
-                  type: boolean
-      responses:
-        "200":
-          description: New session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    delete:
-      tags:
-        - Sessions
-      summary: Bulk soft-delete (archive) every session for an agent
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
+          description: Project slug or id.
+          name: projectId
           in: path
       responses:
         "200":
-          description: Archive counts.
+          description: Fresh audit report.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: integer
-                  deleted:
-                    type: integer
-                required:
-                  - ok
-                  - archived
-                  - deleted
-  /api/agents/{agentId}/sessions/inactive:
-    delete:
-      tags:
-        - Sessions
-      summary: Bulk soft-delete (archive) every *inactive* session for an agent
-      description: Skips sessions with an active in-flight CLI process.
-      parameters:
-        - schema:
-            type: string
-            description: Agent ID.
-          required: true
-          description: Agent ID.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Archive counts.
+                $ref: "#/components/schemas/AuditReport"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: integer
-                  deleted:
-                    type: integer
-                required:
-                  - ok
-                  - archived
-                  - deleted
-  /api/sessions/{sessionId}:
+                $ref: "#/components/schemas/AuditErrorResponse"
+        "500":
+          description: Audit run failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/roster/suggest:
     get:
       tags:
-        - Sessions
-      summary: Get a single session by id
+        - Audit
+      summary: Suggest a track → agent roster
       parameters:
         - schema:
             type: string
-            description: Session UUID.
+            description: Project slug or id.
           required: true
-          description: Session UUID.
-          name: sessionId
+          description: Project slug or id.
+          name: projectId
           in: path
       responses:
         "200":
-          description: Session row.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "404":
-          description: Session not found (or hidden by ownership).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    patch:
-      tags:
-        - Sessions
-      summary: Update session fields
-      description: Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                max_turns:
-                  type: integer
-                  minimum: 0
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-    delete:
-      tags:
-        - Sessions
-      summary: Archive (soft-delete) a single session
-      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Archive ack.
+          description: Suggested tracks.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  archived:
-                    type: boolean
-                    enum:
-                      - true
+                  tracks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrackSuggestion"
                 required:
-                  - ok
-                  - archived
+                  - tracks
         "404":
-          description: Session not found.
+          description: Project not found.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/messages:
+                $ref: "#/components/schemas/AuditErrorResponse"
+  /api/projects/{projectId}/roster:
     get:
       tags:
-        - Sessions
-      summary: List every message in a session (oldest first)
+        - Audit
+      summary: Read back the persisted roster
       parameters:
         - schema:
             type: string
-            description: Session UUID.
+            description: Project slug or id.
           required: true
-          description: Session UUID.
-          name: sessionId
+          description: Project slug or id.
+          name: projectId
           in: path
       responses:
         "200":
-          description: Array of messages.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Message"
-        "404":
-          description: Session not found (or hidden by ownership).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/agents:
-    post:
-      tags:
-        - Sessions
-      summary: Add a read-only advisor agent to a multi-agent session
-      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                agentId:
-                  type: string
-                  minLength: 1
-              required:
-                - agentId
-      responses:
-        "200":
-          description: Updated session with roster.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or primary agent cannot be added as advisor.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "403":
-          description: Reviewer agents cannot join multi-agent sessions.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session or agent not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/agents/{agentId}:
-    delete:
-      tags:
-        - Sessions
-      summary: Remove an advisor from a multi-agent session
-      description: Session owner only. Cannot remove the primary executor.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-        - schema:
-            type: string
-            description: Advisor agent ID to remove.
-          required: true
-          description: Advisor agent ID to remove.
-          name: agentId
-          in: path
-      responses:
-        "200":
-          description: Updated session with roster.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Cannot remove the primary executor.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/restore:
-    post:
-      tags:
-        - Sessions
-      summary: Restore an archived session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Restored session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "409":
-          description: Session is not archived.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/engine:
-    put:
-      tags:
-        - Sessions
-      summary: Switch the engine for a session
-      description: Resets the model to the new engine's default if the current model isn't valid for the chosen engine. Clears the `engine_session_id` so the next chat starts a fresh CLI side.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                engine:
-                  type: string
-                  enum:
-                    - claude-code
-                    - cursor-agent
-                    - gemini-cli
-                    - codex-cli
-              required:
-                - engine
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or invalid engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/model:
-    put:
-      tags:
-        - Sessions
-      summary: Switch the model for a session
-      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                model:
-                  type: string
-                  minLength: 1
-              required:
-                - model
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed or model not valid for the current engine.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/ask-mode:
-    put:
-      tags:
-        - Sessions
-      summary: Toggle ask-mode (read-only / plan-mode) on a session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/react-loop:
-    put:
-      tags:
-        - Sessions
-      summary: Toggle the host-mediated ReAct loop on a session
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: Updated session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/rewind:
-    post:
-      tags:
-        - Sessions
-      summary: Rewind a Claude Code session to a checkpoint UUID
-      description: "Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                uuid:
-                  type: string
-                  minLength: 1
-              required:
-                - uuid
-      responses:
-        "200":
-          description: Rewind kicked off.
+          description: Persisted roster.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
-                    type: string
-                    enum:
-                      - rewind_started
-                  uuid:
-                    type: string
-                  sessionId:
-                    type: string
-                required:
-                  - status
-                  - uuid
-                  - sessionId
-        "400":
-          description: Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "404":
-          description: Session or checkpoint not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "409":
-          description: Session is actively running.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/checkpoints/{uuid}:
-    patch:
-      tags:
-        - Sessions
-      summary: Rename a checkpoint label
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-        - schema:
-            type: string
-            description: Checkpoint UUID.
-          required: true
-          description: Checkpoint UUID.
-          name: uuid
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                label:
-                  type: string
-              required:
-                - label
-      responses:
-        "200":
-          description: Updated checkpoint.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  session_id:
-                    type: string
-                  uuid:
-                    type: string
-                  label:
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        label:
+                          type: string
+                        agentId:
+                          type: string
+                        custom:
+                          type: boolean
+                        agentName:
+                          type: string
+                      required:
+                        - id
+                        - label
+                        - agentId
+                        - custom
+                  updatedAt:
                     type: string
                 required:
-                  - session_id
-                  - uuid
-                  - label
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
+                  - tracks
+                  - updatedAt
         "404":
-          description: Checkpoint not found.
+          description: Roster not set.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/ticket:
-    post:
-      tags:
-        - Sessions
-      summary: Mint a single-use preview iframe ticket
-      description: "Returns a short-lived single-use ticket the SPA appends to the preview iframe `src` as `?ticket=…`. Browsers cannot attach `Authorization: Bearer …` to an iframe top-level navigation, so this endpoint is the bridge between the SPA's JWT session and the preview proxy. The ticket is bound to (sessionId, caller) and ~60 s TTL; on first hit the proxy consumes the ticket and writes a path-scoped HttpOnly cookie so sub-resources (.js/.css/images) authenticate automatically."
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Ticket minted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ticket:
-                    type: string
-                    description: Single-use opaque token (prefixed `ahpt_`). Append as `?ticket=…`.
-                  ttlSeconds:
-                    type: integer
-                    description: Seconds the ticket remains valid before it must be re-minted.
-                required:
-                  - ticket
-                  - ttlSeconds
-        "404":
-          description: Session not found or not owned by the caller.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/stop:
-    post:
-      tags:
-        - Sessions
-      summary: Stop worktree preview for a chat session
-      description: Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Preview teardown requested.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  stopped:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-                  - stopped
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
+                $ref: "#/components/schemas/AuditErrorResponse"
         "500":
-          description: Unexpected server error.
+          description: Stored roster is corrupt.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/workspace/ensure:
+                $ref: "#/components/schemas/AuditErrorResponse"
     post:
       tags:
-        - Sessions
-      summary: Provision session git worktree
-      description: Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.
+        - Audit
+      summary: Persist the user-chosen roster (and create custom agents)
+      description: "Custom tracks (`custom: true`) get a freshly-created agent row id `<projectId>-<trackId>`. Idempotent: re-running with the same custom track refreshes label/role rather than colliding. AGENTS.md in the project workspace is rewritten between roster markers."
       parameters:
         - schema:
             type: string
-            description: Session UUID.
+            description: Project slug or id.
           required: true
-          description: Session UUID.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Worktree ready (or skipped for workflow / wizard sessions).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  skipped:
-                    type: boolean
-                  worktreePath:
-                    type: string
-                  session:
-                    $ref: "#/components/schemas/Session"
-                required:
-                  - ok
-                  - skipped
-                  - worktreePath
-                  - session
-        "404":
-          description: Session not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "500":
-          description: Unexpected server error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "503":
-          description: Provisioning not wired on this server.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/preview/start:
-    post:
-      tags:
-        - Sessions
-      summary: Start worktree preview for a chat session
-      description: Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
-      parameters:
-        - schema:
-            type: string
-            description: Session UUID.
-          required: true
-          description: Session UUID.
-          name: sessionId
+          description: Project slug or id.
+          name: projectId
           in: path
       requestBody:
         content:
@@ -4598,43 +3769,91 @@ paths:
             schema:
               type: object
               properties:
-                route:
-                  type: string
-                  description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
-                reason:
-                  type: string
-              description: Optional preview task overrides.
+                tracks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        minLength: 1
+                      label:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      custom:
+                        type: boolean
+                      agentName:
+                        type: string
+                        maxLength: 80
+                    required:
+                      - id
+                  minItems: 1
+                  description: "Each track must have **either** a non-empty `agentId` XOR `custom: true` (not both, not neither)."
+              required:
+                - tracks
       responses:
         "200":
-          description: Preview boot kicked off.
+          description: Persisted roster. `tracks` echoes the resolved roster; `agents` lists the created/refreshed/bound agents so the client can hydrate display names without a follow-up `GET /api/agents`.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  started:
-                    type: boolean
-                    enum:
-                      - true
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        label:
+                          type: string
+                        agentId:
+                          type: string
+                        custom:
+                          type: boolean
+                        agentName:
+                          type: string
+                      required:
+                        - id
+                        - label
+                        - agentId
+                        - custom
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        role:
+                          type: string
+                          nullable: true
+                      required:
+                        - id
+                        - name
+                  updatedAt:
+                    type: string
                 required:
-                  - ok
-                  - started
+                  - tracks
+                  - agents
+                  - updatedAt
+        "400":
+          description: Invalid payload (XOR violation, unknown agentId, agentName too long, etc.).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditErrorResponse"
         "404":
-          description: Session not found.
+          description: Project not found.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
-        "500":
-          description: Unexpected server error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
+                $ref: "#/components/schemas/AuditErrorResponse"
   /api/projects/{projectId}/board:
     get:
       tags:
@@ -5544,1719 +4763,6 @@ paths:
       responses:
         "200":
           description: Acknowledgment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-  /api/projects/{projectId}/audit:
-    get:
-      tags:
-        - Audit
-      summary: Read the latest persisted audit report
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Audit report.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditReport"
-        "404":
-          description: No audit yet — POST /audit/refresh to generate one.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-        "500":
-          description: Stored report is corrupt JSON.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-  /api/projects/{projectId}/audit/refresh:
-    post:
-      tags:
-        - Audit
-      summary: Regenerate the audit report and persist it
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Fresh audit report.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditReport"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-        "500":
-          description: Audit run failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-  /api/projects/{projectId}/roster/suggest:
-    get:
-      tags:
-        - Audit
-      summary: Suggest a track → agent roster
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Suggested tracks.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  tracks:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/TrackSuggestion"
-                required:
-                  - tracks
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-  /api/projects/{projectId}/roster:
-    get:
-      tags:
-        - Audit
-      summary: Read back the persisted roster
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Persisted roster.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  tracks:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        label:
-                          type: string
-                        agentId:
-                          type: string
-                        custom:
-                          type: boolean
-                        agentName:
-                          type: string
-                      required:
-                        - id
-                        - label
-                        - agentId
-                        - custom
-                  updatedAt:
-                    type: string
-                required:
-                  - tracks
-                  - updatedAt
-        "404":
-          description: Roster not set.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-        "500":
-          description: Stored roster is corrupt.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-    post:
-      tags:
-        - Audit
-      summary: Persist the user-chosen roster (and create custom agents)
-      description: "Custom tracks (`custom: true`) get a freshly-created agent row id `<projectId>-<trackId>`. Idempotent: re-running with the same custom track refreshes label/role rather than colliding. AGENTS.md in the project workspace is rewritten between roster markers."
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                tracks:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                        minLength: 1
-                      label:
-                        type: string
-                      agentId:
-                        type: string
-                        nullable: true
-                      custom:
-                        type: boolean
-                      agentName:
-                        type: string
-                        maxLength: 80
-                    required:
-                      - id
-                  minItems: 1
-                  description: "Each track must have **either** a non-empty `agentId` XOR `custom: true` (not both, not neither)."
-              required:
-                - tracks
-      responses:
-        "200":
-          description: Persisted roster. `tracks` echoes the resolved roster; `agents` lists the created/refreshed/bound agents so the client can hydrate display names without a follow-up `GET /api/agents`.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  tracks:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        label:
-                          type: string
-                        agentId:
-                          type: string
-                        custom:
-                          type: boolean
-                        agentName:
-                          type: string
-                      required:
-                        - id
-                        - label
-                        - agentId
-                        - custom
-                  agents:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        role:
-                          type: string
-                          nullable: true
-                      required:
-                        - id
-                        - name
-                  updatedAt:
-                    type: string
-                required:
-                  - tracks
-                  - agents
-                  - updatedAt
-        "400":
-          description: Invalid payload (XOR violation, unknown agentId, agentName too long, etc.).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AuditErrorResponse"
-  /api/auth/status:
-    get:
-      tags:
-        - Auth
-      summary: Public auth status (used by the login screen).
-      responses:
-        "200":
-          description: Whether auth is configured and which secrets are present.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  authConfigured:
-                    type: boolean
-                  username:
-                    type: string
-                    nullable: true
-                  role:
-                    type: string
-                    nullable: true
-                    enum:
-                      - Owner
-                      - Admin
-                      - User
-                      - null
-                  jwtConfigured:
-                    type: boolean
-                  apiKeyConfigured:
-                    type: boolean
-                  needsMigration:
-                    type: boolean
-                  activeOrgIsLocal:
-                    type: boolean
-                required:
-                  - authConfigured
-                  - username
-                  - role
-                  - jwtConfigured
-                  - apiKeyConfigured
-                  - needsMigration
-                  - activeOrgIsLocal
-  /api/auth/setup:
-    post:
-      tags:
-        - Auth
-      summary: First-run setup — provisions the Owner user.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthSetupBody"
-      responses:
-        "200":
-          description: Setup succeeded; Owner token returned.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  token:
-                    type: string
-                  expiresAt:
-                    type: string
-                  user:
-                    type: object
-                    properties:
-                      username:
-                        type: string
-                      role:
-                        type: string
-                        enum:
-                          - Owner
-                          - Admin
-                          - User
-                    required:
-                      - username
-                      - role
-                required:
-                  - ok
-                  - token
-                  - expiresAt
-                  - user
-        "400":
-          description: Invalid body or domain validation failure.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "409":
-          description: Auth already configured.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/login:
-    post:
-      tags:
-        - Auth
-      summary: Issue a JWT for an existing user.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthLoginBody"
-      responses:
-        "200":
-          description: Login succeeded.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TokenResponse"
-        "400":
-          description: Invalid body shape.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Wrong credentials.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: No membership in active org.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Auth not configured.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "429":
-          description: Rate-limited.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me:
-    get:
-      tags:
-        - Auth
-      summary: Identity of the currently authenticated caller.
-      responses:
-        "200":
-          description: Caller summary.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user:
-                    type: object
-                    nullable: true
-                    properties:
-                      username:
-                        type: string
-                      role:
-                        type: string
-                        nullable: true
-                        enum:
-                          - Owner
-                          - Admin
-                          - User
-                          - null
-                    required:
-                      - username
-                      - role
-                  authConfigured:
-                    type: boolean
-                  role:
-                    type: string
-                    nullable: true
-                    enum:
-                      - Owner
-                      - Admin
-                      - User
-                      - null
-                  orgId:
-                    type: string
-                    nullable: true
-                required:
-                  - user
-                  - authConfigured
-                  - role
-                  - orgId
-  /api/auth/me/claude-auth:
-    get:
-      tags:
-        - Auth
-      summary: Per-user Claude credentials (masked).
-      responses:
-        "200":
-          description: Stored credentials with masking.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties:
-                  nullable: true
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Update per-user Claude credentials.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateClaudeAuthBody"
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties:
-                  nullable: true
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/cursor-auth:
-    get:
-      tags:
-        - Auth
-      summary: Per-user cursor credentials (masked).
-      responses:
-        "200":
-          description: Stored credentials with masking.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Update per-user cursor credentials.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/gemini-auth:
-    get:
-      tags:
-        - Auth
-      summary: Per-user gemini credentials (masked).
-      responses:
-        "200":
-          description: Stored credentials with masking.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Update per-user gemini credentials.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/codex-auth:
-    get:
-      tags:
-        - Auth
-      summary: Per-user Codex credentials (masked) + device-login (CODEX_HOME) status.
-      responses:
-        "200":
-          description: Stored API key + per-user CODEX_HOME inspection.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                  deviceLogin:
-                    type: object
-                    properties:
-                      uiStatus:
-                        type: string
-                        enum:
-                          - missing
-                          - pending
-                          - authenticated
-                      loginInProgress:
-                        type: boolean
-                      oauth:
-                        type: object
-                        properties:
-                          loggedIn:
-                            type: boolean
-                          mode:
-                            type: string
-                            nullable: true
-                          authJsonPath:
-                            type: string
-                            nullable: true
-                        required:
-                          - loggedIn
-                          - mode
-                          - authJsonPath
-                      codexHomePath:
-                        type: string
-                        nullable: true
-                    required:
-                      - uiStatus
-                      - loginInProgress
-                      - oauth
-                      - codexHomePath
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-                  - deviceLogin
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Update per-user Codex credentials.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  engine:
-                    type: string
-                  apiKey:
-                    type: string
-                    nullable: true
-                  updatedAt:
-                    anyOf:
-                      - type: string
-                      - type: number
-                      - nullable: true
-                  hostConfigFallback:
-                    type: object
-                    properties:
-                      apiKey:
-                        type: boolean
-                    required:
-                      - apiKey
-                required:
-                  - engine
-                  - apiKey
-                  - hostConfigFallback
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/agent-engine-overrides:
-    get:
-      tags:
-        - Auth
-      summary: Per-user per-agent engine (+ optional model) overrides.
-      responses:
-        "200":
-          description: Caller-scoped map of agentId → { engine, model? }. Entries whose engine/model are no longer in `engineValidModels` are filtered out.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  agentEngineOverrides:
-                    type: object
-                    additionalProperties:
-                      type: object
-                      properties:
-                        engine:
-                          type: string
-                        model:
-                          type: string
-                      required:
-                        - engine
-                required:
-                  - agentEngineOverrides
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User row missing.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Replace the caller-scoped per-agent engine override map.
-      description: "Pass `{ agentEngineOverrides: {} }` to clear all overrides. Each entry must name an engine present in `engineValidModels`; optional `model` must be a valid model for that engine."
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/PutAgentEngineOverridesBody"
-      responses:
-        "200":
-          description: Updated map.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  agentEngineOverrides:
-                    type: object
-                    additionalProperties:
-                      type: object
-                      properties:
-                        engine:
-                          type: string
-                        model:
-                          type: string
-                      required:
-                        - engine
-                required:
-                  - agentEngineOverrides
-        "400":
-          description: Invalid payload.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User row missing.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/skill-credentials:
-    get:
-      tags:
-        - Auth
-      summary: List masked per-user skill credentials.
-      parameters:
-        - schema:
-            type: string
-          required: false
-          name: skillId
-          in: query
-      responses:
-        "200":
-          description: Credential list.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  credentials:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties:
-                        nullable: true
-                required:
-                  - credentials
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Lookup failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    put:
-      tags:
-        - Auth
-      summary: Upsert a single per-user skill credential.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpsertSkillCredentialBody"
-      responses:
-        "200":
-          description: Created or cleared.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties:
-                  nullable: true
-        "400":
-          description: Validation failure.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Caller is not a member of the org.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Agent / workspace not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/me/skill-credentials/{id}:
-    delete:
-      tags:
-        - Auth
-      summary: Delete a per-user skill credential by id.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: id
-          in: path
-      responses:
-        "200":
-          description: Deleted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Credential not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/keys:
-    get:
-      tags:
-        - Auth
-      summary: List the caller's active API keys.
-      responses:
-        "200":
-          description: Key metadata (no plaintext tokens).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  keys:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        prefix:
-                          type: string
-                        createdAt:
-                          type: string
-                        lastUsedAt:
-                          type: string
-                          nullable: true
-                        expiresAt:
-                          type: string
-                          nullable: true
-                      required:
-                        - id
-                        - name
-                        - prefix
-                        - createdAt
-                        - lastUsedAt
-                        - expiresAt
-                required:
-                  - keys
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    post:
-      tags:
-        - Auth
-      summary: Create a new per-user API key.
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateApiKeyBody"
-      responses:
-        "201":
-          description: Key created — plaintext token shown ONCE.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  name:
-                    type: string
-                  token:
-                    type: string
-                  prefix:
-                    type: string
-                  createdAt:
-                    type: string
-                  expiresAt:
-                    type: string
-                    nullable: true
-                required:
-                  - id
-                  - name
-                  - token
-                  - prefix
-                  - createdAt
-                  - expiresAt
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "429":
-          description: Key cap reached.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/keys/{id}:
-    delete:
-      tags:
-        - Auth
-      summary: Revoke a per-user API key.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: id
-          in: path
-      responses:
-        "200":
-          description: Revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Key not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/users:
-    get:
-      tags:
-        - Auth
-      summary: List members of the active org (Admin+).
-      responses:
-        "200":
-          description: Member list.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  users:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/UserSummary"
-                required:
-                  - users
-        "403":
-          description: Insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    post:
-      tags:
-        - Auth
-      summary: Create a user + membership (Owner only).
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthCreateUserBody"
-      responses:
-        "201":
-          description: Created.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user:
-                    $ref: "#/components/schemas/UserSummary"
-                required:
-                  - user
-        "400":
-          description: Invalid body or domain failure.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "403":
-          description: Only Owner may create Owner.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Username taken.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/users/{id}/role:
-    put:
-      tags:
-        - Auth
-      summary: Change a member's role in the active org (Admin+).
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: id
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthUpdateUserRoleBody"
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  userId:
-                    type: string
-                  orgId:
-                    type: string
-                  role:
-                    type: string
-                    enum:
-                      - Owner
-                      - Admin
-                      - User
-                required:
-                  - ok
-                  - userId
-                  - orgId
-                  - role
-        "400":
-          description: Invalid role or sole-Owner demotion.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "403":
-          description: Insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User or membership missing.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/users/{id}:
-    delete:
-      tags:
-        - Auth
-      summary: Remove a user from the active org (Owner only).
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: id
-          in: path
-      responses:
-        "200":
-          description: Removed; cascade summary if the user was deleted entirely.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  userId:
-                    type: string
-                  orgId:
-                    type: string
-                  userDeleted:
-                    type: boolean
-                  cascadedPrivateProjects:
-                    type: array
-                    items:
-                      type: string
-                  orphanedSharedProjects:
-                    type: array
-                    items:
-                      type: string
-                required:
-                  - ok
-                  - userId
-                  - orgId
-                  - userDeleted
-                  - cascadedPrivateProjects
-                  - orphanedSharedProjects
-        "400":
-          description: Sole-Owner protection.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User or membership missing.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/users/{id}/password:
-    post:
-      tags:
-        - Auth
-      summary: Self-reset or Owner-reset a user password.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: id
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthPasswordResetBody"
-      responses:
-        "200":
-          description: Password updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  userId:
-                    type: string
-                required:
-                  - ok
-                  - userId
-        "400":
-          description: Invalid body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "403":
-          description: Only self or Owner may reset.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: User not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/invites:
-    post:
-      tags:
-        - Auth
-      summary: Issue an invite for the active org (Admin+).
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateInviteBody"
-      responses:
-        "201":
-          description: Invite created.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  token:
-                    type: string
-                  url:
-                    type: string
-                  role:
-                    type: string
-                    enum:
-                      - Owner
-                      - Admin
-                      - User
-                  email:
-                    type: string
-                    nullable: true
-                  expiresAt:
-                    type: string
-                  createdAt:
-                    type: string
-                required:
-                  - token
-                  - url
-                  - role
-                  - email
-                  - expiresAt
-                  - createdAt
-        "400":
-          description: Invalid role or missing user session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "403":
-          description: Insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    get:
-      tags:
-        - Auth
-      summary: List active invites for the active org (Admin+).
-      responses:
-        "200":
-          description: Invite list.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  invites:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        token:
-                          type: string
-                        orgId:
-                          type: string
-                        role:
-                          type: string
-                          enum:
-                            - Owner
-                            - Admin
-                            - User
-                        email:
-                          type: string
-                          nullable: true
-                        expiresAt:
-                          type: string
-                        createdAt:
-                          type: string
-                      required:
-                        - token
-                        - orgId
-                        - role
-                        - email
-                        - expiresAt
-                        - createdAt
-                required:
-                  - invites
-        "403":
-          description: Insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/invites/{token}:
-    delete:
-      tags:
-        - Auth
-      summary: Revoke an invite (Admin+, same org only).
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      responses:
-        "200":
-          description: Revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  token:
-                    type: string
-                required:
-                  - ok
-                  - token
-        "403":
-          description: Cross-org or insufficient role.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Invite not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    get:
-      tags:
-        - Auth
-      summary: Public landing metadata for an invite token.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      responses:
-        "200":
-          description: Invite preview.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  orgId:
-                    type: string
-                  orgName:
-                    type: string
-                  role:
-                    type: string
-                    enum:
-                      - Owner
-                      - Admin
-                      - User
-                  email:
-                    type: string
-                    nullable: true
-                  expiresAt:
-                    type: string
-                  accepted:
-                    type: boolean
-                required:
-                  - orgId
-                  - orgName
-                  - role
-                  - email
-                  - expiresAt
-                  - accepted
-        "404":
-          description: Invite not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "410":
-          description: Invite expired.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/invites/{token}/accept:
-    post:
-      tags:
-        - Auth
-      summary: Redeem an invite — creates user, membership, returns a JWT.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AcceptInviteBody"
-      responses:
-        "201":
-          description: User created and signed in.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TokenResponse"
-        "400":
-          description: Invalid body or domain failure.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "404":
-          description: Invite not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Username taken.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "410":
-          description: Invite expired / already accepted / lost race.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "429":
-          description: Rate-limited.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Server auth not configured.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/logout:
-    post:
-      tags:
-        - Auth
-      summary: Stateless logout receipt (client drops its JWT).
-      responses:
-        "200":
-          description: Receipt.
           content:
             application/json:
               schema:
@@ -9371,192 +6877,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
-  /api/auth/github/start:
-    get:
-      tags:
-        - Auth
-      summary: Mint a signed state token + return the GitHub authorize URL.
-      parameters:
-        - schema:
-            type: string
-          required: false
-          name: returnTo
-          in: query
-      responses:
-        "200":
-          description: Authorize URL the client should redirect the browser to.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  authorizeUrl:
-                    type: string
-                required:
-                  - authorizeUrl
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "503":
-          description: GitHub OAuth not configured on the server.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/github/callback:
-    get:
-      tags:
-        - Auth
-      summary: GitHub OAuth callback — exchanges code for tokens (HTML response).
-      parameters:
-        - schema:
-            type: string
-          required: false
-          name: code
-          in: query
-        - schema:
-            type: string
-          required: false
-          name: state
-          in: query
-        - schema:
-            type: string
-          required: false
-          name: error
-          in: query
-      responses:
-        "200":
-          description: Successful sign-in (HTML status page).
-          content:
-            text/html:
-              schema:
-                type: string
-        "400":
-          description: Missing or invalid parameters.
-          content:
-            text/html:
-              schema:
-                type: string
-        "502":
-          description: GitHub token exchange failed.
-          content:
-            text/html:
-              schema:
-                type: string
-        "503":
-          description: Server not ready or OAuth not configured.
-          content:
-            text/html:
-              schema:
-                type: string
-  /api/auth/github/status:
-    get:
-      tags:
-        - Auth
-      summary: GitHub connection status for the calling user.
-      responses:
-        "200":
-          description: Connection summary.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  connected:
-                    type: boolean
-                  login:
-                    type: string
-                    nullable: true
-                  connectedAt:
-                    type: string
-                    nullable: true
-                  tokenExpiresAt:
-                    type: string
-                    nullable: true
-                  serverConfigured:
-                    type: boolean
-                required:
-                  - connected
-                  - serverConfigured
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/github:
-    delete:
-      tags:
-        - Auth
-      summary: Disconnect the calling user from GitHub.
-      responses:
-        "200":
-          description: Disconnected.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                required:
-                  - ok
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/auth/github/connect-token:
-    post:
-      tags:
-        - Auth
-      summary: Connect via a GitHub Personal Access Token (PAT).
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/GithubConnectTokenBody"
-      responses:
-        "200":
-          description: Token validated and stored.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  login:
-                    type: string
-                required:
-                  - ok
-                  - login
-        "400":
-          description: Missing or invalid token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
-        "401":
-          description: Not authenticated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "502":
-          description: GitHub API call failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
   /api/heartbeats:
     get:
       tags:
@@ -10172,244 +7492,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MemoryErrorResponse"
-  /api/health:
-    get:
-      tags:
-        - Health
-      summary: Liveness + runtime info
-      responses:
-        "200":
-          description: Health payload.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/HealthResponse"
-  /api/server-logs:
-    get:
-      tags:
-        - Health
-      summary: Tail of the in-memory server log buffer
-      responses:
-        "200":
-          description: Recent log entries.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    ts:
-                      type: string
-                    level:
-                      type: string
-                    msg:
-                      type: string
-                  additionalProperties:
-                    nullable: true
-  /api/browse:
-    get:
-      tags:
-        - Misc
-      summary: Directory browser scoped to $HOME
-      description: Lists immediate subdirectories of `path` (default $HOME). Refuses any path outside $HOME with 403; refuses non-directories with 400.
-      parameters:
-        - schema:
-            type: string
-            description: Directory under $HOME. `~` and `~/foo` expand.
-          required: false
-          description: Directory under $HOME. `~` and `~/foo` expand.
-          name: path
-          in: query
-      responses:
-        "200":
-          description: Directory listing.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BrowseResponse"
-        "400":
-          description: Path is not a directory.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-        "403":
-          description: Path escapes $HOME.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-        "404":
-          description: Path does not exist.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-  /api/devices:
-    post:
-      tags:
-        - Devices
-      summary: Register an APNs / FCM push token
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                token:
-                  type: string
-                  minLength: 1
-                platform:
-                  type: string
-              required:
-                - token
-      responses:
-        "200":
-          description: Registered.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                required:
-                  - ok
-        "400":
-          description: token is required.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-  /api/devices/{token}:
-    delete:
-      tags:
-        - Devices
-      summary: Remove a push token
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      responses:
-        "200":
-          description: Removed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                required:
-                  - ok
-    get:
-      tags:
-        - Devices
-      summary: Read a push token's preferences + supported events
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      responses:
-        "200":
-          description: Token row.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DeviceTokenResponse"
-        "404":
-          description: Token not registered.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-  /api/devices/{token}/preferences:
-    put:
-      tags:
-        - Devices
-      summary: Update per-event push preferences
-      description: '`enabledEvents: null` clears the preference (legacy "all events" behaviour). Unknown event names are stripped server-side.'
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabledEvents:
-                  type: array
-                  nullable: true
-                  items:
-                    type: string
-                    enum:
-                      - session_complete
-                      - changes_ready
-                      - pr_creation_stale
-                      - card_started
-                      - card_review
-                      - pr_merged
-                      - thread_created
-                      - thread_entry
-                      - dispatch_failure
-                      - cron
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  enabledEvents:
-                    type: array
-                    nullable: true
-                    items:
-                      type: string
-                required:
-                  - ok
-                  - enabledEvents
-        "400":
-          description: enabledEvents must be an array or null.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-        "404":
-          description: Token not registered.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-  /api/usage:
-    get:
-      tags:
-        - Usage
-      summary: Aggregated usage stats (totals, per-agent, per-day, recent sessions)
-      responses:
-        "200":
-          description: Usage payload.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UsageResponse"
-        "500":
-          description: Aggregation query failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
   /api/projects/{projectId}/notes:
     get:
       tags:
@@ -11589,6 +8671,943 @@ paths:
                     type: string
                 required:
                   - error
+  /api/agents/{agentId}/sessions:
+    get:
+      tags:
+        - Sessions
+      summary: List sessions for an agent (owner-filtered)
+      description: Returns only sessions the caller owns. Pre-Phase-4 NULL-owner rows fall through to org-owner ownership.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Array of sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      tags:
+        - Sessions
+      summary: Create a new session for an agent
+      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                engine:
+                  type: string
+                model:
+                  type: string
+                ask_mode:
+                  type: boolean
+      responses:
+        "200":
+          description: New session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every session for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/agents/{agentId}/sessions/inactive:
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every *inactive* session for an agent
+      description: Skips sessions with an active in-flight CLI process.
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
+  /api/sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get a single session by id
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Session row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    patch:
+      tags:
+        - Sessions
+      summary: Update session fields
+      description: Updates `name` and/or `max_turns` (multi-agent advisor cap). Other keys are ignored.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                max_turns:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Archive (soft-delete) a single session
+      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Archive ack.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - archived
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/messages:
+    get:
+      tags:
+        - Sessions
+      summary: List every message in a session (oldest first)
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Array of messages.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents:
+    post:
+      tags:
+        - Sessions
+      summary: Add a read-only advisor agent to a multi-agent session
+      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+              required:
+                - agentId
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or primary agent cannot be added as advisor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Reviewer agents cannot join multi-agent sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents/{agentId}:
+    delete:
+      tags:
+        - Sessions
+      summary: Remove an advisor from a multi-agent session
+      description: Session owner only. Cannot remove the primary executor.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Advisor agent ID to remove.
+          required: true
+          description: Advisor agent ID to remove.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Cannot remove the primary executor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/restore:
+    post:
+      tags:
+        - Sessions
+      summary: Restore an archived session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Restored session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is not archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/engine:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the engine for a session
+      description: Resets the model to the new engine's default if the current model isn't valid for the chosen engine. Clears the `engine_session_id` so the next chat starts a fresh CLI side.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - gemini-cli
+                    - codex-cli
+              required:
+                - engine
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or invalid engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/model:
+    put:
+      tags:
+        - Sessions
+      summary: Switch the model for a session
+      description: "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+              required:
+                - model
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or model not valid for the current engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/ask-mode:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle ask-mode (read-only / plan-mode) on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/react-loop:
+    put:
+      tags:
+        - Sessions
+      summary: Toggle the host-mediated ReAct loop on a session
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/rewind:
+    post:
+      tags:
+        - Sessions
+      summary: Rewind a Claude Code session to a checkpoint UUID
+      description: "Spawns `claude --resume <engine_session_id> --rewind-files <uuid>`. Supported only when `session.engine` is `claude-code`. Other engines: HTTP 400 with `code: checkpoint_rewind_unsupported_engine`."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                uuid:
+                  type: string
+                  minLength: 1
+              required:
+                - uuid
+      responses:
+        "200":
+          description: Rewind kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - rewind_started
+                  uuid:
+                    type: string
+                  sessionId:
+                    type: string
+                required:
+                  - status
+                  - uuid
+                  - sessionId
+        "400":
+          description: Body validation failed, engine does not support rewind, or session never captured a Claude engine session id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is actively running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/checkpoints/{uuid}:
+    patch:
+      tags:
+        - Sessions
+      summary: Rename a checkpoint label
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Checkpoint UUID.
+          required: true
+          description: Checkpoint UUID.
+          name: uuid
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+              required:
+                - label
+      responses:
+        "200":
+          description: Updated checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  uuid:
+                    type: string
+                  label:
+                    type: string
+                required:
+                  - session_id
+                  - uuid
+                  - label
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Checkpoint not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/ticket:
+    post:
+      tags:
+        - Sessions
+      summary: Mint a single-use preview iframe ticket
+      description: "Returns a short-lived single-use ticket the SPA appends to the preview iframe `src` as `?ticket=…`. Browsers cannot attach `Authorization: Bearer …` to an iframe top-level navigation, so this endpoint is the bridge between the SPA's JWT session and the preview proxy. The ticket is bound to (sessionId, caller) and ~60 s TTL; on first hit the proxy consumes the ticket and writes a path-scoped HttpOnly cookie so sub-resources (.js/.css/images) authenticate automatically."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Ticket minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ticket:
+                    type: string
+                    description: Single-use opaque token (prefixed `ahpt_`). Append as `?ticket=…`.
+                  ttlSeconds:
+                    type: integer
+                    description: Seconds the ticket remains valid before it must be re-minted.
+                required:
+                  - ticket
+                  - ttlSeconds
+        "404":
+          description: Session not found or not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/stop:
+    post:
+      tags:
+        - Sessions
+      summary: Stop worktree preview for a chat session
+      description: Tears down compose/legacy preview runtimes for this session. Safe while boot is still in progress.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Preview teardown requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - stopped
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/workspace/ensure:
+    post:
+      tags:
+        - Sessions
+      summary: Provision session git worktree
+      description: Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Worktree ready (or skipped for workflow / wizard sessions).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  skipped:
+                    type: boolean
+                  worktreePath:
+                    type: string
+                  session:
+                    $ref: "#/components/schemas/Session"
+                required:
+                  - ok
+                  - skipped
+                  - worktreePath
+                  - session
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Provisioning not wired on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/ship:
+    post:
+      tags:
+        - Sessions
+      summary: Ship session work (Create ticket & PR)
+      description: "Operator-initiated publish for ad-hoc sessions: injects the `create-ticket-and-pr` skill, records a system callout in chat, and starts an agent turn without persisting a visible user slash-command message."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Ship workflow started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Session has no worktree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Disabled in workflow mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session, agent, or skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is streaming or is a resolve-PR session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/start:
+    post:
+      tags:
+        - Sessions
+      summary: Start worktree preview for a chat session
+      description: Boots the project preview runtime for this session (human-initiated only; agent `<agenthub:preview>` blocks are ignored). Progress and iframe URL are delivered over WebSocket as `agenthub_preview` events.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: string
+                  description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
+                reason:
+                  type: string
+              description: Optional preview task overrides.
+      responses:
+        "200":
+          description: Preview boot kicked off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  started:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - started
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/webhooks/hmac-failures:
     get:
       tags:

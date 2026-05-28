@@ -31,7 +31,6 @@ import {
   checkWorktreeChanges,
   initAutoGit,
   autoCommitAndPR,
-  manualCommitAndPR,
   buildCardDescription,
   buildPrTitle,
   buildPrBody,
@@ -484,7 +483,7 @@ describe('checkWorktreeChanges', () => {
   });
 });
 
-describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
+describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', () => {
   const mockBroadcast = vi.fn();
   const mockStmts = {
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
@@ -503,10 +502,9 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     });
   });
 
-  it('pushes the fix and broadcasts auto_pr_created (no new PR) when an open PR already exists', async () => {
-    // Regression: ad-hoc session fixing CI / review comments on an existing
-    // PR. Agent committed but did not push. We must push so GitHub sees the
-    // fix, and we must NOT open a new PR — the existing one gets reused.
+  it('does not push at session end — surfaces changes_ready for the operator button', async () => {
+    // User-initiated sessions never auto-push, even when a PR already exists
+    // on the branch. The operator uses Create ticket & PR (POST /ship).
     const execCalls: string[] = [];
     const mockStmtsAdHoc = {
       getKanbanCardBySession: { get: vi.fn(() => undefined) },
@@ -554,56 +552,50 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
 
     await autoCommitAndPR('sess-1', 'agent-1', project, agent, '/worktree', '');
 
-    // The bug fix: branch must be pushed so GitHub sees the agent's commit.
     const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
-    expect(pushCalls.length).toBeGreaterThan(0);
-    expect(pushCalls[0]).toContain('feature/existing-pr');
+    expect(pushCalls).toHaveLength(0);
 
-    // No `changes_ready` banner — there's already a PR, button isn't useful.
     const changesReadyEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'changes_ready',
     );
-    expect(changesReadyEvents).toHaveLength(0);
+    expect(changesReadyEvents.length).toBeGreaterThan(0);
 
-    // The existing PR URL is surfaced via auto_pr_created — no new PR opened.
     const autoPrEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
     );
-    expect(autoPrEvents.length).toBeGreaterThan(0);
-    const lastPrUrl = autoPrEvents[autoPrEvents.length - 1][0].prUrl;
-    expect(lastPrUrl).toBe('https://github.com/test/repo/pull/42');
-
-    // Regression: the pre-check must short-circuit `gh pr create` — calling
-    // create at all (even when it fails) was the bug, because in resolve-
-    // comment flows on a fresh worktree branch the create call SUCCEEDS and
-    // opens a duplicate PR.
-    const createCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
-    expect(createCalls).toHaveLength(0);
+    expect(autoPrEvents).toHaveLength(0);
   });
 
-  it('skips gh pr create entirely when the branch already has an open PR (resolve-comment regression)', async () => {
-    // Resolve-comment regression: when a session pushes to a branch that
-    // already has an open PR — whether that's the original PR branch
-    // (linked-session reuse) or any branch GitHub sees an open PR for —
-    // we must NOT invoke `gh pr create`. The previous behaviour relied on
-    // `gh pr create` failing and a regex pulling the URL out of stderr;
-    // when the resolve session ran on a fresh worktree branch the create
-    // call SUCCEEDED instead of failing, producing one new PR per review
-    // round. The fix pre-checks `gh pr view <branch>` and short-circuits.
+  it('card-assignment session auto-triggers skill ship (no server push)', async () => {
     const execCalls: string[] = [];
     const mockBroadcast = vi.fn();
-    const mockStmtsAdHoc = {
-      getKanbanCardBySession: { get: vi.fn(() => undefined) },
-      getSession: { get: vi.fn(() => ({ name: 'Resolve comment session' })) },
+    const triggerAutoSessionShip = vi.fn().mockResolvedValue({ ok: true });
+    const mockCard = {
+      id: 'card-assign',
+      title: 'Assigned task',
+      dispatched_by_autonomous: 0,
+      epic_id: null,
+    };
+    const sessionRow = {
+      id: 'sess-assign',
+      name: 'Assigned',
+      auto_ship_on_complete: 1,
+      code_changed_at: null,
+      agent_id: 'agent-assign',
+    };
+    const mockStmtsAssign = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getSession: { get: vi.fn(() => sessionRow) },
       updateSessionChangesReady: { run: vi.fn() },
       clearSessionChangesReady: { run: vi.fn() },
     } as Record<string, unknown>;
 
     initAutoGit({
-      stmts: mockStmtsAdHoc as never,
+      stmts: mockStmtsAssign as never,
       broadcast: mockBroadcast,
       getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerAutoSessionShip,
     });
 
     installExecAndGhMock(
@@ -614,51 +606,28 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       ) => {
         execCalls.push(cmd);
         const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
-
         if (cmd.includes('git remote -v'))
           return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
         if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
         if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
-        if (cmd.includes('git rev-parse --abbrev-ref HEAD'))
-          return ok('agent-hub/test/session-resolve\n');
-        // Pre-check: branch already has an open PR.
-        if (cmd.startsWith('gh pr view')) return ok('https://github.com/test/repo/pull/123\n');
-        // `gh pr create` MUST NOT be invoked — fail loudly if it is so the
-        // assertion below pinpoints the regression.
-        if (cmd.startsWith('gh pr create')) {
-          return callback?.(new Error('gh pr create should not be called'), {
-            stdout: '',
-            stderr: '',
-          });
-        }
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/assigned\n');
         return ok('');
       },
     );
 
     const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
-    const agent = { name: 'resolve-agent', role: 'dev' } as never;
+    const agent = { name: 'assign-agent', role: 'dev' } as never;
 
-    await autoCommitAndPR('sess-resolve', 'agent-resolve', project, agent, '/worktree-resolve', '');
+    await autoCommitAndPR('sess-assign', 'agent-assign', project, agent, '/worktree', '');
 
-    // The fix: no `gh pr create` call at all.
-    const createCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
-    expect(createCalls).toHaveLength(0);
-
-    // The existing PR must still be surfaced via auto_pr_created so the
-    // card lifecycle (move to Review, etc.) runs.
+    expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
+    expect(triggerAutoSessionShip.mock.calls[0][0].sessionId).toBe('sess-assign');
+    const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
+    expect(pushCalls).toHaveLength(0);
     const autoPrEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
     );
-    expect(autoPrEvents.length).toBeGreaterThan(0);
-    expect(autoPrEvents[autoPrEvents.length - 1][0].prUrl).toBe(
-      'https://github.com/test/repo/pull/123',
-    );
-
-    // And the branch must still be pushed so the existing PR sees the
-    // additional commits — the whole point of the resolve flow.
-    const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
-    expect(pushCalls.length).toBeGreaterThan(0);
-    expect(pushCalls[0]).toContain('agent-hub/test/session-resolve');
+    expect(autoPrEvents).toHaveLength(0);
   });
 
   it('sets git identity before commit when not configured in worktree', async () => {
@@ -1616,8 +1585,9 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     expect(autoPrEvents).toHaveLength(0);
   });
 
-  it('card with dispatched_by_autonomous=1 takes AUTONOMOUS path → opens PR, no changes_ready', async () => {
+  it('card with dispatched_by_autonomous=1 takes AUTONOMOUS path → auto skill ship, no changes_ready', async () => {
     const execCalls: string[] = [];
+    const triggerAutoSessionShip = vi.fn().mockResolvedValue({ ok: true });
     const stmts = makeStmtsWithCard({
       id: 'card-auto',
       title: 'Autonomous card',
@@ -1626,12 +1596,21 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       dispatched_by_autonomous: 1,
       epic_id: null,
     });
+    stmts.getSession = {
+      get: vi.fn(() => ({
+        id: 'sess-auto',
+        name: 'Test session',
+        agent_id: 'agent-1',
+        auto_ship_on_complete: 0,
+      })),
+    };
 
     initAutoGit({
       stmts: stmts as never,
       broadcast: mockBroadcast,
       getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerAutoSessionShip,
     });
     mockExecAdHocStyle(execCalls);
 
@@ -1639,19 +1618,19 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-auto', 'agent-1', project, agent, '/worktree', '');
 
-    // Autonomous path creates the PR.
+    expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
     const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
-    expect(ghCreateCalls).toHaveLength(1);
+    expect(ghCreateCalls).toHaveLength(0);
 
-    // No changes_ready banner on the autonomous path.
     const changesReadyEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
     );
     expect(changesReadyEvents).toHaveLength(0);
   });
 
-  it('card with epic_id but dispatched_by_autonomous=1 (legacy autonomous epic) → opens PR', async () => {
+  it('card with epic_id but dispatched_by_autonomous=1 (legacy autonomous epic) → auto skill ship', async () => {
     const execCalls: string[] = [];
+    const triggerAutoSessionShip = vi.fn().mockResolvedValue({ ok: true });
     const stmts = makeStmtsWithCard({
       id: 'card-epic',
       title: 'Epic card',
@@ -1660,12 +1639,21 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       dispatched_by_autonomous: 1,
       epic_id: 'epic-xyz',
     });
+    stmts.getSession = {
+      get: vi.fn(() => ({
+        id: 'sess-epic',
+        name: 'Test session',
+        agent_id: 'agent-1',
+        auto_ship_on_complete: 0,
+      })),
+    };
 
     initAutoGit({
       stmts: stmts as never,
       broadcast: mockBroadcast,
       getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerAutoSessionShip,
     });
     mockExecAdHocStyle(execCalls);
 
@@ -1673,8 +1661,9 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-epic', 'agent-1', project, agent, '/worktree', '');
 
+    expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
     const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
-    expect(ghCreateCalls).toHaveLength(1);
+    expect(ghCreateCalls).toHaveLength(0);
 
     const changesReadyEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
@@ -2671,241 +2660,6 @@ describe('isGarbageTitle', () => {
   });
 });
 
-describe('manualCommitAndPR — duplicate card prevention', () => {
-  // Regression for: "Duplicate kanban cards appear when PR moves to Review".
-  // When a session is already linked to an existing kanban card (via
-  // `session_id` — set by autonomous dispatch, bug-report intake, or manual
-  // linking in the UI), clicking "Create PR" must NOT create a second card.
-  // Previously `manualCommitAndPR` unconditionally called `createKanbanCard`,
-  // producing a duplicate in Review while the original stayed behind in
-  // To Do/In Progress.
-  const mockBroadcast = vi.fn();
-
-  function makeStmts(opts: {
-    existingCard?: Record<string, unknown>;
-    createKanbanCardRun: ReturnType<typeof vi.fn>;
-  }) {
-    const existing = opts.existingCard;
-    const newCardRow = {
-      id: 'generated-card-id',
-      title: 'Fresh card',
-      description: '',
-      priority: 'medium',
-      column_id: 'col-inprog',
-      board_id: 'board-1',
-      session_id: 'sess-dup',
-      dispatched_by_autonomous: 0,
-      epic_id: null,
-      pr_url: null,
-    };
-    return {
-      getKanbanCardBySession: { get: vi.fn(() => existing) },
-      getSession: { get: vi.fn(() => ({ name: 'Some session title' })) },
-      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
-      getKanbanColumns: {
-        all: vi.fn(() => [
-          { id: 'col-inprog', name: 'In Progress' },
-          { id: 'col-review', name: 'Review' },
-          { id: 'col-done', name: 'Done' },
-        ]),
-      },
-      getMessages: { all: vi.fn(() => [] as MessageRow[]) },
-      createKanbanCard: { run: opts.createKanbanCardRun },
-      getKanbanCard: { get: vi.fn(() => newCardRow) },
-      setCardPrUrl: { run: vi.fn() },
-      moveKanbanCard: { run: vi.fn() },
-      updateKanbanCard: { run: vi.fn() },
-      updateSessionChangesReady: { run: vi.fn() },
-      clearSessionChangesReady: { run: vi.fn() },
-      addMessage: { run: vi.fn() },
-      getMessageById: {
-        get: vi.fn(() => ({
-          id: 'm-1',
-          session_id: 'sess-dup',
-          role: 'system',
-          content: 'PR created from these changes',
-          engine: null,
-          model: null,
-          attachments: null,
-          metadata: null,
-          created_at: '2026-04-18T00:00:00.000Z',
-        })),
-      },
-      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
-    } as Record<string, unknown>;
-  }
-
-  function installPrCreationMock(prUrl: string) {
-    installExecAndGhMock(
-      (
-        cmd: string,
-        _opts: Record<string, unknown>,
-        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
-      ) => {
-        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
-        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
-        if (cmd.includes('git log @{upstream}..HEAD')) return ok('abc123 fix: thing\n');
-        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/dup-check\n');
-        if (cmd.startsWith('git rev-parse HEAD')) return ok('abc123def\n');
-        if (cmd.includes('git diff --stat')) return ok('');
-        if (cmd.includes('git log main..HEAD')) return ok('');
-        if (cmd.startsWith('gh pr view')) return ok('');
-        if (cmd.startsWith('gh pr create')) return ok(`${prUrl}\n`);
-        return ok('');
-      },
-    );
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('REUSES an existing card already linked to the session (no new card created)', async () => {
-    const createKanbanCardRun = vi.fn();
-    const existingCard = {
-      id: 'existing-card-abc',
-      title: 'Reassign a card even when a session is running',
-      description: 'Original ticket description',
-      priority: 'medium',
-      column_id: 'col-inprog',
-      board_id: 'board-1',
-      session_id: 'sess-dup',
-      dispatched_by_autonomous: 0,
-      epic_id: null,
-      pr_url: null,
-    };
-    const stmts = makeStmts({ existingCard, createKanbanCardRun });
-
-    initAutoGit({
-      stmts: stmts as never,
-      broadcast: mockBroadcast,
-      getConfig: vi.fn(() => ({}) as never),
-      DEFAULT_SKILLS_DIR: '/tmp/skills',
-    });
-    installPrCreationMock('https://github.com/test/repo/pull/777');
-
-    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
-    const agent = { name: 'dev', role: 'dev' } as never;
-    const result = await manualCommitAndPR('sess-dup', 'agent-1', project, agent, '/worktree', {});
-
-    // Core regression assertion: no new card was created.
-    expect(createKanbanCardRun).not.toHaveBeenCalled();
-
-    // The returned cardId MUST be the existing card's id — not a freshly
-    // minted UUID. Otherwise the UI would show (and move to Review) a card
-    // that doesn't exist in the DB.
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.cardId).toBe('existing-card-abc');
-      expect(result.prUrl).toBe('https://github.com/test/repo/pull/777');
-    }
-  });
-
-  it('CREATES a new card when the session has no linked card yet (ad-hoc flow)', async () => {
-    const createKanbanCardRun = vi.fn();
-    const stmts = makeStmts({ existingCard: undefined, createKanbanCardRun });
-
-    initAutoGit({
-      stmts: stmts as never,
-      broadcast: mockBroadcast,
-      getConfig: vi.fn(() => ({}) as never),
-      DEFAULT_SKILLS_DIR: '/tmp/skills',
-    });
-    installPrCreationMock('https://github.com/test/repo/pull/888');
-
-    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
-    const agent = { name: 'dev', role: 'dev' } as never;
-    const result = await manualCommitAndPR('sess-noadhoc', 'agent-1', project, agent, '/worktree', {
-      title: 'Fix the thing',
-    });
-
-    // Ad-hoc flow: exactly one new card was created, and the flow returned
-    // its generated id (not null).
-    expect(createKanbanCardRun).toHaveBeenCalledTimes(1);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.prUrl).toBe('https://github.com/test/repo/pull/888');
-      expect(result.cardId).toBeTruthy();
-    }
-  });
-
-  it('returns ok:false with commit_failed when git commit rejects (Create PR API can show this)', async () => {
-    const createKanbanCardRun = vi.fn();
-    const existingCard = {
-      id: 'existing-card-commit-fail',
-      title: 'Task with `backticks`\nand a newline in the title',
-      description: 'Body has `code` and $(date) — must not require shell quoting.',
-      priority: 'medium',
-      column_id: 'col-inprog',
-      board_id: 'board-1',
-      session_id: 'sess-commit-fail',
-      dispatched_by_autonomous: 0,
-      epic_id: null,
-      pr_url: null,
-    };
-    const stmts = makeStmts({ existingCard, createKanbanCardRun });
-
-    initAutoGit({
-      stmts: stmts as never,
-      broadcast: mockBroadcast,
-      getConfig: vi.fn(() => ({}) as never),
-      DEFAULT_SKILLS_DIR: '/tmp/skills',
-    });
-
-    installExecAndGhMock(
-      (
-        cmd: string,
-        _opts: Record<string, unknown>,
-        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
-      ) => {
-        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
-        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
-        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
-        if (cmd.includes('git log @{upstream}..HEAD')) return ok('abc123 fix: thing\n');
-        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/dup-check\n');
-        if (cmd.startsWith('git rev-parse HEAD')) return ok('abc123def\n');
-        if (cmd.includes('git diff --stat')) return ok('');
-        if (cmd.includes('git log main..HEAD')) return ok('');
-        if (cmd === 'git config user.name') return ok('Tester\n');
-        // execFile joins argv with spaces — full -m body is still one argv element.
-        if (cmd.startsWith('git commit -m')) return fail('pre-commit hook failed');
-        if (cmd.startsWith('gh pr view')) return ok('');
-        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/1\n');
-        return ok('');
-      },
-    );
-
-    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
-    const agent = { name: 'dev', role: 'dev' } as never;
-    const result = await manualCommitAndPR(
-      'sess-commit-fail',
-      'agent-1',
-      project,
-      agent,
-      '/worktree',
-      {},
-    );
-
-    expect(createKanbanCardRun).not.toHaveBeenCalled();
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.code).toBe('commit_failed');
-      expect(result.error).toMatch(/Git commit failed/);
-    }
-
-    const gitCommitSpawn = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (c: unknown[]) => c[0] === 'git' && Array.isArray(c[1]) && (c[1] as string[])[0] === 'commit',
-    );
-    expect(gitCommitSpawn.length).toBeGreaterThanOrEqual(1);
-    const argv = gitCommitSpawn[gitCommitSpawn.length - 1][1] as string[];
-    expect(argv[1]).toBe('-m');
-    const msgArg = argv[2];
-    expect(msgArg).toContain('`backticks`');
-    expect(msgArg).toContain('\n');
-    expect(msgArg).toContain('$(date)');
-  });
-});
-
 describe('runShellCommandStreaming — output byte cap', () => {
   afterEach(() => {
     wireSpawnToExecMocks();
@@ -3313,12 +3067,10 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
   });
 });
 
-describe('tasks-only project (no githubRepo) — auto/manual PR are no-ops', () => {
+describe('tasks-only project (no githubRepo) — auto PR is a no-op', () => {
   // A "tasks-only" project is one with no `githubRepo` set: it has wiki,
-  // kanban, sessions, crons, and heartbeats, but no git/PR lifecycle. Both
-  // the auto-PR babysit (autoCommitAndPR) and the user-clicked manual PR
-  // path (manualCommitAndPR) must short-circuit cleanly when there is no
-  // GitHub repo to push to.
+  // kanban, sessions, crons, and heartbeats, but no git/PR lifecycle.
+  // autoCommitAndPR must short-circuit cleanly when there is no GitHub repo.
   const mockBroadcast = vi.fn();
   const mockStmts = {
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
@@ -3357,24 +3109,6 @@ describe('tasks-only project (no githubRepo) — auto/manual PR are no-ops', () 
     await autoCommitAndPR('sess-tasks', 'agent-1', project, agent, '/worktree', '');
     // No broadcasts at all — nothing happened.
     expect(mockBroadcast).not.toHaveBeenCalled();
-  });
-
-  it('manualCommitAndPR returns no_github_repo when project has no githubRepo', async () => {
-    const project = { id: 'tasks-only', cwd: '/anywhere' } as never;
-    const agent = { name: 'tasker', role: 'dev' } as never;
-    const result = await manualCommitAndPR(
-      'sess-tasks',
-      'agent-1',
-      project,
-      agent,
-      '/worktree',
-      {},
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.code).toBe('no_github_repo');
-      expect(result.error).toMatch(/not connected to a GitHub repository/i);
-    }
   });
 });
 
