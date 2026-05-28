@@ -284,6 +284,7 @@ describe('createPreviewRuntimes', () => {
     const { previewRuntime, previewComposeRuntime, composeOverrideDir } = createPreviewRuntimes({
       db,
       dataDir,
+      reconcileOrphanComposeOnBoot: false,
     });
 
     expect(previewRuntime).toBeDefined();
@@ -312,7 +313,11 @@ describe('createPreviewRuntimes', () => {
     // and would balloon this test by two orders of magnitude.
     const dataDir = freshTmpDir();
     const db = new Database(':memory:');
-    const { previewRuntime } = createPreviewRuntimes({ db, dataDir });
+    const { previewRuntime } = createPreviewRuntimes({
+      db,
+      dataDir,
+      reconcileOrphanComposeOnBoot: false,
+    });
     const wired = (previewRuntime as unknown as { loadProjectEnv: unknown }).loadProjectEnv;
     // Must be a function (not the `null` fallback used when the dep is omitted).
     expect(typeof wired).toBe('function');

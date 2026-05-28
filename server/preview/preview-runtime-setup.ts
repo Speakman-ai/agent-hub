@@ -43,6 +43,7 @@ import {
 import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
+import { reconcileStartupOrphanComposeProjects } from './preview-startup-reconcile.js';
 
 export interface CreatePreviewRuntimesDeps {
   db: Database;
@@ -67,6 +68,8 @@ export interface CreatePreviewRuntimesDeps {
   /** Optional config overrides — primarily used by integration tests. */
   legacyConfig?: PreviewRuntimeConfig;
   composeConfig?: PreviewComposeRuntimeConfig;
+  /** Run docker orphan reconcile on startup. Defaults to true. */
+  reconcileOrphanComposeOnBoot?: boolean;
 }
 
 export interface CreatePreviewRuntimesResult {
@@ -268,6 +271,9 @@ export function createPreviewRuntimes(
     console.log(
       `[preview] startup: reclaimed ${reclaimedOnBoot} failed preview port(s) in [${portMin}, ${portMax}]`,
     );
+  }
+  if (deps.reconcileOrphanComposeOnBoot ?? true) {
+    reconcileStartupOrphanComposeProjects({ db: deps.db });
   }
 
   return { previewRuntime, previewComposeRuntime, composeOverrideDir };
