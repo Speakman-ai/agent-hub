@@ -16,7 +16,7 @@
  * under Vitest without native mocks. All side effects (navigation, state
  * updates) happen in the caller, which inspects the returned `Route` tag.
  *
- * @typedef {'session_complete'|'changes_ready'|'pr_creation_stale'|'card_started'|'card_review'|'pr_merged'|'thread_created'|'thread_entry'|'dispatch_failure'} EventKey
+ * @typedef {'session_complete'|'changes_ready'|'pr_creation_stale'|'card_started'|'card_review'|'pr_merged'|'thread_created'|'thread_entry'|'dispatch_failure'|'finalize_stall_warning'} EventKey
  *
  * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute
@@ -77,6 +77,15 @@ export function resolveAgentIdForSession(sessionId, sessions) {
  * can see which card the failed dispatch was attached to) and otherwise to
  * Threads if a `projectId` is known.
  *
+ * `finalize_stall_warning` (fired by the Finalize fix-dispatch stall
+ * watchdog when a live-mode dispatch has been waiting longer than the
+ * configured notify window — see `server/finalize/stall-watchdog.ts`)
+ * deep-links back to the **session** so the user can pick up the
+ * conversation where the fix dispatch landed. `sessionId` is the
+ * minimum required field; if the host's local sessions list doesn't yet
+ * know the session's agent we surface `agentId = null` and let the
+ * caller resolve / fetch.
+ *
  * Returning `null` means "no clear destination — stay put". Callers must
  * handle this gracefully (do not crash, do not clear active selection).
  *
@@ -128,6 +137,14 @@ export function routeNotificationTap(data, ctx = {}) {
       if (cardId) return { kind: 'kanban', projectId, cardId };
       if (projectId) return { kind: 'threads', projectId, threadId: null };
       return null;
+    }
+
+    case 'finalize_stall_warning': {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : null;
+      if (!sessionId) return null;
+      const payloadAgentId = typeof data.agentId === 'string' ? data.agentId : null;
+      const agentId = payloadAgentId || resolveAgentIdForSession(sessionId, sessions);
+      return { kind: 'chat', agentId, sessionId };
     }
 
     default:

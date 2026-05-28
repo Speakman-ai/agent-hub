@@ -10473,6 +10473,7 @@ paths:
                       - thread_entry
                       - dispatch_failure
                       - cron
+                      - finalize_stall_warning
       responses:
         "200":
           description: Updated.

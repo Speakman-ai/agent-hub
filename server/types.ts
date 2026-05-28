@@ -795,7 +795,23 @@ export type FinalizeRunStatus =
   | 'failed'
   | 'timed_out'
   | 'infra_error'
-  | 'cancelled';
+  | 'cancelled'
+  /**
+   * Terminal status set by the stall watchdog (see
+   * `server/finalize/stall-watchdog.ts` + wiki §7 "Human-walked-away
+   * behavior"). A live-mode fix dispatch landed in the originating
+   * session, the configured notify window elapsed with no turn-end (we
+   * pushed a "still waiting" notification), and the longer stall window
+   * elapsed with still no turn-end. The run is parked: the dispatched
+   * message stays in the session log so the human can pick up where they
+   * left off, and the card surfaces a "retrigger" affordance.
+   *
+   * **Autonomous runs never reach this state.** If an autonomous loop's
+   * fix dispatch is not picked up, that is a bug in the autonomous
+   * dispatcher; the stall path is live-only and gated by
+   * `trigger_source === 'ui_button'`.
+   */
+  | 'stalled_no_response';
 
 /** Phase codes — UI surfaces these; some collapse onto the same status. */
 export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';
@@ -1829,6 +1845,35 @@ export interface Project {
    * dispatcher. See {@link PrEnvProjectConfig}.
    */
   prEnv?: PrEnvProjectConfig;
+  /**
+   * Per-project wall-clock windows that gate the fix-dispatch stall
+   * watchdog (`server/finalize/stall-watchdog.ts`). Both fields are
+   * **starting points** — the design doc names 60 min / 24 hr as defaults
+   * "subject to tuning during dogfood monitoring", so projects may lower
+   * them. The watchdog only arms in **live** mode (UI button trigger);
+   * autonomous-triggered runs ignore both windows. See wiki §7
+   * "Human-walked-away behavior".
+   */
+  finalizeStall?: {
+    /**
+     * Wall-clock ms after a fix dispatch lands at which a push
+     * notification fires to the triggering user. The notification is a
+     * "still waiting" reminder, not a cancel — the run continues to wait
+     * for turn-end. Default: 60 minutes (`60 * 60 * 1000`). Hard floor
+     * 60s so operators cannot accidentally spam pushes every tick.
+     */
+    notifyAfterMs?: number;
+    /**
+     * Wall-clock ms after a fix dispatch lands at which the run is
+     * transitioned to `status = 'stalled_no_response'`. The dispatched
+     * message stays in the session log so the human can pick up later
+     * and re-trigger. Default: 24 hours (`24 * 60 * 60 * 1000`). Hard
+     * floor: must be strictly greater than {@link notifyAfterMs} —
+     * otherwise the notification would have no purpose and we'd just
+     * stall on a single tick.
+     */
+    stallAfterMs?: number;
+  };
   /**
    * Default for `browserToolsEnabled` when an agent omits the field.
    * When omitted project-wide, treated as enabled (backward compatible).

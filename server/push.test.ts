@@ -174,6 +174,10 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
       'thread_entry',
       'dispatch_failure',
       'cron',
+      // Finalize fix-dispatch stall watchdog reminder (live mode). See
+      // `server/finalize/stall-watchdog.ts` + wiki §7
+      // "Human-walked-away behavior".
+      'finalize_stall_warning',
     ];
     for (const e of required) expect(PUSH_EVENT_TYPES).toContain(e);
   });

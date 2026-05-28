@@ -197,6 +197,39 @@ describe('routeNotificationTap — dispatch_failure', () => {
   });
 });
 
+describe('routeNotificationTap — finalize_stall_warning', () => {
+  it('routes to chat using sessionId from the push payload', () => {
+    const data = {
+      type: 'finalize_stall_warning',
+      sessionId: 's1',
+      agentId: 'a1',
+      cardId: 'c1',
+      runId: 'r1',
+    };
+    expect(routeNotificationTap(data)).toEqual({
+      kind: 'chat',
+      agentId: 'a1',
+      sessionId: 's1',
+    });
+  });
+
+  it('resolves agentId from the loaded sessions list when missing from payload', () => {
+    const data = { event: 'finalize_stall_warning', sessionId: 's1', cardId: 'c1' };
+    const ctx = { sessions: [{ id: 's1', agent_id: 'a-resolved' }] };
+    expect(routeNotificationTap(data, ctx)).toEqual({
+      kind: 'chat',
+      agentId: 'a-resolved',
+      sessionId: 's1',
+    });
+  });
+
+  it('returns null when sessionId is missing — no destination', () => {
+    expect(
+      routeNotificationTap({ event: 'finalize_stall_warning', cardId: 'c1' }),
+    ).toBeNull();
+  });
+});
+
 describe('routeNotificationTap — unknown / malformed', () => {
   it('returns null for unknown event keys', () => {
     expect(routeNotificationTap({ event: 'something_new', sessionId: 's1' })).toBeNull();
