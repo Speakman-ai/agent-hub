@@ -7,7 +7,8 @@
  *   1. `gh pr review`  — formal review attribution. Must route through
  *      `POST /api/pr/review` so the review lands as the GitHub App.
  * Interactive non-reviewer spawns use per-user OAuth in `GH_TOKEN`, so
- * `gh pr create` is allowed (see create-ticket-and-pr / ship-pr skills).
+ * `gh pr create` is allowed when the token is `gho_` / `ghp_` (ship skill).
+ * App installation tokens (`ghs_`) and non-user tokens remain blocked.
  * Reviewer-role spawns still block create via `AGENT_HUB_REVIEWER_ROLE_LOCK`.
  *
  * Other write subcommands (comment, merge, close, ready) carry no
@@ -131,10 +132,9 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
   });
 
   // Regression: create/comment/merge/close/ready remain available under
-  // AGENT_HUB_REVIEWER_LOCK=1 for interactive dev spawns (per-user OAuth).
+  // AGENT_HUB_REVIEWER_LOCK=1 for interactive dev spawns with user OAuth.
   // The reviewer-role lock covers create for reviewer spawns separately.
   const NON_LOCKED_WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
-    ['create', ['create', '--title', 'test pr']],
     ['comment', ['comment', '1', '--body', 'note']],
     ['merge', ['merge', '1', '--squash']],
     ['close', ['close', '1']],
@@ -148,7 +148,7 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
           PATH: stubbedPath,
           HOME: os.tmpdir(),
           AGENT_HUB_REVIEWER_LOCK: '1',
-          GH_TOKEN: 'fake-token-to-satisfy-require_gh_token',
+          GH_TOKEN: 'gho_fake-user-oauth',
         },
         encoding: 'utf-8',
       });
@@ -156,6 +156,48 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
       expect(result.stderr || '').not.toContain('is disabled in Agent Hub spawns');
     });
   }
+
+  it('allows create under AGENT_HUB_REVIEWER_LOCK=1 with per-user OAuth (gho_)', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'test pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        AGENT_HUB_REVIEWER_LOCK: '1',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.stderr || '').not.toContain('gh-pr.sh create is disabled');
+    expect(result.status).not.toBe(2);
+  });
+
+  it('blocks create under AGENT_HUB_REVIEWER_LOCK=1 with App installation token (ghs_)', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'test pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        AGENT_HUB_REVIEWER_LOCK: '1',
+        GH_TOKEN: 'ghs_fake-app-installation-token',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('gh-pr.sh create is disabled');
+  });
+
+  it('blocks create under AGENT_HUB_REVIEWER_LOCK=1 without per-user OAuth', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'test pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        AGENT_HUB_REVIEWER_LOCK: '1',
+        GH_TOKEN: 'fake-token-to-satisfy-require_gh_token',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('gh-pr.sh create is disabled');
+  });
 
   it('exits 2 with usage text when AGENT_HUB_REVIEWER_LOCK is unset and required args are missing', () => {
     // Establishes the baseline: without the lock the script still

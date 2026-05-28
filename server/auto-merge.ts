@@ -10,8 +10,8 @@ export interface GithubWorkflowLike {
  *   2. Otherwise, the project's Settings-page `githubWorkflow.autoMerge`.
  *   3. Default: false (do nothing).
  *
- * This is the single source of truth for the default — used by
- * autonomous `commitPushAndCreatePR` (and ad-hoc push-to-existing-PR paths).
+ * This is the single source of truth for the default — retained for tests
+ * and any future server-side PR paths; the ship skill flow does not use it.
  */
 export function resolveShouldAutoMerge(
   override: boolean | undefined,

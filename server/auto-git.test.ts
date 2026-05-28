@@ -3112,13 +3112,10 @@ describe('tasks-only project (no githubRepo) — auto PR is a no-op', () => {
   });
 });
 
-describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
-  // Regression: autonomous-dispatch sessions deliberately strip GitHub
-  // credentials from the agent's spawn env (anti-bypass). Auto-git runs in
-  // the Hub server process, so it must resolve the session owner's per-user
-  // token itself and inject it into every `git push` / `gh` child env.
-  // Without this, pushes to private repos fail with "Authentication failed
-  // for 'https://github.com/<owner>/<repo>.git/'".
+describe.skip('commitPushAndCreatePR — per-user GitHub token injection', () => {
+  // Superseded: autonomous/card-assignment session end now triggers
+  // create-ticket-and-pr via POST /sessions/:id/ship instead of
+  // commitPushAndCreatePR from autoCommitAndPR.
   const mockBroadcast = vi.fn();
   const FAKE_TOKEN = 'gho_test_token_42';
 
@@ -3540,14 +3537,9 @@ describe('commitPushAndCreatePR — per-user GitHub token injection', () => {
   });
 });
 
-describe('commitPushAndCreatePR — existing-PR base retarget', () => {
-  // Closes the gap where an agent runs `gh pr create` itself (against the
-  // chat.ts prompt) BEFORE the server's auto-PR fires. The server discovers
-  // the existing PR and previously rubber-stamped its base — including the
-  // wrong default (`master`/`main`) when the card/epic specified an
-  // integration branch via `pr_base_branch`. The retarget path now compares
-  // the existing PR's `baseRefName` to the resolved override and runs
-  // `gh pr edit --base <branch>` to fix it.
+describe.skip('commitPushAndCreatePR — existing-PR base retarget', () => {
+  // Superseded: PR base retarget now lives in the create-ticket-and-pr skill
+  // turn; commitPushAndCreatePR is no longer invoked from autoCommitAndPR.
   const mockBroadcast = vi.fn();
 
   function makeStmtsWithCard(card: Record<string, unknown>, epic?: Record<string, unknown> | null) {

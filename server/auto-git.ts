@@ -2500,6 +2500,17 @@ export async function autoCommitAndPR(
       console.error(
         `[auto-commit] Auto-ship trigger failed for session ${sessionId}: ${shipResult.code ?? shipResult.error ?? 'unknown'}`,
       );
+      await persistAndBroadcastPrFailure({
+        sessionId,
+        agentId,
+        agentName: agent.name,
+        card,
+        outcome: {
+          ok: false,
+          code: 'pr_failed',
+          error: shipResult.error ?? 'Auto-ship trigger failed',
+        },
+      });
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

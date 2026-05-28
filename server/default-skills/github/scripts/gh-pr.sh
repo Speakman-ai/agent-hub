@@ -34,9 +34,11 @@ source "$DIR/_common.sh"
 #
 # Interactive non-reviewer spawns receive the session owner's per-user
 # OAuth in `GH_TOKEN` (`resolveGithubSpawnToken`), so `gh pr create` is
-# allowed for dev/lead workflows (see `create-ticket-and-pr` / `ship-pr`
-# skills). Reviewer-role spawns still block create via
-# `AGENT_HUB_REVIEWER_ROLE_LOCK`.
+# allowed when the token is a user credential (`gho_` / `ghp_`) — e.g.
+# create-ticket-and-pr / ship-pr skill turns. App installation tokens
+# (`ghs_`) and tokenless spawns are still blocked under the universal lock
+# so mid-turn autonomous agents cannot author bot-attributed PRs.
+# Reviewer-role spawns still block create via `AGENT_HUB_REVIEWER_ROLE_LOCK`.
 #
 # Other write subcommands (`comment`, `merge`, `close`, `ready`, `edit`)
 # are NOT blocked under the universal lock. The role-scoped lock
@@ -77,11 +79,43 @@ LOCKED
   fi
 }
 
+# Block `gh pr create` when the spawn carries an App installation token
+# (`ghs_…`) or no user OAuth — those would attribute the PR to the bot.
+# Per-user OAuth (`gho_` / `ghp_`) is allowed so ship/create-ticket-and-pr
+# skill turns can open PRs under the session owner. See mcsteen/surveytracker
+# PR #682 for the bot-attribution repro.
+_pr_create_locked() {
+  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" != "1" ]]; then
+    return 0
+  fi
+  local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [[ "$tok" == gho_* || "$tok" == ghp_* ]]; then
+    return 0
+  fi
+  cat >&2 <<LOCKED
+error: gh-pr.sh create is disabled in Agent Hub spawns without per-user OAuth.
+
+Spawns with a GitHub App installation token (ghs_…) or no token must not
+run \`gh pr create\` — GitHub attributes the PR to \`agent-hub-reviewer[bot]\`
+instead of the human session owner.
+
+What to do instead:
+  - For ship workflows: use the loaded create-ticket-and-pr skill (POST
+    /api/sessions/:id/ship injects it with the session owner's OAuth).
+  - Mid-turn on autonomous dispatch: commit and push only; let session-end
+    auto-ship open the PR under the owner's credential.
+
+Other subcommands — comment / view / diff / list — remain available.
+LOCKED
+  exit 2
+}
+
 # ---------------------------------------------------------------------------
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
   _reviewer_role_locked "gh-pr.sh create"
+  _pr_create_locked
   local title="" base="" body="" draft=false reviewer="" label=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
