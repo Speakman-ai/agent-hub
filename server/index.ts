@@ -123,6 +123,7 @@ import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
 import createPrResolveRoutes from './routes/pr-resolve.js';
 import createPrNudgeReviewerRoutes from './routes/pr-nudge-reviewer.js';
+import createExternalPrReviewRoutes from './routes/external-pr-review.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
@@ -950,6 +951,7 @@ app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
 app.use(createPrNudgeReviewerRoutes(routeDeps));
+app.use(createExternalPrReviewRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(
   createAuthRoutes({

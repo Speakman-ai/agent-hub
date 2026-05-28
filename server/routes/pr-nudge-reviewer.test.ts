@@ -45,11 +45,22 @@ describe('POST /api/projects/:projectId/pulls/:number/nudge-reviewer', () => {
   beforeEach(async () => {
     const { fetchPrDetail } = await import('../pr-detail-fetch.js');
     (fetchPrDetail as ReturnType<typeof vi.fn>).mockReset();
+    // Real shape from fetchPrDetail → normalizePrSummary: `pr.head` is the
+    // branch-ref STRING, head commit SHA is hoisted to top-level `headSha`.
+    // (Was previously `head: {sha: 'abc'}` — a shape normalizePrSummary
+    // never produces; masked the same prod bug fixed alongside this test.)
     (fetchPrDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
-      pr: { html_url: 'https://github.com/o/r/pull/3', title: 'T', head: { sha: 'abc' } },
+      source: 'user-oauth',
+      pr: {
+        html_url: 'https://github.com/o/r/pull/3',
+        title: 'T',
+        head: 'feature/x',
+        base: 'main',
+      },
       reviews: [],
       checks: [],
       comments: [],
+      headSha: 'abc',
     });
     hoisted.dispatchReviewerForPR.mockReset().mockReturnValue(true);
     hoisted.isReviewerDispatchPending.mockReset().mockReturnValue(false);

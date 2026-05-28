@@ -49,6 +49,7 @@ import {
   tryLinkKanbanCardByPrTitle,
 } from '../kanban-pr-link.js';
 import { clearChangesReadyAndNotifyPrCreated } from '../session-ship.js';
+import { classifyPr } from '../finalize/provenance.js';
 
 export { tryLinkKanbanCardByPrTitle };
 import type {
@@ -861,6 +862,8 @@ function reviewerTriggerDescription(reason: ReviewerDispatchOpts['reason']): str
       return 'Checks were re-run from GitHub (check run or suite rerequested)';
     case 'manual-nudge':
       return 'Manual nudge from Agent Hub (user requested a formal review from the PR list)';
+    case 'external-manual':
+      return 'Manual external-PR review (user pasted a PR URL into Agent Hub)';
     default:
       return String(reason);
   }
@@ -879,7 +882,7 @@ interface ReviewerDispatchOpts {
   prNumber: number;
   prTitle: string;
   repoFullName: string;
-  reason: 'opened' | 'synchronize' | 'rerequested' | 'manual-nudge';
+  reason: 'opened' | 'synchronize' | 'rerequested' | 'manual-nudge' | 'external-manual';
   /**
    * Commit SHA of PR head. Required to create a GitHub Check Run (which is
    * commit-scoped, not PR-scoped). Optional for backward-compat with callers
@@ -1523,7 +1526,7 @@ function isTerminalKanbanColumnName(name: string): boolean {
   return n === 'done' || n === 'cancelled' || n === 'canceled' || n === 'closed';
 }
 
-async function handleKanbanWebhookEvent(
+export async function handleKanbanWebhookEvent(
   deps: RouteDeps,
   event: string,
   action: string,
@@ -1651,13 +1654,25 @@ async function handleKanbanWebhookEvent(
 
   if (!project) return false;
 
-  // ─── Unified Reviewer Dispatch ──────────────────────────────────
-  // Every PR `opened` or `synchronize` event triggers the project's dedicated
-  // Reviewer agent (debounced). This is the SINGLE trigger surface for review —
-  // no longer tied to autonomous mode, kanban column moves, or review_requested.
+  // ─── Webhook Reviewer Dispatch — DISABLED at v0 ─────────────────
+  // Per the Finalize Code Changes architecture (§11 of
+  // `finalize-code-changes-architecture-v0`), the webhook auto-dispatch path
+  // for `pull_request.opened|synchronize` is a no-op at v0:
   //
-  // Gated by the webhook config's author_allowlist so two Agent Hub instances
-  // installed on the same repo don't cross-review each other's PRs.
+  //   - **Internal PRs** (pushed by the Finalize orchestrator) were already
+  //     reviewed pre-PR by the reviewer agent in `server/finalize/
+  //     reviewer-dispatch.ts`; re-reviewing on `opened` is redundant.
+  //   - **External PRs** (contributor, dependabot, direct GH push) are
+  //     reviewed manually — users paste the PR URL into the "Review external
+  //     PR" surface (`POST /api/projects/:projectId/external-pr-review`)
+  //     or use the per-row "Nudge reviewer" button on the PR list. The
+  //     webhook-driven flow is killed to keep the trigger explicit.
+  //
+  // The provenance check (`classifyPr`) is consulted so log lines record
+  // which class was skipped — it makes regressions visible if v1+ re-enables
+  // either branch. The `shouldReviewPrAuthor` allowlist gate is preserved for
+  // the log; it remains the right place to suppress noise if dispatch is
+  // re-enabled.
   if (
     event === 'pull_request' &&
     payload.pull_request &&
@@ -1671,14 +1686,17 @@ async function handleKanbanWebhookEvent(
         `[Webhook/Reviewer] skipping PR #${pr.number} on "${project.name}" — author "${authorLogin ?? '?'}" not in author_allowlist`,
       );
     } else {
-      dispatchReviewerForPR(deps, project, {
-        prUrl: pr.html_url,
-        prNumber: pr.number,
-        prTitle: pr.title,
-        repoFullName: payload.repository.full_name,
-        reason: action as 'opened' | 'synchronize',
-        headSha: pr.head?.sha,
-      });
+      // Classify so the skip log makes the rationale explicit. Body fallback
+      // intentionally omitted — webhook payloads carry `pull_request.body`,
+      // but the registry hit is sufficient for the log; the body marker
+      // path will matter when v1+ re-enables this branch.
+      const classification = await classifyPr({ stmts }, pr.html_url);
+      console.log(
+        `[Webhook/Reviewer] skipping auto-dispatch for PR #${pr.number} on "${project.name}" — ` +
+          `provenance=${classification.provenance} via=${classification.via} ` +
+          `(webhook auto-dispatch is disabled at v0 per finalize-code-changes-architecture §11; ` +
+          `internal PRs were already reviewed pre-PR, external PRs require manual trigger).`,
+      );
     }
   }
 

@@ -90,7 +90,7 @@ describe('validModelsForAgent', () => {
   ];
   const modelConfig = {
     engineValidModels: {
-      'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'],
+      'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'],
       'codex-cli': ['gpt-5-codex'],
       'cursor-agent': [],
     },
@@ -98,7 +98,7 @@ describe('validModelsForAgent', () => {
 
   it('returns models for the agents own engine when no override is set', () => {
     expect(validModelsForAgent(agents, modelConfig, 'ClaudeAgent')).toEqual([
-      'claude-opus-4-7',
+      'claude-opus-4-8',
       'claude-sonnet-4-20250514',
     ]);
     expect(validModelsForAgent(agents, modelConfig, 'CodexAgent')).toEqual([
@@ -117,10 +117,10 @@ describe('validModelsForAgent', () => {
   it('trims and ignores blank overrides (falls back to the agent default)', () => {
     expect(
       validModelsForAgent(agents, modelConfig, 'ClaudeAgent', '   '),
-    ).toEqual(['claude-opus-4-7', 'claude-sonnet-4-20250514']);
+    ).toEqual(['claude-opus-4-8', 'claude-sonnet-4-20250514']);
     expect(
       validModelsForAgent(agents, modelConfig, 'ClaudeAgent', ''),
-    ).toEqual(['claude-opus-4-7', 'claude-sonnet-4-20250514']);
+    ).toEqual(['claude-opus-4-8', 'claude-sonnet-4-20250514']);
   });
 
   it('returns [] when modelConfig is missing or the engine has no models', () => {
@@ -142,7 +142,7 @@ describe('engineEntriesWithModels', () => {
     expect(
       engineEntriesWithModels({
         engineValidModels: {
-          'claude-code': ['claude-opus-4-7'],
+          'claude-code': ['claude-opus-4-8'],
           'codex-cli': ['gpt-5-codex'],
           'cursor-agent': [],
           gemini: [],

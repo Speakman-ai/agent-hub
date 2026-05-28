@@ -170,12 +170,12 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
 
   // config.json replaces whole engine* maps (no deep merge) — real files list every engine.
   const nonCursorValid: Record<string, string[]> = {
-    'claude-code': ['claude-opus-4-7'],
+    'claude-code': ['claude-opus-4-8'],
     'gemini-cli': ['gemini-2.5-pro'],
     'codex-cli': ['gpt-5.3-codex'],
   };
   const nonCursorDefaults: Record<string, string> = {
-    'claude-code': 'claude-opus-4-7',
+    'claude-code': 'claude-opus-4-8',
     'gemini-cli': 'gemini-2.5-pro',
     'codex-cli': 'gpt-5.3-codex',
   };
@@ -204,7 +204,7 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     });
 
     const mod = await import('./config.js');
-    expect(mod.default.engineValidModels['claude-code']).toEqual(['claude-opus-4-7']);
+    expect(mod.default.engineValidModels['claude-code']).toEqual(['claude-opus-4-8']);
     expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
   });
 

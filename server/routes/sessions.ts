@@ -869,7 +869,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // Load the session BEFORE updating the engine so we can check whether
     // the current model is still valid for the new engine. If not, reset
     // the model to the engine's default. Without this step, the session
-    // ends up in a mixed state (e.g. engine=codex-cli, model=claude-opus-4-7)
+    // ends up in a mixed state (e.g. engine=codex-cli, model=claude-opus-4-8)
     // and the next `PUT .../model` call — which the client fires right
     // after — 400s with "Model X is not valid for engine Y".
     const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;

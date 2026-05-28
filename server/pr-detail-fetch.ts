@@ -34,6 +34,16 @@ export interface PrDetailFetchResult {
   reviews: Array<Record<string, unknown>>;
   comments: Array<Record<string, unknown>>;
   checks: Array<Record<string, unknown>>;
+  /**
+   * PR head commit SHA, extracted from the raw GitHub `pull_request.head.sha`
+   * before `normalizePrSummary` collapses `head` into a branch-ref string.
+   *
+   * Exposed at the top level because the normalised `pr.head` is the branch
+   * name only — callers that need the SHA (e.g. reviewer Check Run creation,
+   * which is commit-scoped) would otherwise have to refetch. `null` when the
+   * upstream payload has no head SHA (edge case: deleted-branch GhostPR).
+   */
+  headSha: string | null;
 }
 
 export class PrFetchError extends Error {
@@ -78,6 +88,7 @@ export async function fetchPrDetail(
         reviews: normalizeReviews(reviewsRaw as unknown),
         comments: normalizeIssueComments(commentsRaw as unknown),
         checks: normalizeCheckRuns(checksRaw as unknown),
+        headSha: sha ?? null,
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -120,6 +131,7 @@ export async function fetchPrDetail(
           reviews: normalizeReviews(reviewsRaw),
           comments: normalizeIssueComments(commentsRaw),
           checks: normalizeCheckRuns(checksRaw),
+          headSha: sha ?? null,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -11,7 +11,7 @@ function minimalSession(overrides: Partial<SessionRow>): SessionRow {
     agent_id: 'a1',
     name: 'Test',
     engine: 'claude-code',
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     engine_session_id: null,
     use_worktree: 1,
     worktree_path: null,

@@ -35,15 +35,15 @@ vi.mock('../utils/api.js', () => ({
 }));
 
 const MULTI_ENGINE_MODEL_CONFIG = {
-  defaultModel: 'claude-opus-4-7',
+  defaultModel: 'claude-opus-4-8',
   engineDefaultModels: {
-    'claude-code': 'claude-opus-4-7',
+    'claude-code': 'claude-opus-4-8',
     'cursor-agent': 'cursor-default',
     'gemini-cli': 'gemini-2.5-pro',
     'codex-cli': 'gpt-5-codex',
   },
   engineValidModels: {
-    'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-5'],
+    'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-5'],
     'cursor-agent': ['cursor-default', 'cursor-fast'],
     'gemini-cli': ['gemini-2.5-pro', 'gemini-2.5-flash'],
     'codex-cli': ['gpt-5-codex', 'gpt-5'],

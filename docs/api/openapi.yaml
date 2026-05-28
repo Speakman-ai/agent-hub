@@ -1754,6 +1754,56 @@ components:
       additionalProperties:
         nullable: true
       description: A single escalation row.
+    ExternalPrReviewErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        hint:
+          type: string
+        provenance:
+          type: string
+        via:
+          type: string
+        activeSessionId:
+          type: string
+      required:
+        - error
+      description: Error envelope for the external-PR-review endpoint.
+    ExternalPrReviewRequest:
+      type: object
+      properties:
+        prUrl:
+          type: string
+          minLength: 1
+          description: GitHub PR URL of the form https://github.com/owner/repo/pull/N. The repo must match the project's configured githubRepo.
+          example: https://github.com/acme/widgets/pull/42
+      required:
+        - prUrl
+      description: Manual external-PR review request — user pastes a PR URL from the project's repo to spawn a reviewer-only session.
+    ExternalPrReviewScheduled:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        scheduled:
+          type: boolean
+          enum:
+            - true
+        prNumber:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+        repoFullName:
+          type: string
+      required:
+        - ok
+        - scheduled
+        - prNumber
+        - repoFullName
+      description: Reviewer dispatch scheduled. A reviewer session will be spawned shortly (debounced ~30s); the session posts a formal review on GitHub via Reviewer App auth and exits.
     ReviewerThread:
       type: object
       properties:
@@ -6678,6 +6728,67 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EscalationsErrorResponse"
+  /api/projects/{projectId}/external-pr-review:
+    post:
+      tags:
+        - Pull Requests
+      summary: Manually trigger reviewer for an external GitHub PR
+      description: |-
+        Spawns a reviewer-only session for an external GitHub PR (one not pushed
+        by the Finalize orchestrator — contributor, dependabot, or direct push).
+        The reviewer posts a single formal review back to GitHub via Reviewer App
+        auth and exits. No fix-dispatch loop runs.
+
+        The PR repo must match the project's configured `githubRepo`. PRs whose
+        provenance classifies as `internal` (finalize-pushed) are rejected with 409 —
+        use the per-row "Nudge reviewer" button on the PR list to re-trigger review
+        on those.
+
+        See `finalize-code-changes-architecture-v0` §11.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalPrReviewRequest"
+      responses:
+        "202":
+          description: Reviewer dispatch scheduled (debounced).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalPrReviewScheduled"
+        "400":
+          description: Invalid PR URL, missing project githubRepo, cross-repo URL, or no reviewer agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
+        "404":
+          description: Project not found or PR not found on GitHub.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
+        "409":
+          description: PR classified as internal, a reviewer session is already running, or a dispatch is already debounced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
+        "502":
+          description: Upstream GitHub fetch failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
   /api/projects/{projectId}/finalize/{runId}/reviewer-threads:
     get:
       tags:

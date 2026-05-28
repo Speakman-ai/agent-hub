@@ -17,15 +17,15 @@ import {
  */
 
 const MODEL_CONFIG = {
-  defaultModel: 'claude-opus-4-7',
+  defaultModel: 'claude-opus-4-8',
   engineDefaultModels: {
-    'claude-code': 'claude-opus-4-7',
+    'claude-code': 'claude-opus-4-8',
     'cursor-agent': 'cursor-default',
     'gemini-cli': 'gemini-2.5-pro',
     'codex-cli': 'gpt-5-codex',
   },
   engineValidModels: {
-    'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-5'],
+    'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-5'],
     'cursor-agent': ['cursor-default'],
     'gemini-cli': ['gemini-2.5-pro'],
     'codex-cli': ['gpt-5-codex', 'gpt-5'],
@@ -63,7 +63,7 @@ describe('cronEngineChoices', () => {
   it('drops engines whose allowlist is empty', () => {
     const cfg = {
       engineValidModels: {
-        'claude-code': ['claude-opus-4-7'],
+        'claude-code': ['claude-opus-4-8'],
         'cursor-agent': [],
       },
     };
@@ -80,10 +80,10 @@ describe('cronEngineChoices', () => {
 describe('modelsForCronEngine / defaultModelForCronEngine', () => {
   it('falls back to claude-code when the engine slot is blank', () => {
     expect(modelsForCronEngine(MODEL_CONFIG, '')).toEqual([
-      'claude-opus-4-7',
+      'claude-opus-4-8',
       'claude-sonnet-4-5',
     ]);
-    expect(defaultModelForCronEngine(MODEL_CONFIG, '')).toBe('claude-opus-4-7');
+    expect(defaultModelForCronEngine(MODEL_CONFIG, '')).toBe('claude-opus-4-8');
   });
 
   it('returns the allowlist + default for an explicit engine', () => {

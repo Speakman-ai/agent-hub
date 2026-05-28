@@ -150,7 +150,7 @@ export default function App() {
   const [composerPrefill, setComposerPrefill] = useState(null);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
+  const [sessionModel, setSessionModel] = useState('claude-opus-4-8');
   const [modelConfig, setModelConfig] = useState(null);
   // Worktree state was removed when Agent Hub locked to worktree-only sessions.
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
@@ -652,7 +652,7 @@ export default function App() {
           setSessionModel(
             target.model ||
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
-              'claude-opus-4-7',
+              'claude-opus-4-8',
           );
           setSessionAskMode(isSessionAskModeEnabled(target));
         } else {
@@ -661,7 +661,7 @@ export default function App() {
           const fallbackEngine =
             agentsRef.current.find((a) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
-          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-8');
           setSessionAskMode(false);
         }
       }
@@ -2347,7 +2347,7 @@ export default function App() {
           setSessionModel(
             target.model ||
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
-              'claude-opus-4-7',
+              'claude-opus-4-8',
           );
           setSessionAskMode(isSessionAskModeEnabled(target));
         } else {
@@ -2355,7 +2355,7 @@ export default function App() {
           setMessages([]);
           const fallbackEngine = agents.find((a) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
-          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-8');
           setSessionAskMode(false);
         }
       })
@@ -2931,7 +2931,7 @@ export default function App() {
         modelConfig?.engineDefaultModels?.[
           session.engine || activeAgent?.engine || 'claude-code'
         ] ||
-        'claude-opus-4-7',
+        'claude-opus-4-8',
     );
     setSessionAskMode(isSessionAskModeEnabled(session));
     setMessages([]);
@@ -2944,7 +2944,7 @@ export default function App() {
       if (fromConfig) return fromConfig;
       if (engine === 'cursor-agent') return 'composer-2.5';
       if (engine === 'codex-cli') return 'gpt-5.3-codex';
-      return 'claude-opus-4-7';
+      return 'claude-opus-4-8';
     },
     [modelConfig],
   );

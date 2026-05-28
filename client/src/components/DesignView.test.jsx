@@ -14,9 +14,9 @@ vi.mock('../utils/api.js', () => ({
   api: {
     getModelConfig: vi.fn(() =>
       Promise.resolve({
-        defaultModel: 'claude-opus-4-7',
-        engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
-        engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'] },
+        defaultModel: 'claude-opus-4-8',
+        engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+        engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'] },
       }),
     ),
     updateDesign: vi.fn(() => Promise.resolve({})),

@@ -13,15 +13,15 @@ function makeConfig(): AppConfig {
     defaultCwd: '/tmp',
     dataDir: '/tmp',
     projectsDir: '/tmp/projects',
-    defaultModel: 'claude-opus-4-7',
+    defaultModel: 'claude-opus-4-8',
     engineDefaultModels: {
-      'claude-code': 'claude-opus-4-7',
+      'claude-code': 'claude-opus-4-8',
       'cursor-agent': 'composer-2.5',
       'gemini-cli': 'gemini-2.5-pro',
       'codex-cli': 'gpt-5.3-codex',
     },
     engineValidModels: {
-      'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'],
+      'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
       'cursor-agent': ['composer-2.5'],
       'gemini-cli': ['gemini-2.5-pro'],
       'codex-cli': ['gpt-5.3-codex'],
@@ -69,13 +69,13 @@ describe('buildAuthenticatedModelConfig', () => {
       'codex-cli': true,
     });
 
-    expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-7', 'claude-sonnet-4-6']);
+    expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
     expect(out.engineValidModels['codex-cli']).toEqual(['gpt-5.3-codex']);
     expect(out.engineValidModels['cursor-agent']).toEqual([]);
     expect(out.engineValidModels['gemini-cli']).toEqual([]);
     expect(out.engineDefaultModels['cursor-agent']).toBe('');
     expect(out.engineDefaultModels['gemini-cli']).toBe('');
-    expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-7');
+    expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-8');
   });
 
   it('filters cursor-agent models to the Hub CLI allowlist when authenticated', () => {

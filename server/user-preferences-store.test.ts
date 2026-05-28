@@ -67,7 +67,7 @@ describe('user-preferences-store', () => {
       .prepare('UPDATE users SET preferences_json = ? WHERE id = ?')
       .run(
         JSON.stringify({
-          engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
+          engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
           agentEngineOverrides: {
             reviewer: { engine: 'codex-cli', model: 'gpt-5-codex' },
           },

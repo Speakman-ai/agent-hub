@@ -124,7 +124,7 @@ export interface CronRow {
    */
   notify_on_run: number;
   /**
-   * Model identifier used when the cron fires (e.g. `claude-opus-4-7`,
+   * Model identifier used when the cron fires (e.g. `claude-opus-4-8`,
    * `claude-sonnet-4-6`). When null, falls back to
    * `defaultModelForEngine('claude-code')` at run time. Stored as a free-form
    * TEXT column so the allowlist can change without breaking existing rows;
@@ -1360,7 +1360,7 @@ export interface HeartbeatConfig {
   interval: string;
   prompt: string;
   /**
-   * Optional Claude model ID (e.g. "claude-opus-4-7") forwarded as `--model`
+   * Optional Claude model ID (e.g. "claude-opus-4-8") forwarded as `--model`
    * when this heartbeat runs. Empty string / undefined leaves the Claude CLI
    * default in place. Heartbeats always spawn the Claude binary, so only
    * `claude-code` engine model IDs apply here.

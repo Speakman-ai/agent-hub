@@ -23,9 +23,9 @@ vi.mock('../utils/api.js', () => ({
     get: vi.fn(),
     getCardComments: vi.fn(),
     getModelConfig: vi.fn().mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'] },
     }),
     moveCard: vi.fn(),
     updateCard: vi.fn(),
@@ -307,9 +307,9 @@ describe('KanbanBoard reassign active session', () => {
     ]);
     api.getCardComments.mockResolvedValue([]);
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
-      engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
-      engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'] },
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'] },
     });
   });
 
@@ -468,7 +468,7 @@ describe('KanbanBoard reassign active session', () => {
           position: 0,
           assignee: 'AgentA',
           session_id: 'sess-1',
-          assign_model: 'claude-opus-4-7',
+          assign_model: 'claude-opus-4-8',
         },
       ]),
     );
@@ -489,7 +489,7 @@ describe('KanbanBoard reassign active session', () => {
     // The Session model dropdown should be visible without clicking Reassign.
     const modelSelect = await within(modal).findByTestId('card-model-select');
     // Current value should match card's assign_model.
-    expect(modelSelect.value).toBe('claude-opus-4-7');
+    expect(modelSelect.value).toBe('claude-opus-4-8');
 
     // "Save override" button should NOT appear yet (no change).
     expect(within(modal).queryByRole('button', { name: /Save override/i })).toBeNull();
@@ -732,10 +732,10 @@ describe('KanbanBoard Session engine dropdown', () => {
     api.getCardComments.mockResolvedValue([]);
     // Multi-engine config so the engine selector has > 1 option.
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
-      engineDefaultModels: { 'claude-code': 'claude-opus-4-7', 'codex-cli': 'gpt-5.3-codex' },
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'codex-cli': 'gpt-5.3-codex' },
       engineValidModels: {
-        'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'],
+        'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'],
         'codex-cli': ['gpt-5.3-codex', 'gpt-5.4'],
       },
     });
@@ -861,9 +861,9 @@ describe('KanbanBoard PR & reviews strip', () => {
     api.get.mockReset();
     api.get.mockResolvedValue([]);
     api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-7',
+      defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
   });
 

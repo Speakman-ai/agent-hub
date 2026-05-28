@@ -26,7 +26,7 @@ function renderTopBar(overrides = {}) {
     onToggleSidebar: () => {},
     sessionEngine: 'claude-code',
     onEngineChange: vi.fn(),
-    sessionModel: 'claude-opus-4-7',
+    sessionModel: 'claude-opus-4-8',
     onModelChange: vi.fn(),
     messages: [],
     activeSessionId: 'session-1',
@@ -80,14 +80,14 @@ describe('<TopBar /> engine picker', () => {
     renderTopBar({
       sessionEngine: 'claude-code',
       modelConfig: {
-        defaultModel: 'claude-opus-4-7',
+        defaultModel: 'claude-opus-4-8',
         engineDefaultModels: {
-          'claude-code': 'claude-opus-4-7',
+          'claude-code': 'claude-opus-4-8',
           'cursor-agent': '',
           'codex-cli': '',
         },
         engineValidModels: {
-          'claude-code': ['claude-opus-4-7'],
+          'claude-code': ['claude-opus-4-8'],
           'cursor-agent': [],
           'codex-cli': [],
         },

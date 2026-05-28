@@ -11,7 +11,7 @@ beforeAll(async () => {
 
 /**
  * Per-cron `model` lets the operator pick which Claude variant fires when the
- * cron triggers (previously hardcoded to `claude-opus-4-7` in heartbeat.ts).
+ * cron triggers (previously hardcoded to `claude-opus-4-8` in heartbeat.ts).
  * These tests cover the API contract:
  *
  *   - POST persists a valid id and round-trips on GET.
@@ -89,7 +89,7 @@ describe('crons: per-cron model', () => {
   });
 
   it('POST /api/crons rejects non-string model values with 400', async () => {
-    for (const bad of [123, true, { foo: 'bar' }, ['claude-opus-4-7']]) {
+    for (const bad of [123, true, { foo: 'bar' }, ['claude-opus-4-8']]) {
       await request
         .post('/api/crons')
         .send({

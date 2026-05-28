@@ -419,12 +419,12 @@ describe('api.assignCard — engine/model opts parity with web client', () => {
 
   it('forwards model only when set and non-blank', async () => {
     await api.assignCard('p1', 'card-1', 'agent-a', {
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
     });
     const [, init] = lastCall();
     expect(JSON.parse(init.body)).toEqual({
       agentId: 'agent-a',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
     });
   });
 

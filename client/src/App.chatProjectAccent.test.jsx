@@ -55,7 +55,7 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       getCronSessions: vi.fn(() => Promise.resolve([])),
       getRooms: vi.fn(() => Promise.resolve([])),
       getModelConfig: vi.fn(() =>
-        Promise.resolve({ engineDefaultModels: { 'claude-code': 'claude-opus-4-7' } }),
+        Promise.resolve({ engineDefaultModels: { 'claude-code': 'claude-opus-4-8' } }),
       ),
     },
   };

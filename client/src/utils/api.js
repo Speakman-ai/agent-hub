@@ -1059,6 +1059,22 @@ export const api = {
       timeout: 60000,
     }),
 
+  /**
+   * Manually trigger a reviewer-only session for an external GitHub PR
+   * (contributor, dependabot, direct push). Spawns the reviewer; the
+   * reviewer posts a single formal review back to GitHub and exits.
+   *
+   * Wired through §11 of `finalize-code-changes-architecture-v0` —
+   * internal (Finalize-pushed) PRs are rejected with 409. Use
+   * `nudgePrReviewer` for those.
+   */
+  reviewExternalPr: (projectId, prUrl) =>
+    fetchJSON(`/projects/${projectId}/external-pr-review`, {
+      method: 'POST',
+      body: JSON.stringify({ prUrl }),
+      timeout: 60000,
+    }),
+
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>
     fetchJSON('/pr/merge', {

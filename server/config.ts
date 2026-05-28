@@ -142,7 +142,13 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 // ─── Exported config object ──────────────────────────────────────
 
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
-  'claude-code': ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
+  'claude-code': [
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-6',
+  ],
   // cursor-agent: only IDs the Hub passes through to `agent --model` (see
   // CURSOR_AGENT_HUB_MODEL_ALLOWLIST). Codex/GPT variants belong on codex-cli.
   'cursor-agent': [...CURSOR_AGENT_HUB_MODEL_ALLOWLIST],
@@ -173,7 +179,7 @@ const mergedEngineValidModelsRaw =
 const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineValidModelsRaw);
 
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
-  'claude-code': 'claude-opus-4-7',
+  'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
   // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
@@ -303,7 +309,7 @@ const config: AppConfig = {
   ) as string,
 
   // ── Models ─────────────────────────────────────────────────────
-  defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-7') as string,
+  defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-8') as string,
 
   engineDefaultModels: mergedEngineDefaultModels,
 

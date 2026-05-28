@@ -52,7 +52,7 @@ describe('epicFormToUpdateBody', () => {
     const body = epicFormToUpdateBody({
       name: 'x',
       autonomous: 0,
-      autonomous_model: 'claude-opus-4-7',
+      autonomous_model: 'claude-opus-4-8',
     });
     expect(body.autonomous).toBe(0);
     expect(body.autonomousModel).toBe(null);

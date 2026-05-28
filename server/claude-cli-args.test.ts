@@ -205,7 +205,7 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
         codex: '/bin/codex',
       },
       engine: 'claude-code',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       engineSessionId: null,
       isNewEngineSession: true,
     });
