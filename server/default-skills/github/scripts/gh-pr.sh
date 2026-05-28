@@ -28,36 +28,22 @@ source "$DIR/_common.sh"
 # Reviewer lock — blocks identity-attributing write subcommands from all spawns
 #
 # Agent Hub injects AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just
-# reviewer-role spawns) via `applyReviewerSpawnIsolation`. Two distinct
-# subcommands are blocked under the universal lock because they each
-# attribute a GitHub-visible identity to whatever credential ends up in
-# the spawn env:
+# reviewer-role spawns) via `applyReviewerSpawnIsolation`. The universal
+# lock blocks `gh pr review` — formal review attribution must go through
+# `POST /api/pr/review` so it lands as the GitHub App identity.
 #
-#   1. `gh pr review`  — formal review attribution (Approve / Request
-#      Changes / Comment-as-review). Must always go through
-#      `POST /api/pr/review` so it lands as the GitHub App identity.
-#
-#   2. `gh pr create`  — PR-author attribution. Non-reviewer interactive
-#      spawns receive a GitHub-App **installation token** (`ghs_…`) in
-#      `GH_TOKEN` (see `resolveGithubSpawnToken` step 1, preferred for
-#      org-owned clone/push reliability). When an agent ignores the chat
-#      prompt warning and runs `gh pr create` itself, GitHub attributes
-#      the resulting PR to the App identity (`agent-hub-reviewer[bot]`)
-#      instead of the human session owner — repro: mcsteen/surveytracker
-#      PR #682 (sender=agent-hub-reviewer[bot], no row in
-#      `pr_creation_logs`). The server-managed auto-PR flow
-#      (`commitPushAndCreatePR` in `server/auto-git.ts`) already does
-#      this correctly: it strips the spawn-env tokens and re-resolves
-#      the session-owner's per-user OAuth before pushing. Agents must
-#      route through that flow — commit + push to the feature branch;
-#      the server opens the PR at session end.
+# Interactive non-reviewer spawns receive the session owner's per-user
+# OAuth in `GH_TOKEN` (`resolveGithubSpawnToken`), so `gh pr create` is
+# allowed when the token is a user credential (`gho_` / `ghp_`) — e.g.
+# create-ticket-and-pr / ship-pr skill turns. App installation tokens
+# (`ghs_`) and tokenless spawns are still blocked under the universal lock
+# so mid-turn autonomous agents cannot author bot-attributed PRs.
+# Reviewer-role spawns still block create via `AGENT_HUB_REVIEWER_ROLE_LOCK`.
 #
 # Other write subcommands (`comment`, `merge`, `close`, `ready`, `edit`)
-# are NOT blocked under the universal lock — those don't carry the same
-# attribution surface and lead/dev workflows legitimately need them. The
-# role-scoped lock (`AGENT_HUB_REVIEWER_ROLE_LOCK=1`, reviewer-only) is
-# still the broader denylist for those subcommands; the universal lock
-# is the *create + review* slice that affects every spawn.
+# are NOT blocked under the universal lock. The role-scoped lock
+# (`AGENT_HUB_REVIEWER_ROLE_LOCK=1`, reviewer-only) is the broader
+# denylist for reviewer spawns.
 #
 # Read-only subcommands (view, diff, list, status, checks, checkout) are
 # unguarded — inspecting a PR carries no identity attribution risk.
@@ -93,48 +79,41 @@ LOCKED
   fi
 }
 
-# Hard-stop for `gh pr create` under the universal lock. The spawn env
-# may carry an App installation token in `GH_TOKEN` (correct for
-# `git push` to org-owned repos, but wrong for `gh pr create`, which
-# attributes the resulting PR to the bot). The server auto-PR flow
-# (commit + push the feature branch; the server opens the PR at session
-# end against the session-owner's per-user OAuth) is the only correct
-# path. See mcsteen/surveytracker PR #682 for the reference repro.
+# Block `gh pr create` when the spawn carries an App installation token
+# (`ghs_…`) or no user OAuth — those would attribute the PR to the bot.
+# Per-user OAuth (`gho_` / `ghp_`) is allowed so ship/create-ticket-and-pr
+# skill turns can open PRs under the session owner. See mcsteen/surveytracker
+# PR #682 for the bot-attribution repro.
 _pr_create_locked() {
-  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
-    cat >&2 <<LOCKED
-error: gh-pr.sh create is disabled in Agent Hub spawns.
+  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" != "1" ]]; then
+    return 0
+  fi
+  local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [[ "$tok" == gho_* || "$tok" == ghp_* || "$tok" == github_pat_* ]]; then
+    return 0
+  fi
+  cat >&2 <<LOCKED
+error: gh-pr.sh create is disabled in Agent Hub spawns without per-user OAuth.
 
-Non-reviewer spawns receive a GitHub App installation token in GH_TOKEN
-(needed for git push to org-owned repos). Running \`gh pr create\` with
-that token authors the PR as \`agent-hub-reviewer[bot]\` instead of the
-human session owner — the exact attribution leak this guard prevents.
+Spawns with a GitHub App installation token (ghs_…) or no token must not
+run \`gh pr create\` — GitHub attributes the PR to \`agent-hub-reviewer[bot]\`
+instead of the human session owner.
 
 What to do instead:
-  1. \`git commit\` your work to the feature branch (already on the
-     correct branch via Agent Hub's worktree).
-  2. End your turn. The server-managed auto-PR flow in
-     \`server/auto-git.ts\` will push the branch and open the PR under
-     the session-owner's per-user OAuth credential.
+  - For ship workflows: use the loaded create-ticket-and-pr skill (POST
+    /api/sessions/:id/ship injects it with the session owner's OAuth).
+  - Mid-turn on autonomous dispatch: commit and push only; let session-end
+    auto-ship open the PR under the owner's credential.
 
-If you legitimately need to edit an EXISTING PR (already open on this
-branch) the other subcommands — comment / view / diff / list — remain
-available.
+Other subcommands — comment / view / diff / list — remain available.
 LOCKED
-    exit 2
-  fi
+  exit 2
 }
 
 # ---------------------------------------------------------------------------
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
-  # Order matters: when BOTH locks are set (real reviewer spawns), fire
-  # the stricter reviewer-role denial first — it carries the more
-  # specific "forbidden in reviewer-role spawns" message and matches the
-  # role-lock test contract. The universal-lock guard below is the
-  # fallback for non-reviewer dev/lead spawns where the role lock is
-  # absent but the App installation token is still in GH_TOKEN.
   _reviewer_role_locked "gh-pr.sh create"
   _pr_create_locked
   local title="" base="" body="" draft=false reviewer="" label=""

@@ -325,14 +325,10 @@ export const api = {
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.
 
-  // No client fetch timeout: commit/push/gh + hooks can exceed a minute while
-  // the server streams progress over the WebSocket; aborting early produced
-  // false "timed out" errors even when the PR succeeded.
-  createPrFromSession: (sessionId, { autoMerge = false, title } = {}) =>
-    fetchJSON(`/sessions/${sessionId}/create-pr`, {
+  shipSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/ship`, {
       method: 'POST',
-      body: JSON.stringify({ autoMerge, title }),
-      timeout: null,
+      body: JSON.stringify({}),
     }),
   setSessionAskMode: (sessionId, enabled) =>
     fetchJSON(`/sessions/${sessionId}/ask-mode`, {

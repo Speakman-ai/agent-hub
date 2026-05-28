@@ -216,8 +216,7 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
-  // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
-  const [createPrLogBySession, setCreatePrLogBySession] = useState({});
+  const [shipFailureAt, setShipFailureAt] = useState(null);
   // Live shell output while verify-before-Done runs (close-card → Done gate).
   const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
@@ -1067,12 +1066,6 @@ export default function App() {
             delete next[data.sessionId];
             return next;
           });
-          setCreatePrLogBySession((prev) => {
-            if (!prev[data.sessionId]) return prev;
-            const next = { ...prev };
-            delete next[data.sessionId];
-            return next;
-          });
           if (currentViewRef.current === 'pulls') {
             setPullsListRefreshNonce((n) => n + 1);
           }
@@ -1087,6 +1080,9 @@ export default function App() {
           // Skip the toast on benign codes (none broadcast here — server
           // filters nothing_to_publish — but defensive against future codes).
           if (data.sessionId && typeof data.code === 'string') {
+            if (data.sessionId === activeSessionIdRef.current) {
+              setShipFailureAt(Date.now());
+            }
             const codeLabel =
               data.code === 'push_failed'
                 ? 'Push rejected'
@@ -1111,21 +1107,6 @@ export default function App() {
           }
           break;
         }
-        case 'create_pr_log':
-          if (data.sessionId && typeof data.text === 'string') {
-            const maxChars = 250_000;
-            setCreatePrLogBySession((prev) => {
-              const combined = (prev[data.sessionId] || '') + data.text;
-              const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
-              return { ...prev, [data.sessionId]: tail };
-            });
-          }
-          break;
-        // Stream finished — keep the accumulated text so the user can read
-        // output after commit_failed / push_failed / pr_failed. Cleared on
-        // success (auto_pr_created), dismiss, or a new Create attempt.
-        case 'create_pr_log_done':
-          break;
         case 'done_verify_log':
           if (data.sessionId && typeof data.text === 'string') {
             const maxChars = 250_000;
@@ -4184,12 +4165,6 @@ export default function App() {
                                           delete next[sessionId];
                                           return next;
                                         });
-                                        setCreatePrLogBySession((prev) => {
-                                          if (!prev[sessionId]) return prev;
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
                                       }}
                                     />
                                   )}
@@ -4282,15 +4257,12 @@ export default function App() {
                             onStart={handleStartSessionPreview}
                             onConfigure={handlePreviewConfigure}
                           />
-                          {/* Ad-hoc PR creation — always rendered while a
-                              session is open. The user can request a PR at
-                              any time; the server validates (404 missing
-                              session/agent, 403 workflow mode, 400 no
-                              worktree, 422 commit/PR failed) and surfaces
-                              the error inline. */}
+                          {/* Create ticket & PR — loads create-ticket-and-pr skill */}
                           {activeSessionId && (
                             <ChangesReadyBox
                               sessionId={activeSessionId}
+                              isSessionProcessing={isProcessing}
+                              shipFailureAt={shipFailureAt}
                               changes={
                                 changesReady[activeSessionId] || {
                                   agentId: activeSession?.agent_id,
@@ -4299,49 +4271,19 @@ export default function App() {
                                   hasUnpushed: false,
                                 }
                               }
-                              livePrLog={createPrLogBySession[activeSessionId] || ''}
-                              onPublishStart={(sessionId) => {
-                                setCreatePrLogBySession((prev) => {
-                                  if (!prev[sessionId]) return prev;
-                                  const next = { ...prev };
-                                  delete next[sessionId];
-                                  return next;
-                                });
-                              }}
-                              defaultAutoMerge={
-                                projects.find((p) => p.id === activeAgent?.projectId)
-                                  ?.githubWorkflow?.autoMerge ?? false
-                              }
-                              onCreated={(sessionId, result) => {
-                                setChangesReady((prev) => {
-                                  const next = { ...prev };
-                                  delete next[sessionId];
-                                  return next;
-                                });
-                                setCreatePrLogBySession((prev) => {
-                                  if (!prev[sessionId]) return prev;
-                                  const next = { ...prev };
-                                  delete next[sessionId];
-                                  return next;
-                                });
-                                setToasts((prev) => [
-                                  ...prev,
-                                  {
-                                    id: `pr-created-${Date.now()}`,
-                                    type: 'success',
-                                    message: `PR created: ${result.prUrl}`,
-                                    duration: 8000,
-                                  },
-                                ]);
+                              onTrigger={async () => {
+                                try {
+                                  await api.shipSession(activeSessionId);
+                                } catch (err) {
+                                  showToast(
+                                    err?.message || 'Failed to start Create ticket & PR',
+                                    'error',
+                                    8000,
+                                  );
+                                }
                               }}
                               onDismiss={(sessionId) => {
                                 setChangesReady((prev) => {
-                                  const next = { ...prev };
-                                  delete next[sessionId];
-                                  return next;
-                                });
-                                setCreatePrLogBySession((prev) => {
-                                  if (!prev[sessionId]) return prev;
                                   const next = { ...prev };
                                   delete next[sessionId];
                                   return next;

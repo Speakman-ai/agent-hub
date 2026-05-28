@@ -4634,6 +4634,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/ship:
+    post:
+      tags:
+        - Sessions
+      summary: Ship session work (Create ticket & PR)
+      description: "Operator-initiated publish for ad-hoc sessions: injects the `create-ticket-and-pr` skill, records a system callout in chat, and starts an agent turn without persisting a visible user slash-command message."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Ship workflow started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Session has no worktree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Disabled in workflow mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session, agent, or skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session is streaming, ship is in progress, or is a resolve-PR session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/preview/start:
     post:
       tags:

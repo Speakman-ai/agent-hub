@@ -129,6 +129,83 @@ describe('writeHooksConfig — PreToolUse format guard', () => {
     expect(result.status).toBe(0);
   });
 
+  it('exits 0 (allows) on `cd dir && git commit` when format:check passes', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const cmd = getFormatGuardCommand();
+    const projectDir = makeProjectDir('pass');
+
+    const result = runHook(
+      cmd,
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'cd subdir && git commit -m "wip"' },
+      }),
+      projectDir,
+    );
+
+    expect(result.status).toBe(0);
+  });
+
+  it('exits 0 (allows) on `git commit` when root package.json has no format:check script', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const cmd = getFormatGuardCommand();
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'hooks-no-fmt-'));
+    writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'frontend-only', version: '0.0.0', scripts: { test: 'true' } }),
+    );
+
+    const result = runHook(
+      cmd,
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "wip"' },
+      }),
+      dir,
+    );
+
+    expect(result.status).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('exits 0 (allows) on `git commit` when there is no root package.json', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const cmd = getFormatGuardCommand();
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'hooks-no-pkg-'));
+
+    const result = runHook(
+      cmd,
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "wip"' },
+      }),
+      dir,
+    );
+
+    expect(result.status).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does not treat `git commit` substring inside unrelated bash as a commit', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const cmd = getFormatGuardCommand();
+    const projectDir = makeProjectDir('fail');
+
+    const result = runHook(
+      cmd,
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: {
+          command:
+            'curl -sS -d \'{"content":"blocked on git commit step"}\' http://127.0.0.1:3051/api/x',
+        },
+      }),
+      projectDir,
+    );
+
+    expect(result.status).toBe(0);
+  });
+
   it('exits 2 (blocks) on `git commit` when format:check fails', () => {
     writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
     const cmd = getFormatGuardCommand();

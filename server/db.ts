@@ -990,6 +990,12 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN pending_skill_context TEXT DEFAULT NULL');
   }
 
+  try {
+    db.prepare('SELECT auto_ship_on_complete FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN auto_ship_on_complete INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Soft-delete ("archive") column. When set, the session is hidden from the
   // live `getSessions` list but remains in the DB for up to 24 hours so users
   // can restore it via POST /api/sessions/:sessionId/restore.
@@ -1998,6 +2004,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionPendingSkillContext: db.prepare(
       "UPDATE sessions SET pending_skill_context = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionAutoShipOnComplete: db.prepare(
+      "UPDATE sessions SET auto_ship_on_complete = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",

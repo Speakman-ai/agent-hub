@@ -22,8 +22,12 @@ vi.mock('./routes/webhooks.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
-  default: { apiKey: null },
+  default: { apiKey: null, dataDir: '/tmp/agent-hub-autonomous-test' },
   defaultModelForEngine: vi.fn(() => 'mock-model'),
+}));
+
+vi.mock('./session-ship.js', () => ({
+  markSessionAutoShipOnComplete: vi.fn(),
 }));
 
 vi.mock('./session-ownership.js', () => ({

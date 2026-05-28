@@ -148,7 +148,13 @@ import { handleMultiAgentCancel } from './session-multi-agent.js';
 import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
 import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
 
-import { initAutoGit, autoCommitAndPR, resolveSlashSkill } from './auto-git.js';
+import {
+  initAutoGit,
+  autoCommitAndPR,
+  resolveSlashSkill,
+  setTriggerAutoSessionShip,
+} from './auto-git.js';
+import { triggerSessionShip, type TriggerSessionShipArgs } from './session-ship.js';
 
 import createChatHandler, {
   buildEnrichedPrompt,
@@ -1034,6 +1040,22 @@ const chatHandler = createChatHandler({
 handleChat = chatHandler.handleChat as (ws: unknown, msg: ChatMessage) => Promise<void>;
 saveErrorMessage = chatHandler.saveErrorMessage;
 chatHandler.initMultiAgent();
+
+setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
+  const result = triggerSessionShip({
+    sessionId,
+    session,
+    project,
+    agent,
+    stmts: stmts!,
+    broadcast,
+    activeProcesses,
+    handleChat: handleChat as TriggerSessionShipArgs['handleChat'],
+    source: 'auto_session_end',
+  });
+  if (result.ok) return { ok: true as const };
+  return { ok: false as const, code: result.code, error: result.error };
+});
 
 function handleCancel(sessionId: string): void {
   cancelSessionChatRun({ sessionId, activeProcesses });

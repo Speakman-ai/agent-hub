@@ -21,7 +21,6 @@ import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 import ChangesReadyBox from '../components/ChangesReadyBox';
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
-import { resolveAutoMergeDefault } from '../utils/changesReady';
 import { isWorkflowProject } from '../utils/project-mode';
 import {
   inferPrUrlFromSessionTitle,
@@ -58,9 +57,9 @@ export default function ChatScreen() {
     handleEventsLoaded,
     activeSessionId,
     changesReady,
-    createPrLogBySession,
+    shipFailureAt,
     dismissChangesReady,
-    beginCreatePrPublish,
+    triggerCreateTicketAndPr,
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
@@ -139,11 +138,7 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    // Always render the Create-ticket-&-PR row while a session is open. The
-    // server validates each request (404 missing session/agent, 403 workflow
-    // project, 400 no worktree, 422 commit/PR failed) and surfaces errors
-    // inline. This matches web/App.jsx — see PR "Always show Create ticket &
-    // PR button in chat toolbar".
+    // Create ticket & PR — always shown while a session is open (skill injection).
     ...(activeSessionId
       ? [
           {
@@ -260,13 +255,9 @@ export default function ChatScreen() {
           <ChangesReadyBox
             sessionId={activeSessionId}
             changes={item.data}
-            livePrLog={createPrLogBySession[activeSessionId] || ''}
-            defaultAutoMerge={resolveAutoMergeDefault(activeProject)}
-            onPublishStart={beginCreatePrPublish}
-            onCreated={() => {
-              // The server will emit `auto_pr_created` which clears the
-              // banner in AppContext. Nothing to do here.
-            }}
+            isSessionProcessing={isProcessing}
+            shipFailureAt={shipFailureAt}
+            onTrigger={triggerCreateTicketAndPr}
             onDismiss={dismissChangesReady}
           />
         );

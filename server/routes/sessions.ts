@@ -16,7 +16,6 @@ import {
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
-import { manualCommitAndPR } from '../auto-git.js';
 import {
   buildSessionRunSnapshot,
   buildAggregationSkippedRunSnapshot,
@@ -42,7 +41,7 @@ import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
-import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '../session-title-pr.js';
+import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -76,6 +75,7 @@ import type {
   PreviewComposeRuntimeSync,
   PreviewRuntimeActiveLookup,
 } from '../preview/preview-runtime-lookup.js';
+import { triggerSessionShip } from '../session-ship.js';
 import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
@@ -312,7 +312,8 @@ export function summarizeTranscript(
 }
 
 export default function createSessionRoutes(deps: RouteDeps): Router {
-  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses } = deps;
+  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses, broadcast } =
+    deps;
 
   /**
    * Tear down any preview groups owned by `sessionId` across both runtimes.
@@ -1677,16 +1678,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Create ticket & PR from ad-hoc session ──────────────────────
-  router.post('/api/sessions/:sessionId/create-pr', async (req: Request, res: Response) => {
-    // `autoMerge` is a per-PR override (from ChangesReadyBox). When omitted,
-    // the project's `githubWorkflow.autoMerge` setting is used. When it's an
-    // explicit boolean — including `false` — that wins over the project
-    // default. GitHub's native auto-merge (`gh pr merge --auto --squash`) is
-    // what actually performs the merge once branch-protection checks pass.
-    const { title, autoMerge } = req.body || {};
+  router.post('/api/sessions/:sessionId/ship', async (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
-
     try {
       const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -1695,67 +1688,23 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (!agentLookup) return res.status(404).json({ error: 'Agent not found' });
 
       const { project, agent } = agentLookup;
-
-      if (getProjectMode(project) === 'workflow') {
-        return res.status(403).json({
-          error: 'Session PR creation is disabled while this project is in workflow mode',
-        });
-      }
-
-      // Refuse to commit while the agent process is still streaming output —
-      // a `git commit -a` mid-stream captures a partially-written file and
-      // produces a meaningless PR. The client previously gated this via
-      // `!streamingMsgId`, but moving the gate server-side keeps the
-      // "show the button, server validates" contract honest. Caller surfaces
-      // `error` in the inline panel (ChangesReadyBox.setError).
-      if (activeProcesses.has(sessionId)) {
-        return res.status(409).json({
-          error: 'Session is still streaming — wait for the agent to finish before creating a PR',
-          code: 'session_streaming',
-        });
-      }
-
-      // Sessions spawned from Pull Requests → Resolve PR push fixes to the
-      // existing PR rather than opening a new one. The `[Resolve PR #N]`
-      // title marker is the contract; honour it server-side so the resolve
-      // flow never silently forks a second PR if the client renders both
-      // banners simultaneously.
-      if (isResolvePrSessionTitle(session.name)) {
-        return res.status(409).json({
-          error:
-            'This session is a Resolve PR session — push fixes to the existing PR rather than opening a new one.',
-          code: 'resolve_pr_session',
-        });
-      }
-
-      if (!session.worktree_path) {
-        return res.status(400).json({ error: 'Session has no worktree — nothing to commit' });
-      }
-
-      const result = await manualCommitAndPR(
+      const result = triggerSessionShip({
         sessionId,
-        session.agent_id,
+        session,
         project,
         agent,
-        session.worktree_path,
-        {
-          title: title || undefined,
-          autoMerge: typeof autoMerge === 'boolean' ? autoMerge : undefined,
-        },
-      );
-
+        stmts,
+        broadcast,
+        activeProcesses,
+        handleChat,
+      });
       if (!result.ok) {
-        return res.status(422).json({ error: result.error, code: result.code });
+        return res.status(result.status).json({ error: result.error, code: result.code });
       }
-
-      stmts.clearSessionChangesReady.run(sessionId);
-      res.json({ prUrl: result.prUrl, cardId: result.cardId });
+      return res.json({ ok: true });
     } catch (err) {
-      const msg = (err as Error).message || String(err);
-      const stack = (err as Error).stack || '';
-      console.error(`[create-pr] Error for session ${sessionId}:`, msg);
-      console.error(`[create-pr] Stack:`, stack);
-      res.status(500).json({ error: msg });
+      console.error(`[session-ship] Error for session ${sessionId}:`, (err as Error).message);
+      return res.status(500).json({ error: (err as Error).message });
     }
   });
 

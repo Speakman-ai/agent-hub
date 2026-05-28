@@ -244,11 +244,10 @@ export const api = {
   // Cron sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
 
-  // Ad-hoc PR creation from a session with pending changes
-  createPrFromSession: (sessionId, { autoMerge = false, title } = {}) =>
-    fetchJSON(`/sessions/${sessionId}/create-pr`, {
+  shipSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/ship`, {
       method: 'POST',
-      body: JSON.stringify({ autoMerge, title }),
+      body: JSON.stringify({}),
     }),
 
   // Message events (for session timeline)

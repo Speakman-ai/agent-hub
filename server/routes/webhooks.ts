@@ -48,6 +48,7 @@ import {
   linkKanbanCardPrUrl,
   tryLinkKanbanCardByPrTitle,
 } from '../kanban-pr-link.js';
+import { clearChangesReadyAndNotifyPrCreated } from '../session-ship.js';
 import { classifyPr } from '../finalize/provenance.js';
 
 export { tryLinkKanbanCardByPrTitle };
@@ -1581,6 +1582,21 @@ export async function handleKanbanWebhookEvent(
         )
       ) {
         card = { ...card, pr_url: prUrl };
+        if (card.session_id) {
+          const linkedSession = stmts.getSession.get(card.session_id) as
+            | { agent_id?: string }
+            | undefined;
+          if (linkedSession?.agent_id) {
+            clearChangesReadyAndNotifyPrCreated({
+              sessionId: card.session_id,
+              agentId: linkedSession.agent_id,
+              stmts,
+              broadcast,
+              prUrl,
+              cardTitle: card.title,
+            });
+          }
+        }
       }
     }
   }
