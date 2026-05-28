@@ -717,6 +717,25 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
+
+    -- Reviewer threads — diff-anchored cold-eye-reviewer comments produced
+    -- during the review phase of a Finalize run. Read-only at v0: the UI
+    -- renders them as a side panel; replies happen in session chat. The
+    -- reviewer's verdict (approved / changes_requested) lives on the parent
+    -- finalize_runs row; this table only stores the per-finding notes.
+    -- See wiki: finalize-code-changes-architecture-v0 (§8).
+    CREATE TABLE IF NOT EXISTS reviewer_threads (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES finalize_runs(id),
+      file_path TEXT NOT NULL,
+      line_start INTEGER,
+      line_end INTEGER,
+      body TEXT NOT NULL,
+      author TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reviewer_threads_run
+      ON reviewer_threads(run_id, file_path, line_start);
   `);
 
   try {
@@ -3203,6 +3222,29 @@ function initDb(dataDir: string): void {
               ended_at = unixepoch() * 1000
         WHERE id = ?`,
     ),
+    // Update the reviewer's verdict on a finalize_runs row after the
+    // review phase finishes. Used by the reviewer-dispatch helper to
+    // record approved / changes_requested.
+    updateFinalizeRunReviewerVerdict: db.prepare(
+      `UPDATE finalize_runs
+          SET reviewer_verdict = ?
+        WHERE id = ?`,
+    ),
+
+    // reviewer_threads — diff-anchored notes produced by the reviewer
+    // agent during the review phase. See wiki §8.
+    insertReviewerThread: db.prepare(
+      `INSERT INTO reviewer_threads
+        (id, run_id, file_path, line_start, line_end, body, author, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    listReviewerThreadsForRun: db.prepare(
+      `SELECT id, run_id, file_path, line_start, line_end, body, author, created_at
+         FROM reviewer_threads
+        WHERE run_id = ?
+        ORDER BY file_path ASC, line_start ASC, created_at ASC`,
+    ),
+    deleteReviewerThreadsForRun: db.prepare('DELETE FROM reviewer_threads WHERE run_id = ?'),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

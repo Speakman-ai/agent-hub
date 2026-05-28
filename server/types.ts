@@ -800,6 +800,31 @@ export type FinalizeRunStatus =
 /** Phase codes — UI surfaces these; some collapse onto the same status. */
 export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';
 
+/**
+ * Reviewer-thread row. One row per diff-anchored finding produced by the
+ * reviewer agent during the review phase of a Finalize run.
+ *
+ * Read-only at v0: the UI renders these as a side panel; the only writes
+ * happen inside the reviewer-dispatch helper, which inserts every finding
+ * inside the same transaction that records the run's verdict.
+ *
+ * See wiki: `finalize-code-changes-architecture-v0` (§8).
+ */
+export interface ReviewerThreadRow {
+  id: string;
+  run_id: string;
+  file_path: string;
+  /** 1-indexed start line in the **head** revision of `file_path`. */
+  line_start: number | null;
+  /** 1-indexed end line in the **head** revision; equal to `line_start` for single-line notes. */
+  line_end: number | null;
+  body: string;
+  /** `'reviewer-agent'` is the only value at v0; future authors may extend. */
+  author: string;
+  /** Unix millis. */
+  created_at: number;
+}
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -1290,6 +1315,13 @@ export interface Stmts {
   updateFinalizeRunPhase: Stmt;
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;
+  updateFinalizeRunReviewerVerdict: Stmt;
+
+  // reviewer_threads — diff-anchored notes from the reviewer agent.
+  // See wiki: finalize-code-changes-architecture-v0 (§8).
+  insertReviewerThread: Stmt;
+  listReviewerThreadsForRun: Stmt;
+  deleteReviewerThreadsForRun: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
