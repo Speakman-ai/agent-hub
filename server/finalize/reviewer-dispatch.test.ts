@@ -147,6 +147,13 @@ function makeDeps(
     stmts: stmts as never,
     broadcast: broadcast as unknown as ReviewerDispatchDeps['broadcast'],
     runReviewer: runner,
+    // Production wires a real `db.transaction(...)` here. The
+    // identity wrapper is sufficient for tests because FakeStmts are
+    // deterministic and don't simulate crashes mid-transaction.
+    // Required: `defaultTransactional` throws to refuse silent
+    // atomicity loss, so every caller (including this test harness)
+    // MUST inject a wrapper.
+    transactional: <T>(fn: () => T): T => fn(),
     now: () => 1_700_000_000_000,
     newId: () => `thr-${++idCounter}`,
   };
@@ -392,6 +399,23 @@ describe('runReviewerDispatch — driver failure', () => {
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'review_failed', 'run-4');
     expect(stmts.insertReviewerThread.run).not.toHaveBeenCalled();
     expect(stmts.updateFinalizeRunReviewerVerdict.run).not.toHaveBeenCalled();
+
+    // The reviewer-failure path fires AFTER setPhase has emitted
+    // `reviewing`; subscribers must also see the corrective `failed`
+    // event so the UI's checks spinner clears.
+    const phaseEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_phase_changed');
+    expect(phaseEvents).toEqual([
+      { type: 'finalize_run_phase_changed', run_id: 'run-4', phase: 'review', status: 'reviewing' },
+      {
+        type: 'finalize_run_phase_changed',
+        run_id: 'run-4',
+        phase: 'review',
+        status: 'failed',
+        failure_reason: 'review_failed',
+      },
+    ]);
   });
 });
 
@@ -414,6 +438,22 @@ describe('runReviewerDispatch — guard-rails', () => {
     expect(runner).not.toHaveBeenCalled();
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'no_worktree', 'run-5');
     expect(stmts.updateFinalizeRunPhase.run).not.toHaveBeenCalled();
+
+    // The no-worktree path fires before any setPhase, but we still
+    // emit a terminal phase event so a late-joining subscriber sees
+    // the run finished (instead of polling for status forever).
+    const phaseEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_phase_changed');
+    expect(phaseEvents).toEqual([
+      {
+        type: 'finalize_run_phase_changed',
+        run_id: 'run-5',
+        phase: 'review',
+        status: 'failed',
+        failure_reason: 'no_worktree',
+      },
+    ]);
   });
 
   it('rejects missing diff inputs when no baseBranch is provided', async () => {
@@ -432,6 +472,48 @@ describe('runReviewerDispatch — guard-rails', () => {
     expect(outcome).toMatchObject({ kind: 'failed', failureReason: 'no_diff_inputs' });
     expect(runner).not.toHaveBeenCalled();
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'no_diff_inputs', 'run-6');
+
+    // setPhase fired for `reviewing` before the guard rail; check that
+    // the `failed` correction also fired so the UI's spinner clears.
+    const phaseEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_phase_changed');
+    expect(phaseEvents.map((e) => e.status)).toEqual(['reviewing', 'failed']);
+    expect(phaseEvents.at(-1)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'no_diff_inputs',
+    });
+  });
+});
+
+describe('runReviewerDispatch — defaultTransactional', () => {
+  it('throws when no transactional wrapper is injected, refusing silent atomicity loss', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi.fn<ReviewerDispatchDeps['runReviewer']>().mockResolvedValue({
+      verdict: 'approved',
+      threads: [],
+    });
+    const broadcast = vi.fn();
+    const stmts = makeStmts(store);
+    // Note: deliberately omit `transactional` to exercise the
+    // production-guard fallback. The helper must throw rather than
+    // run inserts + verdict update outside any transaction.
+    const deps: ReviewerDispatchDeps = {
+      stmts: stmts as never,
+      broadcast: broadcast as unknown as ReviewerDispatchDeps['broadcast'],
+      runReviewer: runner,
+      now: () => 1_700_000_000_000,
+      newId: () => `thr-${++idCounter}`,
+    };
+    await expect(
+      runReviewerDispatch(deps, {
+        runId: 'run-tx',
+        worktreePath: '/tmp/wt',
+        inputs: fakeInputs,
+        card: fakeCard,
+        project: fakeProject,
+      }),
+    ).rejects.toThrow(/transactional/i);
   });
 });
 
@@ -596,6 +678,17 @@ describe('collectLocalDiffInputs', () => {
       failureReason: 'no_diff_inputs',
     });
     expect(runner).not.toHaveBeenCalled();
+
+    // setPhase fired before the git spawn; the terminate path must
+    // emit a corrective `failed` event to clear the spinner.
+    const phaseEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_phase_changed');
+    expect(phaseEvents.map((e) => e.status)).toEqual(['reviewing', 'failed']);
+    expect(phaseEvents.at(-1)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'no_diff_inputs',
+    });
   });
 });
 

@@ -1,5 +1,12 @@
 /**
- * reviewer-dispatch.ts — Finalize Code Changes, Phase 2 (review phase).
+ * reviewer-dispatch.ts — Finalize Code Changes, Phase 3 (review phase).
+ *
+ * Numbering matches §3 of the design doc, where the pipeline runs:
+ *   1. rebase   → `server/finalize/rebase.ts`
+ *   2. parse    → `.agent-hub/ci.yaml` parser (future card)
+ *   3. review   → this file
+ *   4. tasks    → step executor (future card)
+ *   5. push     → push gate + PR open (future card)
  *
  * Per design (`finalize-code-changes-architecture-v0` §3, §8): once the
  * rebase phase has produced a clean tree on top of `origin/<default>`,
@@ -149,7 +156,6 @@ export type RunReviewerOnLocalDiff = (args: {
 export interface ReviewerDispatchDeps {
   stmts: Pick<
     Stmts,
-    | 'getFinalizeRun'
     | 'updateFinalizeRunPhase'
     | 'updateFinalizeRunActiveSeconds'
     | 'updateFinalizeRunReviewerVerdict'
@@ -240,7 +246,10 @@ export async function runReviewerDispatch(
   const transactional = deps.transactional ?? defaultTransactional;
 
   if (!opts.worktreePath) {
-    return terminate(stmts, opts.runId, 'no_worktree', 'worktree path missing', 0);
+    // Pre-setPhase guard rail. We still emit a phase-change event so a
+    // UI subscriber that joined before this call observes the terminal
+    // status (it would otherwise see no event at all for this run).
+    return terminate(stmts, broadcast, opts.runId, 'no_worktree', 'worktree path missing', 0);
   }
 
   // Phase change is published BEFORE the (potentially slow) reviewer
@@ -256,6 +265,7 @@ export async function runReviewerDispatch(
     if (!opts.baseBranch) {
       return terminate(
         stmts,
+        broadcast,
         opts.runId,
         'no_diff_inputs',
         'baseBranch required when inputs not pre-computed',
@@ -271,7 +281,14 @@ export async function runReviewerDispatch(
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return terminate(stmts, opts.runId, 'no_diff_inputs', `git diff failed: ${msg}`, 0);
+      return terminate(
+        stmts,
+        broadcast,
+        opts.runId,
+        'no_diff_inputs',
+        `git diff failed: ${msg}`,
+        0,
+      );
     }
   }
 
@@ -289,7 +306,14 @@ export async function runReviewerDispatch(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return terminate(stmts, opts.runId, 'review_failed', `reviewer agent failed: ${msg}`, 0);
+    return terminate(
+      stmts,
+      broadcast,
+      opts.runId,
+      'review_failed',
+      `reviewer agent failed: ${msg}`,
+      0,
+    );
   }
 
   // Sanitise + cap inputs from the driver. Truncation is silent so a
@@ -377,12 +401,25 @@ function setPhase(
 
 function terminate(
   stmts: ReviewerDispatchDeps['stmts'],
+  broadcast: BroadcastFn,
   runId: string,
   reason: 'review_failed' | 'no_worktree' | 'no_diff_inputs',
   detail: string,
   billedSeconds: number,
 ): ReviewerDispatchOutcome {
   stmts.failFinalizeRun.run('failed', reason, runId);
+  // Emit a terminal phase event so any subscriber that received the
+  // earlier `{ status: 'reviewing' }` event sees the corresponding
+  // failure transition and clears the spinner row. Without this, the
+  // UI's checks panel would hang on `reviewing` forever for any
+  // dispatch that bailed after the initial setPhase call.
+  broadcast({
+    type: 'finalize_run_phase_changed',
+    run_id: runId,
+    phase: 'review',
+    status: 'failed',
+    failure_reason: reason,
+  });
   return { kind: 'failed', failureReason: reason, detail, activeSecondsBilled: billedSeconds };
 }
 
@@ -398,12 +435,20 @@ function defaultRunGit(
   }).then(({ stdout, stderr }) => ({ stdout, stderr }));
 }
 
-function defaultTransactional<T>(fn: () => T): T {
-  // Without a `better-sqlite3` handle injected, fall back to running
-  // the body inline. The prepared-statement wrappers in production are
-  // already wrapped in a `db.transaction(...)` at the caller boundary
-  // when atomicity matters.
-  return fn();
+function defaultTransactional<T>(_fn: () => T): T {
+  // The module's transactional contract (threads + verdict written in a
+  // single BEGIN..COMMIT, see file header) is only honoured when the
+  // caller injects a real transaction wrapper — typically
+  // `db.transaction(...)` from `better-sqlite3`. We refuse to run the
+  // body inline because a silent fallback would leave a crash between
+  // `insertReviewerThread` and `updateFinalizeRunReviewerVerdict` with
+  // either dangling threads or a verdict with no findings. Production
+  // callers must wire `transactional` explicitly; tests pass an
+  // identity wrapper because their FakeStmts are already deterministic.
+  throw new Error(
+    "reviewer-dispatch: 'transactional' dep is required — inject db.transaction(...) " +
+      'from better-sqlite3 (or an identity wrapper in tests).',
+  );
 }
 
 interface CollectDiffArgs {
