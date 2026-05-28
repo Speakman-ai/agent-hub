@@ -1336,6 +1336,15 @@ export interface Stmts {
    * the client to track run lifecycle events.
    */
   getLatestFinalizeRunForSession: Stmt;
+  /**
+   * Latest `finalize_runs` row for every session referenced by cards on a
+   * given kanban board. Returns 0..N rows (one per distinct
+   * `session_id` that has any finalize history). The board route
+   * builds a `Map<session_id, FinalizeRunRow>` from this and attaches
+   * each row to the matching card, avoiding the per-card REST fan-out
+   * the v0 surface had. Bound by `(boardId)`.
+   */
+  listLatestFinalizeRunsForBoard: Stmt;
   updateFinalizeRunPhase: Stmt;
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;

@@ -29,8 +29,16 @@ import { api } from '../../utils/api.js';
  * empty/error chrome that would clutter the session view for the vast
  * majority of sessions that have never been finalized.
  */
-export default function ReviewerThreadsPanel({ sessionId }) {
-  const [latestRun, setLatestRun] = useState(null);
+export default function ReviewerThreadsPanel({ sessionId, prefetchedRun }) {
+  // When the parent (e.g. <ChecksPanel />) has already discovered the
+  // latest finalize run for this session, it can pass it in via
+  // `prefetchedRun` (a `FinalizeRunRow` for "the run" or `null` for
+  // "the parent already checked and there is no run"). The panel then
+  // skips the first REST call entirely and starts straight at the
+  // threads-load step. Avoids the duplicate `getLatestFinalizeRunForSession`
+  // round trip when the session view also mounts <ChecksPanel /> above
+  // us (PR #1169 reviewer feedback, non-blocking item 1).
+  const [latestRun, setLatestRun] = useState(prefetchedRun ?? null);
   const [threadsResp, setThreadsResp] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set());
@@ -103,11 +111,31 @@ export default function ReviewerThreadsPanel({ sessionId }) {
       setLatestRun(null);
       return () => controller.abort();
     }
+    // When the parent already handed us a resolved run for this session,
+    // skip step 1 and go straight to the threads fetch — the parent
+    // (e.g. <ChecksPanel />) called the same endpoint and was about to
+    // hand the result down. `prefetchedRun === null` is a valid value:
+    // it means "parent already checked, there is no run for this
+    // session", in which case we render nothing without ever fetching.
+    if (
+      prefetchedRun !== undefined &&
+      (prefetchedRun === null || prefetchedRun?.session_id === sessionId)
+    ) {
+      setLatestRun(prefetchedRun);
+      if (prefetchedRun) {
+        loadThreads(prefetchedRun, controller.signal);
+      }
+      return () => controller.abort();
+    }
     loadLatestRun(controller.signal).then((run) => {
       if (controller.signal.aborted) return;
       loadThreads(run, controller.signal);
     });
     return () => controller.abort();
+    // `prefetchedRun` intentionally NOT in deps — callers pass a
+    // snapshot, not a stream; a remount via React's normal commit is the
+    // right way to react to a changed prefetched value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, loadLatestRun, loadThreads]);
 
   // Step 3 — live updates. The reviewer-dispatch helper fires one

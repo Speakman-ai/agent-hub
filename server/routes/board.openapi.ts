@@ -40,6 +40,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { FinalizeRunComponent } from './finalize.openapi.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -147,8 +148,13 @@ export const KanbanCardEnrichedComponent = registerComponent(
   KanbanCardComponent.extend({
     blockers: z.array(KanbanBlockerLinkComponent),
     blocks: z.array(KanbanBlockerLinkComponent),
+    finalize_run: FinalizeRunComponent.nullable().openapi({
+      description:
+        "Latest Finalize Code Changes run for this card's `session_id`, or `null` when the card has no session or the session has never triggered Finalize. Folded into the board payload so the per-card status badge in the client can render without a separate GET per card.",
+    }),
   }).openapi({
-    description: 'A card with its blocker graph attached (used by GET /board).',
+    description:
+      'A card with its blocker graph and latest finalize run attached (used by GET /board).',
   }),
 );
 

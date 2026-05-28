@@ -22,6 +22,7 @@ import { epicFormToUpdateBody, epicFormToCreateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
 import WebhookConfigBanner from './WebhookConfigBanner.jsx';
+import FinalizeCardBadge from './finalize/CardBadge.jsx';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -1315,6 +1316,30 @@ export default function KanbanBoard({
                                           ? 'Changes Requested'
                                           : 'Awaiting Review'}
                                   </span>
+                                )}
+                                {/* Finalize Code Changes status badge — renders only
+                                    when the card's session has an active or recent
+                                    Finalize run. The badge surfaces phase + active
+                                    time (with wall-clock in the tooltip) so the
+                                    user can see at a glance whether the run is
+                                    progressing or paused waiting on a session.
+
+                                    `card.finalize_run` is folded into the board
+                                    payload server-side (see server/routes/board.ts
+                                    + listLatestFinalizeRunsForBoard). Passing it
+                                    as `prefetchedRun` tells useFinalizeRun to skip
+                                    its initial REST call entirely — both when the
+                                    value is a row and when it's `null` (the
+                                    server already checked, there is nothing to
+                                    load). This eliminates the per-card GET
+                                    fan-out that PR #1169 reviewer flagged.
+                                    Live updates still flow through the WebSocket
+                                    bridge in App.jsx. */}
+                                {card.session_id && (
+                                  <FinalizeCardBadge
+                                    sessionId={card.session_id}
+                                    prefetchedRun={card.finalize_run ?? null}
+                                  />
                                 )}
                                 {card.assignee && (
                                   <span

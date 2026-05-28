@@ -14,7 +14,7 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
-import ReviewerThreadsPanel from './components/finalize/ReviewerThreadsPanel.jsx';
+import ChecksPanel from './components/finalize/ChecksPanel.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
@@ -1886,6 +1886,27 @@ export default function App() {
           window.dispatchEvent(new CustomEvent('reviewer_thread_added', { detail: data }));
           break;
 
+        // Finalize Code Changes lifecycle events. Bridged identically to
+        // `reviewer_thread_added` so the `useFinalizeRun` hook (used by
+        // both the session-view checks panel and the kanban card badge)
+        // can subscribe via `window.addEventListener` without taking a
+        // dependency on the shared WS connection.
+        //
+        // `phase_changed` and `step_state` are emitted server-side today
+        // (rebase / reviewer-dispatch / step-runner / stall-watchdog).
+        // `active_seconds`, `created`, and `completed` are reserved by
+        // the design doc (§14) but not yet wired in `server/finalize/`.
+        // Bridging them now is harmless — listeners simply never fire
+        // until the server starts emitting — and avoids a follow-up
+        // round-trip when the producer side lands.
+        case 'finalize_run_phase_changed':
+        case 'finalize_run_step_state':
+        case 'finalize_run_active_seconds':
+        case 'finalize_run_created':
+        case 'finalize_run_completed':
+          window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
+          break;
+
         case 'lead_review':
           setActiveReviews((prev) => ({
             ...prev,
@@ -3714,7 +3735,17 @@ export default function App() {
               )}
 
               {currentView === 'chat' && activeSessionId && (
-                <ReviewerThreadsPanel sessionId={activeSessionId} />
+                <ChecksPanel
+                  sessionId={activeSessionId}
+                  onJumpToSession={(targetSessionId) => {
+                    if (!targetSessionId) return;
+                    // Cross-link to the originating session from a fix-
+                    // dispatch run. No-op when it's the active session.
+                    if (targetSessionId === activeSessionId) return;
+                    pendingSessionIdRef.current = targetSessionId;
+                    setActiveSessionId(targetSessionId);
+                  }}
+                />
               )}
 
               {currentView.startsWith('kanban:') ? (

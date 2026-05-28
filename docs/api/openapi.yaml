@@ -345,6 +345,191 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    ReviewerThread:
+      type: object
+      properties:
+        id:
+          type: string
+        run_id:
+          type: string
+        file_path:
+          type: string
+        line_start:
+          type: integer
+          nullable: true
+        line_end:
+          type: integer
+          nullable: true
+        body:
+          type: string
+        author:
+          type: string
+        created_at:
+          type: integer
+      required:
+        - id
+        - run_id
+        - file_path
+        - line_start
+        - line_end
+        - body
+        - author
+        - created_at
+      description: One diff-anchored finding produced by the cold-eye reviewer agent during the review phase of a Finalize run.
+    ReviewerThreadsResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        reviewer_verdict:
+          type: string
+          nullable: true
+          enum:
+            - approved
+            - changes_requested
+            - null
+          description: Reviewer verdict for the run (`approved` / `changes_requested`); `null` while the review phase is still pending.
+        threads:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewerThread"
+      required:
+        - run_id
+        - reviewer_verdict
+        - threads
+      description: All reviewer threads for a finalize run, ordered by `file_path ASC, line_start ASC, created_at ASC` so the side-panel can group by file without re-sorting.
+    FinalizeRun:
+      type: object
+      properties:
+        id:
+          type: string
+        card_id:
+          type: string
+        session_id:
+          type: string
+          nullable: true
+        project_id:
+          type: string
+        branch:
+          type: string
+        head_sha:
+          type: string
+        idempotency_key:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - rebasing
+            - reviewing
+            - running
+            - dispatching
+            - pushing
+            - pushed
+            - failed
+            - timed_out
+            - infra_error
+        phase:
+          type: string
+          nullable: true
+          enum:
+            - rebase
+            - review
+            - tasks
+            - dispatching
+            - push
+            - null
+        trigger_source:
+          type: string
+          enum:
+            - ui_button
+            - agent_block
+        worktree_path:
+          type: string
+          nullable: true
+        triggered_by_user_id:
+          type: string
+        author_name:
+          type: string
+        author_email:
+          type: string
+        reviewer_verdict:
+          type: string
+          nullable: true
+          enum:
+            - approved
+            - changes_requested
+            - null
+        failure_reason:
+          type: string
+          nullable: true
+        failed_step_index:
+          type: integer
+          nullable: true
+        failed_step_name:
+          type: string
+          nullable: true
+        failed_step_exit_code:
+          type: integer
+          nullable: true
+        retry_of_run_id:
+          type: string
+          nullable: true
+        active_seconds_consumed:
+          type: integer
+        started_at:
+          type: integer
+        ended_at:
+          type: integer
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+      required:
+        - id
+        - card_id
+        - session_id
+        - project_id
+        - branch
+        - head_sha
+        - idempotency_key
+        - status
+        - phase
+        - trigger_source
+        - worktree_path
+        - triggered_by_user_id
+        - author_name
+        - author_email
+        - reviewer_verdict
+        - failure_reason
+        - failed_step_index
+        - failed_step_name
+        - failed_step_exit_code
+        - retry_of_run_id
+        - active_seconds_consumed
+        - started_at
+        - ended_at
+        - pr_url
+      description: A single finalize_runs row.
+    LatestFinalizeRunForSessionResponse:
+      type: object
+      properties:
+        run:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeRun"
+            - nullable: true
+              description: "`null` when the session has never triggered a Finalize run."
+      required:
+        - run
+      description: Latest Finalize run for a given session.
+    FinalizeErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for finalize routes.
     KanbanBoard:
       type: object
       properties:
@@ -508,10 +693,16 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/KanbanBlockerLink"
+            finalize_run:
+              allOf:
+                - $ref: "#/components/schemas/FinalizeRun"
+                - nullable: true
+                  description: Latest Finalize Code Changes run for this card's `session_id`, or `null` when the card has no session or the session has never triggered Finalize. Folded into the board payload so the per-card status badge in the client can render without a separate GET per card.
           required:
             - blockers
             - blocks
-      description: A card with its blocker graph attached (used by GET /board).
+            - finalize_run
+      description: A card with its blocker graph and latest finalize run attached (used by GET /board).
     KanbanEpic:
       type: object
       properties:
@@ -1962,191 +2153,6 @@ components:
         - prNumber
         - repoFullName
       description: Reviewer dispatch scheduled. A reviewer session will be spawned shortly (debounced ~30s); the session posts a formal review on GitHub via Reviewer App auth and exits.
-    ReviewerThread:
-      type: object
-      properties:
-        id:
-          type: string
-        run_id:
-          type: string
-        file_path:
-          type: string
-        line_start:
-          type: integer
-          nullable: true
-        line_end:
-          type: integer
-          nullable: true
-        body:
-          type: string
-        author:
-          type: string
-        created_at:
-          type: integer
-      required:
-        - id
-        - run_id
-        - file_path
-        - line_start
-        - line_end
-        - body
-        - author
-        - created_at
-      description: One diff-anchored finding produced by the cold-eye reviewer agent during the review phase of a Finalize run.
-    ReviewerThreadsResponse:
-      type: object
-      properties:
-        run_id:
-          type: string
-        reviewer_verdict:
-          type: string
-          nullable: true
-          enum:
-            - approved
-            - changes_requested
-            - null
-          description: Reviewer verdict for the run (`approved` / `changes_requested`); `null` while the review phase is still pending.
-        threads:
-          type: array
-          items:
-            $ref: "#/components/schemas/ReviewerThread"
-      required:
-        - run_id
-        - reviewer_verdict
-        - threads
-      description: All reviewer threads for a finalize run, ordered by `file_path ASC, line_start ASC, created_at ASC` so the side-panel can group by file without re-sorting.
-    FinalizeRun:
-      type: object
-      properties:
-        id:
-          type: string
-        card_id:
-          type: string
-        session_id:
-          type: string
-          nullable: true
-        project_id:
-          type: string
-        branch:
-          type: string
-        head_sha:
-          type: string
-        idempotency_key:
-          type: string
-        status:
-          type: string
-          enum:
-            - queued
-            - rebasing
-            - reviewing
-            - running
-            - dispatching
-            - pushing
-            - pushed
-            - failed
-            - timed_out
-            - infra_error
-        phase:
-          type: string
-          nullable: true
-          enum:
-            - rebase
-            - review
-            - tasks
-            - dispatching
-            - push
-            - null
-        trigger_source:
-          type: string
-          enum:
-            - ui_button
-            - agent_block
-        worktree_path:
-          type: string
-          nullable: true
-        triggered_by_user_id:
-          type: string
-        author_name:
-          type: string
-        author_email:
-          type: string
-        reviewer_verdict:
-          type: string
-          nullable: true
-          enum:
-            - approved
-            - changes_requested
-            - null
-        failure_reason:
-          type: string
-          nullable: true
-        failed_step_index:
-          type: integer
-          nullable: true
-        failed_step_name:
-          type: string
-          nullable: true
-        failed_step_exit_code:
-          type: integer
-          nullable: true
-        retry_of_run_id:
-          type: string
-          nullable: true
-        active_seconds_consumed:
-          type: integer
-        started_at:
-          type: integer
-        ended_at:
-          type: integer
-          nullable: true
-        pr_url:
-          type: string
-          nullable: true
-      required:
-        - id
-        - card_id
-        - session_id
-        - project_id
-        - branch
-        - head_sha
-        - idempotency_key
-        - status
-        - phase
-        - trigger_source
-        - worktree_path
-        - triggered_by_user_id
-        - author_name
-        - author_email
-        - reviewer_verdict
-        - failure_reason
-        - failed_step_index
-        - failed_step_name
-        - failed_step_exit_code
-        - retry_of_run_id
-        - active_seconds_consumed
-        - started_at
-        - ended_at
-        - pr_url
-      description: A single finalize_runs row.
-    LatestFinalizeRunForSessionResponse:
-      type: object
-      properties:
-        run:
-          allOf:
-            - $ref: "#/components/schemas/FinalizeRun"
-            - nullable: true
-              description: "`null` when the session has never triggered a Finalize run."
-      required:
-        - run
-      description: Latest Finalize run for a given session.
-    FinalizeErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for finalize routes.
     HeartbeatConfig:
       type: object
       properties:
@@ -4685,6 +4691,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/projects/{projectId}/finalize/{runId}/reviewer-threads:
+    get:
+      tags:
+        - Finalize
+      summary: List reviewer threads for a Finalize run
+      description: Returns every diff-anchored reviewer thread tied to the run, plus the run-level verdict. Read-only at v0 — replies happen in the originating session, not on the threads themselves.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: finalize_runs.id.
+          required: true
+          description: finalize_runs.id.
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Reviewer threads for the run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewerThreadsResponse"
+        "404":
+          description: Project not found, or finalize run not found in this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+  /api/sessions/{sessionId}/finalize-runs/latest:
+    get:
+      tags:
+        - Finalize
+      summary: Most-recent Finalize run for a session
+      description: 'Convenience lookup so the session-view side-panel can resolve a run id from a session id. Returns `{ run: null }` when the session has never triggered a Finalize run (never 404 — "no runs yet" is the normal first-load state).'
+      parameters:
+        - schema:
+            type: string
+            description: sessions.id.
+          required: true
+          description: sessions.id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Latest finalize_runs row for the session, or `null`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LatestFinalizeRunForSessionResponse"
   /api/projects/{projectId}/board:
     get:
       tags:
@@ -9283,61 +9344,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
-  /api/projects/{projectId}/finalize/{runId}/reviewer-threads:
-    get:
-      tags:
-        - Finalize
-      summary: List reviewer threads for a Finalize run
-      description: Returns every diff-anchored reviewer thread tied to the run, plus the run-level verdict. Read-only at v0 — replies happen in the originating session, not on the threads themselves.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: finalize_runs.id.
-          required: true
-          description: finalize_runs.id.
-          name: runId
-          in: path
-      responses:
-        "200":
-          description: Reviewer threads for the run.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReviewerThreadsResponse"
-        "404":
-          description: Project not found, or finalize run not found in this project.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/FinalizeErrorResponse"
-  /api/sessions/{sessionId}/finalize-runs/latest:
-    get:
-      tags:
-        - Finalize
-      summary: Most-recent Finalize run for a session
-      description: 'Convenience lookup so the session-view side-panel can resolve a run id from a session id. Returns `{ run: null }` when the session has never triggered a Finalize run (never 404 — "no runs yet" is the normal first-load state).'
-      parameters:
-        - schema:
-            type: string
-            description: sessions.id.
-          required: true
-          description: sessions.id.
-          name: sessionId
-          in: path
-      responses:
-        "200":
-          description: Latest finalize_runs row for the session, or `null`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LatestFinalizeRunForSessionResponse"
   /api/config/gemini-auth:
     get:
       tags:

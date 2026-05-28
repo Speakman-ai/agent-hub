@@ -3221,6 +3221,58 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
+    // Latest finalize run per (board-scoped) session. Returns one row per
+    // distinct `session_id` that any card on `boardId` references *and*
+    // that has finalize history. Used by `GET /api/projects/:id/board` to
+    // fold the per-card badge state into the board payload — eliminates
+    // the O(session-linked cards) per-card GET storm the v0 surface had
+    // (PR #1169 reviewer feedback).
+    //
+    // Window-function picker — same tiebreak (started_at DESC, id DESC)
+    // as `getLatestFinalizeRunForSession`, so single-card and board
+    // queries agree on which run is "latest". `ROW_NUMBER()` is SQLite
+    // 3.25+; `better-sqlite3` ships well above that floor.
+    listLatestFinalizeRunsForBoard: db.prepare(
+      `SELECT fr.id,
+              fr.card_id,
+              fr.session_id,
+              fr.project_id,
+              fr.branch,
+              fr.head_sha,
+              fr.idempotency_key,
+              fr.status,
+              fr.phase,
+              fr.trigger_source,
+              fr.worktree_path,
+              fr.triggered_by_user_id,
+              fr.author_name,
+              fr.author_email,
+              fr.reviewer_verdict,
+              fr.failure_reason,
+              fr.failed_step_index,
+              fr.failed_step_name,
+              fr.failed_step_exit_code,
+              fr.retry_of_run_id,
+              fr.active_seconds_consumed,
+              fr.started_at,
+              fr.ended_at,
+              fr.pr_url
+         FROM (
+           SELECT finalize_runs.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY session_id
+                    ORDER BY started_at DESC, id DESC
+                  ) AS rn
+             FROM finalize_runs
+            WHERE session_id IN (
+              SELECT DISTINCT session_id
+                FROM kanban_cards
+               WHERE board_id = ?
+                 AND session_id IS NOT NULL
+            )
+         ) fr
+        WHERE fr.rn = 1`,
+    ),
     updateFinalizeRunPhase: db.prepare(
       `UPDATE finalize_runs
           SET phase = ?,

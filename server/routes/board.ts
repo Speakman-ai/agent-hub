@@ -14,6 +14,7 @@ import type {
   KanbanBlockerLink,
   KanbanCardBlockerRow,
   SessionRow,
+  FinalizeRunRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
@@ -82,6 +83,31 @@ interface BoardData {
 interface EnrichedCard extends KanbanCardRow {
   blockers: KanbanBlockerLink[];
   blocks: KanbanBlockerLink[];
+  /**
+   * Latest Finalize Code Changes run for `session_id`, or `null` if the
+   * card has no session or the session has never triggered Finalize.
+   *
+   * Folded into the board payload so the per-card status badge in the
+   * client can render without a separate GET per card. The shape mirrors
+   * `FinalizeRunRow` 1:1; the client reads it as `initialRun` for the
+   * `useFinalizeRun` hook which then live-updates via WebSocket events.
+   */
+  finalize_run: FinalizeRunRow | null;
+}
+
+/**
+ * Resolve the latest finalize run for every session referenced by cards
+ * on a board, keyed by `session_id`. Returns an empty map when no card
+ * has a session_id or no session has finalize history. Cheap — one
+ * indexed window-function query per board fetch.
+ */
+function loadBoardFinalizeRuns(stmts: Stmts, boardId: string): Map<string, FinalizeRunRow> {
+  const rows = stmts.listLatestFinalizeRunsForBoard.all(boardId) as FinalizeRunRow[];
+  const out = new Map<string, FinalizeRunRow>();
+  for (const row of rows) {
+    if (row.session_id) out.set(row.session_id, row);
+  }
+  return out;
 }
 
 /**
@@ -212,10 +238,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // query fetches every edge on the board; we then attach empty arrays
     // for cards with no blockers so clients can rely on the shape.
     const index = loadBoardBlockers(stmts, data.board.id);
+    // Latest finalize run per session, keyed by session_id — one window-
+    // function query per board fetch. Folded into each card so the per-
+    // card badge in the client can render from board state instead of
+    // self-fetching (PR #1169 reviewer feedback).
+    const finalizeRuns = loadBoardFinalizeRuns(stmts, data.board.id);
     const enrichedCards: EnrichedCard[] = data.cards.map((c) => ({
       ...c,
       blockers: index.blockersByCard.get(c.id) ?? [],
       blocks: index.blocksByCard.get(c.id) ?? [],
+      finalize_run: c.session_id ? (finalizeRuns.get(c.session_id) ?? null) : null,
     }));
     res.json({ ...data, cards: enrichedCards });
   });

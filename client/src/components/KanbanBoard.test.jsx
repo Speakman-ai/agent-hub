@@ -33,6 +33,10 @@ vi.mock('../utils/api.js', () => ({
     addCardComment: vi.fn(),
     linkCardToEpic: vi.fn(),
     assignCard: vi.fn(),
+    // Cards now render <FinalizeCardBadge /> which calls this on mount
+    // whenever the card has a session_id. Mocked to "no run" so the badge
+    // is invisible in kanban-flow tests that don't care about finalize.
+    getLatestFinalizeRunForSession: vi.fn().mockResolvedValue({ run: null }),
   },
 }));
 

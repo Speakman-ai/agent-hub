@@ -1255,6 +1255,103 @@ describe('Kanban Board', () => {
       expect(names).toContain('Done');
       expect(names).not.toContain('Backlog');
     });
+
+    // Board enrichment: each card carries `finalize_run` (the latest
+    // `finalize_runs` row for its session_id, or `null`). The client
+    // <FinalizeCardBadge /> reads this as `prefetchedRun` and skips its
+    // own GET — eliminates the N+1 fan-out the v0 surface had. PR #1169.
+    it('attaches finalize_run to each card (one row per session, null otherwise)', async () => {
+      const proj = await createProject();
+      const agent = await createAgent({ projectId: proj.id as string });
+
+      // Card A — session has a finalize_runs row → attached.
+      const sessionWithRun = await createSession({ agentId: agent.id as string });
+      const cardA = await createCard(proj.id as string, {
+        title: 'Card with finalize run',
+        sessionId: sessionWithRun.id as string,
+      });
+
+      // Card B — session has NO finalize_runs row → attached as null.
+      const sessionNoRun = await createSession({ agentId: agent.id as string });
+      const cardB = await createCard(proj.id as string, {
+        title: 'Card with session, no run',
+        sessionId: sessionNoRun.id as string,
+      });
+
+      // Card C — no session at all → attached as null.
+      const cardC = await createCard(proj.id as string, { title: 'Card with no session' });
+
+      const { stmts, db } = await import('../db.js');
+      if (!stmts || !db) throw new Error('Database not initialized');
+
+      // Insert two finalize_runs for the same session — only the newer
+      // one (by started_at) should be attached. Verifies the window-
+      // function picker agrees with the single-row endpoint.
+      const insert = db.prepare(
+        `INSERT INTO finalize_runs
+           (id, card_id, session_id, project_id, branch, head_sha,
+            idempotency_key, status, trigger_source, triggered_by_user_id,
+            author_name, author_email, active_seconds_consumed, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run(
+        'run-old-' + cardA.id,
+        cardA.id,
+        sessionWithRun.id,
+        proj.id,
+        'main',
+        'aaaa1111',
+        'idem-old-' + cardA.id,
+        'failed',
+        'ui_button',
+        'user-1',
+        'Dev',
+        'dev@example.com',
+        300,
+        Date.now() - 100_000,
+      );
+      insert.run(
+        'run-new-' + cardA.id,
+        cardA.id,
+        sessionWithRun.id,
+        proj.id,
+        'main',
+        'bbbb2222',
+        'idem-new-' + cardA.id,
+        'reviewing',
+        'ui_button',
+        'user-1',
+        'Dev',
+        'dev@example.com',
+        120,
+        Date.now(),
+      );
+
+      const res = await request.get(`/api/projects/${proj.id as string}/board`).expect(200);
+      const cards = res.body.cards as Array<{
+        id: string;
+        session_id: string | null;
+        finalize_run: { id: string; status: string; session_id: string } | null;
+      }>;
+      const byId = new Map(cards.map((c) => [c.id, c] as const));
+
+      // Card A — latest run wins.
+      const a = byId.get(cardA.id as string);
+      expect(a?.finalize_run).not.toBeNull();
+      expect(a?.finalize_run?.id).toBe('run-new-' + (cardA.id as string));
+      expect(a?.finalize_run?.status).toBe('reviewing');
+      expect(a?.finalize_run?.session_id).toBe(sessionWithRun.id);
+
+      // Card B — session present, no finalize history.
+      const b = byId.get(cardB.id as string);
+      expect(b?.session_id).toBe(sessionNoRun.id);
+      expect(b?.finalize_run).toBeNull();
+
+      // Card C — no session at all.
+      const c = byId.get(cardC.id as string);
+      expect(c?.session_id).toBeNull();
+      expect(c?.finalize_run).toBeNull();
+    });
   });
 
   describe('Cards CRUD', () => {

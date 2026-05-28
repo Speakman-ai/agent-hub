@@ -268,6 +268,34 @@ describe('<ReviewerThreadsPanel />', () => {
     expect(panel).toHaveAttribute('data-run-id', 'run-zzz');
   });
 
+  it('skips getLatestFinalizeRunForSession when prefetchedRun is passed (PR #1169 NB1)', async () => {
+    api.getReviewerThreads.mockResolvedValue({
+      run_id: 'run-1',
+      reviewer_verdict: 'approved',
+      threads: [],
+    });
+    render(<ReviewerThreadsPanel sessionId="s1" prefetchedRun={fakeRun()} />);
+    // The threads fetch still runs against the pre-supplied run id…
+    await waitFor(() => {
+      expect(api.getReviewerThreads).toHaveBeenCalledWith(
+        'proj-1',
+        'run-1',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+    // …but the latest-run discovery does NOT — the parent already
+    // resolved it (ChecksPanel) and we trust its handoff.
+    expect(api.getLatestFinalizeRunForSession).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing without fetching when prefetchedRun === null (no run, parent already checked)', async () => {
+    const { container } = render(<ReviewerThreadsPanel sessionId="s1" prefetchedRun={null} />);
+    // Pass-through "we already know there is no run" — no GET at all.
+    expect(api.getLatestFinalizeRunForSession).not.toHaveBeenCalled();
+    expect(api.getReviewerThreads).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="reviewer-threads-panel"]')).toBeNull();
+  });
+
   it('passes an AbortSignal to both api calls and aborts it on unmount', async () => {
     api.getLatestFinalizeRunForSession.mockResolvedValue({ run: fakeRun() });
     api.getReviewerThreads.mockResolvedValue({
