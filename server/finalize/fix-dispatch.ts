@@ -1,0 +1,534 @@
+/**
+ * fix-dispatch.ts — Finalize Code Changes, dispatch-fix step.
+ *
+ * Per wiki `finalize-code-changes-architecture-v0` §6–§7: when a step
+ * fails OR the reviewer requests changes, the orchestrator injects a
+ * structured §7 message into the **originating session** (the session
+ * the human has been collaborating with in live mode, or the
+ * autonomous-mode session the dispatcher assigned) and then awaits
+ * **turn-end** before re-entering the rebase phase.
+ *
+ * There is no Hub CI agent and no separate fixer identity (§6). The
+ * session's agent reads its own chat, edits the worktree, commits, and
+ * ends its turn. Author and committer of any resulting commits are the
+ * session agent's normal identity — no author/committer split, no
+ * synthetic bot trailer.
+ *
+ * This module owns three responsibilities:
+ *
+ *   1. **Compose** the §7 message body from the trigger context (failed
+ *      step + reviewer threads) using the canonical format locked in
+ *      the design doc.
+ *   2. **Inject** the message into the session via the existing
+ *      `addMessage` infra (role `'system'`, a `kind:
+ *      'finalize_fix_dispatch'` metadata tag so the chat UI can render
+ *      it distinctly). Broadcasts a `message` event so live subscribers
+ *      see it without reloading and flips `finalize_runs.phase =
+ *      'dispatching'`.
+ *   3. **Wait** for the originating session to end its next turn. Turn-
+ *      end is the only signal that re-enters rebase — no explicit
+ *      "I'm done" handshake. In live mode, the stall watchdog
+ *      (`server/finalize/stall-watchdog.ts`) is armed in parallel so a
+ *      walked-away human surfaces as a push notification and
+ *      eventually a `stalled_no_response` terminal state.
+ *
+ * Uniform across live and autonomous modes (`trigger_source =
+ * 'ui_button'` or `'agent_block'`): the message shape, the turn-end
+ * signal, and the active-time billing are identical. The only branch is
+ * the stall watchdog, which is armed in live mode only. Autonomous
+ * runs that never produce a turn-end are a bug in the autonomous
+ * dispatcher (surfaces as `dispatch_failure` elsewhere) — Finalize does
+ * not park them as stalled.
+ *
+ * No per-attempt cap on the fix loop. Per §13, the only ceiling is the
+ * 60-minute active-time budget, which the orchestrator enforces across
+ * the whole run. While we are awaiting a turn-end the active-time clock
+ * is paused, so a slow human (or a long-running fixer turn) does not
+ * burn the budget faster than its actual processing time.
+ */
+import { v4 as uuidv4 } from 'uuid';
+import type { BroadcastFn, MessageRow, ReviewerThreadRow, Stmts } from '../types.js';
+import { formatThreadsForDispatchBody } from './reviewer-dispatch.js';
+import {
+  armStallWatchdog,
+  DEFAULT_NOTIFY_AFTER_MS,
+  DEFAULT_STALL_AFTER_MS,
+  type StallWatchdogDeps,
+  type StallWatchdogHandle,
+} from './stall-watchdog.js';
+
+/**
+ * Active-seconds billed on entry to the dispatching phase. Keeps the
+ * counter advancing for runs that loop through multiple dispatches —
+ * we want the §13 budget to actually progress even if the
+ * orchestrator's other phases are momentarily idle. Mirrors the
+ * `TASKS_PHASE_ENTRY_ACTIVE_SECONDS` charge in the step runner.
+ */
+export const DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS = 1;
+
+/**
+ * Trailer the §7 dispatch body ends with. Locked to the wording from
+ * the design doc so the chat UI / autonomous agents can recognise the
+ * end of the structured prompt.
+ */
+export const DISPATCH_TRAILER =
+  'Please fix and commit. The pipeline will re-run automatically when you finish your turn.';
+
+/**
+ * Payload describing the failed step that triggered this dispatch.
+ * Mirrors the shape the step runner's `StepRunResult.failedStep`
+ * already produces so the orchestrator can pass it through unchanged.
+ */
+export interface FailedStepContext {
+  /**
+   * Phase the failure landed in. Defaults to `'tasks'` because that is
+   * the phase declared in §7 ("phase=tasks, step ..."); reviewer-only
+   * dispatches that also carry a failed step (none today; future-proof)
+   * may pass `'review'`.
+   */
+  phase: 'tasks' | 'review';
+  /** Display name from ci.yaml (parse-time default applied). */
+  name: string;
+  /** Exit code; `-1` sentinel for the timeout / spawn-error path. */
+  exitCode: number;
+  /** Trailing-N-line snapshot from the step's mixed stdout+stderr stream. */
+  outputTail: string[];
+}
+
+/**
+ * Composite trigger context. The orchestrator builds this when **any**
+ * of {failed-step, reviewer-changes-requested} happens. Per the §3
+ * `Combined` gate, both can trip in the same dispatch — `failedStep`
+ * and `reviewerThreads` are not mutually exclusive.
+ */
+export interface FixDispatchTrigger {
+  /** Failed-step context; null when only the reviewer requested changes. */
+  failedStep?: FailedStepContext | null;
+  /**
+   * Reviewer threads from the latest review pass on this head. May be
+   * empty when only a step failed and the reviewer hadn't run yet (no
+   * threads to surface), or non-empty when the reviewer requested
+   * changes (with or without a step failure).
+   */
+  reviewerThreads?: ReviewerThreadRow[];
+  /**
+   * Reviewer's verdict on the current head. Drives the message header
+   * when there is no failed step. `'approved'` should never reach this
+   * helper (no dispatch needed), but the type accepts it so the
+   * orchestrator can pass through whatever it has without sanitising.
+   */
+  reviewerVerdict?: 'approved' | 'changes_requested' | null;
+}
+
+/**
+ * Result of one dispatch round. Resolves when **either** the session
+ * produces a turn-end OR the stall watchdog terminates the run.
+ *
+ *   - `'turn_ended'` — the session emitted `done` for the originating
+ *     `sessionId`. Orchestrator re-enters rebase.
+ *   - `'stalled_no_response'` — live mode only. Watchdog tripped after
+ *     the configured stall window. The run is already persisted as
+ *     terminal; the orchestrator should NOT re-enter rebase.
+ *   - `'cancelled'` — the caller (or a parent abort signal) requested
+ *     cancellation. Watchdog timers cleared; no terminal status written
+ *     here — the cancel path owns that.
+ */
+export type FixDispatchOutcome = 'turn_ended' | 'stalled_no_response' | 'cancelled';
+
+export interface FixDispatchResult {
+  outcome: FixDispatchOutcome;
+  /** Inserted session message id (the §7 prompt). */
+  messageId: string;
+  /** Active-seconds billed on entry. The orchestrator may have already paid; see {@link FixDispatchOptions.skipActiveSecondsCharge}. */
+  activeSecondsBilled: number;
+}
+
+/**
+ * Subscriber contract for the originating session's turn-end signal.
+ * Production wires this through the broadcast pipeline (a tap that
+ * listens for `{ type: 'done', sessionId }`) — see the orchestrator
+ * card. Tests inject a fake that exposes a `fire()` method.
+ *
+ * `subscribe` returns an unsubscribe fn. The helper calls it on every
+ * exit path so we never leak listeners.
+ */
+export interface TurnEndSubscriber {
+  subscribe(sessionId: string, onTurnEnd: () => void): () => void;
+}
+
+/**
+ * Cancellation signal. Matches a subset of `AbortSignal` so the
+ * orchestrator can pass its own abort directly through. Tests inject a
+ * tiny stub.
+ */
+export interface CancelSignal {
+  /** True if cancellation has already been requested before subscribe. */
+  readonly aborted: boolean;
+  /** Listener registration; called at most once. Returns unregister fn. */
+  onAbort(listener: () => void): () => void;
+}
+
+export interface FixDispatchDeps {
+  stmts: Pick<
+    Stmts,
+    | 'addMessage'
+    | 'getMessageById'
+    | 'touchSession'
+    | 'updateFinalizeRunPhase'
+    | 'updateFinalizeRunActiveSeconds'
+    | 'failFinalizeRun'
+  >;
+  broadcast: BroadcastFn;
+  turnEnd: TurnEndSubscriber;
+  /** Dep bundle handed to the stall watchdog; see {@link StallWatchdogDeps}. */
+  stallWatchdog?: Omit<StallWatchdogDeps, 'broadcast' | 'stmts'>;
+  /** Injectable clock for tests. */
+  now?: () => number;
+  /** Idempotent id minter for the dispatched message. */
+  newId?: () => string;
+  /** Log sink; tests stub. */
+  log?: (msg: string) => void;
+}
+
+export interface FixDispatchOptions {
+  /** finalize_runs.id. */
+  runId: string;
+  /** Originating session id — the message is dropped into this transcript. */
+  sessionId: string;
+  /** Project id — propagated to push payload + session message metadata. */
+  projectId: string;
+  /** Card id — propagated to push payload + session message metadata. */
+  cardId: string;
+  /**
+   * Trigger source for the parent finalize run. Drives whether the
+   * stall watchdog arms (`'ui_button'` → yes; `'agent_block'` → no).
+   */
+  triggerSource: 'ui_button' | 'agent_block';
+  /** Card title — woven into the stall watchdog's push body. */
+  cardTitle?: string;
+  /** The actual fail signal that triggered this dispatch. */
+  trigger: FixDispatchTrigger;
+  /**
+   * Per-project stall-watchdog notify window override. Passed straight
+   * through to {@link armStallWatchdog} (clamped + sanitised there).
+   */
+  notifyAfterMs?: number;
+  /**
+   * Per-project stall-watchdog stall window override. Passed straight
+   * through to {@link armStallWatchdog}.
+   */
+  stallAfterMs?: number;
+  /** Optional cancel signal. Callers wire their own abort logic through. */
+  signal?: CancelSignal;
+  /**
+   * When true, the dispatch-phase entry active-seconds charge is
+   * skipped. Use case: the orchestrator already billed the phase
+   * transition itself (e.g. through `failFinalizeRun`'s caller) and
+   * the helper would be double-charging. Default false (charge here).
+   */
+  skipActiveSecondsCharge?: boolean;
+}
+
+/**
+ * One round of fix-dispatch. Resolves when the session turn ends OR
+ * the stall watchdog terminates OR the caller cancels.
+ *
+ * Side effects (in order):
+ *
+ *   1. `finalize_runs.phase = 'dispatching'`, `status = 'dispatching'`
+ *      via `updateFinalizeRunPhase` + broadcast.
+ *   2. `finalize_runs.active_seconds_consumed += DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS`
+ *      (skippable via {@link FixDispatchOptions.skipActiveSecondsCharge}).
+ *   3. Insert the composed §7 message into the session via
+ *      `addMessage` (role `'system'`); broadcast `{ type: 'message' }`.
+ *   4. Subscribe to turn-end on the session.
+ *   5. Arm the stall watchdog (live mode only).
+ *   6. Await whichever resolves first.
+ *
+ * Non-throwing: every failure becomes a tagged outcome. A DB write
+ * failure on step 1 still attempts steps 2–3 (best-effort); a message
+ * insert failure aborts with `'cancelled'` so the orchestrator can
+ * surface the infra error.
+ */
+export async function dispatchFixMessage(
+  deps: FixDispatchDeps,
+  opts: FixDispatchOptions,
+): Promise<FixDispatchResult> {
+  const { stmts, broadcast } = deps;
+  const now = deps.now ?? Date.now;
+  const newId = deps.newId ?? uuidv4;
+  const log = deps.log ?? ((msg: string) => console.warn(msg));
+
+  // Compose the body up-front so a malformed trigger (no failed step
+  // AND no threads) surfaces here, not after we've already touched the
+  // DB. Empty body would be a meaningless prompt for the agent.
+  const body = composeDispatchBody(opts.trigger);
+  if (!body.trim()) {
+    log(
+      `[finalize-fix-dispatch] refusing to dispatch empty message for run=${opts.runId} — trigger had no failed step and no reviewer threads`,
+    );
+    return { outcome: 'cancelled', messageId: '', activeSecondsBilled: 0 };
+  }
+
+  // Phase + status flip. We write BEFORE the message insert so a UI
+  // subscriber that joins between the broadcast and the insert sees
+  // the dispatching state at minimum.
+  try {
+    stmts.updateFinalizeRunPhase.run('dispatching', 'dispatching', opts.runId);
+    broadcast({
+      type: 'finalize_run_phase_changed',
+      run_id: opts.runId,
+      phase: 'dispatching',
+      status: 'dispatching',
+    });
+  } catch (err) {
+    // Phase write is best-effort. The dispatch is still useful to the
+    // agent even if the row is mid-transaction lock — surface and
+    // continue.
+    log(
+      `[finalize-fix-dispatch] phase write failed for run=${opts.runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  let activeSecondsBilled = 0;
+  if (!opts.skipActiveSecondsCharge) {
+    try {
+      stmts.updateFinalizeRunActiveSeconds.run(DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS, opts.runId);
+      activeSecondsBilled = DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS;
+    } catch (err) {
+      log(
+        `[finalize-fix-dispatch] active-seconds bump failed for run=${opts.runId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  const messageId = newId();
+  const metadata = JSON.stringify({
+    kind: 'finalize_fix_dispatch',
+    runId: opts.runId,
+    cardId: opts.cardId,
+    projectId: opts.projectId,
+    triggerSource: opts.triggerSource,
+    failedStepName: opts.trigger.failedStep?.name ?? null,
+    failedStepExitCode: opts.trigger.failedStep?.exitCode ?? null,
+    reviewerVerdict: opts.trigger.reviewerVerdict ?? null,
+    reviewerThreadCount: opts.trigger.reviewerThreads?.length ?? 0,
+    dispatchedAt: now(),
+  });
+
+  try {
+    stmts.addMessage.run(
+      messageId,
+      opts.sessionId,
+      'system',
+      body,
+      null,
+      null,
+      null,
+      metadata,
+      null,
+      null,
+      null,
+    );
+  } catch (err) {
+    // We cannot recover from a failed message insert — the agent will
+    // never see the prompt. Surface as cancelled so the orchestrator
+    // can decide whether to retry or fail terminal. Persist nothing
+    // else here; the row's existing phase/status stand.
+    log(
+      `[finalize-fix-dispatch] addMessage failed for session=${opts.sessionId} run=${opts.runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return { outcome: 'cancelled', messageId, activeSecondsBilled };
+  }
+  try {
+    stmts.touchSession.run(opts.sessionId);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    const inserted = stmts.getMessageById.get(messageId) as MessageRow | undefined;
+    if (inserted) {
+      broadcast({ type: 'message', sessionId: opts.sessionId, message: inserted });
+    }
+  } catch (err) {
+    log(
+      `[finalize-fix-dispatch] message broadcast failed for session=${opts.sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  // Pre-cancel: caller already aborted before we set up the wait
+  // primitives. Skip both watchdog and turn-end subscription.
+  if (opts.signal?.aborted) {
+    return { outcome: 'cancelled', messageId, activeSecondsBilled };
+  }
+
+  // Set up turn-end + watchdog with a single shared resolver so each
+  // resolution path is mutually exclusive.
+  return new Promise<FixDispatchResult>((resolve) => {
+    let settled = false;
+
+    let watchdog: StallWatchdogHandle | null = null;
+    let unsubscribeTurnEnd: (() => void) | null = null;
+    let unsubscribeCancel: (() => void) | null = null;
+
+    const finish = (outcome: FixDispatchOutcome): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        watchdog?.cancel();
+      } catch {
+        /* best-effort */
+      }
+      try {
+        unsubscribeTurnEnd?.();
+      } catch {
+        /* best-effort */
+      }
+      try {
+        unsubscribeCancel?.();
+      } catch {
+        /* best-effort */
+      }
+      resolve({ outcome, messageId, activeSecondsBilled });
+    };
+
+    // Subscribe to turn-end first so a same-tick `done` event that
+    // fires synchronously during watchdog setup is not missed.
+    try {
+      unsubscribeTurnEnd = deps.turnEnd.subscribe(opts.sessionId, () => finish('turn_ended'));
+    } catch (err) {
+      log(
+        `[finalize-fix-dispatch] turn-end subscribe failed for session=${opts.sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      finish('cancelled');
+      return;
+    }
+
+    if (opts.signal) {
+      try {
+        unsubscribeCancel = opts.signal.onAbort(() => finish('cancelled'));
+      } catch (err) {
+        log(
+          `[finalize-fix-dispatch] cancel-signal subscribe failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // Arm watchdog. Autonomous mode no-ops inside armStallWatchdog —
+    // the returned handle is valid but neither timer is set.
+    watchdog = armStallWatchdog(
+      {
+        stmts,
+        broadcast,
+        ...(deps.stallWatchdog ?? {}),
+      },
+      {
+        runId: opts.runId,
+        sessionId: opts.sessionId,
+        projectId: opts.projectId,
+        cardId: opts.cardId,
+        triggerSource: opts.triggerSource,
+        cardTitle: opts.cardTitle,
+        notifyAfterMs: opts.notifyAfterMs,
+        stallAfterMs: opts.stallAfterMs,
+      },
+      () => finish('stalled_no_response'),
+    );
+  });
+}
+
+// ─── §7 message composer ────────────────────────────────────────────
+
+/**
+ * Build the §7 fix-dispatch body. Locked to the wiki shape; render is
+ * pure so the orchestrator and tests share one formatter.
+ *
+ * Skeleton:
+ *
+ *     Finalize Code Changes: phase=<phase>, step "<name>" failed (exit <code>).
+ *     (or)
+ *     Finalize Code Changes: phase=review, reviewer requested changes.
+ *
+ *     Last output (40 lines):
+ *     <stdout/stderr tail>
+ *
+ *     Reviewer notes:
+ *     - <file>:<line> — <comment>
+ *
+ *     Please fix and commit. The pipeline will re-run automatically when you finish your turn.
+ *
+ * Empty input produces an empty string — the caller treats that as
+ * "no useful dispatch, do not send".
+ */
+export function composeDispatchBody(trigger: FixDispatchTrigger): string {
+  const hasFailedStep = !!trigger.failedStep;
+  const threads = trigger.reviewerThreads ?? [];
+  const hasReviewerNotes = threads.length > 0;
+  const reviewerChangesRequested = trigger.reviewerVerdict === 'changes_requested';
+
+  if (!hasFailedStep && !hasReviewerNotes && !reviewerChangesRequested) {
+    return '';
+  }
+
+  const lines: string[] = [];
+
+  if (hasFailedStep) {
+    const f = trigger.failedStep!;
+    lines.push(
+      `Finalize Code Changes: phase=${f.phase}, step "${f.name}" failed (exit ${f.exitCode}).`,
+    );
+  } else {
+    // Reviewer-only dispatch. The header phase matches the design doc
+    // wording ("phase=review, reviewer requested changes.") regardless
+    // of which side of the gate the orchestrator entered from.
+    lines.push('Finalize Code Changes: phase=review, reviewer requested changes.');
+  }
+
+  if (hasFailedStep) {
+    const tail = trigger.failedStep!.outputTail ?? [];
+    lines.push('');
+    lines.push('Last output (40 lines):');
+    if (tail.length === 0) {
+      lines.push('(no output captured)');
+    } else {
+      for (const t of tail) lines.push(t);
+    }
+  }
+
+  if (hasReviewerNotes) {
+    const formatted = formatThreadsForDispatchBody(threads);
+    if (formatted.length > 0) {
+      lines.push('');
+      lines.push(formatted);
+    }
+  } else if (reviewerChangesRequested) {
+    // The verdict says changes were requested but no anchored threads
+    // were produced — surface that explicitly so the agent isn't left
+    // guessing what the reviewer wanted.
+    lines.push('');
+    lines.push('Reviewer notes:');
+    lines.push('- (no anchored notes — verdict was changes_requested without per-file findings)');
+  }
+
+  lines.push('');
+  lines.push(DISPATCH_TRAILER);
+
+  return lines.join('\n');
+}
+
+export const __test = {
+  DEFAULT_NOTIFY_AFTER_MS,
+  DEFAULT_STALL_AFTER_MS,
+};

@@ -37,6 +37,18 @@ export const PUSH_EVENT_TYPES = [
   'thread_entry',
   'dispatch_failure',
   'cron',
+  /**
+   * Fired by the Finalize fix-dispatch stall watchdog
+   * (`server/finalize/stall-watchdog.ts`) when a live-mode dispatch sits
+   * in the session for longer than the configured notify window without
+   * the agent producing a turn-end. The triggering user gets one push
+   * with a deep-link back to the session so they can re-engage. The run
+   * keeps waiting; this is a reminder, not a cancel. The longer stall
+   * window (after which the run terminates as `stalled_no_response`)
+   * does not produce a push — the user already got one, and a terminal
+   * state will surface via the existing card / session UI.
+   */
+  'finalize_stall_warning',
 ] as const;
 
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
@@ -193,6 +205,31 @@ export function cronCompletePush(args: { cronName: string; result: string }): {
 } {
   const body = args.result.length > 200 ? args.result.slice(0, 200) + '...' : args.result;
   return { title: `Cron: ${args.cronName}`, body };
+}
+
+/**
+ * Formatter for `finalize_stall_warning` — emitted by the Finalize
+ * fix-dispatch stall watchdog when the notify window elapses without a
+ * turn-end on the originating session. The body names the card so the
+ * recipient can route back to it on mobile. The push `data` payload
+ * carries `runId` + `sessionId` + `cardId` + `type:
+ * 'finalize_stall_warning'`; the deep-link is built client-side from
+ * those fields (mirroring the convention used by `card_review` /
+ * `session_complete`).
+ */
+export function finalizeStallWarningPush(args: { cardTitle?: string; ageMinutes?: number }): {
+  title: string;
+  body: string;
+} {
+  const subject = args.cardTitle ? `"${args.cardTitle}"` : 'A Finalize run';
+  const age =
+    typeof args.ageMinutes === 'number' && Number.isFinite(args.ageMinutes) && args.ageMinutes > 0
+      ? ` for ${Math.round(args.ageMinutes)} min`
+      : '';
+  return {
+    title: 'Finalize — Still waiting for fix',
+    body: `${subject} is waiting on a fix${age}. Tap to continue.`,
+  };
 }
 
 // ── Preference filtering ────────────────────────────────────────────────
