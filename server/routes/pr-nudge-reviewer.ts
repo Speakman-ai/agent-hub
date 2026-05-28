@@ -93,8 +93,12 @@ export default function createPrNudgeReviewerRoutes(deps: RouteDeps): Router {
           ? pr.html_url
           : `https://github.com/${repo.owner}/${repo.repo}/pull/${num}`;
       const prTitle = typeof pr.title === 'string' ? pr.title : `PR #${num}`;
-      const headObj = pr.head as { sha?: string } | null | undefined;
-      const headSha = typeof headObj?.sha === 'string' ? headObj.sha : undefined;
+      // detail.headSha is the raw `pull_request.head.sha` from GitHub.
+      // `pr.head` post-`normalizePrSummary` is the branch-ref string, NOT
+      // `{sha}` — earlier code casting `pr.head as { sha?: string }` always
+      // produced undefined and silently skipped the reviewer Check Run
+      // (which is commit-scoped, see ensureCheckRunForPR's early return).
+      const headSha = detail.headSha ?? undefined;
 
       const scheduled = dispatchReviewerForPR(deps, project, {
         prUrl,

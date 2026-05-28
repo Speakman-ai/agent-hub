@@ -91,6 +91,11 @@ describe('fetchPrDetail', () => {
 
     expect(out.source).toBe('github-app');
     expect((out.pr as Record<string, unknown>).number).toBe(42);
+    // The head SHA is hoisted to top-level `headSha` because
+    // normalizePrSummary collapses `pr.head` into a branch-ref string.
+    // Callers that create commit-scoped artifacts (e.g. reviewer Check Runs)
+    // depend on this; before PR #1161 they were silently getting undefined.
+    expect(out.headSha).toBe('abc123');
   });
 
   it('uses user OAuth when userAccessToken is provided', async () => {
@@ -114,6 +119,29 @@ describe('fetchPrDetail', () => {
     });
     expect(out.source).toBe('user-oauth');
     expect((out.pr as Record<string, unknown>).number).toBe(7);
+    expect(out.headSha).toBe('abc');
+  });
+
+  it('returns headSha=null when the GitHub payload has no head SHA', async () => {
+    const { githubUserApiRequest } = await import('./github-oauth.js');
+    (githubUserApiRequest as ReturnType<typeof vi.fn>).mockImplementation(async ({ endpoint }) => {
+      if (endpoint.endsWith('/pulls/8')) {
+        // Edge case: deleted-branch / GhostPR — `head` is missing entirely.
+        return {
+          number: 8,
+          title: 'GhostPR',
+          state: 'closed',
+          user: { login: 'alice' },
+        };
+      }
+      return [];
+    });
+
+    const { fetchPrDetail } = await import('./pr-detail-fetch.js');
+    const out = await fetchPrDetail(baseConfig(), { owner: 'o', repo: 'r' }, 8, {
+      userAccessToken: 'gho_test',
+    });
+    expect(out.headSha).toBeNull();
   });
 
   it('throws when no user token and reviewerAppRead is false', async () => {
