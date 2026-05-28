@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, AlertTriangle, FileText, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../../utils/api.js';
 
@@ -35,65 +35,93 @@ export default function ReviewerThreadsPanel({ sessionId }) {
   const [loadError, setLoadError] = useState(null);
   const [collapsedFiles, setCollapsedFiles] = useState(() => new Set());
 
+  // One AbortController per mount; we abort it in cleanup (unmount or
+  // sessionId change) so in-flight fetches don't race React state setters
+  // after teardown. Refetch paths (the WS-bridged `reviewer_thread_added`
+  // event) reuse the same controller — if the user switches sessions
+  // mid-refetch, the request is aborted at the next reset.
+  const abortRef = useRef(null);
+  const isAbortError = (e) =>
+    e?.name === 'AbortError' || (typeof e?.message === 'string' && /aborted/i.test(e.message));
+
   // Step 1 — resolve the latest finalize_runs row for this session.
-  const loadLatestRun = useCallback(() => {
-    if (!sessionId) {
-      setLatestRun(null);
-      return Promise.resolve(null);
-    }
-    return api
-      .getLatestFinalizeRunForSession(sessionId)
-      .then((data) => {
-        setLatestRun(data?.run ?? null);
-        return data?.run ?? null;
-      })
-      .catch((e) => {
-        // A 4xx here just means "no finalize for this session yet" — we
-        // don't surface that as an error; the panel just stays hidden.
+  const loadLatestRun = useCallback(
+    (signal) => {
+      if (!sessionId) {
         setLatestRun(null);
-        setLoadError(e?.message || null);
-        return null;
-      });
-  }, [sessionId]);
+        return Promise.resolve(null);
+      }
+      return api
+        .getLatestFinalizeRunForSession(sessionId, { signal })
+        .then((data) => {
+          if (signal?.aborted) return null;
+          setLatestRun(data?.run ?? null);
+          return data?.run ?? null;
+        })
+        .catch((e) => {
+          if (isAbortError(e) || signal?.aborted) return null;
+          // A 4xx here just means "no finalize for this session yet" — we
+          // don't surface that as an error; the panel just stays hidden.
+          setLatestRun(null);
+          setLoadError(e?.message || null);
+          return null;
+        });
+    },
+    [sessionId],
+  );
 
   // Step 2 — load threads for the resolved run.
-  const loadThreads = useCallback((run) => {
+  const loadThreads = useCallback((run, signal) => {
     if (!run || !run.id || !run.project_id) {
       setThreadsResp(null);
       return Promise.resolve();
     }
     return api
-      .getReviewerThreads(run.project_id, run.id)
+      .getReviewerThreads(run.project_id, run.id, { signal })
       .then((data) => {
+        if (signal?.aborted) return;
         setThreadsResp(data);
         setLoadError(null);
       })
       .catch((e) => {
+        if (isAbortError(e) || signal?.aborted) return;
         setThreadsResp(null);
         setLoadError(e?.message || 'Failed to load reviewer threads');
       });
   }, []);
 
   useEffect(() => {
+    // Abort any prior in-flight fetch before kicking off a fresh pair.
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setThreadsResp(null);
     setLoadError(null);
     setCollapsedFiles(new Set());
     if (!sessionId) {
       setLatestRun(null);
-      return;
+      return () => controller.abort();
     }
-    loadLatestRun().then((run) => loadThreads(run));
+    loadLatestRun(controller.signal).then((run) => {
+      if (controller.signal.aborted) return;
+      loadThreads(run, controller.signal);
+    });
+    return () => controller.abort();
   }, [sessionId, loadLatestRun, loadThreads]);
 
   // Step 3 — live updates. The reviewer-dispatch helper fires one
   // `reviewer_thread_added` event per row after the COMMIT, so refetching
-  // on the first event picks up the rest in the same tick.
+  // on the first event picks up the rest in the same tick. Refetches
+  // piggy-back on the mount-scoped AbortController so a unmount mid-refetch
+  // cancels cleanly.
   useEffect(() => {
     if (!latestRun?.id) return undefined;
     const handler = (event) => {
       const detail = event?.detail || {};
       if (detail.run_id !== latestRun.id) return;
-      loadThreads(latestRun);
+      const signal = abortRef.current?.signal;
+      loadThreads(latestRun, signal);
     };
     window.addEventListener('reviewer_thread_added', handler);
     return () => window.removeEventListener('reviewer_thread_added', handler);

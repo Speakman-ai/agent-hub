@@ -3202,16 +3202,23 @@ function initDb(dataDir: string): void {
     // follow-up phase, so this skeleton keeps the schema honest without
     // pretending the orchestrator exists yet.
     getFinalizeRun: db.prepare('SELECT * FROM finalize_runs WHERE id = ?'),
-    // Most-recent finalize run for a session (ordered by started_at DESC).
-    // Used by the session-scoped reviewer-threads side-panel to discover
-    // which run id to pull threads for without forcing the client to track
-    // run lifecycle events. Returns undefined when the session has never
-    // triggered a Finalize run — the panel renders nothing in that case.
+    // Most-recent finalize run for a session. Used by the session-scoped
+    // reviewer-threads side-panel to discover which run id to pull threads
+    // for without forcing the client to track run lifecycle events. Returns
+    // undefined when the session has never triggered a Finalize run — the
+    // panel renders nothing in that case.
+    //
+    // Ordering: started_at DESC is the primary signal. The id DESC tiebreak
+    // is defensive — two rows with the same `started_at` ms are possible
+    // when the orchestrator dispatches two runs in the same tick, and we
+    // need the picker to be deterministic across SQLite versions. Sorting
+    // by a UUID is lexicographic but stable, which is all the tiebreak
+    // needs to be.
     getLatestFinalizeRunForSession: db.prepare(
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-        ORDER BY started_at DESC
+        ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
     updateFinalizeRunPhase: db.prepare(
@@ -3250,11 +3257,20 @@ function initDb(dataDir: string): void {
         (id, run_id, file_path, line_start, line_end, body, author, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
+    // Sort by file_path (NOT NULL in the schema), then line_start, then
+    // created_at. `line_start` is nullable for file-level notes — we want
+    // those to sort BEFORE numbered lines within the same file so the
+    // side-panel renders the "general note about this file" header first.
+    // SQLite happens to default `ASC` → NULLS FIRST, but the explicit
+    // `NULLS FIRST` makes the contract grep-discoverable and survives
+    // any future DB swap. See `server/routes/finalize.test.ts`.
     listReviewerThreadsForRun: db.prepare(
       `SELECT id, run_id, file_path, line_start, line_end, body, author, created_at
          FROM reviewer_threads
         WHERE run_id = ?
-        ORDER BY file_path ASC, line_start ASC, created_at ASC`,
+        ORDER BY file_path ASC,
+                 line_start ASC NULLS FIRST,
+                 created_at ASC`,
     ),
     deleteReviewerThreadsForRun: db.prepare('DELETE FROM reviewer_threads WHERE run_id = ?'),
   } as Stmts;

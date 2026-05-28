@@ -24,6 +24,8 @@
  * is a parallel store that powers a read-only side panel only.
  */
 import { Router, Request, Response } from 'express';
+import type { AuthenticatedRequest } from '../auth.js';
+import { userCanReadSession } from '../session-ownership.js';
 import type { FinalizeRunRow, ReviewerThreadRow, RouteDeps } from '../types.js';
 
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
@@ -59,8 +61,20 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   );
 
   // Latest finalize run for a session (convenience for the panel).
+  //
+  // The sessions router (`createSessionRoutes`) already mounts a
+  // `router.use('/api/sessions/:sessionId', ...)` ownership gate ahead of
+  // this router in `server/index.ts`, so non-owners are already 404'd
+  // before they reach this handler. We **also** call `userCanReadSession`
+  // here as defense in depth — this surface is reachable directly when
+  // future refactors reorder mounts or when an internal caller bypasses
+  // the sessions router. Both layers return 404 (not 403) so we don't
+  // leak the existence of sessions the caller doesn't own.
   router.get('/api/sessions/:sessionId/finalize-runs/latest', (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
+    if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
     const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
     // "no runs yet" is a normal first-load state — we return 200 + null
     // rather than 404 so the client can branch cleanly on a single shape.

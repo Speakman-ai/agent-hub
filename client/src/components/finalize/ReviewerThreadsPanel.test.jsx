@@ -58,7 +58,10 @@ describe('<ReviewerThreadsPanel />', () => {
     api.getLatestFinalizeRunForSession.mockResolvedValue({ run: null });
     const { container } = render(<ReviewerThreadsPanel sessionId="s-empty" />);
     await waitFor(() => {
-      expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledWith('s-empty');
+      expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledWith(
+        's-empty',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
     // Threads fetch must NOT fire when there's no run.
     expect(api.getReviewerThreads).not.toHaveBeenCalled();
@@ -80,7 +83,11 @@ describe('<ReviewerThreadsPanel />', () => {
     });
     const { container } = render(<ReviewerThreadsPanel sessionId="s1" />);
     await waitFor(() => {
-      expect(api.getReviewerThreads).toHaveBeenCalledWith('proj-1', 'run-1');
+      expect(api.getReviewerThreads).toHaveBeenCalledWith(
+        'proj-1',
+        'run-1',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
     expect(container.querySelector('[data-testid="reviewer-threads-panel"]')).toBeNull();
   });
@@ -259,5 +266,73 @@ describe('<ReviewerThreadsPanel />', () => {
     render(<ReviewerThreadsPanel sessionId="s1" />);
     const panel = await screen.findByTestId('reviewer-threads-panel');
     expect(panel).toHaveAttribute('data-run-id', 'run-zzz');
+  });
+
+  it('passes an AbortSignal to both api calls and aborts it on unmount', async () => {
+    api.getLatestFinalizeRunForSession.mockResolvedValue({ run: fakeRun() });
+    api.getReviewerThreads.mockResolvedValue({
+      run_id: 'run-1',
+      reviewer_verdict: 'approved',
+      threads: [],
+    });
+
+    const { unmount } = render(<ReviewerThreadsPanel sessionId="s1" />);
+    await waitFor(() => {
+      expect(api.getReviewerThreads).toHaveBeenCalled();
+    });
+
+    const runCallSignal = api.getLatestFinalizeRunForSession.mock.calls[0]?.[1]?.signal;
+    const threadsCallSignal = api.getReviewerThreads.mock.calls[0]?.[2]?.signal;
+    expect(runCallSignal).toBeInstanceOf(AbortSignal);
+    expect(threadsCallSignal).toBeInstanceOf(AbortSignal);
+    // Same controller for the pair (saves one allocation per render).
+    expect(runCallSignal).toBe(threadsCallSignal);
+    expect(runCallSignal.aborted).toBe(false);
+
+    unmount();
+    expect(runCallSignal.aborted).toBe(true);
+  });
+
+  it('aborts the prior in-flight fetch when sessionId changes mid-flight', async () => {
+    let resolveFirst;
+    api.getLatestFinalizeRunForSession
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ run: fakeRun({ id: 'run-2', session_id: 's2' }) });
+    api.getReviewerThreads.mockResolvedValue({
+      run_id: 'run-2',
+      reviewer_verdict: 'approved',
+      threads: [],
+    });
+
+    const { rerender } = render(<ReviewerThreadsPanel sessionId="s1" />);
+    await waitFor(() => {
+      expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledWith(
+        's1',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+    const firstSignal = api.getLatestFinalizeRunForSession.mock.calls[0]?.[1]?.signal;
+    expect(firstSignal.aborted).toBe(false);
+
+    // Switch sessions before the first request resolves.
+    rerender(<ReviewerThreadsPanel sessionId="s2" />);
+
+    // The first controller is aborted; the second session's request flies.
+    await waitFor(() => {
+      expect(firstSignal.aborted).toBe(true);
+    });
+    await waitFor(() => {
+      expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledTimes(2);
+    });
+
+    // Resolve the now-aborted first call — must not break or write state.
+    await act(async () => {
+      resolveFirst({ run: fakeRun({ id: 'run-1' }) });
+    });
   });
 });
