@@ -1324,6 +1324,21 @@ export interface Stmts {
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;
   updateFinalizeRunReviewerVerdict: Stmt;
+  /**
+   * Set `finalize_runs.pr_url` for a run id. Written atomically with
+   * the push step (card 5c34b2de) so the webhook-side provenance lookup
+   * via {@link getFinalizeRunByPrUrl} can never see an orphan row.
+   * See `server/finalize/provenance.ts` (design §11).
+   */
+  updateFinalizeRunPrUrl: Stmt;
+  /**
+   * Look up a finalize_runs row by the GitHub PR URL the push step
+   * recorded. Used by the webhook handler to classify incoming PR
+   * events as internal (registry hit) vs external (registry miss).
+   * Returns `undefined` when no orchestrator-pushed PR matches.
+   * See `server/finalize/provenance.ts` (design §11).
+   */
+  getFinalizeRunByPrUrl: Stmt;
 
   // reviewer_threads — diff-anchored notes from the reviewer agent.
   // See wiki: finalize-code-changes-architecture-v0 (§8).

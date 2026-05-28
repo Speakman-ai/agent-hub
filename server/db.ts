@@ -3249,6 +3249,21 @@ function initDb(dataDir: string): void {
           SET reviewer_verdict = ?
         WHERE id = ?`,
     ),
+    // Record the GitHub PR URL the push step opened for a finalize run.
+    // Written atomically with the `git push` + `gh pr create` sequence
+    // by the push gate (card 5c34b2de) so the webhook handler can use
+    // a registry hit to mean "internal PR" with no risk of orphan rows.
+    // See `server/finalize/provenance.ts` (design §11).
+    updateFinalizeRunPrUrl: db.prepare(
+      `UPDATE finalize_runs
+          SET pr_url = ?
+        WHERE id = ?`,
+    ),
+    // Reverse lookup for provenance classification: given an incoming PR
+    // URL from a webhook, find the matching finalize_runs row (if any).
+    // Presence = orchestrator-pushed (internal); absence triggers the
+    // PR-body-marker fallback. See `server/finalize/provenance.ts`.
+    getFinalizeRunByPrUrl: db.prepare('SELECT * FROM finalize_runs WHERE pr_url = ? LIMIT 1'),
 
     // reviewer_threads — diff-anchored notes produced by the reviewer
     // agent during the review phase. See wiki §8.
