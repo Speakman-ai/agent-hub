@@ -35,7 +35,7 @@ describe('mobile engine picker constants', () => {
     // with server/config.ts → engineValidModels['codex-cli'] and with the
     // ChatGPT allowlist in server/codex-auth.ts.
     const models = ENGINE_MODELS['codex-cli'].map((m) => m.id);
-    expect(models).toEqual(['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2']);
+    expect(models).toEqual(['gpt-5.5', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2']);
     expect(models).not.toContain('gpt-5');
     expect(models).not.toContain('gpt-5-mini');
     expect(models).not.toContain('gpt-5-codex');

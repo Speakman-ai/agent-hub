@@ -23,6 +23,7 @@ const MODEL_LABELS = {
   'claude-sonnet-4-6': { label: 'Sonnet', short: 'Sonnet' },
   'composer-2.5': { label: 'Composer 2.5', short: 'Composer 2.5' },
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
+  'gpt-5.5': { label: 'GPT-5.5', short: '5.5' },
   'gpt-5.4': { label: 'GPT-5.4', short: '5.4' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', short: '5.4 Mini' },
   'gpt-5.2': { label: 'GPT-5.2', short: '5.2' },
@@ -38,7 +39,8 @@ function modelDisplay(id) {
 
 function fallbackModelsForEngine(engine) {
   if (engine === 'cursor-agent') return ['composer-2.5'];
-  if (engine === 'codex-cli') return ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
+  if (engine === 'codex-cli')
+    return ['gpt-5.5', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
   return ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6'];
 }
 

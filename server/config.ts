@@ -171,7 +171,7 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
   // drop --model when an unsupported/stale ID is still persisted on a
   // session (so resumes from old DBs don't spin forever).
-  'codex-cli': ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+  'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
 };
 
 const mergedEngineValidModelsRaw =

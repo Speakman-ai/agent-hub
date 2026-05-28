@@ -139,6 +139,7 @@ describe('<TopBar /> engine picker', () => {
     const modelTrigger = screen.getByTitle(/^Model: /);
     fireEvent.click(modelTrigger);
     // Present:
+    expect(screen.getAllByText(/^GPT-5.5$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/GPT-5.3 Codex/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.4$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/GPT-5.4 Mini/).length).toBeGreaterThan(0);

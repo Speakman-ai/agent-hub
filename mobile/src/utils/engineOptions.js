@@ -25,6 +25,7 @@ export const ENGINE_MODELS = {
   // with HTTP 400 by the ChatGPT backend. Keep in sync with server/config.ts
   // and client/src/components/TopBar.jsx.
   'codex-cli': [
+    { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', short: '5.3 Codex' },
     { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
