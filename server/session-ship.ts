@@ -85,6 +85,40 @@ export type TriggerSessionShipResult =
   | { ok: true }
   | { ok: false; status: number; error: string; code?: string };
 
+/** Prevents duplicate POST /ship or double auto-ship before handleChat registers activeProcesses. */
+const sessionsWithShipInFlight = new Set<string>();
+
+/** Test-only reset for in-flight ship guard. */
+export function resetShipInFlightForTests(): void {
+  sessionsWithShipInFlight.clear();
+}
+
+/** Clear persisted changes_ready and notify clients once a PR exists (skill or server path). */
+export function clearChangesReadyAndNotifyPrCreated(args: {
+  sessionId: string;
+  agentId: string;
+  stmts: Pick<Stmts, 'clearSessionChangesReady'>;
+  broadcast: BroadcastFn;
+  prUrl: string;
+  cardTitle?: string | null;
+}): void {
+  try {
+    args.stmts.clearSessionChangesReady.run(args.sessionId);
+  } catch (err) {
+    console.warn(
+      `[session-ship] clearSessionChangesReady failed for ${args.sessionId}:`,
+      (err as Error).message,
+    );
+  }
+  args.broadcast({
+    type: 'auto_pr_created',
+    sessionId: args.sessionId,
+    agentId: args.agentId,
+    prUrl: args.prUrl,
+    cardTitle: args.cardTitle ?? undefined,
+  });
+}
+
 export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSessionShipResult {
   const {
     sessionId,
@@ -111,12 +145,14 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
     };
   }
 
-  if (activeProcesses.has(sessionId)) {
+  if (activeProcesses.has(sessionId) || sessionsWithShipInFlight.has(sessionId)) {
     return {
       ok: false,
       status: 409,
-      error: 'Session is still streaming — wait for the agent to finish before creating a PR',
-      code: 'session_streaming',
+      error: sessionsWithShipInFlight.has(sessionId)
+        ? 'Create ticket & PR is already in progress for this session'
+        : 'Session is still streaming — wait for the agent to finish before creating a PR',
+      code: sessionsWithShipInFlight.has(sessionId) ? 'ship_in_progress' : 'session_streaming',
     };
   }
 
@@ -194,68 +230,74 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
     console.error('[session-ship] Failed to persist system message:', (err as Error).message);
   }
 
+  sessionsWithShipInFlight.add(sessionId);
+
   void handleChat(null, {
     type: 'chat',
     agentId: session.agent_id,
     sessionId,
     content: cliPrompt,
     _skipUserMessagePersist: true,
-  }).catch((err: Error) => {
-    console.error(`[session-ship] handleChat failed for session ${sessionId}:`, err.message);
-    const errorText = `Failed to start ship workflow: ${err.message}`;
-    broadcast({
-      type: 'error',
-      sessionId,
-      message: errorText,
-    });
-    try {
-      const msgId = uuidv4();
-      const metadata = JSON.stringify({
-        kind: 'pr_failed',
-        code: 'pr_failed',
-        error: err.message,
-        agentName: agent.name,
-      });
-      const content = `Auto-PR failed (pr_failed): ${errorText}`;
-      stmts.addMessage.run(
-        msgId,
-        sessionId,
-        'system',
-        content,
-        null,
-        null,
-        null,
-        metadata,
-        null,
-        null,
-        null,
-      );
-      const inserted =
-        (stmts.getMessageById.get(msgId) as MessageRow | undefined) ??
-        ({
-          id: msgId,
-          session_id: sessionId,
-          role: 'system',
-          content,
-          engine: null,
-          model: null,
-          attachments: null,
-          metadata,
-          created_at: new Date().toISOString(),
-        } satisfies MessageRow);
-      broadcast({ type: 'message', message: inserted });
+  })
+    .catch((err: Error) => {
+      console.error(`[session-ship] handleChat failed for session ${sessionId}:`, err.message);
+      const errorText = `Failed to start ship workflow: ${err.message}`;
       broadcast({
-        type: 'auto_pr_failed',
+        type: 'error',
         sessionId,
-        agentId: session.agent_id,
-        code: 'pr_failed',
-        error: err.message,
+        message: errorText,
       });
-    } catch (persistErr: unknown) {
-      const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
-      console.warn(`[session-ship] Failed to persist pr_failed marker: ${msg}`);
-    }
-  });
+      try {
+        const msgId = uuidv4();
+        const metadata = JSON.stringify({
+          kind: 'pr_failed',
+          code: 'pr_failed',
+          error: err.message,
+          agentName: agent.name,
+        });
+        const content = `Auto-PR failed (pr_failed): ${errorText}`;
+        stmts.addMessage.run(
+          msgId,
+          sessionId,
+          'system',
+          content,
+          null,
+          null,
+          null,
+          metadata,
+          null,
+          null,
+          null,
+        );
+        const inserted =
+          (stmts.getMessageById.get(msgId) as MessageRow | undefined) ??
+          ({
+            id: msgId,
+            session_id: sessionId,
+            role: 'system',
+            content,
+            engine: null,
+            model: null,
+            attachments: null,
+            metadata,
+            created_at: new Date().toISOString(),
+          } satisfies MessageRow);
+        broadcast({ type: 'message', message: inserted });
+        broadcast({
+          type: 'auto_pr_failed',
+          sessionId,
+          agentId: session.agent_id,
+          code: 'pr_failed',
+          error: err.message,
+        });
+      } catch (persistErr: unknown) {
+        const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+        console.warn(`[session-ship] Failed to persist pr_failed marker: ${msg}`);
+      }
+    })
+    .finally(() => {
+      sessionsWithShipInFlight.delete(sessionId);
+    });
 
   return { ok: true };
 }

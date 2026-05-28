@@ -587,7 +587,7 @@ registerPath({
     },
     400: errorResponse('Session has no worktree.'),
     404: errorResponse('Session, agent, or skill not found.'),
-    409: errorResponse('Session is streaming or is a resolve-PR session.'),
+    409: errorResponse('Session is streaming, ship is in progress, or is a resolve-PR session.'),
     403: errorResponse('Disabled in workflow mode.'),
     500: errorResponse('Unexpected server error.'),
   },

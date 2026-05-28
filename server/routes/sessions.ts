@@ -1701,7 +1701,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (!result.ok) {
         return res.status(result.status).json({ error: result.error, code: result.code });
       }
-      stmts.clearSessionChangesReady.run(sessionId);
       return res.json({ ok: true });
     } catch (err) {
       console.error(`[session-ship] Error for session ${sessionId}:`, (err as Error).message);

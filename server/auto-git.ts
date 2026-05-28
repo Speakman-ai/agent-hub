@@ -30,7 +30,11 @@ import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
-import { shouldAutoShipSessionAtEnd, clearSessionAutoShipOnComplete } from './session-ship.js';
+import {
+  shouldAutoShipSessionAtEnd,
+  clearSessionAutoShipOnComplete,
+  clearChangesReadyAndNotifyPrCreated,
+} from './session-ship.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1909,10 +1913,11 @@ async function commitPushAndCreatePR(
     });
 
     const broadcastAndMove = async (prUrl: string) => {
-      d.broadcast({
-        type: 'auto_pr_created',
+      clearChangesReadyAndNotifyPrCreated({
         sessionId,
         agentId,
+        stmts: d.stmts,
+        broadcast: d.broadcast,
         prUrl,
         cardTitle: card?.title || commitTitle,
       });

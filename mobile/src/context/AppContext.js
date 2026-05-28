@@ -100,6 +100,7 @@ export function AppProvider({ children }) {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  const [shipFailureAt, setShipFailureAt] = useState(null);
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
   // tapping. This is the optimistic, in-memory half; the authoritative source
@@ -607,6 +608,12 @@ export function AppProvider({ children }) {
           delete next[data.sessionId];
           return next;
         });
+        break;
+
+      case 'auto_pr_failed':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setShipFailureAt(Date.now());
+        }
         break;
 
       // ── Thread events (persistent output logs) ───────────────
@@ -1585,6 +1592,7 @@ export function AppProvider({ children }) {
     cronSessions,
     kanbanRefreshKey,
     changesReady,
+    shipFailureAt,
     dismissChangesReady,
     triggerCreateTicketAndPr,
     // Ask-prompt (`agenthub:ask`) submission state and handler

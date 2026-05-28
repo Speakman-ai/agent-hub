@@ -11,6 +11,7 @@ export default function ChangesReadyBox({
   onTrigger,
   onDismiss,
   isSessionProcessing = false,
+  shipFailureAt = null,
 }) {
   const branchLabel = changes?.branch || '';
   const [requestPending, setRequestPending] = useState(false);
@@ -40,6 +41,10 @@ export default function ChangesReadyBox({
     const timer = setTimeout(() => setAwaitingAgentTurn(false), 120_000);
     return () => clearTimeout(timer);
   }, [awaitingAgentTurn]);
+
+  useEffect(() => {
+    if (shipFailureAt) setAwaitingAgentTurn(false);
+  }, [shipFailureAt]);
 
   const handleClick = async () => {
     if (isCreating) return;

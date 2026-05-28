@@ -57,6 +57,7 @@ export default function ChatScreen() {
     handleEventsLoaded,
     activeSessionId,
     changesReady,
+    shipFailureAt,
     dismissChangesReady,
     triggerCreateTicketAndPr,
     projects,
@@ -255,6 +256,7 @@ export default function ChatScreen() {
             sessionId={activeSessionId}
             changes={item.data}
             isSessionProcessing={isProcessing}
+            shipFailureAt={shipFailureAt}
             onTrigger={triggerCreateTicketAndPr}
             onDismiss={dismissChangesReady}
           />

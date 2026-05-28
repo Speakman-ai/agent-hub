@@ -9,6 +9,8 @@ import {
   parseShipRequestedMetadata,
   shouldAutoShipSessionAtEnd,
   triggerSessionShip,
+  clearChangesReadyAndNotifyPrCreated,
+  resetShipInFlightForTests,
 } from './session-ship.js';
 import type { SessionRow } from './types.js';
 
@@ -77,6 +79,7 @@ describe('triggerSessionShip', () => {
     addMessage: { run: vi.fn() },
     touchSession: { run: vi.fn() },
     getMessageById: { get: vi.fn(() => undefined) },
+    clearSessionChangesReady: { run: vi.fn() },
   };
 
   const broadcast = vi.fn();
@@ -84,6 +87,7 @@ describe('triggerSessionShip', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetShipInFlightForTests();
   });
 
   it('persists a system callout and starts handleChat without user message persist', async () => {
@@ -174,5 +178,86 @@ describe('triggerSessionShip', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('session_streaming');
     expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate ship while a prior ship turn is in flight', () => {
+    const result = triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(handleChat).toHaveBeenCalledTimes(1);
+
+    const duplicate = triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.code).toBe('ship_in_progress');
+    expect(handleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the in-flight guard after handleChat settles', async () => {
+    handleChat.mockRejectedValueOnce(new Error('spawn failed'));
+    triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const retry = triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    expect(retry).toEqual({ ok: true });
+    expect(handleChat).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('clearChangesReadyAndNotifyPrCreated', () => {
+  it('clears persisted changes_ready and broadcasts auto_pr_created', () => {
+    const clearSessionChangesReady = { run: vi.fn() };
+    const broadcast = vi.fn();
+    clearChangesReadyAndNotifyPrCreated({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      stmts: { clearSessionChangesReady },
+      broadcast,
+      prUrl: 'https://github.com/o/r/pull/1',
+      cardTitle: 'My card',
+    });
+    expect(clearSessionChangesReady.run).toHaveBeenCalledWith('sess-1');
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'auto_pr_created',
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      prUrl: 'https://github.com/o/r/pull/1',
+      cardTitle: 'My card',
+    });
   });
 });

@@ -9,6 +9,7 @@ export default function ChangesReadyBox({
   onTrigger,
   onDismiss,
   isSessionProcessing = false,
+  shipFailureAt = null,
 }) {
   const [requestPending, setRequestPending] = useState(false);
   const [awaitingAgentTurn, setAwaitingAgentTurn] = useState(false);
@@ -36,6 +37,10 @@ export default function ChangesReadyBox({
     const timer = setTimeout(() => setAwaitingAgentTurn(false), 120_000);
     return () => clearTimeout(timer);
   }, [awaitingAgentTurn]);
+
+  useEffect(() => {
+    if (shipFailureAt) setAwaitingAgentTurn(false);
+  }, [shipFailureAt]);
 
   const handlePress = async () => {
     if (isCreating) return;

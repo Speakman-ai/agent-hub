@@ -216,6 +216,7 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  const [shipFailureAt, setShipFailureAt] = useState(null);
   // Live shell output while verify-before-Done runs (close-card → Done gate).
   const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
@@ -1079,6 +1080,9 @@ export default function App() {
           // Skip the toast on benign codes (none broadcast here — server
           // filters nothing_to_publish — but defensive against future codes).
           if (data.sessionId && typeof data.code === 'string') {
+            if (data.sessionId === activeSessionIdRef.current) {
+              setShipFailureAt(Date.now());
+            }
             const codeLabel =
               data.code === 'push_failed'
                 ? 'Push rejected'
@@ -4227,6 +4231,7 @@ export default function App() {
                             <ChangesReadyBox
                               sessionId={activeSessionId}
                               isSessionProcessing={isProcessing}
+                              shipFailureAt={shipFailureAt}
                               changes={
                                 changesReady[activeSessionId] || {
                                   agentId: activeSession?.agent_id,
