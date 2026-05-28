@@ -588,6 +588,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
       getSession: { get: vi.fn(() => sessionRow) },
       updateSessionChangesReady: { run: vi.fn() },
       clearSessionChangesReady: { run: vi.fn() },
+      updateSessionAutoShipOnComplete: { run: vi.fn() },
     } as Record<string, unknown>;
 
     initAutoGit({
@@ -622,12 +623,74 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
 
     expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
     expect(triggerAutoSessionShip.mock.calls[0][0].sessionId).toBe('sess-assign');
+    expect(
+      (mockStmtsAssign.updateSessionAutoShipOnComplete as { run: ReturnType<typeof vi.fn> }).run,
+    ).toHaveBeenCalledWith(0, 'sess-assign');
     const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
     expect(pushCalls).toHaveLength(0);
     const autoPrEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
     );
     expect(autoPrEvents).toHaveLength(0);
+  });
+
+  it('does not re-trigger auto-ship on a second turn end when the worktree is clean', async () => {
+    const triggerAutoSessionShip = vi.fn().mockResolvedValue({ ok: true });
+    const mockCard = {
+      id: 'card-loop',
+      title: 'Loop guard',
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    };
+    const sessionRow = {
+      id: 'sess-loop',
+      name: 'Autonomous',
+      auto_ship_on_complete: 0,
+      code_changed_at: '2026-05-20T12:00:00.000Z',
+      agent_id: 'agent-loop',
+    };
+    const mockStmtsLoop = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getSession: { get: vi.fn(() => sessionRow) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      updateSessionAutoShipOnComplete: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsLoop as never,
+      broadcast: vi.fn(),
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerAutoSessionShip,
+    });
+
+    let porcelain = 'M file.ts\n';
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok(porcelain);
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/loop\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'loop-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-loop', 'agent-loop', project, agent, '/worktree', '');
+    expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
+
+    porcelain = '';
+    await autoCommitAndPR('sess-loop', 'agent-loop', project, agent, '/worktree', '');
+    expect(triggerAutoSessionShip).toHaveBeenCalledTimes(1);
   });
 
   it.skip('sets git identity before commit when not configured in worktree', async () => {

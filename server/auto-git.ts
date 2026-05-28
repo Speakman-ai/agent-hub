@@ -30,7 +30,7 @@ import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
-import { shouldAutoShipSessionAtEnd } from './session-ship.js';
+import { shouldAutoShipSessionAtEnd, clearSessionAutoShipOnComplete } from './session-ship.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -2511,6 +2511,8 @@ export async function autoCommitAndPR(
           error: shipResult.error ?? 'Auto-ship trigger failed',
         },
       });
+    } else {
+      clearSessionAutoShipOnComplete(d.stmts, sessionId);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

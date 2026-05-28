@@ -89,7 +89,7 @@ _pr_create_locked() {
     return 0
   fi
   local tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-  if [[ "$tok" == gho_* || "$tok" == ghp_* ]]; then
+  if [[ "$tok" == gho_* || "$tok" == ghp_* || "$tok" == github_pat_* ]]; then
     return 0
   fi
   cat >&2 <<LOCKED

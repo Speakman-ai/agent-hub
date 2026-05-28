@@ -210,15 +210,12 @@ export async function sessionHasNoPublishableWork(
   }
 }
 
-/** Card-assignment / autonomous sessions: auto-ship only when there is work to publish. */
+/** Card-assignment / autonomous sessions: auto-ship only when git still has work to publish. */
 export async function shouldTriggerAutoShipAtSessionEnd(
-  sessionId: string,
+  _sessionId: string,
   worktreePath: string,
-  stmts: Pick<Stmts, 'getSession'>,
+  _stmts: Pick<Stmts, 'getSession'>,
 ): Promise<boolean> {
-  if (!(await sessionHasNoPublishableWork(sessionId, worktreePath, stmts))) {
-    return true;
-  }
   try {
     const changes = await checkWorktreeChanges(worktreePath);
     return changes.hasUncommitted || changes.hasUnpushed;

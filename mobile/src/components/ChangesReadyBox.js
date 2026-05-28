@@ -31,6 +31,12 @@ export default function ChangesReadyBox({
     }
   }, [awaitingAgentTurn, isSessionProcessing]);
 
+  useEffect(() => {
+    if (!awaitingAgentTurn) return undefined;
+    const timer = setTimeout(() => setAwaitingAgentTurn(false), 120_000);
+    return () => clearTimeout(timer);
+  }, [awaitingAgentTurn]);
+
   const handlePress = async () => {
     if (isCreating) return;
     setRequestPending(true);

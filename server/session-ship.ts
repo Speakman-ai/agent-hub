@@ -202,11 +202,59 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
     _skipUserMessagePersist: true,
   }).catch((err: Error) => {
     console.error(`[session-ship] handleChat failed for session ${sessionId}:`, err.message);
+    const errorText = `Failed to start ship workflow: ${err.message}`;
     broadcast({
       type: 'error',
       sessionId,
-      message: `Failed to start ship workflow: ${err.message}`,
+      message: errorText,
     });
+    try {
+      const msgId = uuidv4();
+      const metadata = JSON.stringify({
+        kind: 'pr_failed',
+        code: 'pr_failed',
+        error: err.message,
+        agentName: agent.name,
+      });
+      const content = `Auto-PR failed (pr_failed): ${errorText}`;
+      stmts.addMessage.run(
+        msgId,
+        sessionId,
+        'system',
+        content,
+        null,
+        null,
+        null,
+        metadata,
+        null,
+        null,
+        null,
+      );
+      const inserted =
+        (stmts.getMessageById.get(msgId) as MessageRow | undefined) ??
+        ({
+          id: msgId,
+          session_id: sessionId,
+          role: 'system',
+          content,
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata,
+          created_at: new Date().toISOString(),
+        } satisfies MessageRow);
+      broadcast({ type: 'message', message: inserted });
+      broadcast({
+        type: 'auto_pr_failed',
+        sessionId,
+        agentId: session.agent_id,
+        code: 'pr_failed',
+        error: err.message,
+      });
+    } catch (persistErr: unknown) {
+      const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+      console.warn(`[session-ship] Failed to persist pr_failed marker: ${msg}`);
+    }
   });
 
   return { ok: true };
@@ -218,6 +266,18 @@ export function markSessionAutoShipOnComplete(stmts: Stmts, sessionId: string): 
   } catch (err) {
     console.warn(
       `[session-ship] updateSessionAutoShipOnComplete failed for ${sessionId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
+/** One-shot guard: clear after auto-ship is triggered so turn-end does not loop. */
+export function clearSessionAutoShipOnComplete(stmts: Stmts, sessionId: string): void {
+  try {
+    stmts.updateSessionAutoShipOnComplete.run(0, sessionId);
+  } catch (err) {
+    console.warn(
+      `[session-ship] clearSessionAutoShipOnComplete failed for ${sessionId}:`,
       (err as Error).message,
     );
   }

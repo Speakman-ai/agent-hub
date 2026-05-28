@@ -34,6 +34,13 @@ export default function ChangesReadyBox({
     }
   }, [awaitingAgentTurn, isSessionProcessing]);
 
+  // Fail-open if the processing edge is never observed (fast turn / prop race).
+  useEffect(() => {
+    if (!awaitingAgentTurn) return undefined;
+    const timer = setTimeout(() => setAwaitingAgentTurn(false), 120_000);
+    return () => clearTimeout(timer);
+  }, [awaitingAgentTurn]);
+
   const handleClick = async () => {
     if (isCreating) return;
     setRequestPending(true);
