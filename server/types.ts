@@ -1335,6 +1335,40 @@ export interface Stmts {
   // See wiki: finalize-code-changes-architecture-v0 (§4).
   getFinalizeRun: Stmt;
   /**
+   * Idempotency lookup keyed by `sha256(project_id|branch|head_sha)`. The
+   * orchestrator (`server/finalize/orchestrator.ts`) calls this on entry
+   * to decide whether a trigger re-enters an in-flight row or opens a
+   * fresh one. The UNIQUE constraint on `idempotency_key` enforces the
+   * §4 contract at the DB layer; this read is the orchestrator's first
+   * check before it spends INSERT bandwidth.
+   */
+  getFinalizeRunByIdempotencyKey: Stmt;
+  /**
+   * Insert a new `finalize_runs` row. The orchestrator is the only
+   * caller — every other module mutates by id. Mirrors the §4 schema
+   * with the orchestrator-supplied columns (id, key, identity, etc.)
+   * bound and the timing / verdict columns left at their defaults.
+   */
+  insertFinalizeRun: Stmt;
+  /**
+   * Promote a finalize run to its terminal `pushed` state and write
+   * `ended_at` in one atomic update. Called by the push step (§9) after
+   * the PR URL has been written via {@link updateFinalizeRunPrUrl}.
+   */
+  markFinalizeRunPushed: Stmt;
+  /**
+   * Update the `session_id` on a finalize run. The orchestrator calls
+   * this when it resolves or spawns a session for a card that didn't
+   * have one at trigger time (§6).
+   */
+  updateFinalizeRunSessionId: Stmt;
+  /**
+   * Update the worktree path on a finalize_runs row. Used after the
+   * orchestrator resolves or creates the worktree for a freshly
+   * spawned session.
+   */
+  updateFinalizeRunWorktreePath: Stmt;
+  /**
    * Most-recent `finalize_runs` row for a session (ordered by
    * `started_at DESC`). Returns `undefined` when the session has never
    * triggered a Finalize run. Used by the session-scoped reviewer-threads

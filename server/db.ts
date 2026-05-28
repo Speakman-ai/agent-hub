@@ -3211,6 +3211,45 @@ function initDb(dataDir: string): void {
     // follow-up phase, so this skeleton keeps the schema honest without
     // pretending the orchestrator exists yet.
     getFinalizeRun: db.prepare('SELECT * FROM finalize_runs WHERE id = ?'),
+    // Idempotency lookup. The orchestrator hashes (project_id|branch|head_sha)
+    // into the row's `idempotency_key`; a second trigger for the same tuple
+    // returns the in-flight row (regardless of status). A new commit on the
+    // branch produces a new `head_sha`, a new key, and therefore a new row.
+    // See wiki finalize-code-changes-architecture-v0 (§4).
+    getFinalizeRunByIdempotencyKey: db.prepare(
+      'SELECT * FROM finalize_runs WHERE idempotency_key = ? LIMIT 1',
+    ),
+    // Insert a fresh finalize_runs row. The orchestrator owns the only
+    // call-site — every other module mutates an existing row by id. UNIQUE
+    // on `idempotency_key` enforces the §4 dedup contract at the DB layer.
+    insertFinalizeRun: db.prepare(
+      `INSERT INTO finalize_runs (
+        id, card_id, session_id, project_id, branch, head_sha,
+        idempotency_key, status, phase, trigger_source, worktree_path,
+        triggered_by_user_id, author_name, author_email, retry_of_run_id,
+        started_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    // Promote a finalize run to its terminal `pushed` state and record the
+    // ended_at clock in one atomic update. Used by the push step (§9) after
+    // the PR URL has been written via `updateFinalizeRunPrUrl`.
+    markFinalizeRunPushed: db.prepare(
+      `UPDATE finalize_runs
+          SET status = 'pushed',
+              phase = 'push',
+              ended_at = unixepoch() * 1000
+        WHERE id = ?`,
+    ),
+    // Update the session id on a finalize_runs row. The orchestrator calls
+    // this when it spawns or resolves a session after the row has been
+    // inserted (the session may not exist at trigger time; see §6).
+    updateFinalizeRunSessionId: db.prepare(`UPDATE finalize_runs SET session_id = ? WHERE id = ?`),
+    // Update the worktree path on a finalize_runs row after the orchestrator
+    // resolves it (the path may not be known at trigger time when a session
+    // is spawned fresh).
+    updateFinalizeRunWorktreePath: db.prepare(
+      `UPDATE finalize_runs SET worktree_path = ? WHERE id = ?`,
+    ),
     // Most-recent finalize run for a session. Used by the session-scoped
     // reviewer-threads side-panel to discover which run id to pull threads
     // for without forcing the client to track run lifecycle events. Returns
