@@ -30,6 +30,10 @@ export const SHIP_CLI_PROMPT =
 export const SHIP_AUTO_CLI_PROMPT =
   'This session ended with publishable work (card assignment or autonomous dispatch). Follow the loaded create-ticket-and-pr skill now: fetch origin, rebase onto the project base branch and resolve conflicts, run checks, commit if needed, then push and open or update the PR. Never push before integrating remote changes — rebase first. Move the linked kanban card to Review when done.';
 
+const GITHUB_PR_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i;
+const SHIP_PR_POLL_MS = 2_000;
+const SHIP_PR_POLL_TIMEOUT_MS = 120_000;
+
 export function buildShipRequestedMetadata(source: SessionShipSource = 'manual'): string {
   return JSON.stringify({
     kind: 'ship_requested',
@@ -117,6 +121,64 @@ export function clearChangesReadyAndNotifyPrCreated(args: {
     prUrl: args.prUrl,
     cardTitle: args.cardTitle ?? undefined,
   });
+}
+
+interface ShipPrDetectionResult {
+  prUrl: string;
+  cardTitle?: string | null;
+}
+
+function parsePrUrlFromMetadata(metadataString: string | null | undefined): string | null {
+  if (!metadataString) return null;
+  try {
+    const parsed = JSON.parse(metadataString) as Record<string, unknown>;
+    if (
+      parsed.kind === 'pr_created' &&
+      typeof parsed.prUrl === 'string' &&
+      parsed.prUrl.length > 0
+    ) {
+      return parsed.prUrl;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function detectSessionPrUrl(stmts: Stmts, sessionId: string): ShipPrDetectionResult | null {
+  const card = stmts.getKanbanCardBySession.get(sessionId) as
+    | { pr_url?: string | null; title?: string | null }
+    | undefined;
+  if (typeof card?.pr_url === 'string' && card.pr_url.length > 0) {
+    return { prUrl: card.pr_url, cardTitle: card.title ?? null };
+  }
+
+  const messages = stmts.getMessages.all(sessionId) as MessageRow[];
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const message = messages[idx];
+    const fromMetadata = parsePrUrlFromMetadata(message.metadata);
+    if (fromMetadata) return { prUrl: fromMetadata };
+    const fromContent = message.content.match(GITHUB_PR_URL_RE)?.[0];
+    if (fromContent) return { prUrl: fromContent };
+  }
+  return null;
+}
+
+async function pollForSessionPrUrl(args: {
+  stmts: Stmts;
+  sessionId: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+}): Promise<ShipPrDetectionResult | null> {
+  const timeoutMs = args.timeoutMs ?? SHIP_PR_POLL_TIMEOUT_MS;
+  const intervalMs = args.intervalMs ?? SHIP_PR_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const detected = detectSessionPrUrl(args.stmts, args.sessionId);
+    if (detected) return detected;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
 }
 
 export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSessionShipResult {
@@ -239,6 +301,19 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
     content: cliPrompt,
     _skipUserMessagePersist: true,
   })
+    .then(() => {
+      void pollForSessionPrUrl({ stmts, sessionId }).then((detected) => {
+        if (!detected) return;
+        clearChangesReadyAndNotifyPrCreated({
+          sessionId,
+          agentId: session.agent_id,
+          stmts,
+          broadcast,
+          prUrl: detected.prUrl,
+          cardTitle: detected.cardTitle ?? null,
+        });
+      });
+    })
     .catch((err: Error) => {
       console.error(`[session-ship] handleChat failed for session ${sessionId}:`, err.message);
       const errorText = `Failed to start ship workflow: ${err.message}`;

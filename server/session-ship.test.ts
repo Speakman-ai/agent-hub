@@ -12,7 +12,7 @@ import {
   clearChangesReadyAndNotifyPrCreated,
   resetShipInFlightForTests,
 } from './session-ship.js';
-import type { SessionRow } from './types.js';
+import type { MessageRow, SessionRow } from './types.js';
 
 vi.mock('./skill-invoke.js', () => ({
   loadSkillByName: vi.fn(() => '# Create ticket & PR\n\nSkill body'),
@@ -74,11 +74,15 @@ describe('triggerSessionShip', () => {
     name: 'Ad-hoc',
   } as SessionRow;
 
+  const getMessagesAll = vi.fn((): MessageRow[] => []);
+
   const stmts = {
     updateSessionPendingSkillContext: { run: vi.fn() },
     addMessage: { run: vi.fn() },
     touchSession: { run: vi.fn() },
     getMessageById: { get: vi.fn(() => undefined) },
+    getKanbanCardBySession: { get: vi.fn(() => undefined) },
+    getMessages: { all: getMessagesAll },
     clearSessionChangesReady: { run: vi.fn() },
   };
 
@@ -87,6 +91,7 @@ describe('triggerSessionShip', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     resetShipInFlightForTests();
   });
 
@@ -224,7 +229,7 @@ describe('triggerSessionShip', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const retry = triggerSessionShip({
+    let retry = triggerSessionShip({
       sessionId: 'sess-1',
       session: baseSession,
       project: { id: 'p1' } as never,
@@ -234,8 +239,82 @@ describe('triggerSessionShip', () => {
       activeProcesses: new Map(),
       handleChat,
     });
+    if (!retry.ok && retry.code === 'ship_in_progress') {
+      await Promise.resolve();
+      await Promise.resolve();
+      retry = triggerSessionShip({
+        sessionId: 'sess-1',
+        session: baseSession,
+        project: { id: 'p1' } as never,
+        agent: { id: 'agent-1' } as never,
+        stmts: stmts as never,
+        broadcast,
+        activeProcesses: new Map(),
+        handleChat,
+      });
+    }
     expect(retry).toEqual({ ok: true });
     expect(handleChat).toHaveBeenCalledTimes(2);
+  });
+
+  it('polls for PR creation marker and clears changes_ready when detected', async () => {
+    getMessagesAll.mockReturnValueOnce([
+      {
+        id: 'm1',
+        session_id: 'sess-1',
+        role: 'system',
+        content: 'PR created from these changes',
+        metadata: JSON.stringify({
+          kind: 'pr_created',
+          prUrl: 'https://github.com/o/r/pull/42',
+        }),
+      },
+    ] as MessageRow[]);
+
+    triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(stmts.clearSessionChangesReady.run).toHaveBeenCalledWith('sess-1');
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'auto_pr_created',
+        sessionId: 'sess-1',
+        agentId: 'agent-1',
+        prUrl: 'https://github.com/o/r/pull/42',
+      }),
+    );
+  });
+
+  it('does not clear changes_ready if PR is not detected before poll timeout', async () => {
+    vi.useFakeTimers();
+    getMessagesAll.mockReturnValue([]);
+    const localHandleChat = vi.fn().mockResolvedValue(undefined);
+
+    triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat: localHandleChat,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(125_000);
+    await Promise.resolve();
+
+    expect(stmts.clearSessionChangesReady.run).not.toHaveBeenCalled();
   });
 });
 
