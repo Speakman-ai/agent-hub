@@ -676,6 +676,47 @@ function initDb(dataDir: string): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ios_build_artifacts_build ON ios_build_artifacts(build_id);
+
+    -- Finalize Code Changes runs -- pre-PR validation pipeline.
+    -- See wiki finalize-code-changes-architecture-v0 (section 4 for the full
+    -- schema and lifecycle). Phase 1 (this commit) only writes the rebase
+    -- phase; later phases add review, tasks, dispatching, push. The columns
+    -- are populated up-front so we do not have to ratchet the schema for
+    -- every phase that lands.
+    --
+    -- Idempotency: re-triggering finalize with the same
+    -- (project_id, branch, head_sha) reuses the in-flight row via
+    -- idempotency_key = sha256(project_id|branch|head_sha) enforced by the
+    -- UNIQUE constraint. A new commit on the branch (new head_sha) opens a
+    -- new row. The orchestrator owns the upsert; this table is the audit log.
+    CREATE TABLE IF NOT EXISTS finalize_runs (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL,
+      session_id TEXT,
+      project_id TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL,
+      phase TEXT,
+      trigger_source TEXT NOT NULL,
+      worktree_path TEXT,
+      triggered_by_user_id TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      author_email TEXT NOT NULL,
+      reviewer_verdict TEXT,
+      failure_reason TEXT,
+      failed_step_index INTEGER,
+      failed_step_name TEXT,
+      failed_step_exit_code INTEGER,
+      retry_of_run_id TEXT,
+      active_seconds_consumed INTEGER NOT NULL DEFAULT 0,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      pr_url TEXT
+    );
+    CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
   `);
 
   try {
@@ -3133,6 +3174,34 @@ function initDb(dataDir: string): void {
     ),
     getProjectRoster: db.prepare(
       'SELECT tracks_json, updated_at FROM project_rosters WHERE project_id = ?',
+    ),
+
+    // finalize_runs — pre-PR validation pipeline rows (Finalize Code Changes).
+    // Phase 1 ships the rebase phase, so only the read + phase-update +
+    // active-seconds + terminal-status statements are wired here. Insert and
+    // idempotency-lookup statements land with the trigger-route work in a
+    // follow-up phase, so this skeleton keeps the schema honest without
+    // pretending the orchestrator exists yet.
+    getFinalizeRun: db.prepare('SELECT * FROM finalize_runs WHERE id = ?'),
+    updateFinalizeRunPhase: db.prepare(
+      `UPDATE finalize_runs
+          SET phase = ?,
+              status = ?
+        WHERE id = ?`,
+    ),
+    updateFinalizeRunActiveSeconds: db.prepare(
+      `UPDATE finalize_runs
+          SET active_seconds_consumed = active_seconds_consumed + ?
+        WHERE id = ?`,
+    ),
+    // Terminal-state write. Sets status + ended_at + (optional)
+    // failure_reason. Used by rebase phase on `rebase_aborted` / `timeout`.
+    failFinalizeRun: db.prepare(
+      `UPDATE finalize_runs
+          SET status = ?,
+              failure_reason = ?,
+              ended_at = unixepoch() * 1000
+        WHERE id = ?`,
     ),
   } as Stmts;
 

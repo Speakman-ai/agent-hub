@@ -739,6 +739,67 @@ export interface IosBuildArtifactRow {
   created_at: string;
 }
 
+/**
+ * Finalize Code Changes run row — pre-PR validation pipeline.
+ * One row per (project, branch, head_sha) tuple via `idempotency_key`.
+ *
+ * Lifecycle (`status`):
+ *   queued → rebasing → reviewing → running →
+ *     (dispatching → rebasing → reviewing → running)* →
+ *     pushing → pushed | failed | timed_out | infra_error | cancelled
+ *
+ * See wiki: `finalize-code-changes-architecture-v0` (§4).
+ */
+export interface FinalizeRunRow {
+  id: string;
+  card_id: string;
+  /** Null until the orchestrator resolves or spawns the agent session. */
+  session_id: string | null;
+  project_id: string;
+  branch: string;
+  head_sha: string;
+  /** sha256(project_id|branch|head_sha) — UNIQUE. */
+  idempotency_key: string;
+  status: FinalizeRunStatus;
+  phase: FinalizeRunPhase | null;
+  trigger_source: 'ui_button' | 'agent_block';
+  worktree_path: string | null;
+  triggered_by_user_id: string;
+  /** Snapshot of the triggering user's git identity at start time. */
+  author_name: string;
+  author_email: string;
+  reviewer_verdict: 'approved' | 'changes_requested' | null;
+  /** Machine code on terminal failures; see wiki §10 for the table. */
+  failure_reason: string | null;
+  failed_step_index: number | null;
+  failed_step_name: string | null;
+  failed_step_exit_code: number | null;
+  /** Non-null iff this row is the one infra-failure retry of an earlier run. */
+  retry_of_run_id: string | null;
+  active_seconds_consumed: number;
+  /** Unix millis (DB clock via `unixepoch() * 1000`). */
+  started_at: number;
+  ended_at: number | null;
+  pr_url: string | null;
+}
+
+/** Lifecycle status codes — see {@link FinalizeRunRow}. */
+export type FinalizeRunStatus =
+  | 'queued'
+  | 'rebasing'
+  | 'reviewing'
+  | 'running'
+  | 'dispatching'
+  | 'pushing'
+  | 'pushed'
+  | 'failed'
+  | 'timed_out'
+  | 'infra_error'
+  | 'cancelled';
+
+/** Phase codes — UI surfaces these; some collapse onto the same status. */
+export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -1221,6 +1282,14 @@ export interface Stmts {
   getAuditReport: Stmt;
   upsertProjectRoster: Stmt;
   getProjectRoster: Stmt;
+
+  // Finalize Code Changes runs — pre-PR validation pipeline.
+  // Phase 1 ships the rebase phase; later phases reuse the same row.
+  // See wiki: finalize-code-changes-architecture-v0 (§4).
+  getFinalizeRun: Stmt;
+  updateFinalizeRunPhase: Stmt;
+  updateFinalizeRunActiveSeconds: Stmt;
+  failFinalizeRun: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
