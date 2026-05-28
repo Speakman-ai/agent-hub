@@ -71,6 +71,7 @@ import type {
   TurnEndSubscriber,
 } from './fix-dispatch.js';
 import { writeFinalizeRunPrUrl } from './provenance.js';
+import { evaluatePushGate } from './push-gate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -697,18 +698,25 @@ export async function runFinalize(
       );
     }
 
-    // ── Phase 5: combined gate (§3) ─────────────────────────────────
+    // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
+    // The combined gate and the push gate fold together: we only
+    // re-resolve HEAD when steps + reviewer agree, because the head-sha
+    // check is the most expensive of the three (one extra git call) and
+    // is meaningless when the first two conditions already refused.
+    // When either of the first two fails we drop straight into fix
+    // dispatch with the iteration's stale signals — that's the §6
+    // behavior the loop invariant guarantees is safe.
     const stepsGreen = lastStepOutcome.status === 'success';
     const reviewerApproved = lastReviewerOutcome.verdict === 'approved';
     if (stepsGreen && reviewerApproved) {
       // ── Phase 7: push gate (§9) ─────────────────────────────────
-      // The gate is a TOCTOU guard: it refuses when HEAD moved BETWEEN
-      // the post-rebase snapshot (`headValidatedAgainst`) and right now
-      // — i.e. someone landed a commit on the feature branch while the
-      // reviewer + step phases were running. Comparing against the
-      // trigger-time `opts.headSha` would refuse forever after any fix
-      // dispatch landed new commits; the snapshot is what review and
-      // steps actually validated, so it is the authoritative baseline.
+      // Refusal here is a TOCTOU outcome: HEAD moved BETWEEN the
+      // post-rebase snapshot (`headValidatedAgainst`) and right now —
+      // i.e. a commit landed on the feature branch while the reviewer +
+      // step phases were running. Comparing against the trigger-time
+      // `opts.headSha` would refuse forever after any fix dispatch
+      // landed new commits; the snapshot is what review and steps
+      // actually validated, so it is the authoritative baseline.
       let currentHead: string;
       try {
         currentHead = await resolveHead(worktreePath, opts.env);
@@ -723,16 +731,23 @@ export async function runFinalize(
           log,
         );
       }
-      if (currentHead !== headValidatedAgainst) {
-        // Push-gate refusal: re-enter the loop. We DO NOT push a stale
-        // sha. The fix-dispatch path is not invoked — there is no
-        // failure to dispatch; we just retry validation against the new
-        // head. The next loop iteration will refresh the snapshot post-
-        // rebase and re-run review + steps against it.
+      const gateOutcome = evaluatePushGate({
+        stepStatus: lastStepOutcome.status,
+        reviewerVerdict: lastReviewerOutcome.verdict,
+        headBeforePhases: headValidatedAgainst,
+        headAtPushGate: currentHead,
+      });
+      if (gateOutcome.kind === 'refuse') {
+        // The only refusal reachable in this branch is `head_sha_moved`
+        // (the other two refusal codes are unreachable because we
+        // already checked `stepsGreen && reviewerApproved`). Re-enter
+        // the loop instead of dispatching — there is no failure to
+        // dispatch; we just need to re-validate against the new head.
+        // The next loop iteration's rebase pass will refresh the
+        // snapshot and re-run review + steps.
         log(
           `[finalize-orchestrator] push gate refused for run=${runId}: ` +
-            `HEAD moved during pass (${headValidatedAgainst} → ${currentHead}); ` +
-            `re-entering rebase`,
+            `${gateOutcome.detail}; re-entering rebase`,
         );
         // We do not bill active-seconds here — the gate is a pure check.
         // The next loop iteration will burn the rebase + review + tasks
@@ -741,9 +756,9 @@ export async function runFinalize(
       }
 
       // ── Phase 8: push ───────────────────────────────────────────
-      // `headSha` passed downstream is `currentHead` (== `headValidatedAgainst`
-      // at this point) — the sha the reviewer approved and the steps
-      // ran green against, NOT the trigger-time sha. Production's
+      // `headSha` passed downstream is the gate-validated sha — the sha
+      // the reviewer approved and the steps ran green against, NOT the
+      // trigger-time sha. Production's
       // `git push --force-with-lease=<branch>:<headSha>` uses this as
       // the expected remote ref, so it must reflect what's actually on
       // disk now.
@@ -755,7 +770,7 @@ export async function runFinalize(
           worktreePath,
           branch: opts.branch,
           baseBranch: opts.baseBranch,
-          headSha: currentHead,
+          headSha: gateOutcome.validatedHeadSha,
           card: opts.card,
           project: opts.project,
           env: opts.env,
