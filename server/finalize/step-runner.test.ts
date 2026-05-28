@@ -1,0 +1,870 @@
+/**
+ * Unit tests for the Finalize step runner (tasks phase). We use a fake
+ * `spawnStep` that drives an `EventEmitter`-backed child so the streaming
+ * logic exercises end-to-end without touching `bash`. The only piece of
+ * real I/O is the one production-spawn test that confirms
+ * {@link defaultSpawnStep} actually invokes `bash -euo pipefail -c` and
+ * reports the correct exit code on a trivially-failing command (no CLI
+ * binaries are involved — `bash` ships with the test image).
+ */
+import { spawn } from 'child_process';
+import { EventEmitter, Readable } from 'stream';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { CiConfig, CiStep } from './ci-config.js';
+import {
+  STEP_OUTPUT_TAIL_LINES,
+  STEP_ACTIVE_SECONDS_PER_STEP,
+  TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
+  __test,
+  defaultSpawnStep,
+  runStepPhase,
+  type SpawnStepFn,
+  type SpawnedStep,
+  type StepRunnerDeps,
+} from './step-runner.js';
+
+// ─── Fakes ──────────────────────────────────────────────────────────
+
+interface FakeStmts {
+  updateFinalizeRunPhase: { run: ReturnType<typeof vi.fn> };
+  updateFinalizeRunActiveSeconds: { run: ReturnType<typeof vi.fn> };
+  failFinalizeRun: { run: ReturnType<typeof vi.fn> };
+  addMessage: { run: ReturnType<typeof vi.fn> };
+  touchSession: { run: ReturnType<typeof vi.fn> };
+  getMessageById: { get: ReturnType<typeof vi.fn> };
+}
+
+function makeStmts(): FakeStmts {
+  return {
+    updateFinalizeRunPhase: { run: vi.fn() },
+    updateFinalizeRunActiveSeconds: { run: vi.fn() },
+    failFinalizeRun: { run: vi.fn() },
+    addMessage: { run: vi.fn() },
+    touchSession: { run: vi.fn() },
+    getMessageById: {
+      get: vi.fn().mockImplementation((id: string) => ({
+        id,
+        session_id: 'sess-1',
+        role: 'system',
+        content: 'mocked',
+      })),
+    },
+  };
+}
+
+/**
+ * Build a fake spawned child. The returned `emit` is what tests call to
+ * drive stdout/stderr/close in the order the production code would
+ * observe.
+ */
+function makeFakeChild(): {
+  child: SpawnedStep;
+  stdout: Readable;
+  stderr: Readable;
+  emitter: EventEmitter;
+  killed: NodeJS.Signals[];
+} {
+  const stdout = new Readable({ read() {} });
+  const stderr = new Readable({ read() {} });
+  const emitter = new EventEmitter();
+  const killed: NodeJS.Signals[] = [];
+  const child: SpawnedStep = {
+    stdout,
+    stderr,
+    on(event: 'close' | 'error', listener: (arg: never) => void) {
+      emitter.on(event, listener as never);
+      return child;
+    },
+    kill(signal?: NodeJS.Signals) {
+      killed.push(signal ?? 'SIGTERM');
+      return true;
+    },
+  };
+  return { child, stdout, stderr, emitter, killed };
+}
+
+function makeConfig(steps: CiStep[], timeoutMinutes = 60): CiConfig {
+  return {
+    version: 1,
+    on: ['finalize'],
+    timeoutMinutes,
+    steps,
+  };
+}
+
+const SESSION_ID = 'sess-1';
+const RUN_ID = 'run-1';
+const WORKTREE = '/tmp/finalize-step-runner-fake';
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+describe('runStepPhase — happy path', () => {
+  it('runs every step sequentially, streams stdout/stderr line-by-line, returns success', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([
+      { name: 'Install', run: 'npm ci' },
+      { name: 'Test', run: 'npm test' },
+    ]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    // Drive step 1 — emit two complete lines split across chunks.
+    await microtaskTick();
+    fakes[0].stdout.push('hello\nworld');
+    fakes[0].stdout.push('\nfinal');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+
+    // Drive step 2 — single chunk with embedded CRLF (verifies CR stripping).
+    await microtaskTick();
+    fakes[1].stdout.push('line1\r\nline2\n');
+    fakes[1].stderr.push('warn\n');
+    await microtaskTick();
+    fakes[1].emitter.emit('close', 0);
+
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    expect(result.failedStep).toBeUndefined();
+    expect(result.stepResults).toHaveLength(2);
+    expect(result.stepResults[0]).toMatchObject({
+      index: 1,
+      name: 'Install',
+      run: 'npm ci',
+      exitCode: 0,
+      stdoutLines: 3, // "hello", "world", "final" — last fragment flushed on close
+      stderrLines: 0,
+    });
+    expect(result.stepResults[1]).toMatchObject({
+      index: 2,
+      name: 'Test',
+      run: 'npm test',
+      exitCode: 0,
+      stdoutLines: 2,
+      stderrLines: 1,
+    });
+
+    // Phase set once at entry.
+    expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledTimes(1);
+    expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith('tasks', 'running', RUN_ID);
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'finalize_run_phase_changed',
+        run_id: RUN_ID,
+        phase: 'tasks',
+        status: 'running',
+      }),
+    );
+
+    // 6 output lines total → 6 addMessage rows.
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(6);
+    const firstCall = stmts.addMessage.run.mock.calls[0];
+    expect(firstCall[2]).toBe('system'); // role
+    expect(firstCall[3]).toBe('[stdout] hello'); // content
+    expect(typeof firstCall[7]).toBe('string');
+    const meta = JSON.parse(firstCall[7] as string);
+    expect(meta).toMatchObject({
+      kind: 'finalize_step_output',
+      runId: RUN_ID,
+      stepIndex: 1,
+      stepName: 'Install',
+      stream: 'stdout',
+    });
+
+    // Warn line from step 2 is recorded as stderr.
+    const warnCall = stmts.addMessage.run.mock.calls.find(
+      (c: unknown[]) => c[3] === '[stderr] warn',
+    );
+    expect(warnCall).toBeDefined();
+    expect(JSON.parse(warnCall![7] as string).stream).toBe('stderr');
+
+    // `message` broadcasts one per addMessage.
+    const messageBroadcasts = broadcast.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { type?: string }).type === 'message',
+    );
+    expect(messageBroadcasts).toHaveLength(6);
+
+    // step_state events: 2 starts + 2 passes = 4
+    const stepStates = broadcast.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { type?: string }).type === 'finalize_run_step_state',
+    );
+    expect(stepStates).toHaveLength(4);
+    expect(stepStates[0][0]).toMatchObject({
+      run_id: RUN_ID,
+      step_index: 1,
+      state: 'running',
+    });
+    expect(stepStates[1][0]).toMatchObject({
+      run_id: RUN_ID,
+      step_index: 1,
+      state: 'passed',
+      exit_code: 0,
+    });
+
+    // Active seconds billed: 1 entry + 2 steps × 5 = 11.
+    expect(result.activeSecondsBilled).toBe(
+      TASKS_PHASE_ENTRY_ACTIVE_SECONDS + 2 * STEP_ACTIVE_SECONDS_PER_STEP,
+    );
+    expect(stmts.updateFinalizeRunActiveSeconds.run).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('runStepPhase — failure short-circuits', () => {
+  it('non-zero exit on step N stops the pipeline and surfaces failedStep', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    let spawnCount = 0;
+    const spawnStep: SpawnStepFn = () => {
+      spawnCount += 1;
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([
+      { name: 'Install', run: 'npm ci' },
+      { name: 'Typecheck', run: 'npm run typecheck' },
+      { name: 'Test', run: 'npm test' },
+    ]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    // Step 1 passes.
+    await microtaskTick();
+    fakes[0].stdout.push('installed\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+
+    // Step 2 fails with exit 2.
+    await microtaskTick();
+    fakes[1].stderr.push('error TS2304: cannot find name "Foo"\n');
+    fakes[1].stdout.push('Found 1 error\n');
+    await microtaskTick();
+    fakes[1].emitter.emit('close', 2);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(result.failedStep).toBeDefined();
+    expect(result.failedStep).toMatchObject({
+      index: 2,
+      name: 'Typecheck',
+      run: 'npm run typecheck',
+      exitCode: 2,
+    });
+    expect(result.failedStep!.outputTail).toEqual(
+      ['[stderr] error TS2304: cannot find name "Foo"', '[stdout] Found 1 error']
+        .map(stripPrefixForTail)
+        .map((s, i) =>
+          // The tail keeps the raw line (no [stdout]/[stderr] prefix) so the
+          // dispatch body in §7 isn't double-prefixed when it renders the
+          // tail in its own code fence.
+          i === 0 ? 'error TS2304: cannot find name "Foo"' : 'Found 1 error',
+        ),
+    );
+
+    // Step 3 must NOT have been spawned.
+    expect(spawnCount).toBe(2);
+
+    // Accumulated `stepResults` survives the short-circuit — both step 1
+    // (passed) and step 2 (failed) appear in declaration order. This is
+    // the regression contract for #1: `terminate()` used to return an
+    // empty array regardless of how many steps had run.
+    expect(result.stepResults).toHaveLength(2);
+    expect(result.stepResults[0]).toMatchObject({
+      index: 1,
+      name: 'Install',
+      run: 'npm ci',
+      exitCode: 0,
+    });
+    expect(result.stepResults[1]).toMatchObject({
+      index: 2,
+      name: 'Typecheck',
+      run: 'npm run typecheck',
+      exitCode: 2,
+    });
+
+    // Terminal failure persisted.
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+
+    // step_state for step 2 = failed; no events for step 3.
+    const stepStates = broadcast.mock.calls
+      .filter((c: unknown[]) => (c[0] as { type?: string }).type === 'finalize_run_step_state')
+      .map((c: unknown[]) => c[0]) as Array<{
+      step_index: number;
+      state: string;
+      exit_code?: number;
+    }>;
+    expect(stepStates.map((s) => s.step_index)).toEqual([1, 1, 2, 2]);
+    expect(stepStates[3]).toMatchObject({ step_index: 2, state: 'failed', exit_code: 2 });
+
+    // Only 2 step costs billed + entry.
+    expect(result.activeSecondsBilled).toBe(
+      TASKS_PHASE_ENTRY_ACTIVE_SECONDS + 2 * STEP_ACTIVE_SECONDS_PER_STEP,
+    );
+  });
+
+  it('captures negative-exit (null code → -1) as failure', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'kill -9 $$' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('close', null);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(result.failedStep!.exitCode).toBe(-1);
+  });
+});
+
+describe('runStepPhase — timeout (fake timers)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('hard-spawn timeout kills the child and surfaces timeout outcome', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => Date.now(),
+      spawnHardTimeoutMs: 100,
+    };
+    const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await Promise.resolve();
+    // Advance time past the spawn timeout. The runner will SIGTERM, then
+    // SIGKILL after the 1s grace. We finish by emitting close ourselves
+    // (the kill itself doesn't fire close in our fake).
+    await vi.advanceTimersByTimeAsync(150);
+    fakes[0].emitter.emit('close', 143); // 128 + SIGTERM
+    await Promise.resolve();
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+    expect(result.failedStep).toBeDefined();
+    expect(result.failedStep!.name).toBe('sleeper');
+    expect(fakes[0].killed[0]).toBe('SIGTERM');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+  });
+});
+
+describe('runStepPhase — timeout (real timers)', () => {
+  it('pipeline budget exhausted before step N surfaces timeout with the unexecuted step', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    let nowMs = 1_000;
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      // Each spawn advances the clock past the budget.
+      nowMs += 70_000;
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => nowMs,
+    };
+    // 1-minute budget; step 1 will use it all, step 2 won't get to run.
+    const config = makeConfig(
+      [
+        { name: 'eager', run: 'echo hi' },
+        { name: 'skipped', run: 'echo nope' },
+      ],
+      1,
+    );
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    await microtaskTick();
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+    expect(result.failedStep).toMatchObject({
+      index: 2,
+      name: 'skipped',
+      exitCode: -1,
+    });
+    expect(result.failedStep!.outputTail[0]).toContain('budget exhausted');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+
+    // Step 1 ran cleanly before the budget was burned — its StepResult
+    // must survive the terminate() call. Step 2 never ran (we hit the
+    // pre-spawn budget check), so only one entry should be present.
+    expect(result.stepResults).toHaveLength(1);
+    expect(result.stepResults[0]).toMatchObject({
+      index: 1,
+      name: 'eager',
+      run: 'echo hi',
+      exitCode: 0,
+    });
+  });
+});
+
+describe('runStepPhase — spawn errors', () => {
+  it('spawnStep throws → infra_error (no DB terminal write; orchestrator owns retry)', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const spawnStep: SpawnStepFn = () => {
+      throw new Error('ENOENT bash not found');
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
+
+    const result = await runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(result.infraErrorDetail).toContain('ENOENT bash not found');
+    expect(result.failedStep!.exitCode).toBe(-1);
+    // Contract (review #2): infra_error must NOT call failFinalizeRun
+    // here — the design (§10) reserves the infra class for an automatic
+    // one-shot retry, and a terminal DB write would make that retry path
+    // unreachable. The orchestrator decides retry vs. give-up.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('child emits error event → infra_error (no DB terminal write; orchestrator owns retry)', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('error', new Error('runtime panic'));
+    await microtaskTick();
+
+    const result = await resultP;
+    expect(result.status).toBe('infra_error');
+    expect(result.infraErrorDetail).toBe('runtime panic');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('spawn-error mid-pipeline still surfaces prior step results to the orchestrator', async () => {
+    // Reinforces #1: even an infra_error on step 2 must not erase the
+    // StepResult of a step 1 that ran cleanly. The orchestrator needs
+    // those rows to render the checks panel (passed step 1 + the spawn
+    // failure on step 2) on retry.
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    let calls = 0;
+    const spawnStep: SpawnStepFn = () => {
+      calls += 1;
+      if (calls === 2) {
+        throw new Error('container_unavailable: out of pids');
+      }
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([
+      { name: 'first', run: 'echo a' },
+      { name: 'doomed', run: 'echo b' },
+    ]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    await microtaskTick();
+
+    const result = await resultP;
+    expect(result.status).toBe('infra_error');
+    expect(result.stepResults).toHaveLength(2);
+    expect(result.stepResults[0]).toMatchObject({ index: 1, name: 'first', exitCode: 0 });
+    expect(result.stepResults[1]).toMatchObject({ index: 2, name: 'doomed', exitCode: -1 });
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('runStepPhase — guard rails', () => {
+  it('missing worktree → infra_error without spawning anything', async () => {
+    const stmts = makeStmts();
+    const spawnStep = vi.fn();
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep: spawnStep as never,
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
+
+    const result = await runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: '',
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(spawnStep).not.toHaveBeenCalled();
+    // Contract (review #2): infra_error must not write a terminal status —
+    // the orchestrator decides retry vs. give-up. The phase-entry write
+    // never happened either (we bailed before `setPhase`), so the DB row
+    // keeps whatever status the caller had set when it called us.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('missing sessionId → infra_error without spawning', async () => {
+    const stmts = makeStmts();
+    const spawnStep = vi.fn();
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep: spawnStep as never,
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
+
+    const result = await runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: '',
+    });
+    expect(result.status).toBe('infra_error');
+    expect(spawnStep).not.toHaveBeenCalled();
+    // Same infra-error contract as the worktree-missing branch above.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('addMessage hiccup does not abort the step', async () => {
+    const stmts = makeStmts();
+    let callCount = 0;
+    stmts.addMessage.run.mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) throw new Error('disk full');
+    });
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].stdout.push('hi\nbye\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    // Two lines attempted; first threw, second succeeded.
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runStepPhase — output tail capping', () => {
+  it('tail keeps only the last STEP_OUTPUT_TAIL_LINES lines mixed across stdout+stderr', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'noisy', run: 'noisy' }]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    // Push 100 lines on stdout, then fail.
+    let blob = '';
+    for (let i = 0; i < 100; i += 1) blob += `line ${i}\n`;
+    fakes[0].stdout.push(blob);
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(result.failedStep!.outputTail).toHaveLength(STEP_OUTPUT_TAIL_LINES);
+    // First retained line is line(100 - 40) = line 60; last is line 99.
+    expect(result.failedStep!.outputTail[0]).toBe('line 60');
+    expect(result.failedStep!.outputTail.at(-1)).toBe('line 99');
+  });
+
+  it('flushes a trailing fragment without a newline on close', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'step 1', run: 'no-newline' }]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].stdout.push('only fragment, no newline');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    expect(result.stepResults[0].stdoutLines).toBe(1);
+    // The fragment should land as a message.
+    const stdoutCall = stmts.addMessage.run.mock.calls.find(
+      (c: unknown[]) => (c[3] as string) === '[stdout] only fragment, no newline',
+    );
+    expect(stdoutCall).toBeDefined();
+  });
+});
+
+describe('BoundedLineTail', () => {
+  it('grows up to cap then drops oldest', () => {
+    const tail = new __test.BoundedLineTail(3);
+    tail.push('a');
+    tail.push('b');
+    tail.push('c');
+    expect(tail.snapshot()).toEqual(['a', 'b', 'c']);
+    tail.push('d');
+    expect(tail.snapshot()).toEqual(['b', 'c', 'd']);
+    tail.push('e');
+    expect(tail.snapshot()).toEqual(['c', 'd', 'e']);
+  });
+  it('snapshot returns a fresh array', () => {
+    const tail = new __test.BoundedLineTail(2);
+    tail.push('x');
+    const snap = tail.snapshot();
+    snap.push('mutated');
+    expect(tail.snapshot()).toEqual(['x']);
+  });
+});
+
+describe('stripCarriageReturn', () => {
+  it('strips a single trailing CR only', () => {
+    expect(__test.stripCarriageReturn('hello\r')).toBe('hello');
+    expect(__test.stripCarriageReturn('hello')).toBe('hello');
+    expect(__test.stripCarriageReturn('a\r\r')).toBe('a\r');
+  });
+});
+
+describe('defaultSpawnStep — production wiring', () => {
+  // Exercise the real spawn with /usr/bin/bash. We use `bash` itself,
+  // which is the production target — not one of the forbidden CLI
+  // binaries (claude/cursor/gemini/codex), so the test setup guard does
+  // not fire here. (Verified manually: `bash` is not in the no-real-cli
+  // allowlist denylist.)
+  it('runs `bash -euo pipefail -c <run>` and reports the exit code', async () => {
+    // Confirm bash is available (every CI image has it). If not, skip.
+    const available = await new Promise<boolean>((resolve) => {
+      try {
+        const probe = spawn('bash', ['-c', 'exit 0'], { stdio: 'ignore' });
+        probe.on('close', (code) => resolve(code === 0));
+        probe.on('error', () => resolve(false));
+      } catch {
+        resolve(false);
+      }
+    });
+    if (!available) return;
+
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = defaultSpawnStep({
+          step: {
+            name: 'probe',
+            run: 'echo "hi from stdout"; echo "hi from stderr" >&2; exit 7',
+          },
+          index: 1,
+          cwd: process.cwd(),
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout?.on('data', (b: Buffer) => (stdout += b.toString()));
+        child.stderr?.on('data', (b: Buffer) => (stderr += b.toString()));
+        child.on('close', (code: number | null) => resolve({ code: code ?? -1, stdout, stderr }));
+      },
+    );
+    expect(result.code).toBe(7);
+    expect(result.stdout).toContain('hi from stdout');
+    expect(result.stderr).toContain('hi from stderr');
+  });
+
+  it('honors -euo pipefail (failing pipe component terminates the step)', async () => {
+    const available = await new Promise<boolean>((resolve) => {
+      try {
+        const probe = spawn('bash', ['-c', 'exit 0'], { stdio: 'ignore' });
+        probe.on('close', (code) => resolve(code === 0));
+        probe.on('error', () => resolve(false));
+      } catch {
+        resolve(false);
+      }
+    });
+    if (!available) return;
+
+    const code = await new Promise<number>((resolve) => {
+      const child = defaultSpawnStep({
+        step: { name: 'pipefail probe', run: 'false | cat; echo unreachable' },
+        index: 1,
+        cwd: process.cwd(),
+      });
+      child.stdout?.on('data', () => {});
+      child.stderr?.on('data', () => {});
+      child.on('close', (c: number | null) => resolve(c ?? -1));
+    });
+    // `false | cat` → `false`'s exit = 1, pipefail propagates it, set -e
+    // halts the script before the `echo unreachable` line ever fires.
+    expect(code).toBe(1);
+  });
+});
+
+// ─── Helpers ────────────────────────────────────────────────────────
+
+function makeMonoClock(): () => number {
+  let t = 1_000;
+  return () => {
+    t += 10;
+    return t;
+  };
+}
+
+/**
+ * Flush microtasks so the runner has a chance to wire `on('data')` and
+ * `on('close')` before the test pushes data / emits events. The fake
+ * streams + emitter are synchronous, so a single tick is enough.
+ */
+function microtaskTick(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+// Decorative no-op so the test asserts read naturally even when we want
+// to compare against raw tail-line text without the [stdout]/[stderr]
+// prefix the streaming messages carry.
+function stripPrefixForTail(s: string): string {
+  return s.replace(/^\[stdout\] |^\[stderr\] /, '');
+}
