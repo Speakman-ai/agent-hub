@@ -9651,7 +9651,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "409":
-          description: Session is streaming or is a resolve-PR session.
+          description: Session is streaming, ship is in progress, or is a resolve-PR session.
           content:
             application/json:
               schema:
