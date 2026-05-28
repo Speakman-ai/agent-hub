@@ -14,6 +14,7 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
+import ReviewerThreadsPanel from './components/finalize/ReviewerThreadsPanel.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
@@ -1877,6 +1878,14 @@ export default function App() {
           window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
           break;
 
+        // Finalize reviewer-dispatch fires one of these per row after the
+        // COMMIT (see server/finalize/reviewer-dispatch.ts). Bridged to a
+        // window CustomEvent so `<ReviewerThreadsPanel />` can refetch
+        // without subscribing to the WS directly.
+        case 'reviewer_thread_added':
+          window.dispatchEvent(new CustomEvent('reviewer_thread_added', { detail: data }));
+          break;
+
         case 'lead_review':
           setActiveReviews((prev) => ({
             ...prev,
@@ -3702,6 +3711,10 @@ export default function App() {
                   variant="top"
                   onOpenPrDetail={handleOpenPrDetail}
                 />
+              )}
+
+              {currentView === 'chat' && activeSessionId && (
+                <ReviewerThreadsPanel sessionId={activeSessionId} />
               )}
 
               {currentView.startsWith('kanban:') ? (

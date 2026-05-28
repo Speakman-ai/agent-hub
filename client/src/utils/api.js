@@ -256,6 +256,21 @@ export const api = {
   getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
   /** Session sidebar: linked kanban card, skills, aggregated run snapshot from message events. */
   getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
+  /**
+   * Most-recent Finalize run for a session. Returns `{ run: null }` when
+   * the session has never triggered a Finalize run — used by the read-only
+   * reviewer-threads sidecar to discover its current run id.
+   */
+  getLatestFinalizeRunForSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`),
+  /**
+   * Diff-anchored reviewer threads for a Finalize run. Read-only.
+   * Returns `{ run_id, reviewer_verdict, threads }` with threads pre-sorted
+   * by `file_path ASC, line_start ASC, created_at ASC` so the sidecar can
+   * group by file without re-sorting.
+   */
+  getReviewerThreads: (projectId, runId) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/reviewer-threads`),
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),

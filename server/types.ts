@@ -1312,6 +1312,14 @@ export interface Stmts {
   // Phase 1 ships the rebase phase; later phases reuse the same row.
   // See wiki: finalize-code-changes-architecture-v0 (§4).
   getFinalizeRun: Stmt;
+  /**
+   * Most-recent `finalize_runs` row for a session (ordered by
+   * `started_at DESC`). Returns `undefined` when the session has never
+   * triggered a Finalize run. Used by the session-scoped reviewer-threads
+   * side-panel to resolve a `runId` from a `sessionId` without forcing
+   * the client to track run lifecycle events.
+   */
+  getLatestFinalizeRunForSession: Stmt;
   updateFinalizeRunPhase: Stmt;
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;

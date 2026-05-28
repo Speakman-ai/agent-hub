@@ -3202,6 +3202,18 @@ function initDb(dataDir: string): void {
     // follow-up phase, so this skeleton keeps the schema honest without
     // pretending the orchestrator exists yet.
     getFinalizeRun: db.prepare('SELECT * FROM finalize_runs WHERE id = ?'),
+    // Most-recent finalize run for a session (ordered by started_at DESC).
+    // Used by the session-scoped reviewer-threads side-panel to discover
+    // which run id to pull threads for without forcing the client to track
+    // run lifecycle events. Returns undefined when the session has never
+    // triggered a Finalize run — the panel renders nothing in that case.
+    getLatestFinalizeRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+        ORDER BY started_at DESC
+        LIMIT 1`,
+    ),
     updateFinalizeRunPhase: db.prepare(
       `UPDATE finalize_runs
           SET phase = ?,
