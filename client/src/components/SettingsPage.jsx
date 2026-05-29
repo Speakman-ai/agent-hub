@@ -23,6 +23,7 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import PreviewSection from './PreviewSection.jsx';
+import FinalizeSettingsSection from './FinalizeSettingsSection.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import ProjectAwsProfilesEditor from './ProjectAwsProfilesEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -123,6 +124,7 @@ import {
   FolderGit2,
   Download,
   Package,
+  ClipboardCheck,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -8193,6 +8195,7 @@ const SETTINGS_GROUPS = [
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
       { id: 'preview', iconName: 'Monitor', text: 'Preview' },
+      { id: 'finalize', iconName: 'ClipboardCheck', text: 'Finalize' },
     ],
   },
   {
@@ -8247,6 +8250,7 @@ const SETTINGS_ICONS = {
   FolderGit2,
   Plug,
   Monitor,
+  ClipboardCheck,
 };
 
 function SettingsNavItem({ tab, active, onSelect }) {
@@ -8479,6 +8483,15 @@ export default function SettingsPage({
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   registerGuard={registerTabChangeGuard}
+                  onOpenSession={({ sessionId, agentId }) =>
+                    onOpenSession?.({ sessionId, agentId })
+                  }
+                />
+              )}
+              {tab === 'finalize' && (
+                <FinalizeSettingsSection
+                  projects={projects}
+                  onProjectsChange={onAgentsChange}
                   onOpenSession={({ sessionId, agentId }) =>
                     onOpenSession?.({ sessionId, agentId })
                   }

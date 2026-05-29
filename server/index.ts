@@ -115,6 +115,7 @@ import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './wo
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createFinalizeRoutes from './routes/finalize.js';
+import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createInstanceBackupRoutes from './routes/instance-backup.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
@@ -910,6 +911,7 @@ app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
 app.use(createFinalizeRoutes(routeDeps));
+app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));

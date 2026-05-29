@@ -1561,6 +1561,21 @@ export default function App() {
             new CustomEvent('agenthub:preview_wizard_complete', { detail: data }),
           );
           break;
+        // AI-assisted Finalize Code Changes ci.yaml setup wizard.
+        // `finalize_wizard_started` fires on POST .../finalize/setup-wizard;
+        // `finalize_wizard_complete` after the skill calls wizard-complete.
+        // FinalizeSettingsSection listens for the completion event to
+        // refetch state.
+        case 'finalize_wizard_started':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:finalize_wizard_started', { detail: data }),
+          );
+          break;
+        case 'finalize_wizard_complete':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:finalize_wizard_complete', { detail: data }),
+          );
+          break;
         case 'workflow_run':
         case 'workflow_run_status':
         case 'workflow_update':
