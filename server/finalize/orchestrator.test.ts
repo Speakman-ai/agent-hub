@@ -26,6 +26,7 @@ import type { FinalizeRunRow, KanbanCardRow, Project, ReviewerThreadRow } from '
 import {
   computeIdempotencyKey,
   runFinalize,
+  __test,
   type OrchestratorDeps,
   type OrchestratorOptions,
   type PushAndCreatePrResult,
@@ -244,6 +245,9 @@ function makeStmts(): {
     listReviewerThreadsForRun: {
       all: vi.fn(() => threads),
     } as unknown as OrchestratorDeps['stmts']['listReviewerThreadsForRun'],
+    insertFinalizeMetric: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['insertFinalizeMetric'],
   };
 
   return { stmts, rows, byKey, threads, phaseCalls, failCalls };
@@ -1984,5 +1988,114 @@ describe('runFinalize — §10 retry broadcasts and lifecycle', () => {
       expect(e.status).toBe('infra_error');
       expect(e.failure_reason).toBe('container_unavailable');
     }
+  });
+});
+
+// ─── §14 metric emission contract ─────────────────────────────────────
+
+/**
+ * Pull every `insertFinalizeMetric.run` call as a structured row so
+ * tests can assert on the metric name + labels without re-parsing JSON
+ * on every line.
+ */
+function readMetricCalls(stmts: ReturnType<typeof makeStmts>): Array<{
+  projectId: string;
+  name: string;
+  labels: Record<string, unknown>;
+  value: number;
+  runId: string | null;
+}> {
+  const fn = stmts.stmts.insertFinalizeMetric.run as unknown as ReturnType<typeof vi.fn>;
+  return fn.mock.calls.map((c) => ({
+    projectId: c[0] as string,
+    name: c[1] as string,
+    labels: JSON.parse(c[2] as string) as Record<string, unknown>,
+    value: c[3] as number,
+    runId: c[4] as string | null,
+  }));
+}
+
+describe('__test.statusFromOutcome', () => {
+  it('maps each outcome kind to the §14 status label', () => {
+    const map = __test.statusFromOutcome;
+    expect(map({ kind: 'pushed', runId: 'r', prUrl: 'u' })).toBe('pushed');
+    expect(map({ kind: 'cancelled', runId: 'r' })).toBe('cancelled');
+    expect(map({ kind: 'stalled', runId: 'r' })).toBe('stalled_no_response');
+    expect(map({ kind: 'failed', runId: 'r', status: 'infra_error', failureReason: 'x' })).toBe(
+      'infra_error',
+    );
+    expect(map({ kind: 'failed', runId: 'r', status: 'timed_out', failureReason: 't' })).toBe(
+      'timed_out',
+    );
+  });
+
+  it('returns undefined for the `reused` short-circuit so terminal metrics suppress', () => {
+    expect(
+      __test.statusFromOutcome({ kind: 'reused', runId: 'r', status: 'pushed' }),
+    ).toBeUndefined();
+  });
+});
+
+describe('runFinalize — §14 metric emission', () => {
+  it('emits started + every terminal metric on a single-attempt pushed run', async () => {
+    const { deps, stmts } = makeDeps();
+    await runFinalize(deps, baseOpts());
+    const rows = readMetricCalls(stmts);
+    const names = rows.map((r) => r.name);
+    // One started, one completed, one active_seconds, one wall_seconds,
+    // one fix_dispatch_count (single attempt = family terminal).
+    expect(names.filter((n) => n === 'finalize_run_started')).toHaveLength(1);
+    expect(names.filter((n) => n === 'finalize_run_completed')).toHaveLength(1);
+    expect(names.filter((n) => n === 'finalize_run_active_seconds')).toHaveLength(1);
+    expect(names.filter((n) => n === 'finalize_run_wall_seconds')).toHaveLength(1);
+    expect(names.filter((n) => n === 'finalize_fix_dispatch_count')).toHaveLength(1);
+    const completed = rows.find((r) => r.name === 'finalize_run_completed');
+    expect(completed?.labels).toMatchObject({ status: 'pushed', trigger_source: 'ui_button' });
+    const started = rows.find((r) => r.name === 'finalize_run_started');
+    expect(started?.labels).toMatchObject({ trigger_source: 'ui_button' });
+  });
+
+  it('emits one reviewer-verdict row per loop iteration with attempt_index', async () => {
+    const { deps, stmts } = makeDeps();
+    await runFinalize(deps, baseOpts());
+    const verdicts = readMetricCalls(stmts).filter((r) => r.name === 'finalize_reviewer_verdict');
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0].labels).toMatchObject({ verdict: 'approved', attempt_index: 1 });
+  });
+
+  it('emits no metrics on the `reused` short-circuit (idempotent re-trigger)', async () => {
+    // First call seeds the row; second call short-circuits as `reused`.
+    const { deps, stmts } = makeDeps();
+    await runFinalize(deps, baseOpts());
+    const fn = stmts.stmts.insertFinalizeMetric.run as unknown as ReturnType<typeof vi.fn>;
+    const callsBefore = fn.mock.calls.length;
+    const second = await runFinalize(deps, baseOpts());
+    expect(second.kind).toBe('reused');
+    // Zero additional metric rows: started suppressed by the early
+    // `reused` return, terminal suppressed by `statusFromOutcome` → undefined.
+    expect(fn.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('keeps started/completed symmetric across an infra-retried family', async () => {
+    // First rebase attempt throws → `container_unavailable` (infra) →
+    // §10 triggers the one auto-retry. Second attempt also throws so
+    // the retry terminates `infra_error` too. We're not asserting the
+    // retry succeeds; we're asserting metric symmetry.
+    const rebase = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first wedge'))
+      .mockRejectedValueOnce(new Error('second wedge'));
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    await runFinalize(deps, baseOpts());
+    const rows = readMetricCalls(stmts);
+    const counts = (name: string) => rows.filter((r) => r.name === name).length;
+    // One started + one completed per attempt = 2 of each.
+    expect(counts('finalize_run_started')).toBe(2);
+    expect(counts('finalize_run_completed')).toBe(2);
+    expect(counts('finalize_run_active_seconds')).toBe(2);
+    expect(counts('finalize_run_wall_seconds')).toBe(2);
+    // fix_dispatch_count fires ONCE per family (cumulative counter,
+    // sealed only at the FINAL terminal — attempt 2).
+    expect(counts('finalize_fix_dispatch_count')).toBe(1);
   });
 });

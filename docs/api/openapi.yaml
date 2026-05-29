@@ -672,6 +672,164 @@ components:
         - status
         - message
       description: Conflict envelope returned when the run is already in a terminal state.
+    FinalizeMetricHistogramSummary:
+      type: object
+      properties:
+        count:
+          type: integer
+        min:
+          type: number
+          nullable: true
+        max:
+          type: number
+          nullable: true
+        avg:
+          type: number
+          nullable: true
+        p50:
+          type: number
+          nullable: true
+        p95:
+          type: number
+          nullable: true
+        p99:
+          type: number
+          nullable: true
+      required:
+        - count
+        - min
+        - max
+        - avg
+        - p50
+        - p95
+        - p99
+      description: Standard summary for histogram-class metrics. Quantiles use linear interpolation (Type 7). `null` fields signal zero samples in the window.
+    FinalizeMetricCounterAggregate:
+      type: object
+      properties:
+        metric:
+          type: string
+          enum:
+            - finalize_run_started
+            - finalize_run_completed
+            - finalize_run_active_seconds
+            - finalize_run_wall_seconds
+            - finalize_fix_dispatch_count
+            - finalize_reviewer_verdict
+            - finalize_step_result
+            - finalize_stalled_no_response_count
+            - merged_pr_provenance
+        kind:
+          type: string
+          enum:
+            - counter
+        count:
+          type: integer
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              labels:
+                type: object
+                additionalProperties:
+                  anyOf:
+                    - type: string
+                    - type: number
+                    - type: boolean
+                    - nullable: true
+              count:
+                type: integer
+            required:
+              - labels
+              - count
+      required:
+        - metric
+        - kind
+        - count
+        - groups
+      description: "Counter aggregate: total `count` of rows in the window plus a breakdown per distinct label combination."
+    FinalizeMetricHistogramAggregate:
+      type: object
+      properties:
+        metric:
+          type: string
+          enum:
+            - finalize_run_started
+            - finalize_run_completed
+            - finalize_run_active_seconds
+            - finalize_run_wall_seconds
+            - finalize_fix_dispatch_count
+            - finalize_reviewer_verdict
+            - finalize_step_result
+            - finalize_stalled_no_response_count
+            - merged_pr_provenance
+        kind:
+          type: string
+          enum:
+            - histogram
+        summary:
+          $ref: "#/components/schemas/FinalizeMetricHistogramSummary"
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              labels:
+                type: object
+                additionalProperties:
+                  anyOf:
+                    - type: string
+                    - type: number
+                    - type: boolean
+                    - nullable: true
+              summary:
+                $ref: "#/components/schemas/FinalizeMetricHistogramSummary"
+            required:
+              - labels
+              - summary
+      required:
+        - metric
+        - kind
+        - summary
+        - groups
+      description: "Histogram aggregate: summary across all rows in the window plus a per-label-combination breakdown."
+    FinalizeMetricsResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        range:
+          type: object
+          properties:
+            from_ms:
+              type: integer
+            to_ms:
+              type: integer
+            from_iso:
+              type: string
+            to_iso:
+              type: string
+          required:
+            - from_ms
+            - to_ms
+            - from_iso
+            - to_iso
+        sample_count:
+          type: integer
+          description: Number of metric event rows the read query touched.
+        metrics:
+          type: array
+          items:
+            anyOf:
+              - $ref: "#/components/schemas/FinalizeMetricCounterAggregate"
+              - $ref: "#/components/schemas/FinalizeMetricHistogramAggregate"
+      required:
+        - project_id
+        - range
+        - sample_count
+        - metrics
+      description: Aggregated adoption metrics for the requested time window. Counter and histogram metrics share the same `metrics` array; clients discriminate via the `kind` field.
     KanbanBoard:
       type: object
       properties:
@@ -5266,6 +5424,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StartFinalizeRunInFlight"
+  /api/projects/{projectId}/finalize/metrics:
+    get:
+      tags:
+        - Finalize
+      summary: Aggregated Finalize adoption metrics for a project
+      description: |-
+        Counters and histogram summaries over the requested time window.
+        See wiki `finalize-code-changes-architecture-v0` §14 for the metric
+        vocabulary. No dashboard at v0 — the endpoint plus ad-hoc SQL is the
+        dogfood-window read surface.
+
+        Range syntax: `<N><m|h|d>` for a relative window ending now (e.g. `24h`,
+        `7d`), or `<isoFrom>..<isoTo>` for an explicit half-open `[from, to)`
+        interval (the `..` separator avoids collision with ISO8601 colons).
+        Defaults to the last 24 hours.
+
+        Optional `metrics=...` filter accepts a comma-separated subset of metric
+        names. Unknown names are silently dropped; every requested known name
+        is present in the response, even when zero rows landed.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Time window. See description.
+          required: false
+          description: Time window. See description.
+          name: range
+          in: query
+        - schema:
+            type: string
+            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance."
+          required: false
+          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance."
+          name: metrics
+          in: query
+      responses:
+        "200":
+          description: Aggregated metrics for the window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeMetricsResponse"
+        "400":
+          description: Range or metrics filter could not be parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
   /api/projects/{projectId}/finalize/{runId}/cancel:
     post:
       tags:

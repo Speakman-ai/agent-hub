@@ -846,6 +846,29 @@ export interface ReviewerThreadRow {
   created_at: number;
 }
 
+/**
+ * One row in `finalize_metrics`. The metric vocabulary is enumerated in
+ * `server/finalize/metrics.ts` (`MetricName`), not on a CHECK constraint
+ * so a new metric can be added without a schema rebuild. `labels` is a
+ * JSON object string; readers project values via `json_extract(...)`.
+ *
+ * See wiki: `finalize-code-changes-architecture-v0` §14 (Metrics &
+ * Observability).
+ */
+export interface FinalizeMetricRow {
+  id: number;
+  project_id: string;
+  metric_name: string;
+  /** JSON object string. Empty `{}` for label-free counters. */
+  labels: string;
+  /** Counter increment (typically `1`) or a histogram sample value. */
+  value: number;
+  /** Back-link to the originating `finalize_runs.id`, when known. */
+  run_id: string | null;
+  /** Unix millis (server clock). */
+  observed_at: number;
+}
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -1423,6 +1446,24 @@ export interface Stmts {
   insertReviewerThread: Stmt;
   listReviewerThreadsForRun: Stmt;
   deleteReviewerThreadsForRun: Stmt;
+
+  // finalize_metrics — append-only adoption-metrics event log.
+  // See `server/finalize/metrics-schema.ts` for the table shape and
+  // `server/finalize/metrics.ts` for the emitter / aggregator surface.
+  /**
+   * Append one metric event. Parameters bind in column order:
+   * `(project_id, metric_name, labels, value, run_id, observed_at)`.
+   * Callers pass `labels` as `JSON.stringify(...)` and `value` as a
+   * number — emitters in `metrics.ts` are the only sanctioned writers.
+   */
+  insertFinalizeMetric: Stmt;
+  /**
+   * Range scan over all metric events in (project, window). Binds:
+   * `(project_id, from_inclusive_ms, to_exclusive_ms)`. The read
+   * endpoint groups in TypeScript instead of one query per metric to
+   * keep the prepared-statement cache small.
+   */
+  listAllFinalizeMetricsInRange: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────

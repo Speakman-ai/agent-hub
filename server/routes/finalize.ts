@@ -42,6 +42,14 @@ import {
   type OrchestratorOutcome,
 } from '../finalize/orchestrator.js';
 import { buildOrchestratorDeps } from '../finalize/orchestrator-deps.js';
+import {
+  aggregateMetrics,
+  isMetricName,
+  METRIC_NAMES,
+  parseRange,
+  type MetricName,
+} from '../finalize/metrics.js';
+import type { FinalizeMetricRow } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -314,6 +322,83 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       status: 'cancelled',
     });
     return res.json({ ok: true, status: 'cancelled' });
+  });
+
+  // ───────────────────────────────────────────────────────────────
+  // GET /api/projects/:projectId/finalize/metrics
+  // ───────────────────────────────────────────────────────────────
+  //
+  // Adoption-metrics surface for the Finalize Code Changes dogfood
+  // window. Returns aggregated counters and histogram summaries for the
+  // requested time range. See `server/finalize/metrics.ts` for the
+  // metric vocabulary and the wiki entry
+  // `finalize-code-changes-architecture-v0` §14 for the design.
+  //
+  // Query string:
+  //   - `range`: optional. Either `<N><m|h|d>` (e.g. `7d`, `24h`) or
+  //     `<isoFrom>..<isoTo>`. Defaults to the last 24 hours. The `..`
+  //     separator is used (not `:`) because ISO8601 timestamps contain
+  //     colons; see `parseRange` in `server/finalize/metrics.ts`.
+  //   - `metrics`: optional comma-separated subset of metric names.
+  //     Unknown names are ignored (the response still includes every
+  //     requested known name, even with zero rows).
+  router.get('/api/projects/:projectId/finalize/metrics', (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const project = findProject(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const range = parseRange(typeof req.query.range === 'string' ? req.query.range : null);
+    if (!range) {
+      return res.status(400).json({
+        error: 'invalid_range',
+        message:
+          'range must be `<N><m|h|d>` (e.g. `7d`, `24h`) or `<isoFrom>..<isoTo>` with from < to.',
+      });
+    }
+
+    let metricsFilter: MetricName[] | undefined;
+    if (typeof req.query.metrics === 'string' && req.query.metrics.trim().length > 0) {
+      const parts = req.query.metrics
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      metricsFilter = parts.filter(isMetricName);
+      if (metricsFilter.length === 0) {
+        return res.status(400).json({
+          error: 'invalid_metrics',
+          message: `metrics must be a comma-separated subset of: ${METRIC_NAMES.join(', ')}`,
+        });
+      }
+    }
+
+    let rows: FinalizeMetricRow[];
+    try {
+      rows = stmts.listAllFinalizeMetricsInRange.all(
+        project.id,
+        range.fromMs,
+        range.toMs,
+      ) as FinalizeMetricRow[];
+    } catch (err) {
+      console.warn(
+        `[finalize-metrics] read failed for project=${project.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return res.status(500).json({ error: 'metrics_read_failed' });
+    }
+
+    const aggregates = aggregateMetrics(rows, { metrics: metricsFilter });
+    return res.json({
+      project_id: project.id,
+      range: {
+        from_ms: range.fromMs,
+        to_ms: range.toMs,
+        from_iso: new Date(range.fromMs).toISOString(),
+        to_iso: new Date(range.toMs).toISOString(),
+      },
+      sample_count: rows.length,
+      metrics: aggregates,
+    });
   });
 
   return router;

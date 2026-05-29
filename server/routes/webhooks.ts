@@ -50,6 +50,7 @@ import {
 } from '../kanban-pr-link.js';
 import { clearChangesReadyAndNotifyPrCreated } from '../session-ship.js';
 import { classifyPr } from '../finalize/provenance.js';
+import { recordMergedPrProvenance } from '../finalize/metrics.js';
 
 export { tryLinkKanbanCardByPrTitle };
 import type {
@@ -1730,7 +1731,7 @@ export async function handleKanbanWebhookEvent(
     case 'pull_request_review.submitted':
       return await handleWebhookPrReview(deps, card, project, cols, payload, sender);
     case 'pull_request.closed':
-      return handleWebhookPrClosed(deps, card, project, cols, payload, sender);
+      return await handleWebhookPrClosed(deps, card, project, cols, payload, sender);
     case 'pull_request.synchronize':
       return handleWebhookPrSynchronize(deps, card, project, cols, payload, sender);
     case 'check_suite.completed':
@@ -1933,14 +1934,14 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
   return false;
 }
 
-function handleWebhookPrClosed(
+export async function handleWebhookPrClosed(
   deps: RouteDeps,
   card: KanbanCardRow,
   project: Project,
   cols: KanbanColumnRow[],
   payload: GitHubWebhookPayload,
   sender: string,
-): boolean {
+): Promise<boolean> {
   const { stmts, broadcast } = deps;
   const tryAutonomousDispatch = deps.tryAutonomousDispatch as () => void;
   const merged = payload.pull_request?.merged === true;
@@ -1986,6 +1987,38 @@ function handleWebhookPrClosed(
       sessionId: card.session_id || undefined,
       agentId: mergeAgentId,
     });
+
+    // §14 metric: classify the merged PR as Finalize-pushed (internal)
+    // or external. The §11 provenance check uses the finalize_runs
+    // registry first and the PR-body marker fallback second; here we
+    // pass `pull_request.body` from the payload so the marker path can
+    // rescue rows when the registry has been reset or drifted. Best-
+    // effort — recordMetric swallows any DB error.
+    const prUrlForMetric =
+      card.pr_url ||
+      (payload.pull_request?.html_url as string | undefined) ||
+      `${repoFullName ?? ''}#${prNumber ?? ''}`;
+    try {
+      const prBody = (payload.pull_request as { body?: string | null } | undefined)?.body ?? null;
+      const classification = await classifyPr(
+        { stmts, fetchPrBody: async () => prBody },
+        prUrlForMetric,
+      );
+      recordMergedPrProvenance(
+        { stmts },
+        {
+          projectId: project.id,
+          runId: classification.run?.id ?? null,
+          source: classification.provenance === 'internal' ? 'finalize' : 'external',
+        },
+      );
+    } catch (err) {
+      console.warn(
+        `[Webhook/Metrics] merged_pr_provenance emit failed for #${prNumber} on ${repoFullName ?? '?'}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
     tryAutonomousDispatch();
 

@@ -9,6 +9,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { METRIC_NAMES } from '../finalize/metrics.js';
 
 const FINALIZE_RUN_STATUSES = [
   'queued',
@@ -309,6 +310,143 @@ const CancelFinalizeRunTerminal = registerComponent(
       description: 'Conflict envelope returned when the run is already in a terminal state.',
     }),
 );
+
+// ─── GET /api/projects/:projectId/finalize/metrics ──────────────────
+
+// Single source of truth — imported directly from the metrics module so
+// adding a new metric to the union can't silently drift the OpenAPI
+// enum. `z.enum` requires a non-empty readonly tuple, so we re-cast the
+// imported readonly array preserving its literal types.
+const FINALIZE_METRIC_NAMES = METRIC_NAMES as unknown as readonly [
+  (typeof METRIC_NAMES)[number],
+  ...(typeof METRIC_NAMES)[number][],
+];
+
+const LabelMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
+
+const HistogramSummarySchema = registerComponent(
+  'FinalizeMetricHistogramSummary',
+  z
+    .object({
+      count: z.number().int(),
+      min: z.number().nullable(),
+      max: z.number().nullable(),
+      avg: z.number().nullable(),
+      p50: z.number().nullable(),
+      p95: z.number().nullable(),
+      p99: z.number().nullable(),
+    })
+    .openapi({
+      description:
+        'Standard summary for histogram-class metrics. Quantiles use linear interpolation (Type 7). `null` fields signal zero samples in the window.',
+    }),
+);
+
+const CounterAggregateSchema = registerComponent(
+  'FinalizeMetricCounterAggregate',
+  z
+    .object({
+      metric: z.enum(FINALIZE_METRIC_NAMES),
+      kind: z.literal('counter'),
+      count: z.number().int(),
+      groups: z.array(
+        z.object({
+          labels: LabelMap,
+          count: z.number().int(),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'Counter aggregate: total `count` of rows in the window plus a breakdown per distinct label combination.',
+    }),
+);
+
+const HistogramAggregateSchema = registerComponent(
+  'FinalizeMetricHistogramAggregate',
+  z
+    .object({
+      metric: z.enum(FINALIZE_METRIC_NAMES),
+      kind: z.literal('histogram'),
+      summary: HistogramSummarySchema,
+      groups: z.array(
+        z.object({
+          labels: LabelMap,
+          summary: HistogramSummarySchema,
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'Histogram aggregate: summary across all rows in the window plus a per-label-combination breakdown.',
+    }),
+);
+
+const MetricsResponseSchema = registerComponent(
+  'FinalizeMetricsResponse',
+  z
+    .object({
+      project_id: z.string(),
+      range: z.object({
+        from_ms: z.number().int(),
+        to_ms: z.number().int(),
+        from_iso: z.string(),
+        to_iso: z.string(),
+      }),
+      sample_count: z.number().int().openapi({
+        description: 'Number of metric event rows the read query touched.',
+      }),
+      metrics: z.array(z.union([CounterAggregateSchema, HistogramAggregateSchema])),
+    })
+    .openapi({
+      description:
+        'Aggregated adoption metrics for the requested time window. Counter and histogram metrics share the same `metrics` array; clients discriminate via the `kind` field.',
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/finalize/metrics',
+  tags: ['Finalize'],
+  summary: 'Aggregated Finalize adoption metrics for a project',
+  description: [
+    'Counters and histogram summaries over the requested time window.',
+    'See wiki `finalize-code-changes-architecture-v0` §14 for the metric',
+    'vocabulary. No dashboard at v0 — the endpoint plus ad-hoc SQL is the',
+    'dogfood-window read surface.',
+    '',
+    'Range syntax: `<N><m|h|d>` for a relative window ending now (e.g. `24h`,',
+    '`7d`), or `<isoFrom>..<isoTo>` for an explicit half-open `[from, to)`',
+    'interval (the `..` separator avoids collision with ISO8601 colons).',
+    'Defaults to the last 24 hours.',
+    '',
+    'Optional `metrics=...` filter accepts a comma-separated subset of metric',
+    'names. Unknown names are silently dropped; every requested known name',
+    'is present in the response, even when zero rows landed.',
+  ].join('\n'),
+  request: {
+    params: z.object({
+      projectId: z.string(),
+    }),
+    query: z.object({
+      range: z.string().optional().openapi({ description: 'Time window. See description.' }),
+      metrics: z
+        .string()
+        .optional()
+        .openapi({
+          description: `Comma-separated subset: ${FINALIZE_METRIC_NAMES.join(', ')}.`,
+        }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Aggregated metrics for the window.',
+      content: jsonContent(MetricsResponseSchema),
+    },
+    400: errorResponse('Range or metrics filter could not be parsed.'),
+    404: errorResponse('Project not found.'),
+  },
+});
 
 registerPath({
   method: 'post',

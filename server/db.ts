@@ -8,6 +8,7 @@ import {
   MIGRATE_LEGACY_PREVIEWS_SQL,
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
+import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -737,6 +738,11 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS reviewer_threads_run
       ON reviewer_threads(run_id, file_path, line_start);
   `);
+
+  // Finalize Code Changes adoption metrics — append-only event log.
+  // See `server/finalize/metrics-schema.ts` for the column contract and
+  // `server/finalize/metrics.ts` for the emitter / aggregation surface.
+  db.exec(FINALIZE_METRICS_SCHEMA);
 
   try {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
@@ -3402,6 +3408,25 @@ function initDb(dataDir: string): void {
                  created_at ASC`,
     ),
     deleteReviewerThreadsForRun: db.prepare('DELETE FROM reviewer_threads WHERE run_id = ?'),
+
+    // finalize_metrics — append-only adoption-metrics event log. See
+    // `server/finalize/metrics-schema.ts` and `server/finalize/metrics.ts`.
+    insertFinalizeMetric: db.prepare(
+      `INSERT INTO finalize_metrics (project_id, metric_name, labels, value, run_id, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    // All metrics in a (project, range) window. The read endpoint groups
+    // in TypeScript (`aggregateMetrics`) instead of running one query
+    // per metric so the prepared-statement cache stays small and the
+    // window scan stays a single index seek.
+    listAllFinalizeMetricsInRange: db.prepare(
+      `SELECT id, project_id, metric_name, labels, value, run_id, observed_at
+         FROM finalize_metrics
+        WHERE project_id = ?
+          AND observed_at >= ?
+          AND observed_at < ?
+        ORDER BY metric_name ASC, observed_at ASC`,
+    ),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

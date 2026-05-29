@@ -87,6 +87,16 @@ import {
   openInfraRetryRun,
   postInfraTerminalMessage,
 } from './infra-retry.js';
+import {
+  recordFixDispatchCount,
+  recordReviewerVerdict,
+  recordRunActiveSeconds,
+  recordRunCompleted,
+  recordRunStarted,
+  recordRunWallSeconds,
+  recordStalledNoResponse,
+  recordStepResult,
+} from './metrics.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -172,6 +182,7 @@ export interface OrchestratorDeps {
     | 'touchSession'
     | 'getMessageById'
     | 'listReviewerThreadsForRun'
+    | 'insertFinalizeMetric'
   >;
   broadcast: BroadcastFn;
   /**
@@ -439,6 +450,11 @@ export async function runFinalize(
     session_id: opts.sessionId ?? null,
     trigger_source: opts.triggerSource,
   });
+  // §14 metric: one row per Finalize run that actually started.
+  recordRunStarted(
+    { stmts: deps.stmts, now, log },
+    { projectId: opts.project.id, runId, triggerSource: opts.triggerSource },
+  );
   // Mirror the run's start onto the kanban card: move card → In Progress
   // (idempotent if already there) and post the "Finalize started" comment.
   // Idempotency on re-trigger is handled at the row-insert dedup above —
@@ -446,6 +462,90 @@ export async function runFinalize(
   // double-comment when the user clicks Finalize twice against the same
   // head sha.
   lifecycle.onStarted({ runId, triggerSource: opts.triggerSource });
+
+  // §14 fix-dispatch counter — incremented in the attempt loop, sealed
+  // into a `finalize_fix_dispatch_count` histogram at the terminal write.
+  // Shared across the original attempt and its one infra retry so the
+  // metric reflects the whole family's effort, not just attempt 2's.
+  const fixDispatchCounter = { value: 0 };
+
+  /**
+   * Emit the §14 terminal metric set for a finalize run.
+   *
+   * Population definition (kept symmetric with `recordRunStarted`):
+   *
+   * - `finalize_run_completed`, `_active_seconds`, `_wall_seconds`: one
+   *   row per **attempt**. So a family that infra-retries logs two of
+   *   each — one for the original (status = `infra_error`), one for the
+   *   retry (status = whatever it landed on). `recordRunStarted` mirrors
+   *   this: one row per attempt-row started, including the retry row.
+   *
+   * - `finalize_fix_dispatch_count`: emitted **only on the final terminal
+   *   of the family** (`isFamilyTerminal = true`). The counter is
+   *   cumulative across attempts; emitting it twice would produce two
+   *   correlated samples where the second contains the first, skewing
+   *   the histogram and the `count(completed) / count(started)`
+   *   reconciliation. The single emission carries the family total.
+   *
+   * Reads the row back so `active_seconds_consumed`, `started_at`, and
+   * the live status reflect whatever the terminal write just persisted.
+   * Best-effort — caught and logged inside `recordMetric` so a metric
+   * DB hiccup never crashes the orchestrator.
+   */
+  const writeTerminalMetrics = (
+    attemptRunId: string,
+    statusOverride: string | undefined,
+    isFamilyTerminal: boolean,
+  ): void => {
+    // `statusOverride === undefined` is the `reused` short-circuit signal:
+    // the orchestrator never re-counted a reused row at the start, and
+    // double-counting at the terminal would skew dashboards. Bail early.
+    if (statusOverride === undefined) return;
+    let activeSeconds = 0;
+    let wallSeconds = 0;
+    const status = statusOverride;
+    try {
+      const row = deps.stmts.getFinalizeRun.get(attemptRunId) as FinalizeRunRow | undefined;
+      if (row) {
+        activeSeconds = row.active_seconds_consumed ?? 0;
+        const endedAt = row.ended_at ?? now();
+        wallSeconds = Math.max(0, Math.round((endedAt - row.started_at) / 1000));
+      }
+    } catch (err) {
+      log(
+        `[finalize-orchestrator] terminal metrics row read failed for run=${attemptRunId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    const metricDeps = { stmts: deps.stmts, now, log };
+    recordRunCompleted(metricDeps, {
+      projectId: opts.project.id,
+      runId: attemptRunId,
+      status,
+      triggerSource: opts.triggerSource,
+    });
+    recordRunActiveSeconds(metricDeps, {
+      projectId: opts.project.id,
+      runId: attemptRunId,
+      activeSeconds,
+      status,
+    });
+    recordRunWallSeconds(metricDeps, {
+      projectId: opts.project.id,
+      runId: attemptRunId,
+      wallSeconds,
+      status,
+    });
+    if (isFamilyTerminal) {
+      recordFixDispatchCount(metricDeps, {
+        projectId: opts.project.id,
+        runId: attemptRunId,
+        count: fixDispatchCounter.value,
+        status,
+      });
+    }
+  };
 
   // ─── Attempt driver ─────────────────────────────────────────────────
   // The body of a single Finalize attempt — phase loop, session
@@ -779,6 +879,19 @@ export async function runFinalize(
       // a `changes_requested` verdict triggers a fix dispatch and the next
       // pass produces a new verdict.
       lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
+      // §14 metric: every reviewer verdict, labelled with the 1-indexed
+      // attempt the verdict landed on (`loopCount`). A run that bounces
+      // between `changes_requested` and `approved` over multiple
+      // iterations contributes one row per verdict, not one row total.
+      recordReviewerVerdict(
+        { stmts: deps.stmts, now, log },
+        {
+          projectId: opts.project.id,
+          runId,
+          verdict: lastReviewerOutcome.verdict,
+          attemptIndex: loopCount,
+        },
+      );
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
@@ -813,6 +926,24 @@ export async function runFinalize(
 
       // Emit active-seconds tick after the tasks phase (success or fail).
       broadcastActiveSeconds(deps, runId);
+      // §14 metric: one row per CI step the runner actually executed.
+      // Labels include exit_code so a flaky step's exit-code distribution
+      // surfaces directly without re-derivation. `failedStep` carries the
+      // first failure; every result before it is a `passed` row.
+      {
+        const metricDeps = { stmts: deps.stmts, now, log };
+        for (const result of lastStepOutcome.stepResults) {
+          const failed =
+            lastStepOutcome.failedStep != null && lastStepOutcome.failedStep.index === result.index;
+          recordStepResult(metricDeps, {
+            projectId: opts.project.id,
+            runId,
+            stepName: result.name,
+            status: failed ? 'failed' : 'passed',
+            exitCode: result.exitCode,
+          });
+        }
+      }
       // Step terminal classes: the runner already wrote `failed` /
       // `timed_out` to the row for those classes, but NOT for `infra_error`
       // (§10 leaves that to the orchestrator).
@@ -1019,6 +1150,10 @@ export async function runFinalize(
         );
       }
 
+      // §14: count every fix dispatch the family produces. Incremented
+      // BEFORE the await so cancellation / errors mid-dispatch still
+      // contribute (the work was started, even if it didn't finish).
+      fixDispatchCounter.value += 1;
       let fix: FixDispatchResult;
       try {
         fix = await dispatchFix(
@@ -1064,6 +1199,13 @@ export async function runFinalize(
         // branch (see card `490d6c41`); the comment names the two recovery
         // actions so the user has a clear next step.
         lifecycle.onStalled({ runId });
+        // §14 metric: per-CEO-requested 24-hour terminal counter. Fires
+        // once per stall so dashboards can spot whether the dogfood
+        // window is producing more abandoned runs than expected.
+        recordStalledNoResponse(
+          { stmts: deps.stmts, now, log },
+          { projectId: opts.project.id, runId },
+        );
         return { kind: 'stalled', runId };
       }
       if (fix.outcome === 'cancelled') {
@@ -1104,6 +1246,19 @@ export async function runFinalize(
     opts.sessionId ?? opts.card.session_id ?? null,
     opts.worktreePath ?? null,
   );
+  // §14 metric: terminal counters + histograms for the original attempt.
+  // Whether attempt1 is the FAMILY terminal (and therefore gets the
+  // single `finalize_fix_dispatch_count` sample) is determined by the
+  // same gate that drives the retry decision below — copied here so the
+  // `if (!isFirstAttempt || !isInfraTerminal)` early-return below still
+  // reads naturally without an extra flag.
+  const attempt1IsFirst = !opts.retryOfRunId;
+  const attempt1IsInfraTerminal =
+    attempt1.kind === 'failed' &&
+    attempt1.status === 'infra_error' &&
+    isInfraFailureReason(attempt1.failureReason);
+  const attempt1IsFamilyTerminal = !(attempt1IsFirst && attempt1IsInfraTerminal);
+  writeTerminalMetrics(runId, statusFromOutcome(attempt1), attempt1IsFamilyTerminal);
 
   // Retry gate: only the ORIGINAL attempt can spawn a retry. If this
   // run was itself opened as a retry by an upstream caller (e.g. a
@@ -1111,12 +1266,7 @@ export async function runFinalize(
   // escalate further — §10 caps at one auto-retry. The classifier rules
   // — `isInfraFailureReason` returns true only for the explicit §10
   // infra whitelist; an unknown failure_reason is never auto-retried.
-  const isFirstAttempt = !opts.retryOfRunId;
-  const isInfraTerminal =
-    attempt1.kind === 'failed' &&
-    attempt1.status === 'infra_error' &&
-    isInfraFailureReason(attempt1.failureReason);
-  if (!isFirstAttempt || !isInfraTerminal) {
+  if (attempt1IsFamilyTerminal) {
     return attempt1;
   }
 
@@ -1159,12 +1309,24 @@ export async function runFinalize(
     );
   }
 
+  // §14 metric: the retry is a NEW finalize_runs row — record its start
+  // so `count(finalize_run_started)` matches `count(finalize_run_completed)`
+  // per attempt-row (a retried family logs 2 starteds + 2 completeds; an
+  // un-retried family logs 1 + 1).
+  recordRunStarted(
+    { stmts: deps.stmts, now, log },
+    { projectId: opts.project.id, runId: retry.runId, triggerSource: opts.triggerSource },
+  );
   const attempt2 = await driveAttempt(
     retry.runId,
     runId,
     retryInitialSessionId,
     retryInitialWorktreePath,
   );
+  // §14 metric: terminal counters + histograms for the retry attempt.
+  // The retry is ALWAYS the family terminal (§10 caps at one auto-retry),
+  // so it carries the single `finalize_fix_dispatch_count` sample.
+  writeTerminalMetrics(retry.runId, statusFromOutcome(attempt2), /* isFamilyTerminal */ true);
 
   // §10 terminal: a second infra failure surfaces as `infra_error` AND
   // posts a system message into the originating session naming the
@@ -1493,6 +1655,29 @@ function isTriggerEmpty(trigger: FixDispatchTrigger): boolean {
 }
 
 /**
+ * Map an {@link OrchestratorOutcome} to the string the §14 metrics
+ * pipeline records for the run's terminal state. `reused` is omitted
+ * from metrics — the original row's terminal write already produced the
+ * count, and double-counting a reused row would skew the funnel.
+ */
+function statusFromOutcome(outcome: OrchestratorOutcome): string | undefined {
+  switch (outcome.kind) {
+    case 'pushed':
+      return 'pushed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'stalled':
+      return 'stalled_no_response';
+    case 'failed':
+      return outcome.status;
+    case 'reused':
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Default head-resolver — `git rev-parse HEAD` on the worktree. Tests
  * inject a deterministic stub.
  */
@@ -1526,6 +1711,7 @@ export const __test = {
   budgetExhausted,
   timeoutTerminal,
   postBudgetTimeoutMessageIfPossible,
+  statusFromOutcome,
   MAX_FIX_DISPATCH_LOOPS,
   DEFAULT_CI_CONFIG_RELATIVE_PATH,
 };
