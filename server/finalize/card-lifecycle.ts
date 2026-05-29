@@ -57,6 +57,7 @@
  */
 import { randomUUID } from 'crypto';
 import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from '../types.js';
+import { runPostPushDetach, type PostPushTriggerSource } from './post-push-detach.js';
 
 // ─── Public types ────────────────────────────────────────────────────
 
@@ -84,11 +85,14 @@ export interface CardLifecycle {
   /** A step failed and a fix-dispatch is about to be issued for it. */
   onStepFailed(args: { runId: string; stepName: string; exitCode: number }): void;
   /**
-   * Terminal push success. Posts the PR URL comment, then moves the card
-   * to Review. Order matters: a UI subscriber that re-renders on the
-   * column-move broadcast will see the comment already in place.
+   * Terminal push success. Delegates to the §15 post-push detach module
+   * (`./post-push-detach.ts`): posts the handoff comment, then moves the
+   * card to Review. `triggerSource` is forwarded so the comment can name
+   * the autonomous trigger when appropriate. Order matters: a UI
+   * subscriber that re-renders on the column-move broadcast will see the
+   * comment already in place.
    */
-  onPushed(args: { runId: string; prUrl: string }): void;
+  onPushed(args: { runId: string; prUrl: string; triggerSource: PostPushTriggerSource }): void;
   /**
    * Terminal stalled-no-response. The watchdog gave up waiting for the
    * session's next turn and the orchestrator surfaced as `stalled`. The
@@ -108,7 +112,8 @@ export const NOOP_CARD_LIFECYCLE: CardLifecycle = {
   onRebaseAborted: () => undefined,
   onReviewerVerdict: () => undefined,
   onStepFailed: () => undefined,
-  onPushed: () => undefined,
+  onPushed: (_args: { runId: string; prUrl: string; triggerSource: PostPushTriggerSource }) =>
+    undefined,
   onStalled: () => undefined,
 };
 
@@ -243,9 +248,23 @@ export function createCardLifecycle(
         `Step ${stepName} failed (exit ${exitCode}) — fix dispatched to session (run ${runId})`,
       );
     },
-    onPushed({ runId, prUrl }) {
-      postComment(`Pushed to GitHub: ${prUrl} (run ${runId})`);
-      moveToColumnByName(reviewName);
+    onPushed({ runId, prUrl, triggerSource }) {
+      // §15 post-push detach lives in its own module so the wording and
+      // the autonomous-trigger branch are testable in isolation. The
+      // facade method stays the orchestrator's single entry point for the
+      // pushed terminal so the state-machine contract is unchanged.
+      runPostPushDetach(
+        { stmts: deps.stmts, broadcast: deps.broadcast, newId, log },
+        {
+          cardId: opts.cardId,
+          projectId: opts.projectId,
+          prUrl,
+          runId,
+          triggerSource,
+          author,
+          reviewColumnName: reviewName,
+        },
+      );
     },
     onStalled({ runId }) {
       postComment(`Stalled — no session response in 24hr; cancel or retrigger (run ${runId})`);

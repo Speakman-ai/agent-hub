@@ -1096,7 +1096,12 @@ describe('runFinalize — card lifecycle integration', () => {
     // Carry the right payloads.
     expect(lifecycle.calls[0].args).toMatchObject({ triggerSource: 'ui_button' });
     expect(lifecycle.calls[2].args).toMatchObject({ verdict: 'approved' });
-    expect(lifecycle.calls[3].args).toMatchObject({ prUrl: 'https://github.com/o/r/pull/1' });
+    // §15 post-push detach: the orchestrator forwards triggerSource so
+    // the detach module can name the autonomous trigger in the comment.
+    expect(lifecycle.calls[3].args).toMatchObject({
+      prUrl: 'https://github.com/o/r/pull/1',
+      triggerSource: 'ui_button',
+    });
   });
 
   it('rebase with dispatched conflict emits onRebaseConflictDispatched (not clean)', async () => {

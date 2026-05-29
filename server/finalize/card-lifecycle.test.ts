@@ -142,7 +142,13 @@ describe('NOOP_CARD_LIFECYCLE', () => {
     expect(
       NOOP_CARD_LIFECYCLE.onStepFailed({ runId: 'r1', stepName: 'a', exitCode: 1 }),
     ).toBeUndefined();
-    expect(NOOP_CARD_LIFECYCLE.onPushed({ runId: 'r1', prUrl: 'https://x' })).toBeUndefined();
+    expect(
+      NOOP_CARD_LIFECYCLE.onPushed({
+        runId: 'r1',
+        prUrl: 'https://x',
+        triggerSource: 'ui_button',
+      }),
+    ).toBeUndefined();
     expect(NOOP_CARD_LIFECYCLE.onStalled({ runId: 'r1' })).toBeUndefined();
   });
 });
@@ -309,11 +315,22 @@ describe('createCardLifecycle — reviewer + step', () => {
 // ─── onPushed: comment + move to Review ──────────────────────────────
 
 describe('createCardLifecycle.onPushed', () => {
-  it('posts PR URL comment then moves card to Review (order matters)', () => {
+  it('delegates to post-push detach: posts handoff comment then moves card to Review (order matters)', () => {
     const { deps, comments, moves, broadcast } = makeDeps({ column_id: 'col-progress' });
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    lc.onPushed({ runId: 'r1', prUrl: 'https://github.com/o/r/pull/42' });
-    expect(comments[0].content).toBe('Pushed to GitHub: https://github.com/o/r/pull/42 (run r1)');
+    lc.onPushed({
+      runId: 'r1',
+      prUrl: 'https://github.com/o/r/pull/42',
+      triggerSource: 'ui_button',
+    });
+    // Handoff wording lives in `post-push-detach.ts`. The lifecycle test
+    // pins the contract — the user-visible card thread reads
+    // "Finalized…" with the PR URL on the next line.
+    expect(comments[0].content).toBe(
+      'Finalized. PR is on GitHub, owned by the developer from here.\n' +
+        'https://github.com/o/r/pull/42\n' +
+        '(run r1)',
+    );
     expect(moves).toEqual([{ columnId: 'col-review', position: 0, cardId: 'card-1' }]);
     // The order of broadcasts: comment broadcast (kanban_update) before
     // the move broadcasts (kanban_update + card_moved).
@@ -321,10 +338,21 @@ describe('createCardLifecycle.onPushed', () => {
     expect(types).toEqual(['kanban_update', 'kanban_update', 'card_moved']);
   });
 
+  it('autonomous trigger surfaces the suffix line in the comment', () => {
+    const { deps, comments } = makeDeps({ column_id: 'col-progress' });
+    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
+    lc.onPushed({
+      runId: 'r1',
+      prUrl: 'https://github.com/o/r/pull/42',
+      triggerSource: 'agent_block',
+    });
+    expect(comments[0].content).toContain('(triggered by autonomous agent)');
+  });
+
   it('is idempotent: card already in Review → no second move', () => {
     const { deps, moves, comments } = makeDeps({ column_id: 'col-review' });
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    lc.onPushed({ runId: 'r1', prUrl: 'https://x' });
+    lc.onPushed({ runId: 'r1', prUrl: 'https://x', triggerSource: 'ui_button' });
     // Comment still posted; move skipped.
     expect(comments).toHaveLength(1);
     expect(moves).toHaveLength(0);

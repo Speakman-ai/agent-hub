@@ -970,11 +970,17 @@ export async function runFinalize(
           status: 'pushed',
           pr_url: pushResult.prUrl,
         });
-        // Mirror onto the card: post the PR URL comment and move the card
-        // → Review (§15 post-push detach). The lifecycle impl handles the
-        // ordering so the comment is in place by the time the column
-        // re-render hits the UI.
-        lifecycle.onPushed({ runId, prUrl: pushResult.prUrl });
+        // Mirror onto the card: post the handoff comment and move the
+        // card → Review (§15 post-push detach). The lifecycle method
+        // delegates to `./post-push-detach.ts`; we forward `triggerSource`
+        // so the comment surfaces the autonomous trigger when applicable.
+        // Order inside the impl is comment-then-move so the comment is in
+        // place by the time the column re-render hits the UI.
+        lifecycle.onPushed({
+          runId,
+          prUrl: pushResult.prUrl,
+          triggerSource: opts.triggerSource,
+        });
         return { kind: 'pushed', runId, prUrl: pushResult.prUrl };
       }
 
