@@ -98,6 +98,17 @@ export type RebasePhaseOutcome =
       rebaseKind: 'noop' | 'rebased' | 'skipped';
       /** True iff at least one fix pass (trivial or dispatched) ran. */
       requiredFix: boolean;
+      /**
+       * Count of non-trivial conflict passes that were dispatched into
+       * the originating session (each one issued a chat message and
+       * awaited the next turn-end). Trivial auto-resolves don't bump
+       * this — they're invisible to the user. Surfaced so the
+       * orchestrator can distinguish a "rebase: clean (or trivially
+       * cleaned)" outcome from a "rebase: conflict dispatched to
+       * session" outcome when mirroring transitions onto the kanban
+       * card. Defaults to `0`.
+       */
+      conflictsDispatchedCount: number;
       activeSecondsBilled: number;
     }
   | {
@@ -200,6 +211,7 @@ export async function runRebasePhase(
 
   let billedSeconds = 0;
   let requiredFix = false;
+  let conflictsDispatchedCount = 0;
 
   for (let pass = 0; pass < MAX_REBASE_PASSES; pass += 1) {
     if (billedSeconds >= budget) {
@@ -227,6 +239,7 @@ export async function runRebasePhase(
         kind: 'success',
         rebaseKind: outcome.kind,
         requiredFix,
+        conflictsDispatchedCount,
         activeSecondsBilled: billedSeconds,
       };
     }
@@ -239,6 +252,7 @@ export async function runRebasePhase(
         kind: 'success',
         rebaseKind: 'skipped',
         requiredFix,
+        conflictsDispatchedCount,
         activeSecondsBilled: billedSeconds,
       };
     }
@@ -281,6 +295,7 @@ export async function runRebasePhase(
 
     // Non-trivial: dispatch to session, wait for turn-end, retry.
     setPhase(stmts, broadcast, opts.runId, 'rebase', 'dispatching');
+    conflictsDispatchedCount += 1;
     const sessionId = await resolveSessionIdForRun(stmts, opts);
     if (!sessionId) {
       return terminate(

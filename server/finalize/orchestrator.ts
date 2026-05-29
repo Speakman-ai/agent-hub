@@ -72,6 +72,8 @@ import type {
 } from './fix-dispatch.js';
 import { writeFinalizeRunPrUrl } from './provenance.js';
 import { evaluatePushGate } from './push-gate.js';
+import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
+import type { CardLifecycle } from './card-lifecycle.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -199,6 +201,15 @@ export interface OrchestratorDeps {
     cardId: string;
     body: string;
   }) => Promise<{ userMessagePersisted: boolean }>;
+  /**
+   * Kanban-card surface mirror. The orchestrator calls hook methods at
+   * each user-actionable transition (start, rebase outcome, reviewer
+   * verdict, step failure, terminal). Optional — defaults to a no-op so
+   * the existing test suites stay clean; production wiring should always
+   * inject a {@link createCardLifecycle} instance bound to the run's
+   * card + project.
+   */
+  cardLifecycle?: CardLifecycle;
   /** Phase-runner overrides for tests. Defaults import the real helpers. */
   runRebasePhase?: typeof runRebasePhase;
   loadCiConfigFromFile?: typeof loadCiConfigFromFile;
@@ -319,6 +330,10 @@ export async function runFinalize(
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
   const budgetSeconds = deps.budgetSeconds ?? FINALIZE_BUDGET_SECONDS;
+  // The kanban-card mirror. Default no-op keeps the existing test deps
+  // shape minimal — production injects a real lifecycle bound to
+  // (cardId, projectId). See `card-lifecycle.ts`.
+  const lifecycle = deps.cardLifecycle ?? NOOP_CARD_LIFECYCLE;
   const runRebase = deps.runRebasePhase ?? runRebasePhase;
   const loadCi = deps.loadCiConfigFromFile ?? loadCiConfigFromFile;
   const runReview = deps.runReviewerDispatch ?? runReviewerDispatch;
@@ -404,6 +419,13 @@ export async function runFinalize(
     session_id: opts.sessionId ?? null,
     trigger_source: opts.triggerSource,
   });
+  // Mirror the run's start onto the kanban card: move card → In Progress
+  // (idempotent if already there) and post the "Finalize started" comment.
+  // Idempotency on re-trigger is handled at the row-insert dedup above —
+  // a `'reused'` short-circuit never reaches this point, so we don't
+  // double-comment when the user clicks Finalize twice against the same
+  // head sha.
+  lifecycle.onStarted({ runId, triggerSource: opts.triggerSource });
 
   // Pre-cancel: caller already aborted before we wired anything up.
   if (opts.signal?.aborted) {
@@ -534,6 +556,13 @@ export async function runFinalize(
       );
     }
     if (rebaseOutcome.kind === 'failed') {
+      // Mirror the rebase failure onto the card BEFORE we propagate the
+      // failure — `outcomeFromFailed` writes the terminal broadcasts but
+      // does not touch the card surface. Only on first iteration to
+      // avoid spamming on a fix-dispatch-loop rebase that later fails.
+      if (loopCount === 1) {
+        lifecycle.onRebaseAborted({ runId, detail: rebaseOutcome.detail });
+      }
       return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
     }
     if (rebaseOutcome.rebaseKind === 'skipped') {
@@ -541,6 +570,12 @@ export async function runFinalize(
       // The rebase phase already wrote `success` to its return value, but the
       // push gate would refuse anyway, so we surface this as failed early
       // with a clear failure_reason.
+      if (loopCount === 1) {
+        lifecycle.onRebaseAborted({
+          runId,
+          detail: 'rebase skipped — base branch unavailable or unsafe',
+        });
+      }
       return terminate(
         deps,
         runId,
@@ -549,6 +584,21 @@ export async function runFinalize(
         'rebase skipped — base branch unavailable or unsafe',
         log,
       );
+    }
+    // First-iteration rebase succeeded. Mirror "clean" vs "conflict
+    // dispatched to session" onto the card. We split on
+    // `conflictsDispatchedCount` rather than `requiredFix` so the
+    // trivial-auto-resolve case (whitespace / lockfile fixups, no
+    // session interaction) stays silent — the user does not need to act
+    // on it. Subsequent rebase iterations stay silent to keep the
+    // comment timeline readable.
+    if (loopCount === 1) {
+      const dispatched = rebaseOutcome.conflictsDispatchedCount ?? 0;
+      if (dispatched > 0) {
+        lifecycle.onRebaseConflictDispatched({ runId });
+      } else {
+        lifecycle.onRebaseClean({ runId });
+      }
     }
 
     // Snapshot the post-rebase HEAD. Everything from here through the
@@ -649,6 +699,11 @@ export async function runFinalize(
         lastReviewerOutcome.detail,
       );
     }
+    // Mirror the verdict onto the card. Fires on EVERY loop iteration,
+    // not just the first — the user wants to see the back-and-forth when
+    // a `changes_requested` verdict triggers a fix dispatch and the next
+    // pass produces a new verdict.
+    lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
 
     if (opts.signal?.aborted) {
       return cancelTerminal(deps, runId, log);
@@ -828,6 +883,11 @@ export async function runFinalize(
         status: 'pushed',
         pr_url: pushResult.prUrl,
       });
+      // Mirror onto the card: post the PR URL comment and move the card
+      // → Review (§15 post-push detach). The lifecycle impl handles the
+      // ordering so the comment is in place by the time the column
+      // re-render hits the UI.
+      lifecycle.onPushed({ runId, prUrl: pushResult.prUrl });
       return { kind: 'pushed', runId, prUrl: pushResult.prUrl };
     }
 
@@ -837,6 +897,18 @@ export async function runFinalize(
     // the loop. The watchdog is armed inside `dispatchFixMessage` for
     // `ui_button` triggers only.
     const trigger = buildFixTrigger(deps, runId, lastStepOutcome, lastReviewerOutcome, log);
+    // Mirror a step failure onto the card — exactly when there IS a
+    // failed step AND the fix-dispatch loop is about to run. Reviewer-
+    // only `changes_requested` cases (no failed step) are already
+    // covered by `onReviewerVerdict` above; we deliberately don't
+    // double-comment.
+    if (lastStepOutcome.failedStep) {
+      lifecycle.onStepFailed({
+        runId,
+        stepName: lastStepOutcome.failedStep.name,
+        exitCode: lastStepOutcome.failedStep.exitCode,
+      });
+    }
     if (isTriggerEmpty(trigger)) {
       // Defensive: combined gate said "not green AND approved" but the
       // composer found nothing useful (both step success and reviewer
@@ -889,6 +961,10 @@ export async function runFinalize(
 
     if (fix.outcome === 'stalled_no_response') {
       // The watchdog already wrote the terminal status; just surface.
+      // Mirror the stall onto the card — this is the "human walked away"
+      // branch (see card `490d6c41`); the comment names the two recovery
+      // actions so the user has a clear next step.
+      lifecycle.onStalled({ runId });
       return { kind: 'stalled', runId };
     }
     if (fix.outcome === 'cancelled') {

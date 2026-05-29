@@ -105,6 +105,9 @@ describe('runRebasePhase — happy path', () => {
     if (result.kind === 'success') {
       expect(result.rebaseKind).toBe('rebased');
       expect(result.requiredFix).toBe(false);
+      // Clean rebase ⇒ no conflict dispatched. Card-lifecycle uses this
+      // to distinguish "Rebase: clean" from "Rebase: conflict dispatched".
+      expect(result.conflictsDispatchedCount).toBe(0);
     }
     expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith('rebase', 'rebasing', 'run-1');
     expect(broadcast).toHaveBeenCalledWith(
@@ -198,6 +201,9 @@ describe('runRebasePhase — trivial conflict auto-resolved', () => {
     expect(result.kind).toBe('success');
     if (result.kind === 'success') {
       expect(result.requiredFix).toBe(true);
+      // Trivial-only resolve: no session dispatch. Card-lifecycle treats
+      // this as "Rebase: clean" rather than "Rebase: conflict dispatched".
+      expect(result.conflictsDispatchedCount).toBe(0);
     }
     expect(dispatch).not.toHaveBeenCalled();
 
@@ -283,6 +289,8 @@ describe('runRebasePhase — trivial conflict auto-resolved', () => {
     expect(result.kind).toBe('success');
     if (result.kind === 'success') {
       expect(result.requiredFix).toBe(true);
+      // Both conflicts auto-resolved; nothing went out to the session.
+      expect(result.conflictsDispatchedCount).toBe(0);
     }
     // No dispatch — both conflicts were trivial, so the loop walked them
     // both without ever needing the agent.
@@ -418,6 +426,9 @@ describe('runRebasePhase — dispatch path', () => {
     expect(result.kind).toBe('success');
     if (result.kind === 'success') {
       expect(result.requiredFix).toBe(true);
+      // Non-trivial conflict went out to the session — card-lifecycle
+      // surfaces this as "Rebase: conflict dispatched to session".
+      expect(result.conflictsDispatchedCount).toBe(1);
     }
 
     // The phase change to 'dispatching' was broadcast.

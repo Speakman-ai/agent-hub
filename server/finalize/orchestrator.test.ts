@@ -34,6 +34,7 @@ import type { RebasePhaseOutcome } from './rebase.js';
 import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
 import type { FixDispatchResult } from './fix-dispatch.js';
+import type { CardLifecycle } from './card-lifecycle.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -286,6 +287,7 @@ const REBASE_OK: RebasePhaseOutcome = {
   kind: 'success',
   rebaseKind: 'noop',
   requiredFix: false,
+  conflictsDispatchedCount: 0,
   activeSecondsBilled: 5,
 };
 
@@ -453,6 +455,7 @@ describe('runFinalize — rebase failure', () => {
         kind: 'success',
         rebaseKind: 'skipped',
         requiredFix: false,
+        conflictsDispatchedCount: 0,
         activeSecondsBilled: 5,
       }),
     });
@@ -1054,5 +1057,252 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
       expect(result.failureReason).toBe('max_fix_iterations');
       expect(result.failureReason).not.toBe('review_failed');
     }
+  });
+});
+
+// ─── card-lifecycle integration ──────────────────────────────────────
+
+function makeSpyLifecycle(): CardLifecycle & {
+  calls: Array<{ method: string; args: Record<string, unknown> }>;
+} {
+  const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+  const record = (method: string) => (args: Record<string, unknown>) => {
+    calls.push({ method, args });
+  };
+  return {
+    calls,
+    onStarted: record('onStarted'),
+    onRebaseClean: record('onRebaseClean'),
+    onRebaseConflictDispatched: record('onRebaseConflictDispatched'),
+    onRebaseAborted: record('onRebaseAborted'),
+    onReviewerVerdict: record('onReviewerVerdict'),
+    onStepFailed: record('onStepFailed'),
+    onPushed: record('onPushed'),
+    onStalled: record('onStalled'),
+  };
+}
+
+describe('runFinalize — card lifecycle integration', () => {
+  it('happy path emits onStarted → onRebaseClean → onReviewerVerdict → onPushed in order', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps } = makeDeps({ cardLifecycle: lifecycle });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+
+    const methods = lifecycle.calls.map((c) => c.method);
+    expect(methods).toEqual(['onStarted', 'onRebaseClean', 'onReviewerVerdict', 'onPushed']);
+
+    // Carry the right payloads.
+    expect(lifecycle.calls[0].args).toMatchObject({ triggerSource: 'ui_button' });
+    expect(lifecycle.calls[2].args).toMatchObject({ verdict: 'approved' });
+    expect(lifecycle.calls[3].args).toMatchObject({ prUrl: 'https://github.com/o/r/pull/1' });
+  });
+
+  it('rebase with dispatched conflict emits onRebaseConflictDispatched (not clean)', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runRebasePhase: fakeRunRebase({
+        kind: 'success',
+        rebaseKind: 'rebased',
+        requiredFix: true,
+        conflictsDispatchedCount: 1,
+        activeSecondsBilled: 30,
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+
+    const methods = lifecycle.calls.map((c) => c.method);
+    expect(methods).toContain('onRebaseConflictDispatched');
+    expect(methods).not.toContain('onRebaseClean');
+  });
+
+  it('trivial-only fix path emits onRebaseClean (no session dispatch)', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runRebasePhase: fakeRunRebase({
+        kind: 'success',
+        rebaseKind: 'rebased',
+        requiredFix: true,
+        conflictsDispatchedCount: 0,
+        activeSecondsBilled: 30,
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+
+    const methods = lifecycle.calls.map((c) => c.method);
+    expect(methods).toContain('onRebaseClean');
+    expect(methods).not.toContain('onRebaseConflictDispatched');
+  });
+
+  it('rebase failure emits onRebaseAborted with the detail', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runRebasePhase: fakeRunRebase({
+        kind: 'failed',
+        failureReason: 'rebase_aborted',
+        detail: 'session never resolved the conflict',
+        activeSecondsBilled: 30,
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+
+    const abort = lifecycle.calls.find((c) => c.method === 'onRebaseAborted');
+    expect(abort).toBeDefined();
+    expect(abort!.args).toMatchObject({ detail: 'session never resolved the conflict' });
+  });
+
+  it('rebase skipped emits onRebaseAborted with the skip detail', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runRebasePhase: fakeRunRebase({
+        kind: 'success',
+        rebaseKind: 'skipped',
+        requiredFix: false,
+        conflictsDispatchedCount: 0,
+        activeSecondsBilled: 5,
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    const abort = lifecycle.calls.find((c) => c.method === 'onRebaseAborted');
+    expect(abort).toBeDefined();
+    expect(abort!.args.detail).toContain('rebase skipped');
+  });
+
+  it('changes_requested emits onReviewerVerdict on each pass, not onStepFailed', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValueOnce({
+        kind: 'success',
+        verdict: 'changes_requested',
+        threadCount: 1,
+        activeSecondsBilled: 30,
+      })
+      .mockResolvedValueOnce(REVIEW_OK);
+
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runReviewerDispatch: runReview as never,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+
+    const verdicts = lifecycle.calls
+      .filter((c) => c.method === 'onReviewerVerdict')
+      .map((c) => c.args.verdict);
+    expect(verdicts).toEqual(['changes_requested', 'approved']);
+    // Step failure not invoked — the loop was reviewer-driven.
+    const stepFailures = lifecycle.calls.filter((c) => c.method === 'onStepFailed');
+    expect(stepFailures).toHaveLength(0);
+  });
+
+  it('failed step emits onStepFailed with step name and exit code', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const failedSteps: StepRunResult = {
+      status: 'failure',
+      stepResults: [],
+      activeSecondsBilled: 5,
+      failedStep: {
+        index: 2,
+        name: 'Type check',
+        run: 'npm run typecheck',
+        exitCode: 2,
+        outputTail: ['tsc: 3 errors'],
+      },
+    };
+    const runSteps = vi
+      .fn<(...args: unknown[]) => Promise<StepRunResult>>()
+      .mockResolvedValueOnce(failedSteps)
+      .mockResolvedValueOnce(STEPS_OK);
+
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runStepPhase: runSteps as never,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+
+    const stepFail = lifecycle.calls.find((c) => c.method === 'onStepFailed');
+    expect(stepFail).toBeDefined();
+    expect(stepFail!.args).toMatchObject({ stepName: 'Type check', exitCode: 2 });
+  });
+
+  it('stalled fix-dispatch emits onStalled', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const failedSteps: StepRunResult = {
+      status: 'failure',
+      stepResults: [],
+      activeSecondsBilled: 5,
+      failedStep: {
+        index: 1,
+        name: 'Test',
+        run: 'npm test',
+        exitCode: 1,
+        outputTail: ['fail'],
+      },
+    };
+    const { deps } = makeDeps({
+      cardLifecycle: lifecycle,
+      runStepPhase: fakeRunSteps(failedSteps),
+      dispatchFixMessage: fakeDispatchFix({
+        outcome: 'stalled_no_response',
+        messageId: 'msg-stalled',
+        activeSecondsBilled: 1,
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('stalled');
+
+    const stalled = lifecycle.calls.find((c) => c.method === 'onStalled');
+    expect(stalled).toBeDefined();
+  });
+
+  it('re-trigger on same head_sha (reused) emits NO lifecycle calls', async () => {
+    const lifecycle = makeSpyLifecycle();
+    const { deps, stmts } = makeDeps({ cardLifecycle: lifecycle });
+
+    // First run drives the full pipeline.
+    const first = await runFinalize(deps, baseOpts());
+    expect(first.kind).toBe('pushed');
+    const firstCallCount = lifecycle.calls.length;
+    expect(firstCallCount).toBeGreaterThan(0);
+
+    // Reset the "in-flight" side-effects so the dedup row remains and
+    // the second call short-circuits with `reused`.
+    void stmts; // keep the row in place — that's what we want
+
+    const second = await runFinalize(deps, baseOpts());
+    expect(second.kind).toBe('reused');
+
+    // Critically: the reused path adds NO additional comments or moves.
+    // Otherwise a re-trigger would duplicate the start comment and bounce
+    // the card around uselessly.
+    expect(lifecycle.calls.length).toBe(firstCallCount);
+  });
+
+  it('default no-op lifecycle keeps the orchestrator running without injected dep', async () => {
+    // Sanity: every previous test in this file used `makeDeps()` without
+    // injecting `cardLifecycle`; if the default were non-noop those would
+    // already explode. This test makes the contract explicit so future
+    // edits cannot accidentally require the dep.
+    const { deps } = makeDeps();
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
   });
 });
