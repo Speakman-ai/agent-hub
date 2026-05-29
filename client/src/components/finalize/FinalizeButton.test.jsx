@@ -178,4 +178,47 @@ describe('FinalizeButton', () => {
     // Compact variant suppresses the tooltip wrapper.
     expect(btn.getAttribute('title')).toBeNull();
   });
+
+  describe('v0 reviewer-stub caveat', () => {
+    // Surfaces the operator-visible warning that runs terminate at the
+    // reviewer phase until card eeb3380b lands. The caveat is the
+    // user-discoverable counterpart to the PR description warning —
+    // removing it before the reviewer wiring ships is a regression.
+    it('renders the caveat note next to the idle (default) button', () => {
+      render(<FinalizeButton {...baseProps} />);
+      const note = screen.getByTestId('finalize-v0-caveat');
+      expect(note).toBeTruthy();
+      expect(note.textContent).toMatch(/v0:\s*reviewer wiring deferred/i);
+      // Tooltip on the note carries the full sentence + the follow-up card id.
+      expect(note.getAttribute('title')).toMatch(/eeb3380b/i);
+    });
+
+    it('includes the caveat in the button title tooltip when idle', () => {
+      render(<FinalizeButton {...baseProps} />);
+      const btn = screen.getByTestId('finalize-code-changes-button');
+      // The title aggregates: "Finalize Code Changes · branch · caveat"
+      expect(btn.getAttribute('title')).toMatch(/eeb3380b/i);
+    });
+
+    it('omits the adjacent caveat note (but keeps the title) on compact variant', () => {
+      // Compact mode renders on kanban card rows where there's no room
+      // for the trailing italic note; the button title tooltip in
+      // compact is also suppressed (caller is responsible for surface).
+      render(<FinalizeButton {...baseProps} variant="compact" />);
+      expect(screen.queryByTestId('finalize-v0-caveat')).toBeNull();
+    });
+
+    it('drops the caveat note while a run is in flight', () => {
+      // The in-flight surface already shows "Finalizing: <phase>" which
+      // crowds the row; the caveat is most useful on idle (pre-click).
+      useFinalizeRun.mockReturnValue({
+        run: { id: 'run-1' },
+        status: 'rebasing',
+        phase: 'rebasing',
+        activeSeconds: 4,
+      });
+      render(<FinalizeButton {...baseProps} />);
+      expect(screen.queryByTestId('finalize-v0-caveat')).toBeNull();
+    });
+  });
 });

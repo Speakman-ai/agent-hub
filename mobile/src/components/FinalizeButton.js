@@ -270,15 +270,37 @@ export default function FinalizeButton({
           compact && styles.buttonCompact,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={idleLabel}
+        accessibilityLabel={`${idleLabel}. ${V0_REVIEWER_CAVEAT_A11Y}`}
+        accessibilityHint={V0_REVIEWER_CAVEAT_A11Y}
         accessibilityState={{ disabled: initialFetchPending }}
         testID="finalize-code-changes-button"
       >
         <Text style={[styles.buttonText, compact && styles.buttonTextCompact]}>{idleLabel}</Text>
       </TouchableOpacity>
+      {!compact && (
+        <>
+          {/* v0 caveat — render a small italic note so users discover the
+              reviewer stub BEFORE clicking. Mirrors the web button's
+              tooltip + adjacent text. Removed when card eeb3380b lands. */}
+          <Text style={styles.v0Caveat} testID="finalize-v0-caveat">
+            v0: reviewer wiring deferred (card eeb3380b)
+          </Text>
+          {/* Polling-lag disclosure — the mobile WS bridge does not yet
+              forward finalize_run_* events (follow-up card 35c49513), so
+              the in-flight UI may trail the server by up to 2s. Naming
+              it here keeps the lag from being misread as a bug. */}
+          <Text style={styles.v0Caveat}>UI updates poll every 2s on mobile.</Text>
+        </>
+      )}
     </View>
   );
 }
+
+// Mirror of the web `V0_REVIEWER_TOOLTIP_NOTE`. React Native has no
+// `title` attribute so we surface the caveat via inline text + an a11y
+// hint instead.
+const V0_REVIEWER_CAVEAT_A11Y =
+  'v0: reviewer wiring is deferred. Runs terminate at the reviewer phase until card eeb3380b lands.';
 
 // Status helpers (`isTerminalStatus`, `isFinalizeBlocked`,
 // `describeRunPhase`) live in `mobile/src/utils/finalizeRun.js` so they
@@ -346,6 +368,13 @@ const styles = StyleSheet.create({
   },
   buttonTextCompact: {
     fontSize: 11,
+  },
+  v0Caveat: {
+    color: colors.gray500,
+    fontSize: 10,
+    fontStyle: 'italic',
+    marginTop: 6,
+    textAlign: 'center',
   },
   inFlightRow: {
     flexDirection: 'row',

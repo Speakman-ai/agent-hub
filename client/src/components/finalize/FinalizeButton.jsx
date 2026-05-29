@@ -18,6 +18,16 @@ import { api } from '../../utils/api.js';
 const OPTIMISTIC_BLOCK_MS = 1500;
 
 /**
+ * v0 caveat surfaced in the idle button's `title` tooltip and as an
+ * adjacent italic note. The orchestrator's reviewer / turn-end /
+ * dispatch seams are stubs at v0 — runs that reach the reviewer phase
+ * terminate with `review_failed`. Documented here so users discover the
+ * limitation BEFORE clicking; full wiring tracked in card `eeb3380b`.
+ */
+const V0_REVIEWER_TOOLTIP_NOTE =
+  'v0: reviewer wiring is deferred — runs terminate at the reviewer phase until card eeb3380b lands.';
+
+/**
  * "Finalize Code Changes" call-to-action — replaces the legacy
  * `<ChangesReadyBox />` ship affordance. Subscribes to the active
  * Finalize run for the bound session via {@link useFinalizeRun} and
@@ -142,6 +152,11 @@ export default function FinalizeButton({
   } else {
     tooltipParts.push('Finalize Code Changes');
     if (branchLabel) tooltipParts.push(branchLabel);
+    // Surface the v0 reviewer-stub caveat on hover so users aren't surprised
+    // when a click lands a run that terminates at the reviewer phase. The
+    // tooltip is the lowest-noise way to communicate this without a banner
+    // that everyone has to dismiss. See follow-up card `eeb3380b`.
+    tooltipParts.push(V0_REVIEWER_TOOLTIP_NOTE);
   }
   const titleText = tooltipParts.join(' · ');
 
@@ -175,6 +190,15 @@ export default function FinalizeButton({
         >
           <X size={12} />
         </button>
+      ) : null}
+      {!blocked && !compact ? (
+        <span
+          className="text-[10px] text-gray-500 italic ml-1"
+          title={V0_REVIEWER_TOOLTIP_NOTE}
+          data-testid="finalize-v0-caveat"
+        >
+          v0: reviewer wiring deferred
+        </span>
       ) : null}
     </div>
   );
