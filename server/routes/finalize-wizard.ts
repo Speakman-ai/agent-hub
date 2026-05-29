@@ -240,6 +240,15 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         ownerUserId: ownerUid,
       });
       const sessionName = `${SESSION_NAME_PREFIX} ${project.name || project.id}`;
+      // use_worktree=0 by design — do NOT change this without re-reading
+      // the apply route. The wizard session is a read-only chat surface
+      // that collects user input and proposes YAML; the actual file
+      // write + git commit happen in the `setup-apply` endpoint, which
+      // targets a DIFFERENT session's worktree (the originating
+      // card-linked session, resolved at apply time). Setting
+      // use_worktree=1 would clone the project into a throwaway
+      // worktree for the wizard itself — the commit would land on the
+      // wrong branch and never reach the originating session's PR.
       const useWorktree = 0;
       const askMode = 0;
       stmts.createSession.run(
@@ -446,6 +455,17 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
   // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/wizard-complete
   // ───────────────────────────────────────────────────────────────
+  //
+  // Broadcast consumer (one): `FinalizeSettingsSection.jsx` in the web
+  // client listens for `agenthub:finalize_wizard_complete` and calls
+  // `onProjectsChange()` to refetch the project list. Unlike the
+  // preview-wizard's analogous broadcast — which fires because
+  // setup-apply mutated `projects.json` and the panel needs the new
+  // shape — this broadcast fires because a git commit landed on the
+  // originating session's worktree. The panel uses the refetch to
+  // refresh any project-state cached on the client (PR status, latest
+  // session timestamps) that the new ci.yaml + commit might have
+  // updated. No server-side config was mutated by the wizard itself.
   router.post(
     '/api/projects/:projectId/finalize/wizard-complete',
     requireRole('User'),
