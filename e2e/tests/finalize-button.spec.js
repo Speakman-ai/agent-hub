@@ -190,15 +190,17 @@ test.describe('Finalize Code Changes button', () => {
     });
   });
 
-  test('button is hidden when the active session has no linked card', async ({
+  test('card-less session shows the "Link a card" hint instead of the button', async ({
     page,
     seed,
   }) => {
     test.setTimeout(20_000);
 
     // Seed a session that is intentionally NOT linked to a card. The
-    // FinalizeButton's mount gate (`activeSession?.card_id`) means it
-    // must not render in this state.
+    // FinalizeButton's mount gate (`activeSession?.card_id`) means the
+    // button must not render — and the round-2 fallback must surface a
+    // discoverable "Link a card" hint so the new requirement isn't
+    // silently invisible to users.
     const project = await seed.project({ name: 'Finalize Hidden Project' });
     const agent = await seed.agent({ projectId: project.id, name: 'Finalize Hidden Agent' });
     await seed.session(agent.id, { name: 'Unlinked Session' });
@@ -213,9 +215,97 @@ test.describe('Finalize Code Changes button', () => {
     await expect(sessionLink).toBeVisible({ timeout: 5000 });
     await sessionLink.click();
 
-    // Give the chat surface a moment to fully mount before asserting the
-    // negative — the button must remain absent.
+    // Give the chat surface a moment to fully mount before asserting.
     await page.waitForTimeout(1000);
+
+    // The button must be absent (mount gate denied).
     await expect(page.getByTestId('finalize-code-changes-button')).toHaveCount(0);
+
+    // The "Link a card" hint must be present so users discover the new
+    // requirement instead of seeing nothing.
+    const hint = page.getByTestId('finalize-no-card-hint');
+    await expect(hint).toBeVisible({ timeout: 5000 });
+    await expect(hint).toContainText(/link a card/i);
+  });
+
+  test('idle button shows the v0 reviewer-stub caveat note', async ({ page, seed, request }) => {
+    test.setTimeout(20_000);
+
+    // Round-2 added a visible "v0: reviewer wiring deferred" italic note
+    // next to the idle button so users discover the limitation BEFORE
+    // clicking. This spec is the regression guard for that note — it
+    // must remain visible until the reviewer-driver wiring follow-up
+    // (card eeb3380b) lands and removes the caveat.
+
+    // ── Seed: project, agent, card-linked session ──────────────────────
+    const project = await seed.project({ name: 'Finalize Caveat Project' });
+    const agent = await seed.agent({ projectId: project.id, name: 'Finalize Caveat Agent' });
+    const card = await seed.card(project.id, { title: 'Finalize Caveat Card' });
+    const session = await seed.session(agent.id, { name: 'Finalize Caveat Session' });
+
+    const linkRes = await request.put(
+      `http://localhost:${SERVER_PORT}/api/projects/${project.id}/board/cards/${card.id}`,
+      { data: { sessionId: session.id } },
+    );
+    expect(linkRes.ok()).toBeTruthy();
+
+    // Overlay card_id + branch onto the session-list response (same
+    // pattern as the happy-path test above so this spec is independent
+    // of whether the server has natively wired `card_id` onto the
+    // SessionRow wire shape yet).
+    await page.route(`**/api/agents/${agent.id}/sessions`, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const upstream = await route.fetch();
+      const body = await upstream.json();
+      const rows = Array.isArray(body) ? body : [];
+      const patched = rows.map((row) =>
+        row.id === session.id
+          ? { ...row, card_id: card.id, worktree_branch: 'feature/finalize-caveat' }
+          : row,
+      );
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(patched),
+      });
+    });
+
+    // No active run — keep the button in the idle state so the caveat
+    // note is rendered (in-flight states suppress the note).
+    await page.route(
+      `**/api/sessions/${session.id}/finalize-runs/latest`,
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ run: null }),
+        });
+      },
+    );
+
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByText(project.name).click();
+    await page.getByText(agent.name).first().click();
+
+    const sessionLink = page.getByText('Finalize Caveat Session').first();
+    await expect(sessionLink).toBeVisible({ timeout: 5000 });
+    await sessionLink.click();
+
+    // The button mounts in the idle state.
+    const finalizeBtn = page.getByTestId('finalize-code-changes-button');
+    await expect(finalizeBtn).toBeVisible({ timeout: 5000 });
+    await expect(finalizeBtn).toBeEnabled();
+
+    // The v0 caveat note is rendered next to the idle button and names
+    // the follow-up card.
+    const caveat = page.getByTestId('finalize-v0-caveat');
+    await expect(caveat).toBeVisible({ timeout: 5000 });
+    await expect(caveat).toContainText(/v0:\s*reviewer wiring deferred/i);
+    // The full sentence on the tooltip names card eeb3380b so a future
+    // reviewer can grep for the cleanup card from the running app.
+    await expect(caveat).toHaveAttribute('title', /eeb3380b/i);
   });
 });
