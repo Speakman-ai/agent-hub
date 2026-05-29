@@ -29,6 +29,7 @@ import { parseAllowlist, serializeAllowlist, parseAllowlistFromBackend } from '.
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import FinalizeSection from '../components/FinalizeSection';
 
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
@@ -2796,7 +2797,7 @@ function WebhookSection() {
 }
 
 // ─── Main Settings Screen ───────────────────────────────────
-export default function SettingsScreen() {
+export default function SettingsScreen({ navigation }) {
   const [tab, setTab] = useState('orgs');
 
   const tabs = [
@@ -2808,6 +2809,7 @@ export default function SettingsScreen() {
     { id: 'webhooks', label: 'Webhooks' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
+    { id: 'finalize', label: 'Finalize' },
     { id: 'config', label: 'Backup' },
   ];
 
@@ -2853,6 +2855,7 @@ export default function SettingsScreen() {
           {tab === 'webhooks' && <WebhookSection />}
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && <AgentConfigSection />}
+          {tab === 'finalize' && <FinalizeSection navigation={navigation} />}
           {tab === 'config' && <ConfigBackupSection />}
         </ScrollView>
       </KeyboardAvoidingView>

@@ -472,3 +472,31 @@ describe('api.assignCard — engine/model opts parity with web client', () => {
     expect(JSON.parse(init.body)).toEqual({ agentId: 'agent-a' });
   });
 });
+
+describe('api.startFinalizeWizard — Finalize setup parity with web client', () => {
+  it('POSTs /projects/:projectId/finalize/setup-wizard with empty body', async () => {
+    await api.startFinalizeWizard('agent-hub');
+    const [url, init] = lastCall();
+    expect(url).toBe(
+      'https://example.test/api/projects/agent-hub/finalize/setup-wizard',
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+
+  it('returns the parsed response payload (sessionId / agentId / target)', async () => {
+    const payload = {
+      sessionId: 'sess-1',
+      agentId: 'agent-a',
+      target: { sessionId: 'sess-target', branch: 'feat/ci', worktreePath: '/wt' },
+      session: { id: 'sess-1' },
+      draft: { proposedCiYaml: 'version: 1' },
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => payload,
+    });
+    const res = await api.startFinalizeWizard('agent-hub');
+    expect(res).toEqual(payload);
+  });
+});

@@ -273,6 +273,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // Finalize Code Changes — `.agent-hub/ci.yaml` setup wizard. Spawns a
+  // guided chat session loaded with the `finalize-setup` skill. Returns
+  // `{ sessionId, agentId, draft, session, target }`. Mirrors the web
+  // client's `api.startFinalizeWizard`. Settings → Finalize on mobile is
+  // the entry point; the wizard itself runs in the existing chat surface.
+  startFinalizeWizard: (projectId) =>
+    fetchJSON(`/projects/${projectId}/finalize/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   // Message events (for session timeline)
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),

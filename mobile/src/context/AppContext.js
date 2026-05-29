@@ -91,6 +91,13 @@ export function AppProvider({ children }) {
   // live updates react to this ref bump via a counter. Shape:
   //   { type, projectId, thread?, threadId?, entry?, bump }
   const [lastThreadEvent, setLastThreadEvent] = useState(null);
+  // Last `finalize_wizard_*` WS event for the Settings → Finalize panel.
+  // Mirrors the web component's `agenthub:finalize_wizard_complete`
+  // window CustomEvent — RN has no DOM event bus, so we surface the last
+  // event through context state. Shape:
+  //   { type: 'finalize_wizard_started'|'finalize_wizard_complete',
+  //     projectId, sessionId?, agentId?, bump }
+  const [lastFinalizeWizardEvent, setLastFinalizeWizardEvent] = useState(null);
   // Tracks the project currently being viewed in ThreadsScreen so we can
   // suppress unread-badge increments (counts are only incremented when the
   // user isn't already looking at that project's threads list).
@@ -649,6 +656,23 @@ export function AppProvider({ children }) {
           type: 'thread_deleted',
           projectId: data.projectId,
           threadId: data.threadId,
+          bump: Date.now(),
+        });
+        break;
+
+      // ── Finalize setup wizard (Settings → Finalize) ─────────
+      // The web client listens for `agenthub:finalize_wizard_*` window
+      // CustomEvents to refresh the panel. Mobile has no DOM event bus,
+      // so we mirror the broadcast through `lastFinalizeWizardEvent`
+      // state; FinalizeSection reads it via useApp() and refetches the
+      // project list when its own projectId matches.
+      case 'finalize_wizard_started':
+      case 'finalize_wizard_complete':
+        setLastFinalizeWizardEvent({
+          type: data.type,
+          projectId: data.projectId,
+          sessionId: data.sessionId,
+          agentId: data.agentId,
           bump: Date.now(),
         });
         break;
@@ -1622,6 +1646,8 @@ export function AppProvider({ children }) {
     // Ask-prompt (`agenthub:ask`) submission state and handler
     askSubmitted,
     handleAskSubmit,
+    // Finalize setup wizard (Settings → Finalize)
+    lastFinalizeWizardEvent,
     // Threads
     unreadThreadCounts,
     lastThreadEvent,
