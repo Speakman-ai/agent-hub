@@ -134,13 +134,22 @@ function pickSessionWithWorktree(
   };
 }
 
+export interface ResolvedApplyTarget {
+  sessionId: string;
+  branch: string;
+  worktreePath: string;
+}
+
 export function buildKickoffPrompt(
   projectId: string,
   projectCwd: string,
   draft: FinalizeSetupDraft,
-  worktreePath: string | null,
+  target: ResolvedApplyTarget | null,
 ): string {
   const draftJson = JSON.stringify(draft, null, 2);
+  const targetLine = target
+    ? `\`session ${target.sessionId}\` → branch \`${target.branch}\` at \`${target.worktreePath}\``
+    : '(no worktree-bearing session found yet — start a card-linked session first, then re-run the wizard)';
   return [
     '# Finalize Setup — guided walkthrough (required)',
     '',
@@ -150,7 +159,9 @@ export function buildKickoffPrompt(
     '',
     `- **PROJECT_ID**: \`${projectId}\``,
     `- **PROJECT_CWD**: \`${projectCwd}\``,
-    `- **WORKTREE_PATH**: \`${worktreePath ?? '(unknown — apply will fail until a session with a worktree exists)'}\``,
+    `- **RESOLVED COMMIT TARGET (at wizard spawn time)**: ${targetLine}`,
+    '',
+    "> **Heads up — re-resolution at apply time.** Server picks the project's most-recent worktree-bearing session at the moment of `setup-apply`. If a fresher session has appeared between spawn and apply, the file will land THERE, not on the target shown above. **Always echo back the `branch` from the apply response and ask the user to confirm it matches what they expected — then post `finalize/wizard-complete`. If it does not match, do NOT post wizard-complete; halt and tell the user, so they can revert and re-run.**",
     '',
     '## Server-provided draft (do NOT re-run scanners)',
     '',
@@ -167,8 +178,9 @@ export function buildKickoffPrompt(
     '3. **Monorepo / sub-projects** — when `draft.isMonorepo`, list every entry in `draft.subprojects[]` and ask whether to run all or pick one.',
     '4. **Step proposal** — show `draft.proposedCiYaml` verbatim in a fenced ```yaml block. Ask: use as-is, edit steps, or add a custom step. Respect the v1 schema constraints: `version: 1`, `on:` of `finalize`/`manual`, `name`+`run` per step only, `timeout_minutes` in `[1, 60]`.',
     '5. **Env vars** — call out `draft.envVars` entries the steps will read. v1 has no `env:` field; point at Settings → Secrets if values need to be injected at run time.',
-    '6. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>" }`. Server validates against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry.',
-    '7. **`POST .../finalize/wizard-complete`**, then `<agenthub:close-card>`.',
+    '6. **Confirm target branch** — before posting setup-apply, restate the resolved commit target ABOVE to the user in plain prose ("This will land on branch `X` in session `Y`") and use a fenced `agenthub:ask` with at least two options: **Apply** / **Pick a different session**. If the user picks the second, ask them for the explicit `session_id` (or pause the wizard so they can start the right session and re-run). Do not call setup-apply without that confirmation.',
+    '7. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<id confirmed in step 6>" }`. Server validates against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry. The response includes `branch` and `session_id` — echo both back to the user as a second sanity check, then post wizard-complete.',
+    '8. **`POST .../finalize/wizard-complete`**, then `<agenthub:close-card>`.',
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type`.',
     '',
@@ -242,15 +254,35 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
       );
       setSessionOwner(sessionId, ownerUid);
 
-      // Pick a worktree to display in the kickoff prompt (informational
-      // only — apply re-resolves at request time).
-      const preferred = pickSessionWithWorktree(stmts, project, undefined);
-      const prompt = buildKickoffPrompt(project.id, cwd, draft, preferred?.worktree_path ?? null);
+      // Resolve the apply target NOW and pass it both into the kickoff
+      // prompt (so the agent surfaces it to the user) and into the
+      // response payload (so the Settings UI can show it before the
+      // commit lands). This is the wizard's best guess — `setup-apply`
+      // re-resolves at request time, so a fresher session that appears
+      // between spawn and apply will displace this target. The skill
+      // walkthrough is responsible for echoing the `branch` returned by
+      // apply back to the user as a confirmation step.
+      const resolvedTarget = pickSessionWithWorktree(stmts, project, undefined);
+      const resolvedTargetPayload: ResolvedApplyTarget | null = resolvedTarget
+        ? {
+            sessionId: resolvedTarget.id,
+            branch: resolvedTarget.worktree_branch,
+            worktreePath: resolvedTarget.worktree_path,
+          }
+        : null;
+      const prompt = buildKickoffPrompt(project.id, cwd, draft, resolvedTargetPayload);
+      // Fire-and-forget chat handler — mirror the bug-reports / board
+      // pattern: never let a downstream rejection escape as an
+      // UnhandledPromiseRejection. The wizard route's HTTP response is
+      // already in flight.
       void handleChat(null, {
         type: 'chat',
         agentId,
         sessionId,
         content: prompt,
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[finalize-wizard] handleChat failed for session ${sessionId}: ${message}`);
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
@@ -260,7 +292,13 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         sessionId,
         agentId,
       });
-      res.status(201).json({ sessionId, agentId, draft, session });
+      res.status(201).json({
+        sessionId,
+        agentId,
+        draft,
+        session,
+        target: resolvedTargetPayload,
+      });
     },
   );
 
@@ -334,10 +372,24 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         return;
       }
 
-      // Stage + commit in the worktree. We scope `git add` to the file
-      // we just wrote so unrelated worktree edits never sneak into the
-      // commit. Author identity is a local fallback — push-time signing
-      // is unchanged.
+      // Stage + commit in the worktree.
+      //
+      // CRITICAL: the wizard runs in its own `[Finalize Setup]` session
+      // and commits into a DIFFERENT session's worktree (the originating
+      // session that owns the branch). That session's index is routinely
+      // pre-populated with unrelated staged work. Plain `git commit -m
+      // ...` with no pathspec would sweep every staged file into the
+      // "Add ci.yaml" commit under a misleading message — reviewer
+      // confirmed the repro in PR #1179.
+      //
+      // Fix: `git commit -o -m ... -- <pathspec>`. The `-o`/`--only` flag
+      // tells git to commit ONLY the listed paths regardless of what
+      // else is in the index; pre-staged files stay staged on the same
+      // index for the next legitimate commit. The `git add` above is
+      // still needed because `-o` rejects an unstaged file.
+      //
+      // Author identity is a local fallback — push-time signing is
+      // unchanged.
       const commitEnv = {
         ...process.env,
         GIT_AUTHOR_NAME: COMMIT_AUTHOR_NAME,
@@ -352,12 +404,24 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
           maxBuffer: 1 * 1024 * 1024,
           env: commitEnv,
         });
-        await execFileAsync('git', ['commit', '--allow-empty', '-m', COMMIT_MESSAGE_TITLE], {
-          cwd: target.worktree_path,
-          timeout: GIT_TIMEOUT_MS,
-          maxBuffer: 1 * 1024 * 1024,
-          env: commitEnv,
-        });
+        await execFileAsync(
+          'git',
+          [
+            'commit',
+            '--allow-empty',
+            '-o',
+            '-m',
+            COMMIT_MESSAGE_TITLE,
+            '--',
+            FINALIZE_CI_CONFIG_RELATIVE_PATH,
+          ],
+          {
+            cwd: target.worktree_path,
+            timeout: GIT_TIMEOUT_MS,
+            maxBuffer: 1 * 1024 * 1024,
+            env: commitEnv,
+          },
+        );
         const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
           cwd: target.worktree_path,
           timeout: GIT_TIMEOUT_MS,

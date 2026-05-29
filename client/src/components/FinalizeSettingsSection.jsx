@@ -25,6 +25,7 @@ export default function FinalizeSettingsSection({
   const [wizardStarting, setWizardStarting] = useState(false);
   const [wizardError, setWizardError] = useState(null);
   const [lastSessionId, setLastSessionId] = useState(null);
+  const [resolvedTarget, setResolvedTarget] = useState(null);
 
   // Keep the picker in sync when the project list mutates underneath us
   // (e.g. a new project is created elsewhere).
@@ -65,6 +66,7 @@ export default function FinalizeSettingsSection({
         return;
       }
       setLastSessionId(res.sessionId);
+      setResolvedTarget(res.target ?? null);
       if (typeof onOpenSession === 'function') {
         onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
       } else {
@@ -94,8 +96,9 @@ export default function FinalizeSettingsSection({
           Author <code className="text-gray-300">.agent-hub/ci.yaml</code> — the v1 config that
           drives the Finalize Code Changes pre-PR pipeline (lint, typecheck, tests, fixture data,
           etc.). Click <strong className="text-gray-300">Set up Finalize</strong> to scan the repo
-          and walk through a proposed config in chat. The wizard commits the file to the current
-          session’s worktree on approval.
+          and walk through a proposed config in chat. The wizard commits the file to a project
+          session that already has a worktree — the wizard confirms <em>which</em> session before
+          the commit.
         </p>
         <label className="flex items-center gap-2 text-sm mt-4">
           <span className="text-gray-400">Project:</span>
@@ -132,6 +135,21 @@ export default function FinalizeSettingsSection({
                 Last wizard session: <code className="text-emerald-300">{lastSessionId}</code>
               </p>
             )}
+            {resolvedTarget && (
+              <p className="text-xs text-gray-400 mt-2">
+                Proposed commit target: branch{' '}
+                <code className="text-gray-200">{resolvedTarget.branch}</code> in session{' '}
+                <code className="text-gray-200">{resolvedTarget.sessionId}</code>. The wizard will
+                confirm before applying; the apply call re-resolves at request time, so a fresher
+                session may take over.
+              </p>
+            )}
+            {lastSessionId && !resolvedTarget && (
+              <p className="text-xs text-amber-400 mt-2">
+                No worktree-bearing session was found for this project. Start a card-linked session
+                first; the apply step will 400 with <code>no_worktree</code> until one exists.
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -162,8 +180,10 @@ export default function FinalizeSettingsSection({
             A single file at <code className="text-gray-300">.agent-hub/ci.yaml</code>
           </li>
           <li>
-            Committed to your active session’s worktree branch (you can keep iterating in the same
-            session)
+            Committed to a project session that has a worktree — the wizard surfaces the resolved
+            branch and asks you to confirm before applying. Pass an explicit
+            <code className="text-gray-300"> session_id</code> in the wizard if you want to target a
+            specific in-flight session.
           </li>
           <li>
             One step per check you want to run before pushing — install, typecheck, lint, test, etc.

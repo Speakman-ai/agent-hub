@@ -79,6 +79,20 @@ const FinalizeSetupDraftSchema = registerComponent(
     }),
 );
 
+const FinalizeWizardResolvedTarget = registerComponent(
+  'FinalizeWizardResolvedTarget',
+  z
+    .object({
+      sessionId: z.string(),
+      branch: z.string(),
+      worktreePath: z.string(),
+    })
+    .openapi({
+      description:
+        'The project session whose worktree would receive the commit if `setup-apply` were called right now. Resolved at wizard spawn time as the most-recent worktree-bearing session; `setup-apply` re-resolves on its own request, so the value is a starting suggestion, not a guarantee. Surface to the user before calling apply.',
+    }),
+);
+
 const FinalizeWizardStartResponse = registerComponent(
   'FinalizeWizardStartResponse',
   z
@@ -89,6 +103,10 @@ const FinalizeWizardStartResponse = registerComponent(
       session: z
         .unknown()
         .openapi({ description: 'Raw `sessions` row for the spawned wizard session.' }),
+      target: FinalizeWizardResolvedTarget.nullable().openapi({
+        description:
+          'The resolved apply target at spawn time. `null` when no worktree-bearing session exists yet — the wizard can still run but apply will 400 with `no_worktree` until one does.',
+      }),
     })
     .openapi({ description: 'Wizard session spawned successfully.' }),
 );

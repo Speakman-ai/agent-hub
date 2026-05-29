@@ -22,9 +22,13 @@ a small set of decisions, and persist the file via `setup-apply`.
 ## Bound values
 
 - **`PROJECT_ID`**, **`PROJECT_CWD`** — from kickoff.
-- **`WORKTREE_PATH`** — where the proposed `.agent-hub/ci.yaml` will
-  land. This is the originating session's worktree (the session-as-fixer
-  model), **not** the project's main `cwd`.
+- **`RESOLVED COMMIT TARGET`** — at wizard spawn time the server picks
+  the most-recent project session that has a worktree, and prints it
+  into the kickoff prompt (`session <id>` → branch `<branch>` at
+  `<path>`). **Apply re-resolves at request time** — if a fresher
+  worktree-bearing session appears between spawn and apply, the commit
+  will land on THAT one unless you pass an explicit `session_id`. Treat
+  the target as a starting suggestion, not a guarantee.
 - **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`** — set for curl. If any
   wizard curl returns HTTP **401** or **403**, halt — see
   [Auth failure](#auth-failure) below. **Never** ask the operator to
@@ -141,13 +145,34 @@ For each entry in `draft.envVars` (especially `required: true`):
 Surface this as a "secrets the steps will need" checklist, not a
 blocker.
 
-## Step 6 — Persist
+## Step 6 — Confirm target branch (required, before apply)
+
+Re-state the resolved commit target to the user in plain prose:
+
+> "This will land on branch **`<branch>`** in session
+> **`<session_id>`** at `<worktree_path>`."
+
+Then `agenthub:ask`:
+
+- **Apply** — keep the resolved target
+- **Pick a different session** — collect the explicit session id (or
+  pause so the user can start the right session and re-run the wizard)
+
+**Do not call setup-apply without this confirmation.** The default
+heuristic (most-recent worktree-bearing session) can land the commit on
+an unrelated in-flight branch in a busy project — the confirmation step
+is what makes this safe.
+
+## Step 7 — Persist
+
+Always pass the confirmed `session_id` so the apply endpoint targets
+the same session the user just approved (no re-resolution race):
 
 ```bash
 curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/finalize/setup-apply" \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"ci_yaml_content\": \"<the final YAML>\"}"
+  -d "{\"ci_yaml_content\": \"<the final YAML>\", \"session_id\": \"<id confirmed in step 6>\"}"
 ```
 
 Response shape:
@@ -157,7 +182,8 @@ Response shape:
   "ok": true,
   "file": ".agent-hub/ci.yaml",
   "commit_sha": "abc123…",
-  "branch": "<branch the file was committed on>"
+  "branch": "<branch the file was committed on>",
+  "session_id": "<session whose worktree received the commit>"
 }
 ```
 
@@ -166,11 +192,13 @@ Server rejects with **400** + `{ "error": "ci_config_invalid", "code":
 fails v1 validation. Fix the issue and re-submit — do not work around
 the validation.
 
-## Step 7 — Close the session
+## Step 8 — Close the session
 
-After a successful apply, post a short summary in chat:
+After a successful apply, echo `branch` and `session_id` from the
+response so the user can spot any drift, then summarise:
 
-- File committed at `<commit_sha>` on branch `<branch>`
+- File committed at `<commit_sha>` on branch `<branch>` in session
+  `<session_id>`.
 - The card and session can now run Finalize → click **Finalize** in the
   card view and the steps you just configured will run.
 

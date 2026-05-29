@@ -35,6 +35,7 @@ describe('FinalizeSettingsSection', () => {
     api.startFinalizeWizard.mockResolvedValueOnce({
       sessionId: 'sess-1',
       agentId: 'agent-1',
+      target: null,
     });
     const onOpenSession = vi.fn();
     render(<FinalizeSettingsSection projects={projects} onOpenSession={onOpenSession} />);
@@ -76,5 +77,51 @@ describe('FinalizeSettingsSection', () => {
     render(<FinalizeSettingsSection projects={projects} />);
     fireEvent.change(screen.getByDisplayValue('Demo'), { target: { value: 'other' } });
     expect(screen.getByDisplayValue('Other')).toBeInTheDocument();
+  });
+
+  it('surfaces the resolved commit target returned by the wizard', async () => {
+    api.startFinalizeWizard.mockResolvedValueOnce({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      target: {
+        sessionId: 'wt-sess-1',
+        branch: 'feature/x',
+        worktreePath: '/tmp/wt',
+      },
+    });
+    render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/proposed commit target/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText('feature/x')).toBeInTheDocument();
+    expect(screen.getByText('wt-sess-1')).toBeInTheDocument();
+  });
+
+  it('shows a no-worktree warning when target is null', async () => {
+    api.startFinalizeWizard.mockResolvedValueOnce({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      target: null,
+    });
+    render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/no worktree-bearing session/i)).toBeInTheDocument();
+    });
+  });
+
+  it('does not promise commits to "the current session" in user-facing copy (PR #1179 fix)', () => {
+    render(<FinalizeSettingsSection projects={projects} />);
+    // The original copy said "commits the file to the current session's
+    // worktree" and "Committed to your active session's worktree branch"
+    // — both lies when the wizard is spawned from Settings (no active
+    // session). Make sure neither phrasing has snuck back.
+    expect(screen.queryByText(/current session's worktree/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/your active session's worktree/i)).not.toBeInTheDocument();
   });
 });

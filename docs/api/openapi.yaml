@@ -2451,6 +2451,20 @@ components:
         - envVars
         - proposedCiYaml
       description: Server-precomputed signal for the Finalize ci.yaml setup wizard. `proposedCiYaml` always parses against the v1 schema.
+    FinalizeWizardResolvedTarget:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        branch:
+          type: string
+        worktreePath:
+          type: string
+      required:
+        - sessionId
+        - branch
+        - worktreePath
+      description: The project session whose worktree would receive the commit if `setup-apply` were called right now. Resolved at wizard spawn time as the most-recent worktree-bearing session; `setup-apply` re-resolves on its own request, so the value is a starting suggestion, not a guarantee. Surface to the user before calling apply.
     FinalizeWizardStartResponse:
       type: object
       properties:
@@ -2463,10 +2477,16 @@ components:
         session:
           nullable: true
           description: Raw `sessions` row for the spawned wizard session.
+        target:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeWizardResolvedTarget"
+            - nullable: true
+              description: The resolved apply target at spawn time. `null` when no worktree-bearing session exists yet — the wizard can still run but apply will 400 with `no_worktree` until one does.
       required:
         - sessionId
         - agentId
         - draft
+        - target
       description: Wizard session spawned successfully.
     FinalizeSetupApplyRequest:
       type: object

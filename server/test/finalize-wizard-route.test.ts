@@ -202,6 +202,25 @@ describe('POST /api/projects/:projectId/finalize/setup-wizard', () => {
     expect(res.body.draft.stack).toBe('node');
     expect(res.body.draft.packageManager).toBe('npm');
     expect(res.body.draft.proposedCiYaml).toMatch(/npm ci --include=dev/);
+    // No worktree-bearing session exists yet → target is null.
+    expect(res.body.target).toBeNull();
+  });
+
+  it('returns the resolved apply target when a worktree-bearing session exists', async () => {
+    const projectId = await makeProject();
+    const agentId = await makeAgent(projectId);
+    const { sessionId, branch, worktreeDir } = seedSessionWithRepo(agentId);
+
+    const res = await request
+      .post(`/api/projects/${projectId}/finalize/setup-wizard`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({})
+      .expect(201);
+    expect(res.body.target).toEqual({
+      sessionId,
+      branch,
+      worktreePath: worktreeDir,
+    });
   });
 });
 
@@ -306,6 +325,57 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     expect(authorEmail.trim()).toBe('agent-hub-bot@local');
   });
 
+  it('commits ONLY ci.yaml when unrelated files are pre-staged in the worktree (PR #1179 blocker)', async () => {
+    // Reproduces the reviewer's "concurrent staged work" scenario. The
+    // wizard runs in its own session and commits into the originating
+    // session's worktree — that worktree routinely has pre-staged work
+    // from the active human/agent session. A plain `git commit -m ...`
+    // would sweep those staged files into the "Add ci.yaml" commit.
+    const projectId = await makeProject();
+    const agentId = await makeAgent(projectId);
+    const { worktreeDir, sessionId, branch } = seedSessionWithRepo(agentId);
+
+    // Pre-populate the index with an unrelated file the way the active
+    // session would.
+    writeFileSync(path.join(worktreeDir, 'unrelated.txt'), 'pre-staged by the active session\n');
+    execFileSync('git', ['add', 'unrelated.txt'], { cwd: worktreeDir });
+
+    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    await request
+      .post(`/api/projects/${projectId}/finalize/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ ci_yaml_content: yaml, session_id: sessionId })
+      .expect(200);
+
+    // Only `.agent-hub/ci.yaml` should appear in the new commit.
+    const commitFiles = execFileSync('git', ['show', '--name-only', '--pretty=format:', 'HEAD'], {
+      cwd: worktreeDir,
+      encoding: 'utf8',
+    })
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    expect(commitFiles).toEqual(['.agent-hub/ci.yaml']);
+
+    // `unrelated.txt` should still be staged for the next commit (not
+    // committed, not lost) — that's the contract of `git commit -o`.
+    const stagedAfter = execFileSync('git', ['diff', '--name-only', '--cached'], {
+      cwd: worktreeDir,
+      encoding: 'utf8',
+    })
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    expect(stagedAfter).toEqual(['unrelated.txt']);
+
+    // Sanity — we're still on the originating branch.
+    const head = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktreeDir,
+      encoding: 'utf8',
+    });
+    expect(head.trim()).toBe(branch);
+  });
+
   it('appends a trailing newline when the input lacks one', async () => {
     const projectId = await makeProject();
     const agentId = await makeAgent(projectId);
@@ -320,6 +390,40 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
 
     const written = readFileSync(path.join(worktreeDir, '.agent-hub', 'ci.yaml'), 'utf8');
     expect(written.endsWith('\n')).toBe(true);
+  });
+
+  it('picks the freshest worktree-bearing session when no session_id is provided (PR #1179 follow-up)', async () => {
+    // Reviewer flagged that the no-session-id branch — which is what
+    // actually runs in production when launched from Settings — was
+    // never exercised. Seed two worktree-bearing sessions and verify
+    // the apply commit lands on the most-recently-updated one.
+    const projectId = await makeProject();
+    const agentId = await makeAgent(projectId);
+
+    const older = seedSessionWithRepo(agentId);
+    // Force `older.updated_at` into the past so lexical comparison is
+    // deterministic; the wrapper only stamps at insert time.
+    getDb()
+      .prepare("UPDATE sessions SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
+      .run(older.sessionId);
+    const newer = seedSessionWithRepo(agentId);
+    getDb()
+      .prepare("UPDATE sessions SET updated_at = '2030-01-01T00:00:00.000Z' WHERE id = ?")
+      .run(newer.sessionId);
+
+    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const res = await request
+      .post(`/api/projects/${projectId}/finalize/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ ci_yaml_content: yaml }) // <-- no session_id; fallback path
+      .expect(200);
+
+    // The freshest session wins.
+    expect(res.body.session_id).toBe(newer.sessionId);
+    expect(res.body.branch).toBe(newer.branch);
+
+    // ci.yaml landed in the newer worktree, NOT the older one.
+    expect(readFileSync(path.join(newer.worktreeDir, '.agent-hub', 'ci.yaml'), 'utf8')).toBe(yaml);
   });
 
   it('400 when the worktree path is missing on disk', async () => {
