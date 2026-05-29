@@ -74,6 +74,14 @@ import { writeFinalizeRunPrUrl } from './provenance.js';
 import { evaluatePushGate } from './push-gate.js';
 import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import type { CardLifecycle } from './card-lifecycle.js';
+import {
+  broadcastActiveSeconds,
+  FINALIZE_BUDGET_HARD_CEILING_SECONDS,
+  getRunFamilyActiveSeconds,
+  isBudgetExhausted as budgetIsExhausted,
+  postTimeoutDispatchMessage,
+  resolveBudgetSeconds,
+} from './budget.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -329,7 +337,14 @@ export async function runFinalize(
   const log = deps.log ?? ((msg: string) => console.warn(msg));
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
-  const budgetSeconds = deps.budgetSeconds ?? FINALIZE_BUDGET_SECONDS;
+  // The cap is the lesser of the dep-injected budget (tests) and the
+  // §13 hard ceiling. Narrowed further once ci.yaml is parsed (a v0
+  // ci.yaml `timeout_minutes` may lower the cap but never raise it —
+  // {@link resolveBudgetSeconds} enforces the ceiling).
+  let budgetSeconds = Math.min(
+    deps.budgetSeconds ?? FINALIZE_BUDGET_SECONDS,
+    FINALIZE_BUDGET_HARD_CEILING_SECONDS,
+  );
   // The kanban-card mirror. Default no-op keeps the existing test deps
   // shape minimal — production injects a real lifecycle bound to
   // (cardId, projectId). See `card-lifecycle.ts`.
@@ -514,14 +529,7 @@ export async function runFinalize(
       return cancelTerminal(deps, runId, log);
     }
     if (budgetExhausted(deps, runId, budgetSeconds, log)) {
-      return terminate(
-        deps,
-        runId,
-        'timed_out',
-        'timeout',
-        `active-time budget of ${budgetSeconds}s exhausted before loop ${loopCount}`,
-        log,
-      );
+      return timeoutTerminal(deps, runId, opts, sessionId, budgetSeconds, lastStepOutcome, log);
     }
 
     // ── Phase 1: rebase ─────────────────────────────────────────────
@@ -555,6 +563,10 @@ export async function runFinalize(
         log,
       );
     }
+    // Emit active-seconds tick after rebase (success or fail) so
+    // subscribers see the running total. The rebase phase wrote the DB
+    // directly; we read back + broadcast.
+    broadcastActiveSeconds(deps, runId);
     if (rebaseOutcome.kind === 'failed') {
       // Mirror the rebase failure onto the card BEFORE we propagate the
       // failure — `outcomeFromFailed` writes the terminal broadcasts but
@@ -562,6 +574,21 @@ export async function runFinalize(
       // avoid spamming on a fix-dispatch-loop rebase that later fails.
       if (loopCount === 1) {
         lifecycle.onRebaseAborted({ runId, detail: rebaseOutcome.detail });
+      }
+      // §13: a rebase that fails on `failure_reason = 'timeout'` should
+      // surface with the timeout-class behavior (session message with the
+      // last attempt output tail). `outcomeFromFailed` already maps the
+      // status to `timed_out`; we additionally post the dispatch message.
+      if (rebaseOutcome.failureReason === 'timeout') {
+        postBudgetTimeoutMessageIfPossible(
+          deps,
+          runId,
+          opts,
+          sessionId,
+          budgetSeconds,
+          lastStepOutcome,
+          log,
+        );
       }
       return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
     }
@@ -657,6 +684,17 @@ export async function runFinalize(
       );
     }
     parsedCi = parseResult.config;
+    // §13: ci.yaml's `timeout_minutes` may LOWER the cap but never
+    // raise it. The hard ceiling is FINALIZE_BUDGET_HARD_CEILING_SECONDS
+    // — resolveBudgetSeconds clamps to it. We also re-clamp against the
+    // current `budgetSeconds` so a dep-injected lower-than-default cap
+    // (used in tests) is not silently raised back to 60 by a permissive
+    // ci.yaml. Effectively: the narrowest of {dep, ci.yaml, hard cap}
+    // wins.
+    budgetSeconds = Math.min(
+      budgetSeconds,
+      resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
+    );
 
     if (opts.signal?.aborted) {
       return cancelTerminal(deps, runId, log);
@@ -691,6 +729,8 @@ export async function runFinalize(
         log,
       );
     }
+    // Emit active-seconds tick after review (success or fail).
+    broadcastActiveSeconds(deps, runId);
     if (lastReviewerOutcome.kind === 'failed') {
       return outcomeFromFailed(
         deps,
@@ -736,10 +776,22 @@ export async function runFinalize(
       );
     }
 
+    // Emit active-seconds tick after the tasks phase (success or fail).
+    broadcastActiveSeconds(deps, runId);
     // Step terminal classes: the runner already wrote `failed` /
     // `timed_out` to the row for those classes, but NOT for `infra_error`
     // (§10 leaves that to the orchestrator).
     if (lastStepOutcome.status === 'timeout') {
+      // §13: surface with the timeout-class dispatch message.
+      postBudgetTimeoutMessageIfPossible(
+        deps,
+        runId,
+        opts,
+        sessionId,
+        budgetSeconds,
+        lastStepOutcome,
+        log,
+      );
       return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
     }
     if (lastStepOutcome.status === 'infra_error') {
@@ -959,6 +1011,12 @@ export async function runFinalize(
       );
     }
 
+    // Emit active-seconds tick after fix dispatch. The fix-dispatch
+    // helper itself bills the per-dispatch entry charge; the chat.ts
+    // session turn-end hook bills the originating-session turn
+    // duration. Both writes have already landed by the time we're here;
+    // this broadcast surfaces the combined running total.
+    broadcastActiveSeconds(deps, runId);
     if (fix.outcome === 'stalled_no_response') {
       // The watchdog already wrote the terminal status; just surface.
       // Mirror the stall onto the card — this is the "human walked away"
@@ -1085,6 +1143,11 @@ function cancelTerminal(
  * crossed the budget. The orchestrator does NOT bill active time itself
  * — every phase module bills its own units; this helper only reads back
  * the running total against the cap.
+ *
+ * §13: the cap is shared across the original run and its one infra
+ * retry. We defer to {@link budgetIsExhausted} (from `budget.ts`),
+ * which walks `retry_of_run_id` and sums the family total — the retry
+ * does NOT get a fresh 60-min budget.
  */
 function budgetExhausted(
   deps: OrchestratorDeps,
@@ -1092,17 +1155,97 @@ function budgetExhausted(
   budgetSeconds: number,
   log: (msg: string) => void,
 ): boolean {
+  return budgetIsExhausted(deps.stmts, runId, budgetSeconds, log);
+}
+
+/**
+ * Terminal-state writer specialized for the §13 budget timeout. Posts
+ * a system message into the originating session with the last attempt's
+ * output tail (so the human / autonomous agent can see what was
+ * happening when the budget ran out) and then drops into the
+ * standard {@link terminate} path with `status = 'timed_out'`.
+ *
+ * Session message is best-effort: a missing `sessionId` (defensive —
+ * shouldn't happen at this point in the state machine) or a DB hiccup
+ * just skips the message and proceeds with the terminal write.
+ */
+function timeoutTerminal(
+  deps: OrchestratorDeps,
+  runId: string,
+  opts: OrchestratorOptions,
+  sessionId: string | null,
+  budgetSeconds: number,
+  lastStepOutcome: StepRunResult | null,
+  log: (msg: string) => void,
+): OrchestratorOutcome {
+  postBudgetTimeoutMessageIfPossible(
+    deps,
+    runId,
+    opts,
+    sessionId,
+    budgetSeconds,
+    lastStepOutcome,
+    log,
+  );
+  return terminate(
+    deps,
+    runId,
+    'timed_out',
+    'timeout',
+    `active-time budget of ${budgetSeconds}s exhausted`,
+    log,
+  );
+}
+
+/**
+ * Best-effort: drop a §13 timeout message into the originating
+ * session, carrying the last attempt's output tail. The orchestrator
+ * calls this from every code path that surfaces a budget timeout
+ * (top-of-loop guard, rebase timeout, step-phase timeout) so the
+ * dispatched message is consistent regardless of WHERE the budget
+ * tripped.
+ *
+ * The session keeps its worktree on terminal — the session owns the
+ * worktree and the orchestrator never touches it on shutdown (§13:
+ * "container torn down, worktree state preserved").
+ */
+function postBudgetTimeoutMessageIfPossible(
+  deps: OrchestratorDeps,
+  runId: string,
+  opts: OrchestratorOptions,
+  sessionId: string | null,
+  budgetSeconds: number,
+  lastStepOutcome: StepRunResult | null,
+  log: (msg: string) => void,
+): void {
+  if (!sessionId) return;
+  let activeSecondsConsumed = budgetSeconds;
   try {
-    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
-    if (!row) return false;
-    return row.active_seconds_consumed >= budgetSeconds;
+    activeSecondsConsumed = getRunFamilyActiveSeconds(deps.stmts, runId);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    postTimeoutDispatchMessage(
+      { stmts: deps.stmts, broadcast: deps.broadcast, log },
+      {
+        runId,
+        sessionId,
+        cardId: opts.card.id,
+        projectId: opts.project.id,
+        budgetSeconds,
+        activeSecondsConsumed,
+        lastOutputTail: lastStepOutcome?.failedStep?.outputTail,
+        lastStepName: lastStepOutcome?.failedStep?.name,
+        lastStepExitCode: lastStepOutcome?.failedStep?.exitCode,
+      },
+    );
   } catch (err) {
     log(
-      `[finalize-orchestrator] budget check failed for run=${runId}: ${
+      `[finalize-orchestrator] timeout message post failed for run=${runId}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    return false;
   }
 }
 
@@ -1232,6 +1375,8 @@ export const __test = {
   isTriggerEmpty,
   outcomeFromFailed,
   budgetExhausted,
+  timeoutTerminal,
+  postBudgetTimeoutMessageIfPossible,
   MAX_FIX_DISPATCH_LOOPS,
   DEFAULT_CI_CONFIG_RELATIVE_PATH,
 };

@@ -1377,6 +1377,19 @@ export interface Stmts {
    */
   getLatestFinalizeRunForSession: Stmt;
   /**
+   * Most-recent **in-flight** `finalize_runs` row for a session — i.e.
+   * the row whose `status` is NOT in the terminal set
+   * (`pushed`, `failed`, `timed_out`, `infra_error`, `cancelled`,
+   * `stalled_no_response`). Returns `undefined` when the session has
+   * no active Finalize run.
+   *
+   * Used by the chat.ts session turn-end hook
+   * ({@link billSessionTurnDurationIfTaggedToFinalize}) so a turn that
+   * finishes on a session bound to an active Finalize run bills its
+   * duration to that run's §13 active-time budget.
+   */
+  getActiveFinalizeRunForSession: Stmt;
+  /**
    * Latest `finalize_runs` row for every session referenced by cards on a
    * given kanban board. Returns 0..N rows (one per distinct
    * `session_id` that has any finalize history). The board route

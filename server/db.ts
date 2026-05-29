@@ -3269,6 +3269,20 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
+    // In-flight finalize run for a session (status NOT IN terminal set).
+    // The terminal status list is duplicated from
+    // `server/finalize/budget.ts#FINALIZE_TERMINAL_STATUSES`; keep both
+    // in sync if a new terminal status lands. Used by the chat.ts
+    // session turn-end hook so a turn ending on a session bound to an
+    // active finalize run bills its duration to that run.
+    getActiveFinalizeRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
+    ),
     // Latest finalize run per (board-scoped) session. Returns one row per
     // distinct `session_id` that any card on `boardId` references *and*
     // that has finalize history. Used by `GET /api/projects/:id/board` to

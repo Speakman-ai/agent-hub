@@ -259,7 +259,7 @@ function fakeRunRebase(
 
 function fakeRunCi(
   result:
-    | { ok: true; config: { version: 1; on: ['finalize']; timeoutMinutes: 60; steps: [] } }
+    | { ok: true; config: { version: 1; on: ['finalize']; timeoutMinutes: number; steps: [] } }
     | { ok: false; error: { code: 'yaml_parse_error'; message: string } },
 ): NonNullable<OrchestratorDeps['loadCiConfigFromFile']> {
   return vi.fn().mockResolvedValue(result) as never;
@@ -1304,5 +1304,186 @@ describe('runFinalize — card lifecycle integration', () => {
     const { deps } = makeDeps();
     const result = await runFinalize(deps, baseOpts());
     expect(result.kind).toBe('pushed');
+  });
+});
+
+// ─── §13 active-time budget enforcement ──────────────────────────────
+
+describe('runFinalize — §13 budget integration', () => {
+  it('posts a session timeout message with the last attempt output tail on budget exhaustion', async () => {
+    const failedSteps: StepRunResult = {
+      status: 'failure',
+      stepResults: [],
+      activeSecondsBilled: 5,
+      failedStep: {
+        index: 1,
+        name: 'npm test',
+        run: 'npm test',
+        exitCode: 1,
+        outputTail: ['FAIL: a.test.js > does the thing', 'Expected 1, got 2'],
+      },
+    };
+    const { deps, stmts } = makeDeps({
+      // Burn the budget on the first rebase pass via the stmts side-effect.
+      runRebasePhase: vi
+        .fn()
+        .mockImplementation(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
+          depArg.stmts.updateFinalizeRunActiveSeconds.run(99_999, 'run-1');
+          return REBASE_OK;
+        }) as never,
+      runStepPhase: fakeRunSteps(failedSteps),
+      dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
+      budgetSeconds: 60,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+    // A system message was posted into the originating session carrying
+    // the last attempt's failed step + output tail.
+    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
+    const timeoutInsert = inserts.find((c) => {
+      const body = c[3] as string;
+      const metadataRaw = c[7] as string | null;
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
+      } catch {
+        metadata = null;
+      }
+      return (
+        metadata?.kind === 'finalize_timeout_dispatch' &&
+        body.includes('npm test') &&
+        body.includes('FAIL: a.test.js')
+      );
+    });
+    expect(timeoutInsert).toBeDefined();
+  });
+
+  it('clamps the cap to ci.yaml timeout_minutes (lower than dep budget)', async () => {
+    // ci.yaml says 1 minute; dep budget injected at 60s. After parse the
+    // orchestrator narrows to 60s (lesser of the two — ci can lower).
+    // We burn 70s of active time during rebase and then the loop guard
+    // should trip on the next iteration.
+    const ciLowered = {
+      ok: true as const,
+      config: {
+        version: 1 as const,
+        on: ['finalize'] as ['finalize'],
+        timeoutMinutes: 1 as const,
+        steps: [] as [],
+      },
+    };
+    const { deps, stmts } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi(ciLowered) as never,
+      runRebasePhase: vi
+        .fn()
+        .mockImplementation(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
+          // 70 seconds — more than the ci-lowered 60s cap.
+          depArg.stmts.updateFinalizeRunActiveSeconds.run(70, 'run-1');
+          return REBASE_OK;
+        }) as never,
+      runStepPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 1,
+          name: 'lint',
+          run: 'npm run lint',
+          exitCode: 2,
+          outputTail: ['lint failed'],
+        },
+      }),
+      dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
+      // Dep budget is generous; the ci.yaml value should win because it
+      // is the narrower of the two.
+      budgetSeconds: 3600,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+    // Detail string reflects the narrowed cap (60s = 1 minute).
+    if (result.kind === 'failed') {
+      expect(result.detail).toMatch(/60s/);
+    }
+    void stmts;
+  });
+
+  it('shares the budget with the retry parent — the retry does NOT get a fresh 60 min', async () => {
+    // Seed a "parent" run that already burned 3500 seconds. Then start a
+    // retry of that parent — the retry only gets 100 more seconds before
+    // the family total trips the 3600s cap.
+    const { deps, stmts } = makeDeps({
+      runRebasePhase: vi
+        .fn()
+        .mockImplementation(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
+          // 200 seconds on this iteration alone.
+          depArg.stmts.updateFinalizeRunActiveSeconds.run(200, 'run-1');
+          return REBASE_OK;
+        }) as never,
+      runStepPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 1,
+          name: 't',
+          run: 'r',
+          exitCode: 1,
+          outputTail: [],
+        },
+      }),
+      dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
+      // Inject a "parent" row by running once first with a low budget
+      // to get the parent in place, then re-trigger with retryOfRunId.
+      budgetSeconds: 3600,
+    });
+
+    // Manually pre-seed the parent row at 3500s consumed.
+    stmts.rows.set('parent', {
+      id: 'parent',
+      idempotency_key: 'parent-key',
+      active_seconds_consumed: 3500,
+      retry_of_run_id: null,
+    } as never);
+
+    // The "retry" run uses a different head_sha so it gets its own row.
+    const result = await runFinalize(
+      deps,
+      baseOpts({ headSha: 'bbbbbbbbbbbbbbbb', retryOfRunId: 'parent' }),
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+  });
+
+  it('emits finalize_run_active_seconds broadcasts after each phase', async () => {
+    const { deps, broadcast } = makeDeps();
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+    const evtTypes = broadcast.mock.calls
+      .map((c) => (c[0] as { type: string }).type)
+      .filter((t) => t === 'finalize_run_active_seconds');
+    // At least 3 ticks: after rebase, review, tasks (push gate is a pure
+    // check — it does not bill / broadcast).
+    expect(evtTypes.length).toBeGreaterThanOrEqual(3);
+    // Each carries the running total of active_seconds_consumed.
+    const sample = broadcast.mock.calls.find(
+      (c) => (c[0] as { type: string }).type === 'finalize_run_active_seconds',
+    );
+    expect(sample?.[0]).toMatchObject({
+      type: 'finalize_run_active_seconds',
+      run_id: expect.any(String),
+      active_seconds_consumed: expect.any(Number),
+    });
   });
 });

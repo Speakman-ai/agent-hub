@@ -108,6 +108,7 @@ import {
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
+import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
 import {
   detectWikiRequestBlock,
   parseWikiRequestBlock,
@@ -3995,6 +3996,34 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             created_at: new Date().toISOString(),
           },
         });
+
+        // §13 active-time budget — Finalize Code Changes.
+        //
+        // If this session has an in-flight `finalize_runs` row, bill the
+        // turn's wall-clock duration to that run's
+        // `active_seconds_consumed`. Active = "the seconds Agent Hub spent
+        // actually processing the run"; the originating session's turn
+        // duration counts toward that (the fix-dispatch loop runs through
+        // this same session, so a long turn IS active Hub processing).
+        //
+        // No-op when the session has no active Finalize run; never
+        // throws — `billSessionTurnDurationIfTaggedToFinalize` swallows
+        // all errors so a stray finalize accounting glitch can never
+        // break chat.
+        try {
+          const turnDurationMs = Date.now() - cliTurnStartMs;
+          billSessionTurnDurationIfTaggedToFinalize(
+            { stmts: S, broadcast },
+            sessionId,
+            turnDurationMs,
+          );
+        } catch (err) {
+          console.warn(
+            `[chat] finalize active-seconds hook threw for ${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
 
         // Sidebar "waiting on user input" signal. The assistant just landed
         // its turn; if the final content carries an unanswered `agenthub:ask`
