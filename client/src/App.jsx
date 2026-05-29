@@ -4254,7 +4254,7 @@ export default function App() {
                             onConfigure={handlePreviewConfigure}
                           />
                           {/* Finalize Code Changes — replaces the legacy ship affordance. */}
-                          {activeSession?.card_id && activeChatProject?.id && (
+                          {activeSession?.card_id && activeChatProject?.id ? (
                             <FinalizeButton
                               projectId={activeChatProject.id}
                               cardId={activeSession.card_id}
@@ -4262,7 +4262,20 @@ export default function App() {
                               branchLabel={activeSession?.worktree_branch || ''}
                               onError={(msg) => showToast(msg, 'error', 8000)}
                             />
-                          )}
+                          ) : activeSessionId && activeChatProject?.id ? (
+                            // Card-less session — surface the new requirement
+                            // explicitly. Before this PR, ad-hoc sessions had
+                            // the "Create ticket & PR" shortcut; that shortcut
+                            // is gone, so we point users at the board instead
+                            // of silently dropping the affordance.
+                            <span
+                              className="inline-flex items-center gap-1 text-[11px] italic text-gray-500"
+                              title="Finalize Code Changes targets a specific kanban card. Link this session to a card on the board to enable the affordance."
+                              data-testid="finalize-no-card-hint"
+                            >
+                              Link a card to use Finalize Code Changes
+                            </span>
+                          ) : null}
                         </div>
                       )}
 
