@@ -23,23 +23,21 @@ import { createCardLifecycle } from './card-lifecycle.js';
 import { createPushAndCreatePr } from './push-and-create-pr.js';
 import type { CancelSignal, FixDispatchTrigger, TurnEndSubscriber } from './fix-dispatch.js';
 import type { RunReviewerOnLocalDiff } from './reviewer-dispatch.js';
+import { createInSessionReviewer } from './in-session-reviewer.js';
+import { buildEnrichedPrompt } from '../chat.js';
 import type { OrchestratorDeps } from './orchestrator.js';
-import type { KanbanCardRow, RouteDeps } from '../types.js';
+import type { EnrichedAgent, KanbanCardRow, RouteDeps } from '../types.js';
 
 // ─── Stub seams ───────────────────────────────────────────────────────
 
 /**
- * Reviewer driver stub. The real implementation needs to run the project's
- * reviewer agent against the local diff (see card on Finalize reviewer
- * wiring). Throwing here means a run that reaches the reviewer phase will
- * fail loudly with `review_failed` — the orchestrator catches and writes
- * the row's terminal state.
- *
- * TODO follow-up: implement against the reviewer-agent spawn path.
+ * Reviewer driver stub. Kept for tests / __test exports that want a
+ * deliberate "no reviewer" outcome — production now wires
+ * {@link createInSessionReviewer} below.
  */
 const stubRunReviewer: RunReviewerOnLocalDiff = async () => {
   throw new Error(
-    '[finalize] runReviewer not wired — Finalize button POST landed before the reviewer-driver seam. See follow-up card.',
+    '[finalize] stubRunReviewer invoked — production wiring should use createInSessionReviewer.',
   );
 };
 
@@ -98,11 +96,24 @@ export function buildOrchestratorDeps(
   card: KanbanCardRow,
   projectId: string,
 ): OrchestratorDeps {
+  const runReviewer = createInSessionReviewer({
+    stmts: routeDeps.stmts,
+    broadcast: routeDeps.broadcast,
+    getEnrichedAgent: routeDeps.getEnrichedAgent,
+    findAgent: routeDeps.findAgent,
+    buildEnrichedPrompt: (agent: EnrichedAgent): string => buildEnrichedPrompt(agent),
+    getClaudeBin: routeDeps.getClaudeBin,
+    getCursorBin: routeDeps.getCursorBin ?? (() => 'cursor-agent'),
+    getGeminiBin: routeDeps.getGeminiBin ?? (() => 'gemini'),
+    getCodexBin: routeDeps.getCodexBin ?? (() => 'codex'),
+    getConfig: () => routeDeps.config,
+    activeProcesses: routeDeps.activeProcesses,
+  });
   return {
     stmts: routeDeps.stmts,
     broadcast: routeDeps.broadcast,
     transactional: <T>(fn: () => T): T => getDb().transaction(fn)(),
-    runReviewer: stubRunReviewer,
+    runReviewer,
     turnEnd: stubTurnEnd,
     pushAndCreatePr: createPushAndCreatePr({ config: routeDeps.config }),
     dispatchAndWaitForTurnEnd: stubDispatchAndWaitForTurnEnd,

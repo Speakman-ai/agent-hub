@@ -851,6 +851,16 @@ export async function runFinalize(
             env: opts.env,
             card: opts.card,
             project: opts.project,
+            // Plumb the originating session id + cancel signal into the
+            // reviewer driver. The in-session reviewer driver attaches
+            // the reviewer agent to this session and surfaces its turn
+            // in the chat timeline (§10 — session is the canonical log).
+            // Cancel race: if the user cancels while the reviewer turn
+            // is in flight, the signal kills the CLI BEFORE the
+            // tail-parse step, so the run terminal beats the verdict
+            // persistence.
+            sessionId,
+            signal: opts.signal,
           },
         );
       } catch (err) {

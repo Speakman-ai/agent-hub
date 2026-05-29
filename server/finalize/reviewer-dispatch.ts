@@ -139,11 +139,32 @@ export interface ReviewerRunResult {
 }
 
 /**
+ * Mirror of {@link CancelSignal} from `./fix-dispatch.js` — repeated
+ * inline to avoid a circular import. Stays in lockstep with the canonical
+ * shape; a richer signal (full AbortSignal) is a structural superset.
+ */
+export interface ReviewerCancelSignal {
+  readonly aborted: boolean;
+  onAbort(listener: () => void): () => void;
+}
+
+/**
  * Driver type: takes the local-diff inputs + context, returns the
  * reviewer's verdict and (zero or more) findings. Production wires this
  * to the project's reviewer agent identity over a session that consumes
  * a local-diff prompt; tests inject a fake that resolves synchronously
  * to a fixed result.
+ *
+ * `sessionId` is the originating session the orchestrator is driving —
+ * the in-session reviewer driver attaches the reviewer agent there and
+ * surfaces its turn in the session timeline. Optional for backwards
+ * compatibility: legacy out-of-band drivers (and unit-test stubs) may
+ * ignore it.
+ *
+ * `signal` plumbs the orchestrator's cancel signal through so a mid-
+ * review Finalize cancel kills the reviewer CLI cleanly. The dispatch
+ * helper itself does not inject a signal; production wires this at the
+ * orchestrator's call site.
  */
 export type RunReviewerOnLocalDiff = (args: {
   runId: string;
@@ -151,6 +172,8 @@ export type RunReviewerOnLocalDiff = (args: {
   card: KanbanCardRow;
   project: Project;
   inputs: ReviewerLocalDiffInputs;
+  sessionId?: string | null;
+  signal?: ReviewerCancelSignal;
 }) => Promise<ReviewerRunResult>;
 
 export interface ReviewerDispatchDeps {
@@ -208,6 +231,18 @@ export interface ReviewerDispatchOptions {
   card: KanbanCardRow;
   /** The project the card belongs to. */
   project: Project;
+  /**
+   * Originating session id — threaded into the reviewer driver so the
+   * in-session driver can attach the reviewer agent and persist its
+   * turn into the chat timeline. Optional: legacy out-of-band drivers
+   * ignore it.
+   */
+  sessionId?: string | null;
+  /**
+   * Cancellation signal — threaded into the reviewer driver so a Finalize
+   * cancel mid-review kills the reviewer turn cleanly. Optional.
+   */
+  signal?: ReviewerCancelSignal;
 }
 
 /**
@@ -303,6 +338,8 @@ export async function runReviewerDispatch(
       card: opts.card,
       project: opts.project,
       inputs,
+      sessionId: opts.sessionId ?? null,
+      signal: opts.signal,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
