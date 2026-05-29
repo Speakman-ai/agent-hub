@@ -49,6 +49,30 @@ function lookupCardIdForSession(stmts: Stmts, sessionId: string): string | null 
  * routes that drive the *primary* session payloads (list, detail, restore,
  * forwarded session, finalize trigger) thread `stmts` and get the full
  * wire shape; transient broadcasts that don't have it stay null.
+ *
+ * ─── Contract for new callers ──────────────────────────────────────────
+ *
+ * If you are wiring a NEW emitter that broadcasts a session payload to
+ * the client (a `session_created` / `session-updated` / similar event),
+ * you MUST pass `stmts` — otherwise the wire row arrives with
+ * `card_id: null` and any client-side surface gated on card-linkage
+ * (FinalizeButton, kanban links, card-anchored badges) will silently
+ * disappear for sessions that DO have a linked card. That looks like a
+ * UI bug, not an omission, and is hard to spot in code review.
+ *
+ * The current call sites that pass `stmts`:
+ *   - `routes/sessions.ts` (list, detail, restore, forward, etc.)
+ *   - `routes/board.ts` (card → session spawn broadcast)
+ *   - `routes/webhooks.ts` (review/reviewer spawn broadcasts)
+ *   - `autonomous.ts` (autonomous dispatch session_created)
+ *   - `chat.ts` (session-updated after first message + title upgrade)
+ *   - `handoff.ts` (handoff session_created)
+ *   - `kanban-caller-session.ts` (card-link title rename broadcast)
+ *   - `session-agents.ts` (`enrichSessionWithAgents` reuses it)
+ *
+ * The two-arg shape is enforced by ESLint via grep-friendly call sites,
+ * not by the type system (the optional is a back-compat affordance, not
+ * a "use it or not" hint). When in doubt: pass `stmts`.
  */
 export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionWireRow {
   return {
