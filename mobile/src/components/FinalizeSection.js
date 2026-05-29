@@ -69,6 +69,10 @@ export default function FinalizeSection({ navigation }) {
 
   const project = projects.find((p) => p.id === projectId) || null;
   const status = pickFinalizeStatus({ lastSessionId, target: resolvedTarget });
+  // We track the wizard's agent id separately so the "Open wizard chat"
+  // button works even after the user changes the project picker (which
+  // clears `project` but not the just-spawned session).
+  const [spawnedAgentId, setSpawnedAgentId] = useState(null);
 
   const handleStartWalkthrough = useCallback(async () => {
     if (!project || wizardStarting) return;
@@ -80,23 +84,32 @@ export default function FinalizeSection({ navigation }) {
         setWizardError('Server did not return a wizard session id');
         return;
       }
+      // Set state and STOP. We deliberately do NOT auto-navigate: the
+      // user needs to see the resolved commit target (branch + session)
+      // on this screen before going to the wizard chat — otherwise the
+      // round-2 contract from PR #1179 ("Settings shows the proposed
+      // branch before the wizard starts") is silently dropped on mobile,
+      // where the small screen makes the in-chat echo easy to miss.
+      // The "Open wizard chat" button below performs the navigation
+      // once the user has confirmed the target.
       setLastSessionId(res.sessionId);
       setResolvedTarget(res.target ?? null);
-      // Navigate to the spawned chat session (mirrors KanbanScreen's
-      // assign-and-start path). The wizard agent is `res.agentId`; the
-      // chat surface reads `activeAgentId` + `activeSessionId` from the
-      // app context.
-      if (res.agentId) setActiveAgentId(res.agentId);
-      setActiveSessionId(res.sessionId);
-      if (navigation && typeof navigation.navigate === 'function') {
-        navigation.navigate('Chat');
-      }
+      setSpawnedAgentId(res.agentId || null);
     } catch (err) {
       setWizardError(err?.message || 'Failed to start setup walkthrough');
     } finally {
       setWizardStarting(false);
     }
-  }, [project, wizardStarting, setActiveAgentId, setActiveSessionId, navigation]);
+  }, [project, wizardStarting]);
+
+  const handleOpenWizardChat = useCallback(() => {
+    if (!lastSessionId) return;
+    if (spawnedAgentId) setActiveAgentId(spawnedAgentId);
+    setActiveSessionId(lastSessionId);
+    if (navigation && typeof navigation.navigate === 'function') {
+      navigation.navigate('Chat');
+    }
+  }, [lastSessionId, spawnedAgentId, setActiveAgentId, setActiveSessionId, navigation]);
 
   if (!projects || projects.length === 0) {
     return <Text style={styles.emptyText}>No projects yet.</Text>;
@@ -185,9 +198,21 @@ export default function FinalizeSection({ navigation }) {
           {wizardStarting ? (
             <ActivityIndicator size="small" color={colors.white} />
           ) : (
-            <Text style={styles.primaryButtonText}>Set up Finalize</Text>
+            <Text style={styles.primaryButtonText}>
+              {lastSessionId ? 'Re-run wizard' : 'Set up Finalize'}
+            </Text>
           )}
         </TouchableOpacity>
+
+        {lastSessionId && (
+          <TouchableOpacity
+            onPress={handleOpenWizardChat}
+            style={styles.secondaryButton}
+            testID="finalize-open-chat-button"
+          >
+            <Text style={styles.secondaryButtonText}>Open wizard chat</Text>
+          </TouchableOpacity>
+        )}
 
         {wizardError && (
           <Text style={styles.errorInline} testID="finalize-error">
@@ -337,6 +362,23 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 14,
     fontWeight: '600',
+  },
+  secondaryButton: {
+    marginTop: 8,
+    backgroundColor: 'transparent',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray600,
+    alignItems: 'center',
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    color: colors.gray200,
+    fontSize: 14,
+    fontWeight: '500',
   },
   errorInline: {
     fontSize: 12,
