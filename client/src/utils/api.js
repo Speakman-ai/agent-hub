@@ -158,6 +158,32 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // Finalize Code Changes — `.agent-hub/ci.yaml` setup wizard.
+  // Spawns a guided chat session loaded with the `finalize-setup`
+  // skill. Returns `{ sessionId, agentId, draft, session }`.
+  startFinalizeWizard: (projectId) =>
+    fetchJSON(`/projects/${projectId}/finalize/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // Commit a wizard-generated ci.yaml to the worktree. The optional
+  // `sessionId` overrides the "most recent project session with a
+  // worktree" heuristic. Returns `{ ok, file, commit_sha, branch,
+  // session_id }`.
+  applyFinalizeWizardConfig: (projectId, { ciYamlContent, sessionId } = {}) =>
+    fetchJSON(`/projects/${projectId}/finalize/setup-apply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ci_yaml_content: ciYamlContent,
+        ...(sessionId ? { session_id: sessionId } : {}),
+      }),
+    }),
+  // Notify Settings that the Finalize wizard finished.
+  completeFinalizeWizard: (projectId) =>
+    fetchJSON(`/projects/${projectId}/finalize/wizard-complete`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // Single-path configure + secrets + compose boot test. Admin+.
   buildPreviewEnvironment: (projectId, body) =>
     fetchJSON(`/projects/${projectId}/preview/build`, {

@@ -2295,6 +2295,264 @@ components:
         - prNumber
         - repoFullName
       description: Reviewer dispatch scheduled. A reviewer session will be spawned shortly (debounced ~30s); the session posts a formal review on GitHub via Reviewer App auth and exits.
+    FinalizeWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for finalize wizard routes.
+    FinalizeSetupSubproject:
+      type: object
+      properties:
+        path:
+          type: string
+          description: '`"."` for the root, else POSIX-relative.'
+        manifest:
+          type: string
+        manager:
+          type: string
+          nullable: true
+          enum:
+            - npm
+            - pnpm
+            - yarn
+            - pip
+            - poetry
+            - cargo
+            - go
+            - null
+      required:
+        - path
+        - manifest
+        - manager
+      description: A detected sub-project (root + apps/* + packages/*).
+    FinalizeNpmScriptHit:
+      type: object
+      properties:
+        name:
+          type: string
+        body:
+          type: string
+        kind:
+          type: string
+          enum:
+            - test
+            - lint
+            - typecheck
+            - build
+            - format
+            - other
+      required:
+        - name
+        - body
+        - kind
+      description: Top-level package.json script bucketed by name + body.
+    FinalizeSetupDraft:
+      type: object
+      properties:
+        existingCi:
+          type: boolean
+        existingCiContent:
+          type: string
+          nullable: true
+        stack:
+          type: string
+          enum:
+            - node
+            - python
+            - rust
+            - go
+            - mixed
+            - unknown
+        packageManager:
+          type: string
+          nullable: true
+          enum:
+            - npm
+            - pnpm
+            - yarn
+            - pip
+            - poetry
+            - cargo
+            - go
+            - null
+        isMonorepo:
+          type: boolean
+        subprojects:
+          type: array
+          items:
+            $ref: "#/components/schemas/FinalizeSetupSubproject"
+        githubWorkflows:
+          type: array
+          items:
+            type: string
+        makefileTargets:
+          type: array
+          items:
+            type: string
+        npmScripts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FinalizeNpmScriptHit"
+        readme:
+          type: object
+          properties:
+            readmePath:
+              type: string
+              nullable: true
+            setupExcerpt:
+              type: string
+              nullable: true
+            hasDockerHints:
+              type: boolean
+            envKeysFromReadme:
+              type: array
+              items:
+                type: string
+          required:
+            - readmePath
+            - setupExcerpt
+            - hasDockerHints
+            - envKeysFromReadme
+        envVars:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              sources:
+                type: array
+                items:
+                  type: string
+              required:
+                type: boolean
+            required:
+              - key
+              - sources
+              - required
+        proposedCiYaml:
+          type: string
+      required:
+        - existingCi
+        - existingCiContent
+        - stack
+        - packageManager
+        - isMonorepo
+        - subprojects
+        - githubWorkflows
+        - makefileTargets
+        - npmScripts
+        - readme
+        - envVars
+        - proposedCiYaml
+      description: Server-precomputed signal for the Finalize ci.yaml setup wizard. `proposedCiYaml` always parses against the v1 schema.
+    FinalizeWizardResolvedTarget:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        branch:
+          type: string
+        worktreePath:
+          type: string
+      required:
+        - sessionId
+        - branch
+        - worktreePath
+      description: The project session whose worktree would receive the commit if `setup-apply` were called right now. Resolved at wizard spawn time as the most-recent worktree-bearing session; `setup-apply` re-resolves on its own request, so the value is a starting suggestion, not a guarantee. Surface to the user before calling apply.
+    FinalizeWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/FinalizeSetupDraft"
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned wizard session.
+        target:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeWizardResolvedTarget"
+            - nullable: true
+              description: The resolved apply target at spawn time. `null` when no worktree-bearing session exists yet — the wizard can still run but apply will 400 with `no_worktree` until one does.
+      required:
+        - sessionId
+        - agentId
+        - draft
+        - target
+      description: Wizard session spawned successfully.
+    FinalizeSetupApplyRequest:
+      type: object
+      properties:
+        ci_yaml_content:
+          type: string
+          description: Verbatim `.agent-hub/ci.yaml` to commit. Validated against the v1 parser.
+        session_id:
+          type: string
+          description: Optional explicit target session id. When omitted the server picks the most-recent project session that has a worktree.
+      required:
+        - ci_yaml_content
+      description: Apply payload for the Finalize ci.yaml wizard.
+    FinalizeSetupApplyResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        file:
+          type: string
+          description: Relative path of the committed file.
+        commit_sha:
+          type: string
+        branch:
+          type: string
+        session_id:
+          type: string
+      required:
+        - ok
+        - file
+        - commit_sha
+        - branch
+        - session_id
+      description: Commit landed on the worktree branch.
+    FinalizeSetupApplyInvalidConfig:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - ci_config_invalid
+        code:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+          nullable: true
+      required:
+        - error
+        - code
+        - message
+        - path
+      description: YAML failed the v1 schema. `code` is the `CiConfigErrorCode` from `server/finalize/ci-config.ts`; `path` is the offending dotted field path when meaningful.
+    FinalizeWizardCompleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+      required:
+        - ok
+      description: Acknowledgement envelope.
     HeartbeatConfig:
       type: object
       properties:
@@ -9652,6 +9910,134 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExternalPrReviewErrorResponse"
+  /api/projects/{projectId}/finalize/setup-wizard:
+    post:
+      tags:
+        - Finalize
+      summary: Spawn the Finalize ci.yaml setup wizard
+      description: |-
+        Admin+. Scans the project (README, package manifests, .github/workflows,
+        Makefile, package.json scripts) and spawns a one-shot chat session loaded
+        with the `finalize-setup` skill. The pre-built `proposedCiYaml` always
+        parses against the v1 schema.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Body is empty.
+      responses:
+        "201":
+          description: Wizard session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardStartResponse"
+        "400":
+          description: Project has no cwd configured, or no agents to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+        "500":
+          description: Wizard agent could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+  /api/projects/{projectId}/finalize/setup-apply:
+    post:
+      tags:
+        - Finalize
+      summary: Commit a wizard-generated ci.yaml to the worktree
+      description: |-
+        Admin+. Validates `ci_yaml_content` against the v1 schema, writes
+        `<worktree>/.agent-hub/ci.yaml`, and commits the file to the worktree
+        branch. The target worktree is the request body's `session_id` when
+        supplied, else the most-recent project session that has one.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalizeSetupApplyRequest"
+      responses:
+        "200":
+          description: Committed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeSetupApplyResponse"
+        "400":
+          description: "Payload invalid: missing content, invalid v1 schema, no worktree-bearing session found, or worktree path is unreadable."
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+                  - $ref: "#/components/schemas/FinalizeSetupApplyInvalidConfig"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+        "500":
+          description: Write or commit failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
+  /api/projects/{projectId}/finalize/wizard-complete:
+    post:
+      tags:
+        - Finalize
+      summary: Notify the UI that the Finalize wizard has finished
+      description: User+. Broadcasts `finalize_wizard_complete` for the Settings panel so it can refresh state.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Body is empty.
+      responses:
+        "200":
+          description: Acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardCompleteResponse"
+        "404":
+          description: Project not found (silent — broadcast is a no-op).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeWizardErrorResponse"
   /api/config/gemini-auth:
     get:
       tags:
