@@ -52,7 +52,7 @@ export function enrichSessionWithAgents(
 ): SessionWireRow & { agents: SessionAgentDetail[]; advisor_count: number } {
   const agents = listSessionAgents(stmts, session, getEnrichedAgent);
   return {
-    ...enrichSessionForClient(session),
+    ...enrichSessionForClient(session, stmts),
     agents,
     advisor_count: Math.max(0, agents.length - 1),
   };

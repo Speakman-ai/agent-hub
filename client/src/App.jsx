@@ -23,7 +23,7 @@ import {
   previewIdFromEvent,
   shouldShowSessionPreviewPane,
 } from './utils/sessionPreviewState.js';
-import ChangesReadyBox from './components/ChangesReadyBox.jsx';
+import FinalizeButton from './components/finalize/FinalizeButton.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
 import {
   inferPrUrlFromSessionTitle,
@@ -216,7 +216,6 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
-  const [shipFailureAt, setShipFailureAt] = useState(null);
   // Live shell output while verify-before-Done runs (close-card → Done gate).
   const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
@@ -1080,9 +1079,6 @@ export default function App() {
           // Skip the toast on benign codes (none broadcast here — server
           // filters nothing_to_publish — but defensive against future codes).
           if (data.sessionId && typeof data.code === 'string') {
-            if (data.sessionId === activeSessionIdRef.current) {
-              setShipFailureAt(Date.now());
-            }
             const codeLabel =
               data.code === 'push_failed'
                 ? 'Push rejected'
@@ -4257,38 +4253,14 @@ export default function App() {
                             onStart={handleStartSessionPreview}
                             onConfigure={handlePreviewConfigure}
                           />
-                          {/* Create ticket & PR — loads create-ticket-and-pr skill */}
-                          {activeSessionId && (
-                            <ChangesReadyBox
+                          {/* Finalize Code Changes — replaces the legacy ship affordance. */}
+                          {activeSession?.card_id && activeChatProject?.id && (
+                            <FinalizeButton
+                              projectId={activeChatProject.id}
+                              cardId={activeSession.card_id}
                               sessionId={activeSessionId}
-                              isSessionProcessing={isProcessing}
-                              shipFailureAt={shipFailureAt}
-                              changes={
-                                changesReady[activeSessionId] || {
-                                  agentId: activeSession?.agent_id,
-                                  branch: activeSession?.worktree_branch || '',
-                                  hasUncommitted: false,
-                                  hasUnpushed: false,
-                                }
-                              }
-                              onTrigger={async () => {
-                                try {
-                                  await api.shipSession(activeSessionId);
-                                } catch (err) {
-                                  showToast(
-                                    err?.message || 'Failed to start Create ticket & PR',
-                                    'error',
-                                    8000,
-                                  );
-                                }
-                              }}
-                              onDismiss={(sessionId) => {
-                                setChangesReady((prev) => {
-                                  const next = { ...prev };
-                                  delete next[sessionId];
-                                  return next;
-                                });
-                              }}
+                              branchLabel={activeSession?.worktree_branch || ''}
+                              onError={(msg) => showToast(msg, 'error', 8000)}
                             />
                           )}
                         </div>

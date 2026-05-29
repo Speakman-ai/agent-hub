@@ -774,7 +774,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       broadcast({
         type: 'session_created',
         agentId,
-        session: enrichSessionForClient(stmts.getSession.get(sessionId) as SessionRow),
+        session: enrichSessionForClient(stmts.getSession.get(sessionId) as SessionRow, stmts),
       });
 
       res.json({

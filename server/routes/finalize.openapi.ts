@@ -21,6 +21,8 @@ const FINALIZE_RUN_STATUSES = [
   'failed',
   'timed_out',
   'infra_error',
+  'cancelled',
+  'stalled_no_response',
 ] as const;
 
 const FINALIZE_RUN_PHASES = ['rebase', 'review', 'tasks', 'dispatching', 'push'] as const;
@@ -162,6 +164,182 @@ registerPath({
     200: {
       description: 'Latest finalize_runs row for the session, or `null`.',
       content: jsonContent(LatestFinalizeRunResponseSchema),
+    },
+  },
+});
+
+// ─── POST /api/projects/:projectId/cards/:cardId/finalize ─────────────
+
+const StartFinalizeRunRequest = registerComponent(
+  'StartFinalizeRunRequest',
+  z.object({}).openapi({
+    description:
+      'Body is empty — the run is keyed entirely off the card, its linked session, and the resolved HEAD SHA.',
+  }),
+);
+
+const StartFinalizeRunResponse = registerComponent(
+  'StartFinalizeRunResponse',
+  z
+    .object({
+      run_id: z.string().nullable().openapi({
+        description:
+          'The `finalize_runs.id` for this run. `null` only when the run started but the row was not visible within the synchronous poll window (the 202 fallback).',
+      }),
+      status: z.enum(FINALIZE_RUN_STATUSES).openapi({
+        description: 'Status of the run at response time — `queued` for fresh starts.',
+      }),
+      reused: z.boolean().openapi({
+        description:
+          'True when the idempotency key matched an existing terminal row and that row was returned as-is.',
+      }),
+    })
+    .openapi({ description: 'A new or reused Finalize run.' }),
+);
+
+const StartFinalizeRunPending = registerComponent(
+  'StartFinalizeRunPending',
+  z
+    .object({
+      ok: z.literal(true).openapi({
+        description: 'Acknowledgement marker for the 202 fallback envelope.',
+      }),
+      run_id: z.null().openapi({
+        description:
+          'Always `null` on the 202 path — the row was not visible within the synchronous poll window. Clients fall back to the WS event stream or `GET /api/sessions/:sessionId/finalize-runs/latest` to discover the id.',
+      }),
+      status: z.literal('queued').openapi({
+        description: 'Always `queued` on the 202 path.',
+      }),
+      message: z.string().openapi({
+        description: 'Human-readable note explaining the fallback.',
+      }),
+    })
+    .openapi({
+      description:
+        'Fallback envelope returned when the orchestrator fired but the row insert was not visible within ~300ms. Distinct shape from `StartFinalizeRunResponse` so OpenAPI clients can branch on it.',
+    }),
+);
+
+const StartFinalizeRunInFlight = registerComponent(
+  'StartFinalizeRunInFlight',
+  z
+    .object({
+      error: z.literal('in_flight'),
+      run_id: z.string(),
+      status: z.enum(FINALIZE_RUN_STATUSES),
+      message: z.string(),
+    })
+    .openapi({
+      description:
+        'Conflict envelope returned when a non-terminal Finalize run already exists for the same (project, branch, head_sha).',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/cards/{cardId}/finalize',
+  tags: ['Finalize'],
+  summary: 'Start a Finalize Code Changes run for a card',
+  description: [
+    "Kicks off the Finalize pipeline against the card's linked session.",
+    'Idempotent on (project, branch, head_sha) per §4 — clicking the button',
+    'twice against the same HEAD returns the same row id.',
+    '',
+    'Returns 200 with the row id when the run was created (`reused: false`) or',
+    'when an idempotency match returned a TERMINAL row (`reused: true`).',
+    'Returns 409 when an idempotency match is non-terminal (a run is in flight).',
+    '',
+    'Requires session ownership — non-owners receive 404 to mask existence.',
+  ].join('\n'),
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      cardId: z.string(),
+    }),
+    body: { content: jsonContent(StartFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'Run created or terminal row reused.',
+      content: jsonContent(StartFinalizeRunResponse),
+    },
+    202: {
+      description:
+        'Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream. The 202 body uses a distinct envelope (`StartFinalizeRunPending`) from the 200 path so OpenAPI consumers can discriminate by `run_id: null`.',
+      content: jsonContent(StartFinalizeRunPending),
+    },
+    400: errorResponse(
+      'Missing session linkage, missing worktree, missing branch, or HEAD SHA could not be resolved.',
+    ),
+    404: errorResponse('Project or card not found, or caller does not own the session.'),
+    409: {
+      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      content: jsonContent(StartFinalizeRunInFlight),
+    },
+  },
+});
+
+// ─── POST /api/projects/:projectId/finalize/:runId/cancel ──────────────
+
+const CancelFinalizeRunRequest = registerComponent(
+  'CancelFinalizeRunRequest',
+  z.object({}).openapi({ description: 'Body is empty.' }),
+);
+
+const CancelFinalizeRunResponse = registerComponent(
+  'CancelFinalizeRunResponse',
+  z
+    .object({
+      ok: z.literal(true),
+      status: z.literal('cancelled'),
+    })
+    .openapi({ description: 'Cancellation confirmation.' }),
+);
+
+const CancelFinalizeRunTerminal = registerComponent(
+  'CancelFinalizeRunTerminal',
+  z
+    .object({
+      error: z.literal('terminal'),
+      status: z.enum(FINALIZE_RUN_STATUSES),
+      message: z.string(),
+    })
+    .openapi({
+      description: 'Conflict envelope returned when the run is already in a terminal state.',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/finalize/{runId}/cancel',
+  tags: ['Finalize'],
+  summary: 'Cancel an in-flight Finalize run',
+  description: [
+    'Flips the row to `cancelled` and broadcasts `finalize_run_phase_changed`',
+    "and `finalize_run_completed`. v0 is UI-only: the orchestrator's in-process",
+    '`CancelSignal` is NOT plumbed across requests, so an attempt already in flight',
+    'continues until it next checks for cancellation; its DB writes will land on',
+    'a row that is already terminal. The UI subscribes to the broadcast pair.',
+  ].join('\n'),
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      runId: z.string(),
+    }),
+    body: { content: jsonContent(CancelFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'Run was flipped to cancelled.',
+      content: jsonContent(CancelFinalizeRunResponse),
+    },
+    404: errorResponse(
+      'Project not found, run not found, run belongs to a different project, or caller does not own the linked session.',
+    ),
+    409: {
+      description: 'Run is already terminal.',
+      content: jsonContent(CancelFinalizeRunTerminal),
     },
   },
 });

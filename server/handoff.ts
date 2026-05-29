@@ -757,7 +757,7 @@ export async function handleHandoff(
       broadcast({
         type: 'session_created',
         agentId: targetAgent.id,
-        session: enrichSessionForClient(row),
+        session: enrichSessionForClient(row, stmts),
       });
     }
   }

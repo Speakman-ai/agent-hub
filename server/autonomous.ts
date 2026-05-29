@@ -1019,7 +1019,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
           d.broadcast({
             type: 'session_created',
             agentId: agent.id,
-            session: enrichSessionForClient(row),
+            session: enrichSessionForClient(row, d.stmts),
           });
         }
       }

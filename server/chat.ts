@@ -1851,7 +1851,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (session) {
           broadcast({
             type: 'session-updated',
-            session: enrichSessionForClient(session),
+            session: enrichSessionForClient(session, stmts),
           });
         }
 
@@ -1877,10 +1877,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               if (!sessSnapshot) return;
               broadcast({
                 type: 'session-updated',
-                session: enrichSessionForClient({
-                  ...sessSnapshot,
-                  name: newTitle,
-                } as SessionRow),
+                session: enrichSessionForClient(
+                  {
+                    ...sessSnapshot,
+                    name: newTitle,
+                  } as SessionRow,
+                  stmts,
+                ),
               });
             },
           });
