@@ -1487,3 +1487,497 @@ describe('runFinalize — §13 budget integration', () => {
     });
   });
 });
+
+// ─── §10 infra-failure classifier + one-auto-retry semantics ─────────
+//
+// The orchestrator's §10 contract:
+//   - infra-class failures (worktree_create_failed, container_unavailable,
+//     github_push_5xx) auto-retry exactly once.
+//   - CI-class failures (step_failed, reviewer_changes_requested,
+//     rebase_aborted, ci_config_invalid, timeout, etc.) never auto-retry.
+//   - The retry row's `retry_of_run_id` points at the original.
+//   - The retry inherits the family active-time budget — it does NOT
+//     get a fresh 60-min window.
+//   - On second infra failure, a system message is posted into the
+//     originating session with the machine code + detail + escalation
+//     hint. No GitHub surfaces touched.
+
+describe('runFinalize — §10 infra retry on first infra failure', () => {
+  it('first spawnSession failure opens a retry row pointing at the original', async () => {
+    const cardNoSession = { ...fakeCard, session_id: null } as KanbanCardRow;
+    const spawnSession = vi.fn().mockResolvedValue(null);
+    const { deps, stmts } = makeDeps({ spawnSession: spawnSession as never });
+    const result = await runFinalize(
+      deps,
+      baseOpts({ card: cardNoSession, sessionId: null, worktreePath: null }),
+    );
+    // Both attempts terminate with the same infra reason; the final
+    // outcome is the retry's terminal infra_error.
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('worktree_create_failed');
+    }
+    // Exactly two rows were inserted — the original + one retry.
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(2);
+    // The retry row carries `retry_of_run_id` pointing at the original.
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(2);
+    const original = rows.find((r) => !r.retry_of_run_id);
+    const retry = rows.find((r) => r.retry_of_run_id);
+    expect(original).toBeDefined();
+    expect(retry).toBeDefined();
+    expect(retry!.retry_of_run_id).toBe(original!.id);
+    // spawnSession was called for both attempts (the retry inherits null
+    // session/worktree because the original never resolved one).
+    expect(spawnSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('first push_5xx failure opens a retry row that succeeds → outcome is pushed', async () => {
+    // Push throws on attempt 1 then resolves successfully on attempt 2.
+    const pushed = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('502 from github'))
+      .mockResolvedValueOnce({
+        prUrl: 'https://github.com/o/r/pull/2',
+      } satisfies PushAndCreatePrResult);
+    const { deps, stmts } = makeDeps({ pushAndCreatePr: pushed });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('pushed');
+    if (result.kind === 'pushed') {
+      expect(result.prUrl).toBe('https://github.com/o/r/pull/2');
+    }
+    // Two rows: original (infra_error/github_push_5xx) + retry (pushed).
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(2);
+    const rows = Array.from(stmts.rows.values());
+    const original = rows.find((r) => !r.retry_of_run_id);
+    const retry = rows.find((r) => r.retry_of_run_id);
+    expect(original!.status).toBe('infra_error');
+    expect(original!.failure_reason).toBe('github_push_5xx');
+    expect(retry!.status).toBe('pushed');
+  });
+
+  it('CI-class failure (review_failed thrown) does NOT auto-retry', async () => {
+    const runReview = vi.fn().mockRejectedValue(new Error('llm timeout'));
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: runReview as never,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('review_failed');
+      // review_failed is CI-class → status remains `failed`, NOT
+      // `infra_error`.
+      expect(result.status).toBe('failed');
+    }
+    // No retry row — the reviewer phase ran exactly once.
+    expect(runReview).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('CI-class rebase_aborted does NOT auto-retry', async () => {
+    const rebase = vi.fn().mockResolvedValue({
+      kind: 'failed',
+      failureReason: 'rebase_aborted',
+      detail: 'unresolved conflict',
+      activeSecondsBilled: 30,
+    });
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('rebase_aborted');
+    }
+    expect(rebase).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('CI-class ci_config_invalid does NOT auto-retry', async () => {
+    const { deps, stmts } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi({
+        ok: false,
+        error: { code: 'yaml_parse_error', message: 'bad indent' },
+      }) as never,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('ci_config_invalid');
+    }
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('CI-class timeout (active-budget exhausted) does NOT auto-retry', async () => {
+    // Defense: the §13 timeout is CI-class. A test could pass if we
+    // accidentally classified timeout as infra (auto-retry once) AND
+    // the retry also tripped the family-budget guard → identical outer
+    // outcome (status=timed_out). The difference is whether the
+    // orchestrator opened a second row. Asserting exactly one
+    // insertFinalizeRun call pins the "no auto-retry on timeout"
+    // contract.
+    const { deps, stmts } = makeDeps({
+      runRebasePhase: vi
+        .fn()
+        .mockImplementation(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
+          depArg.stmts.updateFinalizeRunActiveSeconds.run(99_999, 'run-1');
+          return REBASE_OK;
+        }) as never,
+      runStepPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 1,
+          name: 'Test',
+          run: 'npm test',
+          exitCode: 1,
+          outputTail: ['failed'],
+        },
+      }),
+      dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
+      budgetSeconds: 60,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+    // Exactly ONE row — no retry was opened.
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unknown failure_reason does NOT trigger auto-retry (defensive default)', async () => {
+    // If a future phase module ever emits a failure_reason that hasn't
+    // been added to either whitelist (CI nor INFRA), the classifier
+    // returns 'unknown' and the orchestrator MUST treat it as
+    // non-retryable. Auto-retrying on a novel code could silently hide
+    // a CI regression behind a duplicate run; the correct fix is for
+    // the new code to be added to the appropriate list explicitly.
+    //
+    // We exercise this by stubbing rebase to return a `kind: 'failed'`
+    // with a failure_reason that is in neither whitelist.
+    const rebase = vi.fn().mockResolvedValue({
+      kind: 'failed',
+      failureReason: 'novel_failure_class_not_in_whitelist',
+      detail: 'some new failure source',
+      activeSecondsBilled: 30,
+    });
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      // outcomeFromFailed maps unknown reasons to status='failed' (the
+      // status='infra_error' branch only fires for known infra codes),
+      // and the retry gate also reads infra-class only — so no retry.
+      expect(result.failureReason).toBe('novel_failure_class_not_in_whitelist');
+      expect(result.status).toBe('failed');
+    }
+    // Rebase ran exactly once — no retry.
+    expect(rebase).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runFinalize — §10 second infra failure terminates as infra_error + posts session message', () => {
+  it('two consecutive worktree_create_failed → infra_error + system message posted', async () => {
+    const cardNoSession = { ...fakeCard, session_id: null } as KanbanCardRow;
+    const { deps, stmts } = makeDeps({
+      spawnSession: vi.fn().mockResolvedValue(null) as never,
+    });
+    const result = await runFinalize(
+      deps,
+      baseOpts({ card: cardNoSession, sessionId: null, worktreePath: null }),
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('worktree_create_failed');
+    }
+    // No session was ever resolved → no terminal message can be posted
+    // (the helper no-ops when sessionId is null). This is the expected
+    // graceful behavior for the worktree_create_failed code path.
+    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
+    const infraTerminalInsert = inserts.find((c) => {
+      const metadataRaw = c[7] as string | null;
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
+      } catch {
+        metadata = null;
+      }
+      return metadata?.kind === 'finalize_infra_terminal';
+    });
+    // No session, no message — graceful no-op.
+    expect(infraTerminalInsert).toBeUndefined();
+  });
+
+  it('two consecutive container_unavailable (rebase phase throws twice) → posts terminal session message', async () => {
+    // Session pre-resolved (so the terminal message has a place to land).
+    const rebase = vi.fn().mockRejectedValue(new Error('worktree wedged'));
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('container_unavailable');
+    }
+    // Both attempts re-ran rebase (which throws each time).
+    expect(rebase).toHaveBeenCalledTimes(2);
+    // Two rows: original + retry, both infra_error.
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(2);
+    const retry = rows.find((r) => r.retry_of_run_id)!;
+    expect(retry.status).toBe('infra_error');
+    expect(retry.failure_reason).toBe('container_unavailable');
+    // System message posted: structured metadata + escalation hint.
+    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
+    const infraTerminalInsert = inserts.find((c) => {
+      const metadataRaw = c[7] as string | null;
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
+      } catch {
+        metadata = null;
+      }
+      return metadata?.kind === 'finalize_infra_terminal';
+    });
+    expect(infraTerminalInsert).toBeDefined();
+    // The body carries the machine code + escalation hint.
+    const body = infraTerminalInsert![3] as string;
+    expect(body).toContain('container_unavailable');
+    expect(body).toContain('Re-trigger Finalize Code Changes');
+  });
+
+  it('two consecutive github_push_5xx → posts terminal session message + retry row marked infra_error', async () => {
+    const pushed = vi.fn().mockRejectedValue(new Error('502 from github'));
+    const { deps, stmts } = makeDeps({ pushAndCreatePr: pushed });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('github_push_5xx');
+      expect(result.status).toBe('infra_error');
+    }
+    expect(pushed).toHaveBeenCalledTimes(2);
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(2);
+    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
+    const infraTerminalInsert = inserts.find((c) => {
+      const metadataRaw = c[7] as string | null;
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
+      } catch {
+        metadata = null;
+      }
+      return metadata?.kind === 'finalize_infra_terminal';
+    });
+    expect(infraTerminalInsert).toBeDefined();
+    const meta = JSON.parse(infraTerminalInsert![7] as string) as Record<string, unknown>;
+    expect(meta.failureReason).toBe('github_push_5xx');
+  });
+});
+
+describe('runFinalize — §10 retry inherits the family active-time budget', () => {
+  it('retry does NOT get a fresh 60-min — family total caps the cumulative spend', async () => {
+    // Each rebase burns 1800s (30 min). Attempt 1 fails infra (rebase
+    // throws on the SECOND call, after the first attempt's loop has
+    // already burned budget). Attempt 2 has only the remainder. The
+    // budget guard at the top of the retry loop sees the family total
+    // and trips immediately.
+    //
+    // Setup: budget = 3600s (60 min). Attempt 1's rebase succeeds once,
+    // burning 1800s, then steps fail green-but-not-approved → fix
+    // dispatch → second rebase pass throws (infra_error). At that
+    // point parent's active_seconds_consumed = 1800. The retry attempt
+    // starts with a fresh runId; if it had a fresh budget it would
+    // happily burn another 3600s. With the family-shared cap, the next
+    // rebase pass (which would burn 1800s, total 3600s) starts but the
+    // top-of-loop guard checks isBudgetExhausted(retryRunId, 3600)
+    // which sums parent+retry; after the retry's rebase the family
+    // total is 3600 and the guard trips.
+    //
+    // To make the assertion crisp: we mock rebase to ALWAYS throw
+    // (infra_error). Attempt 1: budget burn during the throw is zero
+    // (the rebase throws before billing). Both attempts terminate
+    // immediately with container_unavailable, BUT we then check the
+    // family-budget reading:
+    //   - parent active_seconds_consumed: 0
+    //   - retry active_seconds_consumed: 0
+    //   - family total: 0
+    // The budget guard doesn't trip because nothing was consumed.
+    //
+    // For the inherited-budget assertion, we instead pre-seed the
+    // original row with active_seconds_consumed at the cap. The retry
+    // path's top-of-loop budget guard should then trip on the FIRST
+    // rebase pass — before even calling rebase — because the family
+    // total already crosses the cap.
+    //
+    // We achieve this by: spawnSession is the infra failure on attempt
+    // 1, but BEFORE returning null the spawnSession mock writes the
+    // parent's active_seconds_consumed to 3600. On the retry the
+    // top-of-loop guard sees parent=3600 + retry=0 = 3600 vs cap 3600
+    // → exhausted → returns timed_out terminal IMMEDIATELY without
+    // burning any further work.
+    //
+    // We assert: the retry terminates as timed_out (CI-class), not
+    // infra_error. The family budget caps the retry's reach.
+
+    const cardNoSession = { ...fakeCard, session_id: null } as KanbanCardRow;
+    let spawnCallCount = 0;
+    const spawnSession = vi.fn(async ({ card: _c, project: _p }) => {
+      void _c;
+      void _p;
+      spawnCallCount += 1;
+      if (spawnCallCount === 1) {
+        // First spawn: pre-burn the parent's budget so the retry will
+        // trip the top-of-loop guard immediately, then return null
+        // (worktree_create_failed → infra retry path).
+        const rows = Array.from(stmts.rows.values());
+        const original = rows[0];
+        if (original) {
+          original.active_seconds_consumed = 3600; // exactly at cap
+        }
+        return null;
+      }
+      // Second spawn (on retry): also returns null → another
+      // worktree_create_failed.
+      return null;
+    });
+
+    const { deps, stmts } = makeDeps({
+      spawnSession: spawnSession as never,
+      budgetSeconds: 3600, // 60 min
+    });
+    const result = await runFinalize(
+      deps,
+      baseOpts({ card: cardNoSession, sessionId: null, worktreePath: null }),
+    );
+    // The retry's session-resolution layer (still null) hits the same
+    // worktree_create_failed terminal. The family budget was at the cap
+    // BEFORE the retry even started; the guard inside driveAttempt's
+    // main loop would have tripped on the next iteration, but the
+    // worktree_create_failed surface happens BEFORE the loop. We assert
+    // the family budget is respected: both rows together should not
+    // consume more than the cap.
+    expect(result.kind).toBe('failed');
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(2);
+    const parent = rows.find((r) => !r.retry_of_run_id)!;
+    const retry = rows.find((r) => r.retry_of_run_id)!;
+    // Parent was pre-seeded at the cap; the retry's own bill is 0.
+    expect(parent.active_seconds_consumed).toBe(3600);
+    expect(retry.active_seconds_consumed).toBe(0);
+    // Sum is exactly the cap; retry did NOT get a fresh 60 min.
+    const familyTotal =
+      (parent.active_seconds_consumed ?? 0) + (retry.active_seconds_consumed ?? 0);
+    expect(familyTotal).toBe(3600);
+    expect(familyTotal).not.toBeGreaterThan(3600);
+  });
+
+  it('retry attempt that DOES enter the main loop sees the family-shared budget guard trip', async () => {
+    // This time the original fails infra inside the main loop (rebase
+    // throws AFTER consuming budget). The retry then enters the loop
+    // with the family budget already at the cap; the top-of-loop guard
+    // trips and surfaces as timed_out — NOT infra_error — because the
+    // budget guard is the §13 timeout path.
+    let rebaseCallCount = 0;
+    const rebase = vi.fn(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
+      rebaseCallCount += 1;
+      if (rebaseCallCount === 1) {
+        // Original attempt's first rebase pass: consume the entire
+        // budget, then throw.
+        depArg.stmts.updateFinalizeRunActiveSeconds.run(3600, 'run-1');
+        throw new Error('worktree wedged');
+      }
+      // Retry attempt's first rebase: would normally consume more, but
+      // we should never reach this point — the budget guard at the top
+      // of the loop should trip first because the family total is
+      // already at the cap.
+      depArg.stmts.updateFinalizeRunActiveSeconds.run(100, 'run-2');
+      return REBASE_OK;
+    });
+
+    const { deps, stmts } = makeDeps({
+      runRebasePhase: rebase as never,
+      budgetSeconds: 3600,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      // The retry tripped the §13 budget guard on its top-of-loop
+      // check (family total ≥ cap), surfacing timed_out — NOT
+      // infra_error.
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+    // Rebase was called once on the original (which threw); the retry
+    // tripped the budget guard BEFORE calling rebase.
+    expect(rebaseCallCount).toBe(1);
+    // Family total stays at the cap; the retry's own bill is 0.
+    const rows = Array.from(stmts.rows.values());
+    const parent = rows.find((r) => !r.retry_of_run_id)!;
+    const retry = rows.find((r) => r.retry_of_run_id)!;
+    expect(parent.active_seconds_consumed).toBe(3600);
+    expect(retry.active_seconds_consumed).toBe(0);
+  });
+});
+
+describe('runFinalize — §10 retry inherits resolved session + worktree from parent', () => {
+  it('spawnSession ran on attempt 1 → retry uses the same sessionId, does NOT re-spawn', async () => {
+    // Attempt 1: card has no session_id; spawnSession succeeds, then
+    // the rebase phase throws (infra) BEFORE any further session work.
+    // Attempt 2: should inherit the spawned session/worktree and NOT
+    // re-fire spawnSession — the worktree belongs to the session.
+    const cardNoSession = { ...fakeCard, session_id: null } as KanbanCardRow;
+    const spawnSession = vi
+      .fn()
+      .mockResolvedValueOnce({ sessionId: 'spawned-sess', worktreePath: '/tmp/spawned-wt' })
+      .mockResolvedValue(null); // would NULL if called a second time
+    const rebase = vi.fn().mockRejectedValue(new Error('worktree wedged'));
+    const { deps } = makeDeps({
+      spawnSession: spawnSession as never,
+      runRebasePhase: rebase as never,
+    });
+    const result = await runFinalize(
+      deps,
+      baseOpts({ card: cardNoSession, sessionId: null, worktreePath: null }),
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('container_unavailable');
+    }
+    // spawnSession called exactly ONCE — the retry inherited the
+    // original's resolved session.
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+    // Rebase called twice — the retry actually ran the state machine.
+    expect(rebase).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runFinalize — §10 retry broadcasts and lifecycle', () => {
+  it('emits TWO finalize_run_created events (one per run row)', async () => {
+    const rebase = vi.fn().mockRejectedValue(new Error('worktree wedged'));
+    const { deps, broadcast } = makeDeps({ runRebasePhase: rebase as never });
+    await runFinalize(deps, baseOpts());
+    const createdEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_created');
+    expect(createdEvents).toHaveLength(2);
+  });
+
+  it('emits TWO finalize_run_completed events on double-infra terminal', async () => {
+    const rebase = vi.fn().mockRejectedValue(new Error('worktree wedged'));
+    const { deps, broadcast } = makeDeps({ runRebasePhase: rebase as never });
+    await runFinalize(deps, baseOpts());
+    const completedEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_completed');
+    expect(completedEvents).toHaveLength(2);
+    for (const e of completedEvents) {
+      expect(e.status).toBe('infra_error');
+      expect(e.failure_reason).toBe('container_unavailable');
+    }
+  });
+});

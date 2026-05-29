@@ -82,6 +82,11 @@ import {
   postTimeoutDispatchMessage,
   resolveBudgetSeconds,
 } from './budget.js';
+import {
+  isInfraFailureReason,
+  openInfraRetryRun,
+  postInfraTerminalMessage,
+} from './infra-retry.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -442,144 +447,377 @@ export async function runFinalize(
   // head sha.
   lifecycle.onStarted({ runId, triggerSource: opts.triggerSource });
 
-  // Pre-cancel: caller already aborted before we wired anything up.
-  if (opts.signal?.aborted) {
-    return cancelTerminal(deps, runId, log);
-  }
+  // ─── Attempt driver ─────────────────────────────────────────────────
+  // The body of a single Finalize attempt — phase loop, session
+  // resolution, push gate, terminal writes — lives inside this nested
+  // closure so the §10 one-auto-retry path can re-invoke it with a
+  // fresh `runId` (the retry row's id) without restating the entire
+  // state machine. `runId` is shadowed by the parameter — every helper
+  // inside resolves to the per-attempt id, never to the outer-scope
+  // original.
+  //
+  // The closure shares `budgetSeconds` with the outer scope by
+  // reference so a ci.yaml narrowing inside attempt 1 carries into
+  // attempt 2 (per §13: the cap is family-shared and may only LOWER —
+  // both attempts see the same monotonically-narrowing cap). The
+  // family-total accounting inside `budgetExhausted` ensures the
+  // retry's own bills add to the parent's, not start fresh.
+  const driveAttempt = async (
+    runId: string,
+    retryOfRunId: string | null,
+    initialSessionId: string | null,
+    initialWorktreePath: string | null,
+  ): Promise<OrchestratorOutcome> => {
+    // Retain the param so callers reading the type signature see what
+    // it is for, even though the body does not branch on it today (the
+    // §10 retry gate lives in the outer wrapper). Linters keep us
+    // honest with this no-op reference.
+    void retryOfRunId;
 
-  // ─── Resolve the session if needed ──────────────────────────────────
-  // The fix-dispatch loop requires a real session to inject messages
-  // into; we resolve up-front so a "session was archived" surface
-  // produces a clear failure before we burn rebase time.
-  let sessionId: string | null = opts.sessionId ?? opts.card.session_id ?? null;
-  let worktreePath = opts.worktreePath ?? null;
-  if (!sessionId && deps.spawnSession) {
-    try {
-      const spawned = await deps.spawnSession({
-        card: opts.card,
-        project: opts.project,
-        triggeredByUserId: opts.triggeredByUserId,
-      });
-      if (!spawned) {
-        return terminate(
-          deps,
-          runId,
-          'failed',
-          'worktree_create_failed',
-          'spawnSession returned null — no session available for fix dispatch',
-          log,
-        );
-      }
-      sessionId = spawned.sessionId;
-      worktreePath = spawned.worktreePath;
-      deps.stmts.updateFinalizeRunSessionId.run(sessionId, runId);
-      deps.stmts.updateFinalizeRunWorktreePath.run(worktreePath, runId);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'worktree_create_failed',
-        `spawnSession threw: ${msg}`,
-        log,
-      );
-    }
-  }
-
-  if (!sessionId) {
-    return terminate(
-      deps,
-      runId,
-      'failed',
-      'worktree_create_failed',
-      'card has no session_id and no spawnSession dep wired',
-      log,
-    );
-  }
-  if (!worktreePath) {
-    return terminate(
-      deps,
-      runId,
-      'failed',
-      'worktree_create_failed',
-      'no worktree_path available for rebase phase',
-      log,
-    );
-  }
-
-  const ciConfigPath = opts.ciConfigPath ?? `${worktreePath}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
-
-  // ─── Main loop: rebase → parse → review → tasks → combined gate ─────
-  // Every fix dispatch re-enters at the top of this loop (§3 loop
-  // invariant). We pin `lastReviewerVerdict` and `lastStepStatus` PER
-  // ITERATION so a stale signal from a prior pass can never escape into
-  // the push gate.
-  let loopCount = 0;
-  // Track the last reviewer + step signals so the combined gate doesn't
-  // re-read state from the DB (which would race with the live row).
-  let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
-  let lastStepOutcome: StepRunResult | null = null;
-  let parsedCi: CiConfig | null = null;
-
-  while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
-    loopCount += 1;
-
+    // Pre-cancel: caller already aborted before we wired anything up.
     if (opts.signal?.aborted) {
       return cancelTerminal(deps, runId, log);
     }
-    if (budgetExhausted(deps, runId, budgetSeconds, log)) {
-      return timeoutTerminal(deps, runId, opts, sessionId, budgetSeconds, lastStepOutcome, log);
-    }
 
-    // ── Phase 1: rebase ─────────────────────────────────────────────
-    let rebaseOutcome: RebasePhaseOutcome;
-    try {
-      rebaseOutcome = await runRebase(
-        {
-          stmts: deps.stmts,
-          broadcast: deps.broadcast,
-          dispatchAndWaitForTurnEnd: deps.dispatchAndWaitForTurnEnd,
-          budgetSeconds: budgetSeconds,
-        },
-        {
-          runId,
-          worktreePath,
-          baseBranch: opts.baseBranch,
-          featureBranch: opts.branch,
-          env: opts.env,
+    // ─── Resolve the session if needed ────────────────────────────────
+    // The fix-dispatch loop requires a real session to inject messages
+    // into; we resolve up-front so a "session was archived" surface
+    // produces a clear failure before we burn rebase time. On the retry
+    // attempt we inherit the original's resolved session + worktree
+    // path so spawnSession is not re-fired (the session owns the
+    // worktree per §6).
+    let sessionId: string | null = initialSessionId;
+    let worktreePath = initialWorktreePath;
+    if (!sessionId && deps.spawnSession) {
+      try {
+        const spawned = await deps.spawnSession({
           card: opts.card,
           project: opts.project,
-        },
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+          triggeredByUserId: opts.triggeredByUserId,
+        });
+        if (!spawned) {
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'worktree_create_failed',
+            'spawnSession returned null — no session available for fix dispatch',
+            log,
+          );
+        }
+        sessionId = spawned.sessionId;
+        worktreePath = spawned.worktreePath;
+        deps.stmts.updateFinalizeRunSessionId.run(sessionId, runId);
+        deps.stmts.updateFinalizeRunWorktreePath.run(worktreePath, runId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'infra_error',
+          'worktree_create_failed',
+          `spawnSession threw: ${msg}`,
+          log,
+        );
+      }
+    }
+
+    if (!sessionId) {
       return terminate(
         deps,
         runId,
         'infra_error',
-        'container_unavailable',
-        `rebase phase threw: ${msg}`,
+        'worktree_create_failed',
+        'card has no session_id and no spawnSession dep wired',
         log,
       );
     }
-    // Emit active-seconds tick after rebase (success or fail) so
-    // subscribers see the running total. The rebase phase wrote the DB
-    // directly; we read back + broadcast.
-    broadcastActiveSeconds(deps, runId);
-    if (rebaseOutcome.kind === 'failed') {
-      // Mirror the rebase failure onto the card BEFORE we propagate the
-      // failure — `outcomeFromFailed` writes the terminal broadcasts but
-      // does not touch the card surface. Only on first iteration to
-      // avoid spamming on a fix-dispatch-loop rebase that later fails.
-      if (loopCount === 1) {
-        lifecycle.onRebaseAborted({ runId, detail: rebaseOutcome.detail });
+    if (!worktreePath) {
+      return terminate(
+        deps,
+        runId,
+        'infra_error',
+        'worktree_create_failed',
+        'no worktree_path available for rebase phase',
+        log,
+      );
+    }
+
+    const ciConfigPath = opts.ciConfigPath ?? `${worktreePath}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
+
+    // ─── Main loop: rebase → parse → review → tasks → combined gate ─────
+    // Every fix dispatch re-enters at the top of this loop (§3 loop
+    // invariant). We pin `lastReviewerVerdict` and `lastStepStatus` PER
+    // ITERATION so a stale signal from a prior pass can never escape into
+    // the push gate.
+    let loopCount = 0;
+    // Track the last reviewer + step signals so the combined gate doesn't
+    // re-read state from the DB (which would race with the live row).
+    let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
+    let lastStepOutcome: StepRunResult | null = null;
+    let parsedCi: CiConfig | null = null;
+
+    while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
+      loopCount += 1;
+
+      if (opts.signal?.aborted) {
+        return cancelTerminal(deps, runId, log);
       }
-      // §13: a rebase that fails on `failure_reason = 'timeout'` should
-      // surface with the timeout-class behavior (session message with the
-      // last attempt output tail). `outcomeFromFailed` already maps the
-      // status to `timed_out`; we additionally post the dispatch message.
-      if (rebaseOutcome.failureReason === 'timeout') {
+      if (budgetExhausted(deps, runId, budgetSeconds, log)) {
+        return timeoutTerminal(deps, runId, opts, sessionId, budgetSeconds, lastStepOutcome, log);
+      }
+
+      // ── Phase 1: rebase ─────────────────────────────────────────────
+      let rebaseOutcome: RebasePhaseOutcome;
+      try {
+        rebaseOutcome = await runRebase(
+          {
+            stmts: deps.stmts,
+            broadcast: deps.broadcast,
+            dispatchAndWaitForTurnEnd: deps.dispatchAndWaitForTurnEnd,
+            budgetSeconds: budgetSeconds,
+          },
+          {
+            runId,
+            worktreePath,
+            baseBranch: opts.baseBranch,
+            featureBranch: opts.branch,
+            env: opts.env,
+            card: opts.card,
+            project: opts.project,
+          },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'infra_error',
+          'container_unavailable',
+          `rebase phase threw: ${msg}`,
+          log,
+        );
+      }
+      // Emit active-seconds tick after rebase (success or fail) so
+      // subscribers see the running total. The rebase phase wrote the DB
+      // directly; we read back + broadcast.
+      broadcastActiveSeconds(deps, runId);
+      if (rebaseOutcome.kind === 'failed') {
+        // Mirror the rebase failure onto the card BEFORE we propagate the
+        // failure — `outcomeFromFailed` writes the terminal broadcasts but
+        // does not touch the card surface. Only on first iteration to
+        // avoid spamming on a fix-dispatch-loop rebase that later fails.
+        if (loopCount === 1) {
+          lifecycle.onRebaseAborted({ runId, detail: rebaseOutcome.detail });
+        }
+        // §13: a rebase that fails on `failure_reason = 'timeout'` should
+        // surface with the timeout-class behavior (session message with the
+        // last attempt output tail). `outcomeFromFailed` already maps the
+        // status to `timed_out`; we additionally post the dispatch message.
+        if (rebaseOutcome.failureReason === 'timeout') {
+          postBudgetTimeoutMessageIfPossible(
+            deps,
+            runId,
+            opts,
+            sessionId,
+            budgetSeconds,
+            lastStepOutcome,
+            log,
+          );
+        }
+        return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
+      }
+      if (rebaseOutcome.rebaseKind === 'skipped') {
+        // Skipped rebases mean we cannot guarantee we're on top of origin/<base>.
+        // The rebase phase already wrote `success` to its return value, but the
+        // push gate would refuse anyway, so we surface this as failed early
+        // with a clear failure_reason.
+        if (loopCount === 1) {
+          lifecycle.onRebaseAborted({
+            runId,
+            detail: 'rebase skipped — base branch unavailable or unsafe',
+          });
+        }
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'rebase_aborted',
+          'rebase skipped — base branch unavailable or unsafe',
+          log,
+        );
+      }
+      // First-iteration rebase succeeded. Mirror "clean" vs "conflict
+      // dispatched to session" onto the card. We split on
+      // `conflictsDispatchedCount` rather than `requiredFix` so the
+      // trivial-auto-resolve case (whitespace / lockfile fixups, no
+      // session interaction) stays silent — the user does not need to act
+      // on it. Subsequent rebase iterations stay silent to keep the
+      // comment timeline readable.
+      if (loopCount === 1) {
+        const dispatched = rebaseOutcome.conflictsDispatchedCount ?? 0;
+        if (dispatched > 0) {
+          lifecycle.onRebaseConflictDispatched({ runId });
+        } else {
+          lifecycle.onRebaseClean({ runId });
+        }
+      }
+
+      // Snapshot the post-rebase HEAD. Everything from here through the
+      // push gate is "validation against this specific sha"; the push gate
+      // refuses when HEAD differs from this snapshot at push time (§9).
+      //
+      // Why AFTER rebase, not before: rebase may rewrite the feature
+      // branch's commits onto `origin/<base>` and thereby change every
+      // local SHA. Capturing pre-rebase would always refuse on the first
+      // pass when the upstream actually moved. The snapshot must reflect
+      // the tree the reviewer and step runner saw.
+      let headValidatedAgainst: string;
+      try {
+        headValidatedAgainst = await resolveHead(worktreePath, opts.env);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'infra_error',
+          'container_unavailable',
+          `resolveHeadSha (post-rebase snapshot) threw: ${msg}`,
+          log,
+        );
+      }
+
+      if (opts.signal?.aborted) {
+        return cancelTerminal(deps, runId, log);
+      }
+
+      // ── Phase 2: parse ci.yaml ──────────────────────────────────────
+      // Always re-parse — the session may have edited ci.yaml during the
+      // fix dispatch and the loop invariant demands we re-validate it.
+      let parseResult: CiConfigParseResult;
+      try {
+        parseResult = await loadCi(ciConfigPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'ci_config_invalid',
+          `ci.yaml load threw: ${msg}`,
+          log,
+        );
+      }
+      if (!parseResult.ok) {
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'ci_config_invalid',
+          `${parseResult.error.code}: ${parseResult.error.message}`,
+          log,
+        );
+      }
+      parsedCi = parseResult.config;
+      // §13: ci.yaml's `timeout_minutes` may LOWER the cap but never
+      // raise it. The hard ceiling is FINALIZE_BUDGET_HARD_CEILING_SECONDS
+      // — resolveBudgetSeconds clamps to it. We also re-clamp against the
+      // current `budgetSeconds` so a dep-injected lower-than-default cap
+      // (used in tests) is not silently raised back to 60 by a permissive
+      // ci.yaml. Effectively: the narrowest of {dep, ci.yaml, hard cap}
+      // wins.
+      budgetSeconds = Math.min(
+        budgetSeconds,
+        resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
+      );
+
+      if (opts.signal?.aborted) {
+        return cancelTerminal(deps, runId, log);
+      }
+
+      // ── Phase 3: reviewer ──────────────────────────────────────────
+      try {
+        lastReviewerOutcome = await runReview(
+          {
+            stmts: deps.stmts,
+            broadcast: deps.broadcast,
+            runReviewer: deps.runReviewer,
+            transactional: deps.transactional ?? identityTransactional,
+          },
+          {
+            runId,
+            worktreePath,
+            baseBranch: opts.baseBranch,
+            env: opts.env,
+            card: opts.card,
+            project: opts.project,
+          },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'review_failed',
+          `reviewer dispatch threw: ${msg}`,
+          log,
+        );
+      }
+      // Emit active-seconds tick after review (success or fail).
+      broadcastActiveSeconds(deps, runId);
+      if (lastReviewerOutcome.kind === 'failed') {
+        return outcomeFromFailed(
+          deps,
+          runId,
+          lastReviewerOutcome.failureReason,
+          lastReviewerOutcome.detail,
+        );
+      }
+      // Mirror the verdict onto the card. Fires on EVERY loop iteration,
+      // not just the first — the user wants to see the back-and-forth when
+      // a `changes_requested` verdict triggers a fix dispatch and the next
+      // pass produces a new verdict.
+      lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
+
+      if (opts.signal?.aborted) {
+        return cancelTerminal(deps, runId, log);
+      }
+
+      // ── Phase 4: tasks ──────────────────────────────────────────────
+      try {
+        lastStepOutcome = await runSteps(
+          {
+            stmts: deps.stmts,
+            broadcast: deps.broadcast,
+          },
+          {
+            runId,
+            config: parsedCi,
+            worktreePath,
+            sessionId,
+            env: opts.env,
+          },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return terminate(
+          deps,
+          runId,
+          'infra_error',
+          'container_unavailable',
+          `step phase threw: ${msg}`,
+          log,
+        );
+      }
+
+      // Emit active-seconds tick after the tasks phase (success or fail).
+      broadcastActiveSeconds(deps, runId);
+      // Step terminal classes: the runner already wrote `failed` /
+      // `timed_out` to the row for those classes, but NOT for `infra_error`
+      // (§10 leaves that to the orchestrator).
+      if (lastStepOutcome.status === 'timeout') {
+        // §13: surface with the timeout-class dispatch message.
         postBudgetTimeoutMessageIfPossible(
           deps,
           runId,
@@ -589,244 +827,213 @@ export async function runFinalize(
           lastStepOutcome,
           log,
         );
+        return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
       }
-      return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
-    }
-    if (rebaseOutcome.rebaseKind === 'skipped') {
-      // Skipped rebases mean we cannot guarantee we're on top of origin/<base>.
-      // The rebase phase already wrote `success` to its return value, but the
-      // push gate would refuse anyway, so we surface this as failed early
-      // with a clear failure_reason.
-      if (loopCount === 1) {
-        lifecycle.onRebaseAborted({
+      if (lastStepOutcome.status === 'infra_error') {
+        return terminate(
+          deps,
           runId,
-          detail: 'rebase skipped — base branch unavailable or unsafe',
+          'infra_error',
+          'container_unavailable',
+          lastStepOutcome.infraErrorDetail ?? 'step phase reported infra_error',
+          log,
+        );
+      }
+
+      // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
+      // The combined gate and the push gate fold together: we only
+      // re-resolve HEAD when steps + reviewer agree, because the head-sha
+      // check is the most expensive of the three (one extra git call) and
+      // is meaningless when the first two conditions already refused.
+      // When either of the first two fails we drop straight into fix
+      // dispatch with the iteration's stale signals — that's the §6
+      // behavior the loop invariant guarantees is safe.
+      const stepsGreen = lastStepOutcome.status === 'success';
+      const reviewerApproved = lastReviewerOutcome.verdict === 'approved';
+      if (stepsGreen && reviewerApproved) {
+        // ── Phase 7: push gate (§9) ─────────────────────────────────
+        // Refusal here is a TOCTOU outcome: HEAD moved BETWEEN the
+        // post-rebase snapshot (`headValidatedAgainst`) and right now —
+        // i.e. a commit landed on the feature branch while the reviewer +
+        // step phases were running. Comparing against the trigger-time
+        // `opts.headSha` would refuse forever after any fix dispatch
+        // landed new commits; the snapshot is what review and steps
+        // actually validated, so it is the authoritative baseline.
+        let currentHead: string;
+        try {
+          currentHead = await resolveHead(worktreePath, opts.env);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'container_unavailable',
+            `resolveHeadSha (push gate) threw: ${msg}`,
+            log,
+          );
+        }
+        const gateOutcome = evaluatePushGate({
+          stepStatus: lastStepOutcome.status,
+          reviewerVerdict: lastReviewerOutcome.verdict,
+          headBeforePhases: headValidatedAgainst,
+          headAtPushGate: currentHead,
+        });
+        if (gateOutcome.kind === 'refuse') {
+          // The only refusal reachable in this branch is `head_sha_moved`
+          // (the other two refusal codes are unreachable because we
+          // already checked `stepsGreen && reviewerApproved`). Re-enter
+          // the loop instead of dispatching — there is no failure to
+          // dispatch; we just need to re-validate against the new head.
+          // The next loop iteration's rebase pass will refresh the
+          // snapshot and re-run review + steps.
+          log(
+            `[finalize-orchestrator] push gate refused for run=${runId}: ` +
+              `${gateOutcome.detail}; re-entering rebase`,
+          );
+          // We do not bill active-seconds here — the gate is a pure check.
+          // The next loop iteration will burn the rebase + review + tasks
+          // budget for the new head.
+          continue;
+        }
+
+        // ── Phase 8: push ───────────────────────────────────────────
+        // `headSha` passed downstream is the gate-validated sha — the sha
+        // the reviewer approved and the steps ran green against, NOT the
+        // trigger-time sha. Production's
+        // `git push --force-with-lease=<branch>:<headSha>` uses this as
+        // the expected remote ref, so it must reflect what's actually on
+        // disk now.
+        setPhase(deps, runId, 'push', 'pushing', log);
+        let pushResult: PushAndCreatePrResult;
+        try {
+          pushResult = await deps.pushAndCreatePr({
+            runId,
+            worktreePath,
+            branch: opts.branch,
+            baseBranch: opts.baseBranch,
+            headSha: gateOutcome.validatedHeadSha,
+            card: opts.card,
+            project: opts.project,
+            env: opts.env,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'github_push_5xx',
+            `push step threw: ${msg}`,
+            log,
+          );
+        }
+        if (!pushResult.prUrl) {
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'github_push_5xx',
+            'push step returned empty pr_url',
+            log,
+          );
+        }
+
+        // Persist atomically: the provenance helper writes pr_url; we
+        // then mark the row pushed + ended_at. Order matters — the
+        // markFinalizeRunPushed write closes the lifecycle, so pr_url
+        // MUST be persisted first so any read-back during the same tick
+        // sees a complete row.
+        try {
+          writeFinalizeRunPrUrl({ stmts: deps.stmts }, { runId, prUrl: pushResult.prUrl });
+          deps.stmts.markFinalizeRunPushed.run(runId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'github_push_5xx',
+            `persisting pr_url / pushed failed: ${msg}`,
+            log,
+          );
+        }
+        deps.broadcast({
+          type: 'finalize_run_phase_changed',
+          run_id: runId,
+          phase: 'push',
+          status: 'pushed',
+        });
+        deps.broadcast({
+          type: 'finalize_run_completed',
+          run_id: runId,
+          status: 'pushed',
+          pr_url: pushResult.prUrl,
+        });
+        // Mirror onto the card: post the PR URL comment and move the card
+        // → Review (§15 post-push detach). The lifecycle impl handles the
+        // ordering so the comment is in place by the time the column
+        // re-render hits the UI.
+        lifecycle.onPushed({ runId, prUrl: pushResult.prUrl });
+        return { kind: 'pushed', runId, prUrl: pushResult.prUrl };
+      }
+
+      // ── Phase 6: fix dispatch ───────────────────────────────────────
+      // Either steps failed, reviewer requested changes, or both. Build
+      // the §7 trigger and inject the message; await turn-end and re-enter
+      // the loop. The watchdog is armed inside `dispatchFixMessage` for
+      // `ui_button` triggers only.
+      const trigger = buildFixTrigger(deps, runId, lastStepOutcome, lastReviewerOutcome, log);
+      // Mirror a step failure onto the card — exactly when there IS a
+      // failed step AND the fix-dispatch loop is about to run. Reviewer-
+      // only `changes_requested` cases (no failed step) are already
+      // covered by `onReviewerVerdict` above; we deliberately don't
+      // double-comment.
+      if (lastStepOutcome.failedStep) {
+        lifecycle.onStepFailed({
+          runId,
+          stepName: lastStepOutcome.failedStep.name,
+          exitCode: lastStepOutcome.failedStep.exitCode,
         });
       }
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'rebase_aborted',
-        'rebase skipped — base branch unavailable or unsafe',
-        log,
-      );
-    }
-    // First-iteration rebase succeeded. Mirror "clean" vs "conflict
-    // dispatched to session" onto the card. We split on
-    // `conflictsDispatchedCount` rather than `requiredFix` so the
-    // trivial-auto-resolve case (whitespace / lockfile fixups, no
-    // session interaction) stays silent — the user does not need to act
-    // on it. Subsequent rebase iterations stay silent to keep the
-    // comment timeline readable.
-    if (loopCount === 1) {
-      const dispatched = rebaseOutcome.conflictsDispatchedCount ?? 0;
-      if (dispatched > 0) {
-        lifecycle.onRebaseConflictDispatched({ runId });
-      } else {
-        lifecycle.onRebaseClean({ runId });
+      if (isTriggerEmpty(trigger)) {
+        // Defensive: combined gate said "not green AND approved" but the
+        // composer found nothing useful (both step success and reviewer
+        // approved with empty threads). The only way this can happen is a
+        // bug in upstream logic; surface as failed with a dedicated code so
+        // it can't be confused with `review_failed` (real reviewer crash)
+        // or `max_fix_iterations` (runaway-loop backstop).
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'combined_gate_invariant_violated',
+          'combined gate refused but no failure signal to dispatch',
+          log,
+        );
       }
-    }
 
-    // Snapshot the post-rebase HEAD. Everything from here through the
-    // push gate is "validation against this specific sha"; the push gate
-    // refuses when HEAD differs from this snapshot at push time (§9).
-    //
-    // Why AFTER rebase, not before: rebase may rewrite the feature
-    // branch's commits onto `origin/<base>` and thereby change every
-    // local SHA. Capturing pre-rebase would always refuse on the first
-    // pass when the upstream actually moved. The snapshot must reflect
-    // the tree the reviewer and step runner saw.
-    let headValidatedAgainst: string;
-    try {
-      headValidatedAgainst = await resolveHead(worktreePath, opts.env);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'infra_error',
-        'container_unavailable',
-        `resolveHeadSha (post-rebase snapshot) threw: ${msg}`,
-        log,
-      );
-    }
-
-    if (opts.signal?.aborted) {
-      return cancelTerminal(deps, runId, log);
-    }
-
-    // ── Phase 2: parse ci.yaml ──────────────────────────────────────
-    // Always re-parse — the session may have edited ci.yaml during the
-    // fix dispatch and the loop invariant demands we re-validate it.
-    let parseResult: CiConfigParseResult;
-    try {
-      parseResult = await loadCi(ciConfigPath);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'ci_config_invalid',
-        `ci.yaml load threw: ${msg}`,
-        log,
-      );
-    }
-    if (!parseResult.ok) {
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'ci_config_invalid',
-        `${parseResult.error.code}: ${parseResult.error.message}`,
-        log,
-      );
-    }
-    parsedCi = parseResult.config;
-    // §13: ci.yaml's `timeout_minutes` may LOWER the cap but never
-    // raise it. The hard ceiling is FINALIZE_BUDGET_HARD_CEILING_SECONDS
-    // — resolveBudgetSeconds clamps to it. We also re-clamp against the
-    // current `budgetSeconds` so a dep-injected lower-than-default cap
-    // (used in tests) is not silently raised back to 60 by a permissive
-    // ci.yaml. Effectively: the narrowest of {dep, ci.yaml, hard cap}
-    // wins.
-    budgetSeconds = Math.min(
-      budgetSeconds,
-      resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
-    );
-
-    if (opts.signal?.aborted) {
-      return cancelTerminal(deps, runId, log);
-    }
-
-    // ── Phase 3: reviewer ──────────────────────────────────────────
-    try {
-      lastReviewerOutcome = await runReview(
-        {
-          stmts: deps.stmts,
-          broadcast: deps.broadcast,
-          runReviewer: deps.runReviewer,
-          transactional: deps.transactional ?? identityTransactional,
-        },
-        {
-          runId,
-          worktreePath,
-          baseBranch: opts.baseBranch,
-          env: opts.env,
-          card: opts.card,
-          project: opts.project,
-        },
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'review_failed',
-        `reviewer dispatch threw: ${msg}`,
-        log,
-      );
-    }
-    // Emit active-seconds tick after review (success or fail).
-    broadcastActiveSeconds(deps, runId);
-    if (lastReviewerOutcome.kind === 'failed') {
-      return outcomeFromFailed(
-        deps,
-        runId,
-        lastReviewerOutcome.failureReason,
-        lastReviewerOutcome.detail,
-      );
-    }
-    // Mirror the verdict onto the card. Fires on EVERY loop iteration,
-    // not just the first — the user wants to see the back-and-forth when
-    // a `changes_requested` verdict triggers a fix dispatch and the next
-    // pass produces a new verdict.
-    lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
-
-    if (opts.signal?.aborted) {
-      return cancelTerminal(deps, runId, log);
-    }
-
-    // ── Phase 4: tasks ──────────────────────────────────────────────
-    try {
-      lastStepOutcome = await runSteps(
-        {
-          stmts: deps.stmts,
-          broadcast: deps.broadcast,
-        },
-        {
-          runId,
-          config: parsedCi,
-          worktreePath,
-          sessionId,
-          env: opts.env,
-        },
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'infra_error',
-        'container_unavailable',
-        `step phase threw: ${msg}`,
-        log,
-      );
-    }
-
-    // Emit active-seconds tick after the tasks phase (success or fail).
-    broadcastActiveSeconds(deps, runId);
-    // Step terminal classes: the runner already wrote `failed` /
-    // `timed_out` to the row for those classes, but NOT for `infra_error`
-    // (§10 leaves that to the orchestrator).
-    if (lastStepOutcome.status === 'timeout') {
-      // §13: surface with the timeout-class dispatch message.
-      postBudgetTimeoutMessageIfPossible(
-        deps,
-        runId,
-        opts,
-        sessionId,
-        budgetSeconds,
-        lastStepOutcome,
-        log,
-      );
-      return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
-    }
-    if (lastStepOutcome.status === 'infra_error') {
-      return terminate(
-        deps,
-        runId,
-        'infra_error',
-        'container_unavailable',
-        lastStepOutcome.infraErrorDetail ?? 'step phase reported infra_error',
-        log,
-      );
-    }
-
-    // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
-    // The combined gate and the push gate fold together: we only
-    // re-resolve HEAD when steps + reviewer agree, because the head-sha
-    // check is the most expensive of the three (one extra git call) and
-    // is meaningless when the first two conditions already refused.
-    // When either of the first two fails we drop straight into fix
-    // dispatch with the iteration's stale signals — that's the §6
-    // behavior the loop invariant guarantees is safe.
-    const stepsGreen = lastStepOutcome.status === 'success';
-    const reviewerApproved = lastReviewerOutcome.verdict === 'approved';
-    if (stepsGreen && reviewerApproved) {
-      // ── Phase 7: push gate (§9) ─────────────────────────────────
-      // Refusal here is a TOCTOU outcome: HEAD moved BETWEEN the
-      // post-rebase snapshot (`headValidatedAgainst`) and right now —
-      // i.e. a commit landed on the feature branch while the reviewer +
-      // step phases were running. Comparing against the trigger-time
-      // `opts.headSha` would refuse forever after any fix dispatch
-      // landed new commits; the snapshot is what review and steps
-      // actually validated, so it is the authoritative baseline.
-      let currentHead: string;
+      let fix: FixDispatchResult;
       try {
-        currentHead = await resolveHead(worktreePath, opts.env);
+        fix = await dispatchFix(
+          {
+            stmts: deps.stmts,
+            broadcast: deps.broadcast,
+            turnEnd: deps.turnEnd,
+          },
+          {
+            runId,
+            sessionId,
+            projectId: opts.project.id,
+            cardId: opts.card.id,
+            triggerSource: opts.triggerSource,
+            cardTitle: opts.card.title,
+            trigger,
+            notifyAfterMs: opts.stallNotifyAfterMs,
+            stallAfterMs: opts.stallAfterMs,
+            signal: opts.signal,
+          },
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return terminate(
@@ -834,220 +1041,156 @@ export async function runFinalize(
           runId,
           'infra_error',
           'container_unavailable',
-          `resolveHeadSha (push gate) threw: ${msg}`,
-          log,
-        );
-      }
-      const gateOutcome = evaluatePushGate({
-        stepStatus: lastStepOutcome.status,
-        reviewerVerdict: lastReviewerOutcome.verdict,
-        headBeforePhases: headValidatedAgainst,
-        headAtPushGate: currentHead,
-      });
-      if (gateOutcome.kind === 'refuse') {
-        // The only refusal reachable in this branch is `head_sha_moved`
-        // (the other two refusal codes are unreachable because we
-        // already checked `stepsGreen && reviewerApproved`). Re-enter
-        // the loop instead of dispatching — there is no failure to
-        // dispatch; we just need to re-validate against the new head.
-        // The next loop iteration's rebase pass will refresh the
-        // snapshot and re-run review + steps.
-        log(
-          `[finalize-orchestrator] push gate refused for run=${runId}: ` +
-            `${gateOutcome.detail}; re-entering rebase`,
-        );
-        // We do not bill active-seconds here — the gate is a pure check.
-        // The next loop iteration will burn the rebase + review + tasks
-        // budget for the new head.
-        continue;
-      }
-
-      // ── Phase 8: push ───────────────────────────────────────────
-      // `headSha` passed downstream is the gate-validated sha — the sha
-      // the reviewer approved and the steps ran green against, NOT the
-      // trigger-time sha. Production's
-      // `git push --force-with-lease=<branch>:<headSha>` uses this as
-      // the expected remote ref, so it must reflect what's actually on
-      // disk now.
-      setPhase(deps, runId, 'push', 'pushing', log);
-      let pushResult: PushAndCreatePrResult;
-      try {
-        pushResult = await deps.pushAndCreatePr({
-          runId,
-          worktreePath,
-          branch: opts.branch,
-          baseBranch: opts.baseBranch,
-          headSha: gateOutcome.validatedHeadSha,
-          card: opts.card,
-          project: opts.project,
-          env: opts.env,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return terminate(
-          deps,
-          runId,
-          'infra_error',
-          'github_push_5xx',
-          `push step threw: ${msg}`,
-          log,
-        );
-      }
-      if (!pushResult.prUrl) {
-        return terminate(
-          deps,
-          runId,
-          'infra_error',
-          'github_push_5xx',
-          'push step returned empty pr_url',
+          `fix dispatch threw: ${msg}`,
           log,
         );
       }
 
-      // Persist atomically: the provenance helper writes pr_url; we
-      // then mark the row pushed + ended_at. Order matters — the
-      // markFinalizeRunPushed write closes the lifecycle, so pr_url
-      // MUST be persisted first so any read-back during the same tick
-      // sees a complete row.
-      try {
-        writeFinalizeRunPrUrl({ stmts: deps.stmts }, { runId, prUrl: pushResult.prUrl });
-        deps.stmts.markFinalizeRunPushed.run(runId);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return terminate(
-          deps,
-          runId,
-          'infra_error',
-          'github_push_5xx',
-          `persisting pr_url / pushed failed: ${msg}`,
-          log,
-        );
+      // Emit active-seconds tick after fix dispatch. The fix-dispatch
+      // helper itself bills the per-dispatch entry charge; the chat.ts
+      // session turn-end hook bills the originating-session turn
+      // duration. Both writes have already landed by the time we're here;
+      // this broadcast surfaces the combined running total.
+      broadcastActiveSeconds(deps, runId);
+      if (fix.outcome === 'stalled_no_response') {
+        // The watchdog already wrote the terminal status; just surface.
+        // Mirror the stall onto the card — this is the "human walked away"
+        // branch (see card `490d6c41`); the comment names the two recovery
+        // actions so the user has a clear next step.
+        lifecycle.onStalled({ runId });
+        return { kind: 'stalled', runId };
       }
-      deps.broadcast({
-        type: 'finalize_run_phase_changed',
-        run_id: runId,
-        phase: 'push',
-        status: 'pushed',
-      });
-      deps.broadcast({
-        type: 'finalize_run_completed',
-        run_id: runId,
-        status: 'pushed',
-        pr_url: pushResult.prUrl,
-      });
-      // Mirror onto the card: post the PR URL comment and move the card
-      // → Review (§15 post-push detach). The lifecycle impl handles the
-      // ordering so the comment is in place by the time the column
-      // re-render hits the UI.
-      lifecycle.onPushed({ runId, prUrl: pushResult.prUrl });
-      return { kind: 'pushed', runId, prUrl: pushResult.prUrl };
+      if (fix.outcome === 'cancelled') {
+        return cancelTerminal(deps, runId, log);
+      }
+      // `turn_ended` — the session committed (or at least ended its turn).
+      // We re-enter at the top of the loop. The next iteration's rebase
+      // pass will refresh the worktree state and the reviewer + step
+      // verdicts will be reproduced against the new HEAD.
     }
 
-    // ── Phase 6: fix dispatch ───────────────────────────────────────
-    // Either steps failed, reviewer requested changes, or both. Build
-    // the §7 trigger and inject the message; await turn-end and re-enter
-    // the loop. The watchdog is armed inside `dispatchFixMessage` for
-    // `ui_button` triggers only.
-    const trigger = buildFixTrigger(deps, runId, lastStepOutcome, lastReviewerOutcome, log);
-    // Mirror a step failure onto the card — exactly when there IS a
-    // failed step AND the fix-dispatch loop is about to run. Reviewer-
-    // only `changes_requested` cases (no failed step) are already
-    // covered by `onReviewerVerdict` above; we deliberately don't
-    // double-comment.
-    if (lastStepOutcome.failedStep) {
-      lifecycle.onStepFailed({
-        runId,
-        stepName: lastStepOutcome.failedStep.name,
-        exitCode: lastStepOutcome.failedStep.exitCode,
-      });
-    }
-    if (isTriggerEmpty(trigger)) {
-      // Defensive: combined gate said "not green AND approved" but the
-      // composer found nothing useful (both step success and reviewer
-      // approved with empty threads). The only way this can happen is a
-      // bug in upstream logic; surface as failed with a dedicated code so
-      // it can't be confused with `review_failed` (real reviewer crash)
-      // or `max_fix_iterations` (runaway-loop backstop).
-      return terminate(
-        deps,
-        runId,
-        'failed',
-        'combined_gate_invariant_violated',
-        'combined gate refused but no failure signal to dispatch',
-        log,
-      );
-    }
+    return terminate(
+      deps,
+      runId,
+      'failed',
+      // Distinct code from `review_failed` (the reviewer step itself
+      // crashing) so dashboards / log queries can tell apart "the LLM
+      // reviewer broke" from "the runaway-loop backstop tripped". The
+      // backstop should almost never fire — when it does, that's the
+      // signal that either the active-time budget is misconfigured or
+      // the fix dispatch produced no actual commits across N iterations.
+      'max_fix_iterations',
+      `fix-dispatch loop hit MAX_FIX_DISPATCH_LOOPS=${MAX_FIX_DISPATCH_LOOPS}`,
+      log,
+    );
+  }; // end driveAttempt
 
-    let fix: FixDispatchResult;
-    try {
-      fix = await dispatchFix(
-        {
-          stmts: deps.stmts,
-          broadcast: deps.broadcast,
-          turnEnd: deps.turnEnd,
-        },
-        {
-          runId,
-          sessionId,
-          projectId: opts.project.id,
-          cardId: opts.card.id,
-          triggerSource: opts.triggerSource,
-          cardTitle: opts.card.title,
-          trigger,
-          notifyAfterMs: opts.stallNotifyAfterMs,
-          stallAfterMs: opts.stallAfterMs,
-          signal: opts.signal,
-        },
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return terminate(
-        deps,
-        runId,
-        'infra_error',
-        'container_unavailable',
-        `fix dispatch threw: ${msg}`,
-        log,
-      );
-    }
+  // ─── §10: drive original attempt + optional one infra retry ─────────
+  // The first attempt receives the trigger-time session/worktree (which
+  // may be null when the card has no live session — in that case the
+  // attempt's session-resolution block spawns one and persists the
+  // resolved values onto the row). The retry attempt inherits whatever
+  // the original resolved, so spawnSession is NOT re-fired on the
+  // retry path.
+  const attempt1 = await driveAttempt(
+    runId,
+    opts.retryOfRunId ?? null,
+    opts.sessionId ?? opts.card.session_id ?? null,
+    opts.worktreePath ?? null,
+  );
 
-    // Emit active-seconds tick after fix dispatch. The fix-dispatch
-    // helper itself bills the per-dispatch entry charge; the chat.ts
-    // session turn-end hook bills the originating-session turn
-    // duration. Both writes have already landed by the time we're here;
-    // this broadcast surfaces the combined running total.
-    broadcastActiveSeconds(deps, runId);
-    if (fix.outcome === 'stalled_no_response') {
-      // The watchdog already wrote the terminal status; just surface.
-      // Mirror the stall onto the card — this is the "human walked away"
-      // branch (see card `490d6c41`); the comment names the two recovery
-      // actions so the user has a clear next step.
-      lifecycle.onStalled({ runId });
-      return { kind: 'stalled', runId };
-    }
-    if (fix.outcome === 'cancelled') {
-      return cancelTerminal(deps, runId, log);
-    }
-    // `turn_ended` — the session committed (or at least ended its turn).
-    // We re-enter at the top of the loop. The next iteration's rebase
-    // pass will refresh the worktree state and the reviewer + step
-    // verdicts will be reproduced against the new HEAD.
+  // Retry gate: only the ORIGINAL attempt can spawn a retry. If this
+  // run was itself opened as a retry by an upstream caller (e.g. a
+  // future cron resumes a finalize_runs row directly), we do not
+  // escalate further — §10 caps at one auto-retry. The classifier rules
+  // — `isInfraFailureReason` returns true only for the explicit §10
+  // infra whitelist; an unknown failure_reason is never auto-retried.
+  const isFirstAttempt = !opts.retryOfRunId;
+  const isInfraTerminal =
+    attempt1.kind === 'failed' &&
+    attempt1.status === 'infra_error' &&
+    isInfraFailureReason(attempt1.failureReason);
+  if (!isFirstAttempt || !isInfraTerminal) {
+    return attempt1;
   }
 
-  return terminate(
-    deps,
-    runId,
-    'failed',
-    // Distinct code from `review_failed` (the reviewer step itself
-    // crashing) so dashboards / log queries can tell apart "the LLM
-    // reviewer broke" from "the runaway-loop backstop tripped". The
-    // backstop should almost never fire — when it does, that's the
-    // signal that either the active-time budget is misconfigured or
-    // the fix dispatch produced no actual commits across N iterations.
-    'max_fix_iterations',
-    `fix-dispatch loop hit MAX_FIX_DISPATCH_LOOPS=${MAX_FIX_DISPATCH_LOOPS}`,
-    log,
+  // Open the one infra-retry row. `openInfraRetryRun` mirrors the
+  // parent's identifying tuple onto the retry row and broadcasts a
+  // fresh `finalize_run_created` so subscribers see the retry pop into
+  // existence. If the helper returns null (parent missing, would-be a
+  // retry-of-retry, insert raced) we surface the original terminal
+  // as-is — better to leave the original failure visible than to
+  // crash the orchestrator on a retry attempt that could not even be
+  // recorded.
+  const retry = openInfraRetryRun(
+    {
+      stmts: deps.stmts,
+      broadcast: deps.broadcast,
+      newId,
+      now,
+      log,
+    },
+    { parentRunId: runId, triggerSource: opts.triggerSource },
   );
+  if (!retry) {
+    return attempt1;
+  }
+
+  // The original row may have learned a session_id / worktree_path
+  // mid-attempt (spawnSession ran). Read it back here so the retry
+  // inherits those values rather than re-spawning a second session.
+  let retryInitialSessionId: string | null = null;
+  let retryInitialWorktreePath: string | null = null;
+  try {
+    const origRow = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    retryInitialSessionId = origRow?.session_id ?? null;
+    retryInitialWorktreePath = origRow?.worktree_path ?? null;
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] reading original row=${runId} for retry inheritance threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const attempt2 = await driveAttempt(
+    retry.runId,
+    runId,
+    retryInitialSessionId,
+    retryInitialWorktreePath,
+  );
+
+  // §10 terminal: a second infra failure surfaces as `infra_error` AND
+  // posts a system message into the originating session naming the
+  // machine code, the error string, and the escalation hint. No GitHub
+  // surfaces touched — Finalize runs entirely pre-PR.
+  const retryIsInfraTerminal =
+    attempt2.kind === 'failed' &&
+    attempt2.status === 'infra_error' &&
+    isInfraFailureReason(attempt2.failureReason);
+  if (retryIsInfraTerminal && attempt2.kind === 'failed') {
+    let terminalSessionId: string | null = retryInitialSessionId;
+    try {
+      const retryRow = deps.stmts.getFinalizeRun.get(retry.runId) as FinalizeRunRow | undefined;
+      terminalSessionId = retryRow?.session_id ?? terminalSessionId;
+    } catch {
+      /* fall back to retryInitialSessionId */
+    }
+    postInfraTerminalMessage(
+      { stmts: deps.stmts, broadcast: deps.broadcast, log, newId },
+      {
+        parentRunId: runId,
+        retryRunId: retry.runId,
+        sessionId: terminalSessionId,
+        cardId: opts.card.id,
+        projectId: opts.project.id,
+        failureReason: attempt2.failureReason,
+        detail: attempt2.detail,
+      },
+    );
+  }
+
+  return attempt2;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
