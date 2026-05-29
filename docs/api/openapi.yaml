@@ -567,6 +567,31 @@ components:
         - status
         - reused
       description: A new or reused Finalize run.
+    StartFinalizeRunPending:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+          description: Acknowledgement marker for the 202 fallback envelope.
+        run_id:
+          nullable: true
+          description: Always `null` on the 202 path — the row was not visible within the synchronous poll window. Clients fall back to the WS event stream or `GET /api/sessions/:sessionId/finalize-runs/latest` to discover the id.
+        status:
+          type: string
+          enum:
+            - queued
+          description: Always `queued` on the 202 path.
+        message:
+          type: string
+          description: Human-readable note explaining the fallback.
+      required:
+        - ok
+        - run_id
+        - status
+        - message
+      description: Fallback envelope returned when the orchestrator fired but the row insert was not visible within ~300ms. Distinct shape from `StartFinalizeRunResponse` so OpenAPI clients can branch on it.
     StartFinalizeRunInFlight:
       type: object
       properties:
@@ -4960,11 +4985,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/StartFinalizeRunResponse"
         "202":
-          description: Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream.
+          description: "Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream. The 202 body uses a distinct envelope (`StartFinalizeRunPending`) from the 200 path so OpenAPI consumers can discriminate by `run_id: null`."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StartFinalizeRunResponse"
+                $ref: "#/components/schemas/StartFinalizeRunPending"
         "400":
           description: Missing session linkage, missing worktree, missing branch, or HEAD SHA could not be resolved.
           content:

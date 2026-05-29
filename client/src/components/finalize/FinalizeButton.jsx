@@ -9,6 +9,15 @@ import {
 import { api } from '../../utils/api.js';
 
 /**
+ * Floor for the optimistic-disable timer, in milliseconds. Sized large
+ * enough to cover both the usual `finalize_run_phase_changed` WS arrival
+ * window and the reused/terminal short-circuit case where the POST
+ * returns but the run-row stays idle (so the button would otherwise
+ * snap back to enabled in the same tick the click handler resolved).
+ */
+const OPTIMISTIC_BLOCK_MS = 1500;
+
+/**
  * "Finalize Code Changes" call-to-action — replaces the legacy
  * `<ChangesReadyBox />` ship affordance. Subscribes to the active
  * Finalize run for the bound session via {@link useFinalizeRun} and
@@ -31,9 +40,13 @@ import { api } from '../../utils/api.js';
  * subprocess. See contract §12 / `finalize-code-changes-architecture-v0`.
  *
  * Optimistic disable: after a successful POST we hold the button
- * disabled for ~250ms so the user sees an immediate response even if
- * the `finalize_run_phase_changed` WebSocket event takes a beat to
- * land. The hook's real `status` takes over as soon as it arrives.
+ * disabled for {@link OPTIMISTIC_BLOCK_MS} as a floor so the user sees
+ * an immediate response even if the `finalize_run_phase_changed`
+ * WebSocket event takes a beat to land. The hook's real `status` takes
+ * over as soon as it arrives. The floor is also what covers the
+ * reused/terminal short-circuit case where the POST returns but the
+ * hook stays idle — without it, the button would visibly snap back to
+ * enabled in the same tick.
  */
 export default function FinalizeButton({
   projectId,
@@ -53,7 +66,9 @@ export default function FinalizeButton({
   // Brief optimistic disable so the click feels responsive — the WS
   // event that flips `status` into a blocked state usually arrives
   // within a few hundred ms but we don't want a "click does nothing"
-  // gap.
+  // gap. The floor (OPTIMISTIC_BLOCK_MS) is sized to cover both the
+  // usual WS-arrival window AND the reused/terminal short-circuit case
+  // where the POST returns but the hook never transitions.
   const [optimisticBlock, setOptimisticBlock] = useState(false);
   const optimisticTimerRef = useRef(null);
   useEffect(
@@ -71,12 +86,13 @@ export default function FinalizeButton({
     if (!projectId || !cardId) return;
     setOptimisticBlock(true);
     if (optimisticTimerRef.current) clearTimeout(optimisticTimerRef.current);
-    // Keep the optimistic disable for ~250ms as a floor — the WS event
-    // typically arrives sooner, but the floor avoids a flicker if the
-    // POST returns reused/terminal and the hook stays idle.
+    // Hold the optimistic disable for `OPTIMISTIC_BLOCK_MS` as a floor —
+    // the WS event typically arrives in a few hundred ms, but the floor
+    // avoids a flicker when the POST returns reused/terminal and the
+    // hook stays idle.
     optimisticTimerRef.current = setTimeout(() => {
       setOptimisticBlock(false);
-    }, 1500);
+    }, OPTIMISTIC_BLOCK_MS);
     try {
       await api.startFinalizeRun(projectId, cardId);
     } catch (err) {

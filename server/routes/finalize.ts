@@ -42,7 +42,6 @@ import {
   type OrchestratorOutcome,
 } from '../finalize/orchestrator.js';
 import { buildOrchestratorDeps } from '../finalize/orchestrator-deps.js';
-import { getDb } from '../db.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -143,9 +142,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Card not found' });
       }
 
-      const session = getDb()
-        .prepare('SELECT * FROM sessions WHERE id = ?')
-        .get(card.session_id) as SessionRow | undefined;
+      const session = stmts.getSession.get(card.session_id) as SessionRow | undefined;
       if (!session) {
         return res
           .status(400)

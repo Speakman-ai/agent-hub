@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
+import { isTerminalStatus, isFinalizeBlocked, describeRunPhase } from '../utils/finalizeRun';
 import { colors } from '../theme/colors';
 
 /**
@@ -279,69 +280,10 @@ export default function FinalizeButton({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Status helpers — mirror `client/src/hooks/useFinalizeRun.js`. We re-derive
-// them locally rather than import from the web hook because the web hook
-// also wires up `window.addEventListener` which isn't available in RN.
-// ---------------------------------------------------------------------------
-
-const TERMINAL_STATUSES = new Set([
-  'pushed',
-  'failed',
-  'timed_out',
-  'infra_error',
-  'cancelled',
-  'stalled_no_response',
-]);
-
-function isTerminalStatus(status) {
-  return !!status && TERMINAL_STATUSES.has(status);
-}
-
-const FINALIZE_BLOCKED_STATUSES = new Set([
-  'queued',
-  'rebasing',
-  'reviewing',
-  'running',
-  'dispatching',
-  'pushing',
-]);
-
-function isFinalizeBlocked(status) {
-  return !!status && FINALIZE_BLOCKED_STATUSES.has(status);
-}
-
-function describeRunPhase(status, phase) {
-  if (!status) return 'idle';
-  switch (status) {
-    case 'queued':
-      return 'queued';
-    case 'rebasing':
-      return 'rebasing';
-    case 'reviewing':
-      return 'reviewing';
-    case 'running':
-      return phase === 'tasks' ? 'running checks' : 'running';
-    case 'dispatching':
-      return 'awaiting fix';
-    case 'pushing':
-      return 'pushing';
-    case 'pushed':
-      return 'pushed';
-    case 'failed':
-      return 'failed';
-    case 'timed_out':
-      return 'timed out';
-    case 'infra_error':
-      return 'infra error';
-    case 'cancelled':
-      return 'cancelled';
-    case 'stalled_no_response':
-      return 'stalled';
-    default:
-      return String(status).replace(/_/g, ' ');
-  }
-}
+// Status helpers (`isTerminalStatus`, `isFinalizeBlocked`,
+// `describeRunPhase`) live in `mobile/src/utils/finalizeRun.js` so they
+// can be unit-tested and shared. Keep them in sync with
+// `client/src/hooks/useFinalizeRun.js`.
 
 const PURPLE = '#7C3AED';
 

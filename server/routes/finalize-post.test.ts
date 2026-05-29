@@ -52,6 +52,9 @@ vi.mock('../finalize/orchestrator-deps.js', () => ({
   buildOrchestratorDeps,
 }));
 
+// The session lookup now flows through `stmts.getSession` (not a raw
+// `getDb().prepare(...)`); we keep the `db.js` mock to neutralise any
+// lingering imports but the real fixture lives on `makeStmts()` below.
 const dbGetSession = vi.fn();
 vi.mock('../db.js', () => ({
   getDb: () => ({
@@ -70,6 +73,7 @@ function makeStmts() {
     getLatestFinalizeRunForSession: { get: vi.fn() },
     getKanbanCard: { get: vi.fn() },
     getKanbanBoard: { get: vi.fn() },
+    getSession: { get: vi.fn() },
     listReviewerThreadsForRun: { all: vi.fn().mockReturnValue([]) },
     failFinalizeRun: { run: vi.fn() },
   };
@@ -161,7 +165,7 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       session_id: 'sess-1',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
-    dbGetSession.mockReturnValue({
+    stmts.getSession.get.mockReturnValue({
       id: 'sess-1',
       worktree_path: null,
       worktree_branch: 'feature/x',
@@ -182,7 +186,7 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       session_id: 'sess-1',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
-    dbGetSession.mockReturnValue({
+    stmts.getSession.get.mockReturnValue({
       id: 'sess-1',
       worktree_path: '/tmp/wt',
       worktree_branch: null,
@@ -216,7 +220,7 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       session_id: 'sess-1',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
-    dbGetSession.mockReturnValue({
+    stmts.getSession.get.mockReturnValue({
       id: 'sess-1',
       worktree_path: '/tmp/wt',
       worktree_branch: 'feature/x',
@@ -245,7 +249,7 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       session_id: 'sess-1',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
-    dbGetSession.mockReturnValue({
+    stmts.getSession.get.mockReturnValue({
       id: 'sess-1',
       worktree_path: '/tmp/wt',
       worktree_branch: 'feature/x',
@@ -272,7 +276,7 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       title: 't',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
-    dbGetSession.mockReturnValue({
+    stmts.getSession.get.mockReturnValue({
       id: 'sess-1',
       worktree_path: '/tmp/wt',
       worktree_branch: 'feature/x',

@@ -197,6 +197,30 @@ const StartFinalizeRunResponse = registerComponent(
     .openapi({ description: 'A new or reused Finalize run.' }),
 );
 
+const StartFinalizeRunPending = registerComponent(
+  'StartFinalizeRunPending',
+  z
+    .object({
+      ok: z.literal(true).openapi({
+        description: 'Acknowledgement marker for the 202 fallback envelope.',
+      }),
+      run_id: z.null().openapi({
+        description:
+          'Always `null` on the 202 path — the row was not visible within the synchronous poll window. Clients fall back to the WS event stream or `GET /api/sessions/:sessionId/finalize-runs/latest` to discover the id.',
+      }),
+      status: z.literal('queued').openapi({
+        description: 'Always `queued` on the 202 path.',
+      }),
+      message: z.string().openapi({
+        description: 'Human-readable note explaining the fallback.',
+      }),
+    })
+    .openapi({
+      description:
+        'Fallback envelope returned when the orchestrator fired but the row insert was not visible within ~300ms. Distinct shape from `StartFinalizeRunResponse` so OpenAPI clients can branch on it.',
+    }),
+);
+
 const StartFinalizeRunInFlight = registerComponent(
   'StartFinalizeRunInFlight',
   z
@@ -242,8 +266,8 @@ registerPath({
     },
     202: {
       description:
-        'Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream.',
-      content: jsonContent(StartFinalizeRunResponse),
+        'Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream. The 202 body uses a distinct envelope (`StartFinalizeRunPending`) from the 200 path so OpenAPI consumers can discriminate by `run_id: null`.',
+      content: jsonContent(StartFinalizeRunPending),
     },
     400: errorResponse(
       'Missing session linkage, missing worktree, missing branch, or HEAD SHA could not be resolved.',
