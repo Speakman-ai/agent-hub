@@ -429,6 +429,8 @@ components:
             - failed
             - timed_out
             - infra_error
+            - cancelled
+            - stalled_no_response
         phase:
           type: string
           nullable: true
@@ -530,6 +532,121 @@ components:
       required:
         - error
       description: Error envelope for finalize routes.
+    StartFinalizeRunRequest:
+      type: object
+      properties: {}
+      description: Body is empty — the run is keyed entirely off the card, its linked session, and the resolved HEAD SHA.
+    StartFinalizeRunResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          nullable: true
+          description: The `finalize_runs.id` for this run. `null` only when the run started but the row was not visible within the synchronous poll window (the 202 fallback).
+        status:
+          type: string
+          enum:
+            - queued
+            - rebasing
+            - reviewing
+            - running
+            - dispatching
+            - pushing
+            - pushed
+            - failed
+            - timed_out
+            - infra_error
+            - cancelled
+            - stalled_no_response
+          description: Status of the run at response time — `queued` for fresh starts.
+        reused:
+          type: boolean
+          description: True when the idempotency key matched an existing terminal row and that row was returned as-is.
+      required:
+        - run_id
+        - status
+        - reused
+      description: A new or reused Finalize run.
+    StartFinalizeRunInFlight:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - in_flight
+        run_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - rebasing
+            - reviewing
+            - running
+            - dispatching
+            - pushing
+            - pushed
+            - failed
+            - timed_out
+            - infra_error
+            - cancelled
+            - stalled_no_response
+        message:
+          type: string
+      required:
+        - error
+        - run_id
+        - status
+        - message
+      description: Conflict envelope returned when a non-terminal Finalize run already exists for the same (project, branch, head_sha).
+    CancelFinalizeRunRequest:
+      type: object
+      properties: {}
+      description: Body is empty.
+    CancelFinalizeRunResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        status:
+          type: string
+          enum:
+            - cancelled
+      required:
+        - ok
+        - status
+      description: Cancellation confirmation.
+    CancelFinalizeRunTerminal:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - terminal
+        status:
+          type: string
+          enum:
+            - queued
+            - rebasing
+            - reviewing
+            - running
+            - dispatching
+            - pushing
+            - pushed
+            - failed
+            - timed_out
+            - infra_error
+            - cancelled
+            - stalled_no_response
+        message:
+          type: string
+      required:
+        - error
+        - status
+        - message
+      description: Conflict envelope returned when the run is already in a terminal state.
     KanbanBoard:
       type: object
       properties:
@@ -4804,6 +4921,114 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LatestFinalizeRunForSessionResponse"
+  /api/projects/{projectId}/cards/{cardId}/finalize:
+    post:
+      tags:
+        - Finalize
+      summary: Start a Finalize Code Changes run for a card
+      description: |-
+        Kicks off the Finalize pipeline against the card's linked session.
+        Idempotent on (project, branch, head_sha) per §4 — clicking the button
+        twice against the same HEAD returns the same row id.
+
+        Returns 200 with the row id when the run was created (`reused: false`) or
+        when an idempotency match returned a TERMINAL row (`reused: true`).
+        Returns 409 when an idempotency match is non-terminal (a run is in flight).
+
+        Requires session ownership — non-owners receive 404 to mask existence.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartFinalizeRunRequest"
+      responses:
+        "200":
+          description: Run created or terminal row reused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartFinalizeRunResponse"
+        "202":
+          description: Run started but the row was not visible within the synchronous poll window — clients should fall back to the WS event stream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartFinalizeRunResponse"
+        "400":
+          description: Missing session linkage, missing worktree, missing branch, or HEAD SHA could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+        "404":
+          description: Project or card not found, or caller does not own the session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+        "409":
+          description: A non-terminal Finalize run already exists for this (branch, head_sha).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartFinalizeRunInFlight"
+  /api/projects/{projectId}/finalize/{runId}/cancel:
+    post:
+      tags:
+        - Finalize
+      summary: Cancel an in-flight Finalize run
+      description: |-
+        Flips the row to `cancelled` and broadcasts `finalize_run_phase_changed`
+        and `finalize_run_completed`. v0 is UI-only: the orchestrator's in-process
+        `CancelSignal` is NOT plumbed across requests, so an attempt already in flight
+        continues until it next checks for cancellation; its DB writes will land on
+        a row that is already terminal. The UI subscribes to the broadcast pair.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelFinalizeRunRequest"
+      responses:
+        "200":
+          description: Run was flipped to cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelFinalizeRunResponse"
+        "404":
+          description: Project not found, run not found, run belongs to a different project, or caller does not own the linked session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+        "409":
+          description: Run is already terminal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelFinalizeRunTerminal"
   /api/projects/{projectId}/board:
     get:
       tags:

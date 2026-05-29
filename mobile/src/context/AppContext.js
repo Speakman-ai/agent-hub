@@ -1530,6 +1530,27 @@ export function AppProvider({ children }) {
     }
   }, []);
 
+  // Finalize Code Changes — kicks off a finalize_runs row for a card-linked
+  // session. The card id is required (sessions without a linked card cannot
+  // finalize). Errors bubble to the caller so the button can surface them
+  // via Alert / inline message.
+  const startFinalizeRun = useCallback(async (projectId, cardId) => {
+    if (!projectId || !cardId) {
+      throw new Error('Project id and card id are required');
+    }
+    return api.startFinalizeRun(projectId, cardId);
+  }, []);
+
+  // UI-only cancel: flips the DB row to `cancelled` and broadcasts. The
+  // orchestrator's CancelSignal is in-process only, so a long-running run
+  // may still emit subsequent events for a moment after this resolves.
+  const cancelFinalizeRun = useCallback(async (projectId, runId) => {
+    if (!projectId || !runId) {
+      throw new Error('Project id and run id are required');
+    }
+    return api.cancelFinalizeRun(projectId, runId);
+  }, []);
+
   const isProcessing = thinking || !!streamingContent || sessionRoundProcessing;
 
   const value = {
@@ -1595,6 +1616,9 @@ export function AppProvider({ children }) {
     shipFailureAt,
     dismissChangesReady,
     triggerCreateTicketAndPr,
+    // Finalize Code Changes (card 2bce78c2)
+    startFinalizeRun,
+    cancelFinalizeRun,
     // Ask-prompt (`agenthub:ask`) submission state and handler
     askSubmitted,
     handleAskSubmit,

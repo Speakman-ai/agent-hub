@@ -268,6 +268,37 @@ export const api = {
   getLatestFinalizeRunForSession: (sessionId, opts = {}) =>
     fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`, { signal: opts.signal }),
   /**
+   * Start a new Finalize Code Changes run for a card. The server resolves
+   * the bound session's worktree + branch + HEAD sha, idempotency-keys the
+   * tuple, and either short-circuits (`reused: true`) when a non-terminal
+   * row already exists or kicks off a background run. Returns
+   * `{ run_id, status, reused }` on success.
+   *
+   * 4xx error shapes (surfaced via fetchJSON's `Error.message`):
+   *   - 400 `no_session` / `no_worktree` / `no_branch` — card is not yet
+   *     in a finalizable state.
+   *   - 404 — project or card not found / cross-project.
+   *   - 409 `in_flight` — a non-terminal run already exists for the
+   *     same (project, branch, head_sha).
+   */
+  startFinalizeRun: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  /**
+   * Cancel an in-flight Finalize run. UI-only at v0 — flips the DB row to
+   * `cancelled` and broadcasts `finalize_run_phase_changed` /
+   * `finalize_run_completed`. Does not interrupt an already-running
+   * subprocess (the orchestrator polls its in-process CancelSignal at
+   * await boundaries).
+   */
+  cancelFinalizeRun: (projectId, runId) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  /**
    * Diff-anchored reviewer threads for a Finalize run. Read-only.
    * Returns `{ run_id, reviewer_verdict, threads }` with threads pre-sorted
    * by `file_path ASC, line_start ASC, created_at ASC` so the sidecar can

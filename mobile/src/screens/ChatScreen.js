@@ -19,7 +19,10 @@ import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
-import ChangesReadyBox from '../components/ChangesReadyBox';
+// ChangesReadyBox replaced by FinalizeButton (card 2bce78c2). The component
+// file is intentionally retained — its removal is tracked as a separate
+// cleanup card.
+import FinalizeButton from '../components/FinalizeButton';
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import { isWorkflowProject } from '../utils/project-mode';
 import {
@@ -57,9 +60,7 @@ export default function ChatScreen() {
     handleEventsLoaded,
     activeSessionId,
     changesReady,
-    shipFailureAt,
     dismissChangesReady,
-    triggerCreateTicketAndPr,
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
@@ -138,19 +139,18 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    // Create ticket & PR — always shown while a session is open (skill injection).
-    ...(activeSessionId
+    // Finalize Code Changes — only shown for card-linked sessions.
+    // Replaces the legacy "Create ticket & PR" affordance (card 2bce78c2).
+    ...(activeSessionId && activeSession?.card_id && activeProject?.id
       ? [
           {
-            type: 'changes-ready',
-            key: 'changes-ready',
-            data:
-              pendingChanges || {
-                agentId: activeSession?.agent_id,
-                branch: activeSession?.worktree_branch || '',
-                hasUncommitted: false,
-                hasUnpushed: false,
-              },
+            type: 'finalize-button',
+            key: 'finalize-button',
+            data: {
+              projectId: activeProject.id,
+              cardId: activeSession.card_id,
+              branch: activeSession?.worktree_branch || '',
+            },
           },
         ]
       : []),
@@ -250,15 +250,13 @@ export default function ChatScreen() {
             onDismiss={dismissChangesReady}
           />
         );
-      case 'changes-ready':
+      case 'finalize-button':
         return (
-          <ChangesReadyBox
+          <FinalizeButton
+            projectId={item.data.projectId}
+            cardId={item.data.cardId}
             sessionId={activeSessionId}
-            changes={item.data}
-            isSessionProcessing={isProcessing}
-            shipFailureAt={shipFailureAt}
-            onTrigger={triggerCreateTicketAndPr}
-            onDismiss={dismissChangesReady}
+            branchLabel={item.data.branch || ''}
           />
         );
       default:

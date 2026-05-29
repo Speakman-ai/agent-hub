@@ -250,6 +250,30 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
+  // Finalize Code Changes — design doc: finalize-code-changes-architecture-v0
+  // Returns the most-recent finalize_runs row for a session, or `{ run: null }`
+  // when none exists yet. Used by the mobile FinalizeButton for both initial
+  // load and (as a polling fallback) live-state tracking — there's no WS
+  // bridge for `finalize_run_*` events on mobile yet.
+  getLatestFinalizeRunForSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`),
+  // Kick off a finalize run for a card-linked session. Server returns the
+  // run id + status (and a `reused` flag when the existing non-terminal row
+  // was returned). Throws on 409 in_flight / 400 no_session etc.
+  startFinalizeRun: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // Cancel an in-flight finalize run. v0 is "UI-only cancel" — the server
+  // flips the DB row to `cancelled`; the orchestrator does not currently
+  // honor an out-of-process cancel. Returns 200 `{ ok: true, status }`.
+  cancelFinalizeRun: (projectId, runId) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
   // Message events (for session timeline)
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
 

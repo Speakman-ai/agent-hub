@@ -361,7 +361,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // sessions (reviewer threads spawned from GitHub webhooks) are
     // visible to everyone so all users can inspect a PR review.
     const sessions = all.filter((s) => userCanReadSession(req as AuthenticatedRequest, s.id));
-    res.json(sessions.map(enrichSessionForClient));
+    res.json(sessions.map((s) => enrichSessionForClient(s, stmts)));
   });
 
   router.post('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
@@ -399,7 +399,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
     setSessionOwner(id, resolveOwnerUserId(req as AuthenticatedRequest));
     const session = stmts.getSession.get(id) as SessionRow;
-    const sessionWire = enrichSessionForClient(session);
+    const sessionWire = enrichSessionForClient(session, stmts);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });
     res.json(sessionWire);
   });
@@ -408,7 +408,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const all = stmts.getAllCronSessions.all() as SessionRow[];
     // Cron sessions are owned by the org owner; non-owners see nothing.
     const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
-    res.json(sessions.map(enrichSessionForClient));
+    res.json(sessions.map((s) => enrichSessionForClient(s, stmts)));
   });
 
   /**
@@ -502,7 +502,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
-    res.status(201).json({ taskId, sessionId, session: enrichSessionForClient(session) });
+    res.status(201).json({ taskId, sessionId, session: enrichSessionForClient(session, stmts) });
   });
 
   router.get('/api/tasks', (req: Request, res: Response) => {
@@ -780,7 +780,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const rows = (stmts.getArchivedSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    res.json(rows.map(enrichSessionForClient));
+    res.json(rows.map((s) => enrichSessionForClient(s, stmts)));
   });
 
   // Restore a soft-deleted session. 404 when the row either doesn't exist or
@@ -796,7 +796,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     stmts.restoreArchivedSession.run(sessionId);
     const restored = stmts.getSession.get(sessionId) as SessionRow;
-    const restoredWire = enrichSessionForClient(restored);
+    const restoredWire = enrichSessionForClient(restored, stmts);
 
     try {
       deps.broadcast({ type: 'session_restored', sessionId, session: restoredWire });
@@ -891,7 +891,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     })();
     const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    res.json(enrichSessionForClient(session));
+    res.json(enrichSessionForClient(session, stmts));
   });
 
   router.put('/api/sessions/:sessionId/model', (req: Request, res: Response) => {
@@ -916,7 +916,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     stmts.updateSessionModel.run(model, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(updated));
+    res.json(enrichSessionForClient(updated, stmts));
   });
 
   // NOTE: `PUT /api/sessions/:sessionId/worktree` was removed when Agent
@@ -932,7 +932,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionAskMode.run(enabled ? 1 : 0, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(updated));
+    res.json(enrichSessionForClient(updated, stmts));
   });
 
   router.put('/api/sessions/:sessionId/react-loop', (req: Request, res: Response) => {
@@ -943,7 +943,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(updated));
+    res.json(enrichSessionForClient(updated, stmts));
   });
 
   router.put('/api/sessions/:sessionId/orchestration', (req: Request, res: Response) => {
@@ -984,7 +984,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     stmts.updateSessionOrchestration.run(nextPhase, nextMetaJson, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    const updatedWire = enrichSessionForClient(updated);
+    const updatedWire = enrichSessionForClient(updated, stmts);
     deps.broadcast({ type: 'session-updated', session: updatedWire });
     res.json({
       ...updatedWire,
@@ -1173,7 +1173,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             ok: true,
             skipped: true,
             worktreePath: project.cwd,
-            session: enrichSessionForClient(session),
+            session: enrichSessionForClient(session, stmts),
           });
         }
         if (!deps.provisionSessionWorkspace) {
@@ -1181,7 +1181,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }
         const worktreePath = await deps.provisionSessionWorkspace(sessionId);
         const updated = stmts.getSession.get(sessionId) as SessionRow;
-        const sessionWire = enrichSessionForClient(updated);
+        const sessionWire = enrichSessionForClient(updated, stmts);
         deps.broadcast({
           type: 'session_workspace_ready',
           sessionId,
@@ -1649,7 +1649,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
 
       const newSession = stmts.getSession.get(newSessionId) as SessionRow;
-      const newSessionWire = enrichSessionForClient(newSession);
+      const newSessionWire = enrichSessionForClient(newSession, stmts);
 
       // Broadcast so all clients know a new forwarded session was created
       deps.broadcast({

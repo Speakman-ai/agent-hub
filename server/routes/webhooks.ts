@@ -657,7 +657,7 @@ export async function dispatchReviewFeedback(
         broadcast({
           type: 'session_created',
           agentId: agent.id,
-          session: enrichSessionForClient(row),
+          session: enrichSessionForClient(row, stmts),
         });
       }
     }
@@ -1333,7 +1333,7 @@ async function runReviewerDispatch(
       broadcast({
         type: 'session_created',
         agentId: reviewer.id,
-        session: enrichSessionForClient(row),
+        session: enrichSessionForClient(row, stmts),
       });
     }
   }

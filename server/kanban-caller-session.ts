@@ -63,5 +63,5 @@ export function maybeRenameSessionForLinkedCard(
   stmts.updateSessionName.run(title, sessionId);
   const updated = stmts.getSession.get(sessionId) as SessionRow | undefined;
   if (!updated) return;
-  broadcast({ type: 'session-updated', session: enrichSessionForClient(updated) });
+  broadcast({ type: 'session-updated', session: enrichSessionForClient(updated, stmts) });
 }
