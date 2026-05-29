@@ -38,16 +38,55 @@ function runBash(
   stdout: string;
   stderr: string;
 } {
-  const result = spawnSync('bash', ['-c', script], {
-    encoding: 'utf8',
-    timeout: 15_000,
-    env: { ...process.env, ...env },
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+  // CI flake guard: GitHub-Actions hosted runners occasionally kill a
+  // short-lived bash subprocess by signal (the OOM-killer is the usual
+  // culprit on shared Azure VMs under memory pressure — the
+  // `mask_secrets` helper below spawns 5 `echo | sed` subshells in
+  // sequence, and any one of them can be picked off mid-flight, which
+  // surfaces here as `spawnSync` returning `status: null`,
+  // `signal: 'SIGKILL'`). The helper is pure I/O and idempotent, so a
+  // single retry is safe — it gives the runner one more chance to
+  // execute without a signal-kill. If the second attempt also returns
+  // null, we surface the original null + diagnostics so the test
+  // failure points at the actual cause rather than a stale "expected 0
+  // got null" message.
+  const attempt = (): {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    signal: NodeJS.Signals | null;
+    error: Error | undefined;
+  } => {
+    const r = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: { ...process.env, ...env },
+    });
+    return {
+      status: r.status,
+      stdout: r.stdout ?? '',
+      stderr: r.stderr ?? '',
+      signal: r.signal,
+      error: r.error,
+    };
   };
+
+  let res = attempt();
+  if (res.status === null) {
+    // Retry once. If the first run was a signal-kill, the second one
+    // usually succeeds — we are not racing against an external
+    // resource, only against runner-level scheduling.
+    res = attempt();
+  }
+  if (res.status === null) {
+    // Surface the diagnostic on the stderr field so test assertions
+    // that examine output still have something useful to display.
+    const diag = `[runBash] bash subprocess produced status=null after one retry. signal=${
+      res.signal ?? 'none'
+    } error=${res.error?.message ?? 'none'} stderr=${res.stderr || '(empty)'}`;
+    return { status: res.status, stdout: res.stdout, stderr: `${diag}\n${res.stderr}` };
+  }
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr };
 }
 
 // ---------------------------------------------------------------------------
