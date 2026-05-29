@@ -1,0 +1,101 @@
+# Proposed Finalize Code Changes pipeline config for survey-tracker.
+#
+# This file is committed inside the agent-hub repo as a known-good v1
+# reference; the deliverable described by card 5df552ec ("Roll out
+# Finalize Code Changes to survey-tracker repo (second dogfood)") is to
+# copy this file verbatim into the survey-tracker repo at
+# `<repo-root>/.agent-hub/ci.yaml`. The actual commit must happen via a
+# session on the surveytracker kanban board because Agent Hub's PR
+# machinery pushes the worktree branch to the agent-hub remote.
+#
+# The schema is locked at v1 by `server/finalize/ci-config.ts`. The
+# wiki page `finalize-code-changes-architecture-v0` §5 (and its
+# survey-tracker appendix added by this same card) is the design
+# contract.
+#
+# Step ordering mirrors the agent-hub config so reviewers can grep for
+# "install, lint, test, build" across both files and observe that the
+# repo-agnostic finalize orchestrator runs the same shape regardless of
+# language stack:
+#
+#   install (backend python venv + frontend npm)
+#     → lint (flake8 + black + Angular ng lint via ./lint)
+#     → test (Cypress Angular component tests; backend pytest deferred)
+#     → build (Angular production build)
+#
+# Backend Django pytest is intentionally NOT in this v1 dogfood:
+#
+#   - `survey_tracker_api.settings.test` needs a Postgres reachable via
+#     POSTGRES_DB_HOST / POSTGRES_DB_PORT / POSTGRES_DB_USER /
+#     POSTGRES_DB_PASSWORD environment, plus AWS_STORAGE_BUCKET_NAME /
+#     AWS_LOCATION secrets the GitHub Actions workflow currently pulls
+#     from repo secrets (`.github/workflows/backend.ci.yml`).
+#   - Finalize ci.yaml v1 has no per-step `env:` field and no
+#     service-container syntax — `Unknown step keys fail closed` in
+#     `ci-config.ts` rejects `env:` outright. Any environment values
+#     have to be exported in the orchestrator's process environment
+#     before the step runs.
+#   - The right time to wire backend tests is once an operator-side
+#     mechanism for "this finalize run needs Postgres + these secrets"
+#     exists. Until then, lint + frontend build + frontend component
+#     tests give us the cross-repo parity signal the card asks for
+#     without leaking a half-working backend pipeline.
+#
+# The full lint pass already exercises both Python (flake8 + black 25.1.0)
+# and Angular (`ng lint --quiet`) and the orphan-CAD-command check, so a
+# real bug in either stack still fails the pipeline.
+
+version: 1
+on:
+  - finalize
+  - manual
+
+steps:
+  - name: Install backend python (venv + flake8 + black)
+    # The committed `./lint` script requires `.venv/bin/python` to exist
+    # at the repo root. The lint workflow at
+    # `.github/workflows/lint.yml` creates the venv exactly this way, so
+    # we mirror it. We do NOT install the full backend requirements here
+    # because they pull in Django + drf + postgres drivers that aren't
+    # exercised by lint or the frontend tests — keeping the venv lean
+    # cuts ~90s off the cold install.
+    run: |
+      python3 -m venv .venv
+      .venv/bin/pip install --upgrade pip
+      .venv/bin/pip install flake8 black==25.1.0
+
+  - name: Install frontend (Angular 18, npm ci)
+    # `frontend/package.json` pins Angular 18.1.x — npm ci uses the
+    # committed lockfile for reproducibility. The Angular CLI is in
+    # devDependencies, so a vanilla `npm ci` is enough for `ng build`
+    # and `ng lint`. No `npm run install:all` style aggregation
+    # because survey-tracker is NOT a monorepo at the npm-workspaces
+    # layer — the root package.json is a tooling placeholder.
+    run: cd frontend && npm ci
+
+  - name: Lint (./lint — flake8 + black + ng lint + CAD orphan check)
+    # Single repo-root script that runs flake8 + black on `backend/`,
+    # Angular ng lint on `frontend/`, and the orphan-CAD-command check.
+    # It tracks per-tool failures via a FAILED flag and exits non-zero
+    # iff any sub-tool failed, so bash -euo pipefail propagates the
+    # signal correctly to the finalize orchestrator.
+    run: ./lint
+
+  - name: Frontend component tests (Cypress)
+    # Angular Cypress component tests, mirroring
+    # `.github/workflows/frontend.ci.yml` (Unit Tests job). Cypress in
+    # component mode doesn't need a live API + Postgres — that's
+    # `npm run e2e`, which is correctly NOT in this pipeline at v1.
+    # If `npx cypress run --component` flakes in the finalize
+    # environment without `xvfb`, swap to the Cypress GitHub Action
+    # equivalent or wrap with `xvfb-run`.
+    run: |
+      cd frontend
+      npx cypress run --component
+
+  - name: Frontend production build (ng build --configuration=production)
+    # Mirrors the Frontend CI's "Test Build" job. Catches Angular
+    # template / TS compile regressions that lint alone wouldn't see —
+    # e.g. a removed-but-referenced component or a strict template
+    # type error.
+    run: cd frontend && npm run build:production
