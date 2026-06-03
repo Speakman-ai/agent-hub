@@ -30,6 +30,8 @@ import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
+import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
+import { resolveShouldAutoMerge } from '../auto-merge.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 import {
@@ -667,7 +669,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       markSessionAutoShipOnComplete(stmts, sessionId);
-      markSessionFinalizeAutomation(stmts, sessionId);
+      // Assigned cards run at least "Build and Push"; they escalate to "Send
+      // It" (auto-merge) only when the project's auto-merge is enabled.
+      markSessionFinalizeAutomation(
+        stmts,
+        sessionId,
+        assignedFinalizeAutomationLevel(resolveShouldAutoMerge(undefined, project.githubWorkflow)),
+      );
       // Reuse the owner uid resolved above; no need to walk req.user twice
       // in the same handler.
       setSessionOwner(sessionId, assignOwnerUid);

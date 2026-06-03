@@ -3,7 +3,7 @@ import {
   engineSupportsCheckpointRewind,
   enrichSessionForClient,
 } from './session-checkpoint-rewind.js';
-import type { SessionRow } from './types.js';
+import type { SessionRow, Stmts } from './types.js';
 
 function minimalSession(overrides: Partial<SessionRow>): SessionRow {
   return {
@@ -46,5 +46,75 @@ describe('enrichSessionForClient', () => {
 
     const cursor = enrichSessionForClient(minimalSession({ engine: 'cursor-agent' }));
     expect(cursor.checkpoint_rewind_supported).toBe(false);
+  });
+
+  it('finalize_status is null when stmts is omitted', () => {
+    const wire = enrichSessionForClient(minimalSession({}));
+    expect(wire.finalize_status).toBeNull();
+  });
+
+  it('finalize_status reflects the latest finalize run status when stmts is provided', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: { get: () => ({ status: 'ready_to_push' }) },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    expect(wire.finalize_status).toBe('ready_to_push');
+  });
+
+  it('finalize_status reports the passed phase (not ready_to_push) for a partial, not-fully-validated run', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: {
+        get: () => ({ status: 'ready_to_push', mode: 'checks' }),
+      },
+      getLatestChecksRunForSession: {
+        get: () => ({ status: 'ready_to_push', validated_head_sha: 'sha1' }),
+      },
+      getLatestReviewRunForSession: { get: () => undefined },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    // Inert marker — the sidebar's "ready to push" check only matches the
+    // literal 'ready_to_push', so it stays dark until the reviewer passes too.
+    expect(wire.finalize_status).toBe('checks_passed');
+  });
+
+  it('finalize_status reports ready_to_push once both phases validated the same head', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: {
+        get: () => ({ status: 'ready_to_push', mode: 'review' }),
+      },
+      getLatestChecksRunForSession: {
+        get: () => ({ status: 'ready_to_push', validated_head_sha: 'sha1' }),
+      },
+      getLatestReviewRunForSession: {
+        get: () => ({ status: 'ready_to_push', validated_head_sha: 'sha1' }),
+      },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    expect(wire.finalize_status).toBe('ready_to_push');
+  });
+
+  it('finalize_status is null when the session has no finalize runs', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: { get: () => undefined },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    expect(wire.finalize_status).toBeNull();
+  });
+
+  it('finalize_status falls back to null if the lookup throws', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: {
+        get: () => {
+          throw new Error('no finalize_runs table');
+        },
+      },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    expect(wire.finalize_status).toBeNull();
   });
 });

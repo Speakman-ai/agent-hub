@@ -191,4 +191,43 @@ describe('<CardBadge />', () => {
     render(<CardBadge sessionId="s1" />);
     expect(screen.getByTestId('finalize-card-badge-label').textContent).toBe('pushed');
   });
+
+  it('labels a checks-only ready_to_push run "checks passed", not "ready to push"', () => {
+    setHook({
+      run: { id: 'r1', session_id: 's1', mode: 'checks' },
+      status: 'ready_to_push',
+      phase: null,
+      isTerminal: false,
+      activeSeconds: 60,
+      wallSeconds: 90,
+    });
+    render(<CardBadge sessionId="s1" />);
+    expect(screen.getByTestId('finalize-card-badge-label').textContent).toBe('checks passed');
+  });
+
+  it('labels a review-only ready_to_push run "review approved"', () => {
+    setHook({
+      run: { id: 'r1', session_id: 's1', mode: 'review' },
+      status: 'ready_to_push',
+      phase: null,
+      isTerminal: false,
+      activeSeconds: 60,
+      wallSeconds: 90,
+    });
+    render(<CardBadge sessionId="s1" />);
+    expect(screen.getByTestId('finalize-card-badge-label').textContent).toBe('review approved');
+  });
+
+  it('keeps the "ready to push" label for a full run', () => {
+    setHook({
+      run: { id: 'r1', session_id: 's1', mode: 'full' },
+      status: 'ready_to_push',
+      phase: null,
+      isTerminal: false,
+      activeSeconds: 60,
+      wallSeconds: 90,
+    });
+    render(<CardBadge sessionId="s1" />);
+    expect(screen.getByTestId('finalize-card-badge-label').textContent).toBe('ready to push');
+  });
 });

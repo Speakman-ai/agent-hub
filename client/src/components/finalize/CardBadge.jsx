@@ -57,7 +57,16 @@ export default function CardBadge({ sessionId, prefetchedRun }) {
   // a stale ghost; other terminal states are interesting at-a-glance).
   if (!run || status === 'cancelled') return null;
 
-  const label = describeRunPhase(status, phase);
+  // A single-phase run ("Run Tests" / "Reviewer") parks at `ready_to_push`
+  // internally, but the branch isn't actually ready to push until BOTH gates
+  // pass. Surface the phase that passed instead of the misleading "ready to
+  // push" so the board doesn't over-promise on a partial validation.
+  const label =
+    status === 'ready_to_push' && run.mode && run.mode !== 'full'
+      ? run.mode === 'checks'
+        ? 'checks passed'
+        : 'review approved'
+      : describeRunPhase(status, phase);
   const Icon = pickIcon(status, isPaused);
   const tone = pickTone(status, isPaused);
 

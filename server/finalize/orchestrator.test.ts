@@ -26,6 +26,7 @@ import type { FinalizeRunRow, KanbanCardRow, Project, ReviewerThreadRow } from '
 import {
   computeIdempotencyKey,
   runFinalize,
+  setReadyToPushAutomationHook,
   __test,
   type OrchestratorDeps,
   type OrchestratorOptions,
@@ -87,6 +88,28 @@ interface FakeRow extends Partial<FinalizeRunRow> {
   idempotency_key: string;
 }
 
+/**
+ * Mirror of the per-phase pickers (`getLatestChecksRunForSession` /
+ * `getLatestReviewRunForSession`): latest row for `sessionId` whose `mode`
+ * is in `modes`, ordered by `started_at DESC, id DESC`.
+ */
+function latestRunForModes(
+  rows: Map<string, FakeRow>,
+  sessionId: string,
+  modes: string[],
+): FakeRow | undefined {
+  const matches = [...rows.values()].filter(
+    (r) => r.session_id === sessionId && r.mode != null && modes.includes(r.mode),
+  );
+  matches.sort((a, b) => {
+    const sa = a.started_at ?? 0;
+    const sb = b.started_at ?? 0;
+    if (sb !== sa) return sb - sa;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+  return matches[0];
+}
+
 function makeStmts(): {
   stmts: OrchestratorDeps['stmts'];
   rows: Map<string, FakeRow>;
@@ -129,6 +152,7 @@ function makeStmts(): {
           authorEmail: string,
           retryOfRunId: string | null,
           startedAt: number,
+          mode?: string,
         ) => {
           if (byKey.has(idempotencyKey)) {
             const err = new Error('UNIQUE constraint failed: finalize_runs.idempotency_key');
@@ -161,6 +185,7 @@ function makeStmts(): {
             failed_step_exit_code: null,
             pr_url: null,
             loop_round: 0,
+            mode: (mode as FinalizeRunRow['mode']) ?? 'full',
           };
           rows.set(id, row);
           byKey.set(idempotencyKey, row);
@@ -239,6 +264,12 @@ function makeStmts(): {
         }
       }),
     } as unknown as OrchestratorDeps['stmts']['markFinalizeRunReadyToPush'],
+    getLatestChecksRunForSession: {
+      get: vi.fn((sessionId: string) => latestRunForModes(rows, sessionId, ['checks', 'full'])),
+    } as unknown as OrchestratorDeps['stmts']['getLatestChecksRunForSession'],
+    getLatestReviewRunForSession: {
+      get: vi.fn((sessionId: string) => latestRunForModes(rows, sessionId, ['review', 'full'])),
+    } as unknown as OrchestratorDeps['stmts']['getLatestReviewRunForSession'],
     updateFinalizeRunPrUrl: {
       run: vi.fn((prUrl: string, id: string) => {
         const row = rows.get(id);
@@ -429,6 +460,165 @@ describe('computeIdempotencyKey', () => {
     expect(computeIdempotencyKey(base)).not.toBe(
       computeIdempotencyKey({ ...base, projectId: 'q' }),
     );
+  });
+
+  it('separates split-mode runs on the same head sha', () => {
+    const base = { projectId: 'p', branch: 'feature/x', headSha: 'aaa' } as const;
+    const full = computeIdempotencyKey({ ...base, mode: 'full' });
+    const checks = computeIdempotencyKey({ ...base, mode: 'checks' });
+    const review = computeIdempotencyKey({ ...base, mode: 'review' });
+    expect(new Set([full, checks, review]).size).toBe(3);
+    // Omitting `mode` resolves to the historical `'full'` key.
+    expect(computeIdempotencyKey(base)).toBe(full);
+  });
+});
+
+describe('runFinalize — split modes', () => {
+  afterEach(() => {
+    setReadyToPushAutomationHook(null);
+  });
+
+  it('checks mode runs the tasks phase, skips the reviewer, and parks at ready_to_push', async () => {
+    const review = fakeRunReview(REVIEW_OK);
+    const steps = fakeRunSteps(STEPS_OK);
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: review,
+      runStepPhase: steps,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(review).not.toHaveBeenCalled();
+    expect(steps).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('review mode runs the reviewer, skips the tasks phase, and parks at ready_to_push', async () => {
+    const review = fakeRunReview(REVIEW_OK);
+    const steps = fakeRunSteps(STEPS_OK);
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: review,
+      runStepPhase: steps,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'review' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(steps).not.toHaveBeenCalled();
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks mode still dispatches a fix when the tasks phase fails', async () => {
+    const failingSteps = fakeRunSteps({
+      status: 'failure',
+      stepResults: [],
+      failedStep: {
+        index: 0,
+        name: 'unit-tests',
+        run: 'npm test',
+        exitCode: 1,
+        outputTail: ['boom'],
+      },
+      activeSecondsBilled: 5,
+    });
+    // Re-enter after the fix turn ends with green steps so the run lands.
+    const review = fakeRunReview(REVIEW_OK);
+    const dispatch = fakeDispatchFix(FIX_TURN_ENDED);
+    const { deps } = makeDeps({
+      runReviewerDispatch: review,
+      runStepPhase: failingSteps,
+      dispatchFixMessage: dispatch,
+    });
+
+    // Stop after the first failing pass to keep the test bounded.
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+    void result;
+    expect(review).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalled();
+  });
+
+  it('does NOT fire the ready-to-push automation hook for a partial run', async () => {
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { deps } = makeDeps();
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+    expect(result.kind).toBe('ready_to_push');
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('DOES fire the ready-to-push automation hook for a full run', async () => {
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { deps } = makeDeps();
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full' }));
+    expect(result.kind).toBe('ready_to_push');
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses the "ready to push" timeline for a checks-only run with no review sibling', async () => {
+    const { deps, stmts } = makeDeps();
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+    expect(result.kind).toBe('ready_to_push');
+    // The row still parks at ready_to_push internally...
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+    // ...but it must NOT announce "Ready to push to GitHub" — the reviewer
+    // phase has not passed yet.
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).not.toContain('finalize_ready_to_push');
+  });
+
+  it('announces ready-to-push once a review sibling passed the same head', async () => {
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { deps, stmts } = makeDeps();
+    // Seed a passing review-only run validated against the same head the
+    // checks run will validate (resolveHead → 'deadbeefcafebabe').
+    stmts.rows.set('review-sibling', {
+      id: 'review-sibling',
+      idempotency_key: 'idem-review',
+      session_id: 'sess-1',
+      mode: 'review',
+      status: 'ready_to_push',
+      validated_head_sha: 'deadbeefcafebabe',
+      started_at: 1,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+    expect(result.kind).toBe('ready_to_push');
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).toContain('finalize_ready_to_push');
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT promote when the review sibling validated a different head', async () => {
+    const { deps, stmts } = makeDeps();
+    // Sibling review passed, but against an older commit — the branch moved
+    // since, so checks-now + review-then is not a coherent full validation.
+    stmts.rows.set('stale-review', {
+      id: 'stale-review',
+      idempotency_key: 'idem-stale',
+      session_id: 'sess-1',
+      mode: 'review',
+      status: 'ready_to_push',
+      validated_head_sha: 'an-older-commit-sha',
+      started_at: 1,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+    expect(result.kind).toBe('ready_to_push');
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).not.toContain('finalize_ready_to_push');
   });
 });
 

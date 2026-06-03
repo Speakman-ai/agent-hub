@@ -33,6 +33,28 @@ export function inferPrUrlFromSessionTitle(
 }
 
 /**
+ * Resolve the PR URL associated with a session, mirroring what the session
+ * header / summary surface shows. Precedence: the linked kanban card's
+ * `pr_url` (authoritative — written by `auto-git.ts` when a PR opens), then a
+ * best-effort inference from the session title (Resolve/Review PR flows, or a
+ * pasted PR URL).
+ *
+ * Used by the Finalize ship-gate so that any session attached to an open PR —
+ * even one linked only via its title — can push commits to that PR instead of
+ * being hard-blocked by the spawn guard.
+ */
+export function resolveSessionPrUrl(args: {
+  sessionName: string | null | undefined;
+  githubRepo: string | null | undefined;
+  cardPrUrl: string | null | undefined;
+}): string | null {
+  const cardPrUrl =
+    typeof args.cardPrUrl === 'string' && args.cardPrUrl.trim() ? args.cardPrUrl.trim() : null;
+  if (cardPrUrl) return cardPrUrl;
+  return inferPrUrlFromSessionTitle(args.sessionName, args.githubRepo);
+}
+
+/**
  * Sessions spawned from Pull Requests → Resolve PR push fixes to an
  * existing PR rather than opening a new one. Used to gate
  * resolve-PR chat flows (banner + skill guidance) so agents push fixes to

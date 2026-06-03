@@ -715,7 +715,8 @@ function initDb(dataDir: string): void {
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
       pr_url TEXT,
-      validated_head_sha TEXT
+      validated_head_sha TEXT,
+      mode TEXT NOT NULL DEFAULT 'full'
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
@@ -788,6 +789,12 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT loop_round FROM finalize_runs LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE finalize_runs ADD COLUMN loop_round INTEGER NOT NULL DEFAULT 0');
+  }
+
+  try {
+    db.prepare('SELECT mode FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec("ALTER TABLE finalize_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'full'");
   }
 
   try {
@@ -3310,8 +3317,8 @@ function initDb(dataDir: string): void {
         id, card_id, session_id, project_id, branch, head_sha,
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email, retry_of_run_id,
-        started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        started_at, mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Promote a finalize run to its terminal `pushed` state and record the
     // ended_at clock in one atomic update. Used by the push step (§9) after
@@ -3358,6 +3365,27 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
+    ),
+    // Per-phase pickers. The split "Run Tests" / "Reviewer" buttons each
+    // surface their own done-state, which may come from a phase-scoped run
+    // (mode 'checks' / 'review') OR from a combined 'full' run that
+    // exercised both. Same (started_at DESC, id DESC) tiebreak as the
+    // overall picker so all three agree on which row is "latest".
+    getLatestChecksRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND mode IN ('checks', 'full')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
+    ),
+    getLatestReviewRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND mode IN ('review', 'full')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),

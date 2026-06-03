@@ -690,6 +690,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         hasUncommitted: false,
         hasUnpushed: false,
         committable: false,
+        headSha: null,
       });
     }
     try {
@@ -699,6 +700,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         hasUncommitted: changes.hasUncommitted,
         hasUnpushed: changes.hasUnpushed,
         committable: changes.hasUncommitted || changes.hasUnpushed,
+        headSha: changes.headSha || null,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

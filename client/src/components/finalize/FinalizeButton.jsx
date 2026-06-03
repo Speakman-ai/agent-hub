@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GitPullRequest, Loader2, Upload, X, CheckCircle2 } from 'lucide-react';
+import { FlaskConical, Eye, Loader2, Upload, Square, CheckCircle2 } from 'lucide-react';
 import {
   useFinalizeRun,
-  isFinalizeBlocked,
   isFinalizeInFlight,
   isReadyToPush,
   describeRunPhase,
@@ -17,6 +16,12 @@ import {
 
 const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
+
+// A phase summary counts as "passed" once its run is validated (parked at
+// ready_to_push) or already pushed.
+function phasePassed(summary) {
+  return summary?.status === 'ready_to_push' || summary?.status === 'pushed';
+}
 
 async function fetchGithubConnected() {
   try {
@@ -41,17 +46,27 @@ export default function FinalizeButton({
   onError,
   variant = 'default',
 }) {
-  const { run, steps, status, phase, activeSeconds } = useFinalizeRun({
+  const { run, steps, phases, status, phase, activeSeconds } = useFinalizeRun({
     sessionId,
     prefetchedRun,
     enabled: !!sessionId,
   });
 
   const [optimisticBlock, setOptimisticBlock] = useState(false);
+  // Which trigger ('checks' | 'review') was just clicked — drives the
+  // per-button spinner during the optimistic window before the run row
+  // (with its authoritative `mode`) arrives over the WebSocket.
+  const [pendingMode, setPendingMode] = useState(null);
   const [pushPending, setPushPending] = useState(false);
+  // True while a Stop request is in flight, so the stop buttons disable to
+  // prevent double-cancel until the terminal broadcast lands.
+  const [stopping, setStopping] = useState(false);
   const [githubConnected, setGithubConnected] = useState(false);
   const [worktreeCommittable, setWorktreeCommittable] = useState(false);
   const [worktreeBranch, setWorktreeBranch] = useState(null);
+  // Current worktree HEAD — used to expire a phase's done-state once new
+  // commits land (the validated commit no longer matches HEAD).
+  const [worktreeHeadSha, setWorktreeHeadSha] = useState(null);
   const optimisticTimerRef = useRef(null);
 
   useEffect(
@@ -75,6 +90,7 @@ export default function FinalizeButton({
     if (!sessionId) {
       setWorktreeCommittable(false);
       setWorktreeBranch(null);
+      setWorktreeHeadSha(null);
       return undefined;
     }
     let cancelled = false;
@@ -85,12 +101,14 @@ export default function FinalizeButton({
           if (!cancelled) {
             setWorktreeCommittable(Boolean(data?.committable));
             setWorktreeBranch(typeof data?.branch === 'string' ? data.branch : null);
+            setWorktreeHeadSha(typeof data?.headSha === 'string' ? data.headSha : null);
           }
         })
         .catch(() => {
           if (!cancelled) {
             setWorktreeCommittable(false);
             setWorktreeBranch(null);
+            setWorktreeHeadSha(null);
           }
         });
     };
@@ -104,44 +122,84 @@ export default function FinalizeButton({
 
   const readyToPush = isReadyToPush(status);
   const inFlight = isFinalizeInFlight(status) || optimisticBlock;
-  const blocked = isFinalizeBlocked(status) || optimisticBlock;
   const runId = run?.id ?? null;
   const hasCommittableChanges =
     worktreeCommittable || hasCommittableChangesFromReady(pendingChanges);
   const canShip = hasCommittableChanges || readyToPush;
   const noChangesHint = noCommittableChangesTooltip(worktreeBranch || branchLabel);
 
-  const handleStart = useCallback(async () => {
-    if (blocked || readyToPush || !canShip) return;
-    if (!projectId || !sessionId) return;
-    setOptimisticBlock(true);
-    if (optimisticTimerRef.current) clearTimeout(optimisticTimerRef.current);
-    optimisticTimerRef.current = setTimeout(() => {
-      setOptimisticBlock(false);
-    }, OPTIMISTIC_BLOCK_MS);
-    try {
-      if (cardId) {
-        await api.startFinalizeRun(projectId, cardId);
-      } else {
-        await api.startFinalizeRunForSession(projectId, sessionId);
+  const handleStart = useCallback(
+    async (mode) => {
+      // A run already in flight blocks a second trigger; a prior
+      // `ready_to_push` row does NOT — the other split button may still
+      // run its phase (modes are distinct idempotency keys server-side).
+      if (inFlight || !canShip) return;
+      if (!projectId || !sessionId) return;
+      setOptimisticBlock(true);
+      setPendingMode(mode);
+      if (optimisticTimerRef.current) clearTimeout(optimisticTimerRef.current);
+      optimisticTimerRef.current = setTimeout(() => {
+        setOptimisticBlock(false);
+        setPendingMode(null);
+      }, OPTIMISTIC_BLOCK_MS);
+      try {
+        if (cardId) {
+          await api.startFinalizeRun(projectId, cardId, { mode });
+        } else {
+          await api.startFinalizeRunForSession(projectId, sessionId, { mode });
+        }
+      } catch (err) {
+        if (optimisticTimerRef.current) {
+          clearTimeout(optimisticTimerRef.current);
+          optimisticTimerRef.current = null;
+        }
+        setOptimisticBlock(false);
+        setPendingMode(null);
+        onError?.(err?.message || 'Failed to start Finalize run');
       }
-    } catch (err) {
-      if (optimisticTimerRef.current) {
-        clearTimeout(optimisticTimerRef.current);
-        optimisticTimerRef.current = null;
-      }
-      setOptimisticBlock(false);
-      onError?.(err?.message || 'Failed to start Finalize Code Changes');
-    }
-  }, [blocked, readyToPush, canShip, projectId, cardId, sessionId, onError]);
+    },
+    [inFlight, canShip, projectId, cardId, sessionId, onError],
+  );
+
+  // A phase's done-state is only "fresh" while the commit it validated is
+  // still the worktree HEAD. Once the session lands a new commit, HEAD moves
+  // and the prior "Tested" / "Reviewed" badge is stale — the phase must run
+  // again. Before the first worktree poll resolves (`worktreeHeadSha` null)
+  // we trust the server's status to avoid a flash of "Run Tests".
+  const phaseFresh = (summary) => {
+    if (!phasePassed(summary)) return false;
+    if (!worktreeHeadSha) return true;
+    return summary?.validated_head_sha === worktreeHeadSha;
+  };
+
+  // Independent per-phase done-state. The two phases may come from separate
+  // runs ("Run Tests" then "Reviewer") or from one combined `full` run.
+  const tested = phaseFresh(phases?.checks);
+  const reviewed = phaseFresh(phases?.review);
+  // The branch is fully validated only when BOTH phases passed against the
+  // SAME (still-current) commit — a combined `full` run, or two phase runs
+  // with no commits in between (matching `validated_head_sha`). This is what
+  // unlocks a confirm-free push.
+  const bothValidated =
+    tested &&
+    reviewed &&
+    !!phases?.checks?.validated_head_sha &&
+    phases.checks.validated_head_sha === phases?.review?.validated_head_sha;
 
   const handlePush = useCallback(async () => {
-    if (!projectId || !sessionId || pushPending || !canShip) return;
+    // Push is only meaningful when there's something to push — uncommitted or
+    // unpushed work. A clean, fully-pushed branch leaves the button disabled.
+    if (!projectId || !sessionId || pushPending || !hasCommittableChanges) return;
 
-    const needsConfirm = !readyToPush;
-    if (needsConfirm) {
+    // Only a fully-validated branch (reviewer approved AND checks green on
+    // the same commit) unlocks a confirm-free push. A single phase ("Run
+    // Tests" or "Reviewer" only) still warns before pushing — the other
+    // gate has not been satisfied. Fall back to the legacy single-run
+    // check when the phase summary is unavailable (e.g. prefetch path).
+    const fullyValidated = phases ? bothValidated : readyToPush && run?.mode === 'full';
+    if (!fullyValidated) {
       const ok = window.confirm(
-        'Finalize checks have not passed. Push branch and open PR on GitHub anyway?',
+        'Review and checks have not both passed. Push branch and open PR on GitHub anyway?',
       );
       if (!ok) return;
     }
@@ -160,16 +218,33 @@ export default function FinalizeButton({
     } finally {
       setPushPending(false);
     }
-  }, [projectId, sessionId, runId, readyToPush, pushPending, canShip, onError]);
+  }, [
+    projectId,
+    sessionId,
+    runId,
+    readyToPush,
+    run?.mode,
+    phases,
+    bothValidated,
+    pushPending,
+    hasCommittableChanges,
+    onError,
+  ]);
 
-  const handleCancel = useCallback(async () => {
-    if (!projectId || !runId) return;
+  // Stop an in-flight phase. The server trips the orchestrator's cancel
+  // signal, kills the session's agent turn, and broadcasts the terminal
+  // state — so all turns halt and the session waits for user input.
+  const handleStop = useCallback(async () => {
+    if (!projectId || !runId || stopping) return;
+    setStopping(true);
     try {
       await api.cancelFinalizeRun(projectId, runId);
     } catch (err) {
-      onError?.(err?.message || 'Failed to cancel Finalize Code Changes');
+      onError?.(err?.message || 'Failed to stop Finalize Code Changes');
+    } finally {
+      setStopping(false);
     }
-  }, [projectId, runId, onError]);
+  }, [projectId, runId, stopping, onError]);
 
   const compact = variant === 'compact';
   const runningStep = steps.find((s) => s.state === 'running');
@@ -182,39 +257,44 @@ export default function FinalizeButton({
     phaseLabel = `${phaseLabel}: ${runningStep.name}`;
   }
 
-  const finalizeLabel = readyToPush
-    ? 'Checks passed'
-    : inFlight
-      ? `Finalizing: ${phaseLabel}`
-      : 'Finalize Code Changes';
+  // Which split run (if any) is currently executing. `full` runs (started
+  // by automation or the legacy combined path) light up both buttons so the
+  // operator sees activity. Before the run row lands we fall back to the
+  // optimistically-recorded `pendingMode` so the clicked button spins
+  // immediately.
+  const activeMode = run?.mode ?? (optimisticBlock ? pendingMode : null);
+  const checksBusy = inFlight && (activeMode === 'checks' || activeMode === 'full');
+  const reviewBusy = inFlight && (activeMode === 'review' || activeMode === 'full');
+
   const baseBtnClasses = compact
     ? 'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border transition-colors'
     : 'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors';
-  const finalizeClasses = `${baseBtnClasses} border-purple-700/60 bg-purple-950/40 ${
-    inFlight
-      ? 'text-purple-200/80 cursor-wait opacity-90'
-      : readyToPush
-        ? 'text-emerald-200/90 cursor-not-allowed opacity-95'
-        : !canShip
-          ? 'text-purple-300/50 cursor-not-allowed opacity-60'
+  // While a phase runs its trigger flips into a red "Stop" affordance.
+  const triggerClasses = (busy, passed) => {
+    if (busy) {
+      return `${baseBtnClasses} border-red-700/60 bg-red-950/40 text-red-100 hover:bg-red-900/50 hover:text-white ${
+        stopping ? 'cursor-wait opacity-90' : 'cursor-pointer'
+      }`;
+    }
+    return `${baseBtnClasses} border-purple-700/60 bg-purple-950/40 ${
+      !canShip
+        ? 'text-purple-300/50 cursor-not-allowed opacity-60'
+        : passed
+          ? 'text-emerald-200/90 hover:bg-purple-900/50'
           : 'text-purple-100 hover:bg-purple-900/50 hover:text-white'
-  }`;
+    }`;
+  };
   const pushClasses = `${baseBtnClasses} border-emerald-700/60 bg-emerald-950/40 text-emerald-100 hover:bg-emerald-900/50 hover:text-white disabled:opacity-60 disabled:cursor-not-allowed`;
 
-  const tooltipParts = [];
-  if (readyToPush) {
-    tooltipParts.push('Review and checks passed — push when ready');
-  } else if (inFlight) {
-    tooltipParts.push(`Finalizing: ${phaseLabel}`);
-    if (typeof activeSeconds === 'number') {
-      tooltipParts.push(`${formatDuration(activeSeconds)} active`);
-    }
-  } else if (!canShip) {
-    tooltipParts.push(noChangesHint);
-  } else {
-    tooltipParts.push('Rebase, review, and run tests (does not push to GitHub)');
-    if (branchLabel) tooltipParts.push(branchLabel);
-  }
+  const triggerDisabled = inFlight || !canShip;
+  // A busy phase can only be stopped once its run row (with an id) has landed.
+  const checksStoppable = checksBusy && !!runId && !stopping;
+  const reviewStoppable = reviewBusy && !!runId && !stopping;
+  const runTestsLabel = checksBusy ? 'Stop Tests' : tested ? 'Tested' : 'Run Tests';
+  const reviewerLabel = reviewBusy ? 'Stop Reviewing' : reviewed ? 'Reviewed' : 'Reviewer';
+  const noChangesOr = (active) => (!canShip ? noChangesHint : active);
+  const activeSuffix =
+    typeof activeSeconds === 'number' ? ` · ${formatDuration(activeSeconds)} active` : '';
 
   const showPush = githubConnected && sessionId;
 
@@ -222,36 +302,83 @@ export default function FinalizeButton({
     <div className="relative inline-flex items-center gap-1">
       <button
         type="button"
-        onClick={handleStart}
-        disabled={blocked || readyToPush || !canShip}
-        title={compact ? undefined : tooltipParts.join(' · ')}
-        aria-label={finalizeLabel}
-        aria-busy={inFlight}
-        data-testid="finalize-code-changes-button"
-        className={finalizeClasses}
+        onClick={checksBusy ? handleStop : () => handleStart('checks')}
+        disabled={checksBusy ? !checksStoppable : triggerDisabled}
+        title={
+          compact
+            ? undefined
+            : checksBusy
+              ? `Stop tests — halts the run and waits for input (running checks: ${phaseLabel}${activeSuffix})`
+              : noChangesOr(
+                  tested
+                    ? 'CI checks passed — run again to re-test'
+                    : `Rebase and run CI checks${branchLabel ? ` · ${branchLabel}` : ''} (does not push)`,
+                )
+        }
+        aria-label={runTestsLabel}
+        aria-busy={checksBusy}
+        data-testid="finalize-run-tests-button"
+        className={triggerClasses(checksBusy, tested)}
       >
-        {inFlight ? (
-          <Loader2 size={compact ? 12 : 14} className="animate-spin shrink-0" />
-        ) : readyToPush ? (
+        {checksBusy ? (
+          checksStoppable ? (
+            <Square size={compact ? 12 : 14} className="shrink-0 fill-current" />
+          ) : (
+            <Loader2 size={compact ? 12 : 14} className="animate-spin shrink-0" />
+          )
+        ) : tested ? (
           <CheckCircle2 size={compact ? 12 : 14} className="shrink-0 text-emerald-400" />
         ) : (
-          <GitPullRequest size={compact ? 12 : 14} />
+          <FlaskConical size={compact ? 12 : 14} />
         )}
-        {finalizeLabel}
+        {runTestsLabel}
+      </button>
+      <button
+        type="button"
+        onClick={reviewBusy ? handleStop : () => handleStart('review')}
+        disabled={reviewBusy ? !reviewStoppable : triggerDisabled}
+        title={
+          compact
+            ? undefined
+            : reviewBusy
+              ? `Stop reviewing — halts the run and waits for input (reviewing: ${phaseLabel}${activeSuffix})`
+              : noChangesOr(
+                  reviewed
+                    ? 'Reviewer approved — run again to re-review'
+                    : `Rebase and run the reviewer${branchLabel ? ` · ${branchLabel}` : ''} (does not push)`,
+                )
+        }
+        aria-label={reviewerLabel}
+        aria-busy={reviewBusy}
+        data-testid="finalize-reviewer-button"
+        className={triggerClasses(reviewBusy, reviewed)}
+      >
+        {reviewBusy ? (
+          reviewStoppable ? (
+            <Square size={compact ? 12 : 14} className="shrink-0 fill-current" />
+          ) : (
+            <Loader2 size={compact ? 12 : 14} className="animate-spin shrink-0" />
+          )
+        ) : reviewed ? (
+          <CheckCircle2 size={compact ? 12 : 14} className="shrink-0 text-emerald-400" />
+        ) : (
+          <Eye size={compact ? 12 : 14} />
+        )}
+        {reviewerLabel}
       </button>
       {showPush ? (
         <button
           type="button"
           onClick={handlePush}
-          disabled={pushPending || !canShip}
+          disabled={pushPending || !hasCommittableChanges}
           title={
             compact
               ? undefined
-              : !canShip
+              : !hasCommittableChanges
                 ? noChangesHint
-                : readyToPush
-                  ? 'Push branch and open PR on GitHub'
-                  : 'Push anyway (Finalize checks have not passed)'
+                : bothValidated
+                  ? 'Review and checks passed — push branch and open PR on GitHub'
+                  : 'Push anyway (review and checks have not both passed)'
           }
           aria-label="Push to GitHub"
           aria-busy={pushPending}
@@ -264,18 +391,6 @@ export default function FinalizeButton({
             <Upload size={compact ? 12 : 14} />
           )}
           Push to GitHub
-        </button>
-      ) : null}
-      {inFlight && runId && !readyToPush ? (
-        <button
-          type="button"
-          onClick={handleCancel}
-          className="text-[11px] text-gray-400 hover:text-gray-200 px-1"
-          title="Cancel"
-          aria-label="Cancel"
-          data-testid="finalize-code-changes-cancel"
-        >
-          <X size={12} />
         </button>
       ) : null}
     </div>

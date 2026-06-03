@@ -117,6 +117,23 @@ export const FinalizeRunStepComponent = registerComponent(
     .openapi({ description: 'One CI step row from a Finalize run.' }),
 );
 
+export const FinalizePhaseSummaryComponent = registerComponent(
+  'FinalizePhaseSummary',
+  z
+    .object({
+      run_id: z.string(),
+      status: z.string(),
+      mode: z.enum(['full', 'checks', 'review']),
+      head_sha: z.string(),
+      validated_head_sha: z.string().nullable(),
+      ended_at: z.number().int().nullable(),
+    })
+    .openapi({
+      description:
+        'Done-state for one Finalize phase (checks or review). Resolved from the latest run that exercised that phase — either a phase-scoped run or a combined `full` run.',
+    }),
+);
+
 export const LatestFinalizeRunResponseSchema = registerComponent(
   'LatestFinalizeRunForSessionResponse',
   z
@@ -127,6 +144,15 @@ export const LatestFinalizeRunResponseSchema = registerComponent(
       steps: z.array(FinalizeRunStepComponent).openapi({
         description: 'Persisted CI step states for the latest run; empty when no run.',
       }),
+      phases: z
+        .object({
+          checks: FinalizePhaseSummaryComponent.nullable(),
+          review: FinalizePhaseSummaryComponent.nullable(),
+        })
+        .openapi({
+          description:
+            'Independent per-phase done-state powering the split "Run Tests" / "Reviewer" buttons. Each is `null` until that phase has run for the session.',
+        }),
     })
     .openapi({ description: 'Latest Finalize run for a given session.' }),
 );
@@ -191,10 +217,17 @@ registerPath({
 
 const StartFinalizeRunRequest = registerComponent(
   'StartFinalizeRunRequest',
-  z.object({}).openapi({
-    description:
-      'Body is empty — the run is keyed entirely off the card, its linked session, and the resolved HEAD SHA.',
-  }),
+  z
+    .object({
+      mode: z.enum(['full', 'checks', 'review']).optional().openapi({
+        description:
+          'Which phases to run. `full` (default) = rebase + reviewer + checks; `checks` ("Run Tests") = rebase + CI only; `review` ("Reviewer") = rebase + reviewer only. Folded into the idempotency key so a checks-only and a review-only run can co-exist on one HEAD SHA.',
+      }),
+    })
+    .openapi({
+      description:
+        'Optional `mode` selects which phases run. The rest of the run is keyed off the card, its linked session, and the resolved HEAD SHA.',
+    }),
 );
 
 const StartFinalizeRunResponse = registerComponent(
@@ -708,10 +741,12 @@ registerPath({
   summary: 'Cancel an in-flight Finalize run',
   description: [
     'Flips the row to `cancelled` and broadcasts `finalize_run_phase_changed`',
-    "and `finalize_run_completed`. v0 is UI-only: the orchestrator's in-process",
-    '`CancelSignal` is NOT plumbed across requests, so an attempt already in flight',
-    'continues until it next checks for cancellation; its DB writes will land on',
-    'a row that is already terminal. The UI subscribes to the broadcast pair.',
+    "and `finalize_run_completed`. Trips the orchestrator's in-process",
+    '`CancelSignal` (via the run-abort registry) so the fix-dispatch loop and any',
+    'in-flight reviewer turn stop instead of dispatching another fix, kills the',
+    "originating session's agent turn, and broadcasts an `interrupted` event so",
+    'the session falls idle and waits for user input. The UI subscribes to the',
+    'broadcast pair.',
   ].join('\n'),
   request: {
     params: z.object({

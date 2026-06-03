@@ -7,7 +7,7 @@ GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REAL_GIT="${AGENT_HUB_REAL_GIT:-git}"
 
 if [ "$1" = "push" ]; then
-  _finalize_direct_ship_gate "git push" || exit $?
+  _finalize_direct_ship_gate "git push" "git_push" || exit $?
 fi
 
 exec "$REAL_GIT" "$@"

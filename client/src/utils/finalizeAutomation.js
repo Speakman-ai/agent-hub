@@ -3,23 +3,24 @@ export const FINALIZE_AUTOMATION_LEVELS = ['manual', 'review', 'push', 'merge'];
 export const FINALIZE_AUTOMATION_OPTIONS = [
   {
     value: 'manual',
-    label: 'Manual',
-    description: 'Nothing automatic — press Finalize and Push yourself',
+    label: 'Build',
+    description:
+      'Everything runs manually — keep a back-and-forth with the agent to build what you want',
   },
   {
     value: 'review',
-    label: 'Review Automatically',
-    description: 'Run review and checks when the session ends; you push manually',
+    label: 'Build and Review',
+    description: 'Tests and a review run after every turn; you push manually',
   },
   {
     value: 'push',
-    label: 'Push Automatically',
-    description: 'Review, checks, and push to GitHub — no auto-merge',
+    label: 'Build and Push',
+    description: 'Build, review, test, and push to GitHub — no auto-merge',
   },
   {
     value: 'merge',
-    label: 'Merge Automatically',
-    description: 'Review, push, and enable GitHub auto-merge on the PR',
+    label: 'Send It',
+    description: 'Build, review, test, push, and enable GitHub auto-merge if available',
   },
 ];
 
@@ -33,5 +34,5 @@ export function finalizeAutomationFromSession(session) {
 }
 
 export function finalizeAutomationLabel(value) {
-  return FINALIZE_AUTOMATION_OPTIONS.find((o) => o.value === value)?.label ?? 'Manual';
+  return FINALIZE_AUTOMATION_OPTIONS.find((o) => o.value === value)?.label ?? 'Build';
 }

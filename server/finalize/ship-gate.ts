@@ -30,6 +30,7 @@ const IN_FLIGHT_STATUSES = new Set([
 
 export type FinalizeShipGateCode =
   | 'allowed'
+  | 'existing_pr'
   | 'no_finalize_config'
   | 'no_card'
   | 'no_worktree'
@@ -45,10 +46,22 @@ export interface FinalizeShipGateResult {
   failure_reason?: string | null;
 }
 
+/**
+ * Which spawn-guarded command is asking. `git_push` may attach commits to an
+ * already-open PR; `gh_pr_create` must never run when a PR already exists (it
+ * would open a duplicate). Defaults to the stricter `gh_pr_create` so legacy
+ * callers that don't pass an action keep today's behavior.
+ */
+export type FinalizeShipGateAction = 'git_push' | 'gh_pr_create';
+
 export interface EvaluateFinalizeShipGateArgs {
   session: SessionRow;
   projectId: string;
   headSha: string | null;
+  /** What the caller wants to do; defaults to `gh_pr_create` (stricter). */
+  action?: FinalizeShipGateAction;
+  /** Resolved PR URL for this session's branch, if one is already open. */
+  existingPrUrl?: string | null;
 }
 
 export interface EvaluateFinalizeShipGateDeps {
@@ -73,6 +86,11 @@ export async function evaluateFinalizeShipGate(
   args: EvaluateFinalizeShipGateArgs,
 ): Promise<FinalizeShipGateResult> {
   const { session, projectId, headSha } = args;
+  const action: FinalizeShipGateAction = args.action ?? 'gh_pr_create';
+  const existingPrUrl =
+    typeof args.existingPrUrl === 'string' && args.existingPrUrl.trim()
+      ? args.existingPrUrl.trim()
+      : null;
   const ciExists = deps.ciConfigExists ?? defaultCiConfigExists;
 
   if (!session.worktree_path || !session.worktree_branch) {
@@ -89,6 +107,27 @@ export async function evaluateFinalizeShipGate(
       allowed: true,
       code: 'no_finalize_config',
       message: 'No .agent-hub/ci.yaml in worktree; legacy ship path allowed.',
+    };
+  }
+
+  // An open PR already exists for this branch (linked card or session title).
+  // The Finalize gate exists to force the *first* push through local CI before
+  // a PR opens; once a PR exists, every push re-triggers GitHub's PR checks, so
+  // attaching commits is safe and matches the "commit & push to the existing
+  // branch" guidance in the spawn prompt. Allow `git push`; still block
+  // `gh pr create` so we never open a duplicate PR.
+  if (existingPrUrl) {
+    if (action === 'git_push') {
+      return {
+        allowed: true,
+        code: 'existing_pr',
+        message: `A pull request is already open for this branch (${existingPrUrl}); pushing attaches your commits and re-runs its checks.`,
+      };
+    }
+    return {
+      allowed: false,
+      code: 'existing_pr',
+      message: `A pull request is already open for this branch (${existingPrUrl}). Push to the branch to update it — do not run \`gh pr create\` (it would open a duplicate).`,
     };
   }
 

@@ -5,6 +5,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { AuthenticatedRequest } from '../auth.js';
 import type {
+  FinalizeRunMode,
   FinalizeRunRow,
   FinalizeRunStatus,
   KanbanCardRow,
@@ -17,6 +18,11 @@ import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
+import {
+  createFinalizeRunSignal,
+  registerFinalizeRunAbort,
+  unregisterFinalizeRunAbort,
+} from './run-abort-registry.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,6 +66,7 @@ async function kickoffFinalizeRun(
     session: SessionRow;
     triggerSource: 'ui_button' | 'agent_block';
     triggeredByUserId: string;
+    mode?: FinalizeRunMode;
   },
 ): Promise<
   | { kind: 'started'; runId: string; status: string }
@@ -70,6 +77,7 @@ async function kickoffFinalizeRun(
 > {
   const { project, card, session } = args;
   const { stmts } = deps;
+  const mode: FinalizeRunMode = args.mode ?? 'full';
 
   if (!session.worktree_path) {
     return { kind: 'error', error: 'no_worktree', message: 'Session has no worktree_path.' };
@@ -101,6 +109,7 @@ async function kickoffFinalizeRun(
     projectId: project.id,
     branch: session.worktree_branch,
     headSha,
+    mode,
   });
   const existing = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
     | FinalizeRunRow
@@ -122,6 +131,13 @@ async function kickoffFinalizeRun(
     worktreePath: session.worktree_path,
     getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
+  // Cancellation handle: the orchestrator honors this signal at every
+  // awaitable boundary. We register it under the run's id (once visible)
+  // so the HTTP cancel route can trip it across call stacks, halting the
+  // fix-dispatch loop and any in-flight reviewer turn.
+  const { signal, abort } = createFinalizeRunSignal();
+  let registeredRunId: string | null = null;
+  let settled = false;
   const orchestratorPromise = runFinalize(orchestratorDeps, {
     card,
     project,
@@ -134,20 +150,32 @@ async function kickoffFinalizeRun(
     triggeredByUserId: ownerId,
     authorName: ownerId,
     authorEmail: `${ownerId}@local`,
+    mode,
+    signal,
   });
-  orchestratorPromise.catch((err: unknown) => {
-    console.warn(
-      `[finalize] background runFinalize threw for card=${card.id}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  });
+  orchestratorPromise
+    .catch((err: unknown) => {
+      console.warn(
+        `[finalize] background runFinalize threw for card=${card.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    })
+    .finally(() => {
+      settled = true;
+      if (registeredRunId) unregisterFinalizeRunAbort(registeredRunId);
+    });
 
   for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
     const created = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
       | FinalizeRunRow
       | undefined;
     if (created) {
+      registeredRunId = created.id;
+      // The run may have already settled within this poll window — register
+      // then immediately reconcile so we never leak a dead entry.
+      registerFinalizeRunAbort(created.id, abort);
+      if (settled) unregisterFinalizeRunAbort(created.id);
       return { kind: 'started', runId: created.id, status: created.status };
     }
     await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
@@ -199,6 +227,7 @@ export async function triggerFinalizeRun(
     project: Project;
     card: KanbanCardRow;
     session: SessionRow;
+    mode?: FinalizeRunMode;
   },
 ): Promise<TriggerFinalizeRunResult> {
   const { req, project, card, session } = args;
@@ -209,6 +238,7 @@ export async function triggerFinalizeRun(
     session,
     triggerSource: 'ui_button',
     triggeredByUserId: ownerId,
+    mode: args.mode,
   });
 
   switch (outcome.kind) {

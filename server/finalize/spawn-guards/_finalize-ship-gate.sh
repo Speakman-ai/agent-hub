@@ -2,12 +2,16 @@
 # Shared Finalize direct-ship gate for spawn PATH wrappers (git push, gh pr create).
 _finalize_direct_ship_gate() {
   _cmd_name="$1"
+  # Optional action ("git_push" | "gh_pr_create") tells the gate whether this
+  # may attach to an already-open PR (git push) or must be blocked when a PR
+  # already exists (gh pr create). Defaults to the stricter gh_pr_create.
+  _action="${2:-gh_pr_create}"
   if [ -z "${AGENT_HUB_SESSION_ID:-}" ] || [ -z "${AGENT_HUB_URL:-}" ] || [ -z "${AGENT_HUB_API_KEY:-}" ]; then
     return 0
   fi
   _resp=$(
     curl -sS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \
-      "$AGENT_HUB_URL/api/sessions/${AGENT_HUB_SESSION_ID}/finalize-ship-gate" 2>/dev/null
+      "$AGENT_HUB_URL/api/sessions/${AGENT_HUB_SESSION_ID}/finalize-ship-gate?action=${_action}" 2>/dev/null
   ) || return 0
   _allowed=$(printf '%s' "$_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print('1' if d.get('allowed') else '0')" 2>/dev/null) || return 0
   if [ "$_allowed" = "1" ]; then

@@ -44,6 +44,13 @@ vi.mock('../session-ownership.js', () => ({
   userOwnsSession,
 }));
 
+const { cancelSessionChatRun } = vi.hoisted(() => ({
+  cancelSessionChatRun: vi.fn(),
+}));
+vi.mock('../session-chat-cancel.js', () => ({
+  cancelSessionChatRun,
+}));
+
 vi.mock('../finalize/orchestrator.js', () => ({
   runFinalize,
   computeIdempotencyKey,
@@ -93,14 +100,16 @@ function makeApp() {
   const findProject = vi.fn();
   const app = express();
   app.use(express.json());
+  const activeProcesses = new Map();
   const deps = {
     stmts,
     broadcast,
     findProject,
+    activeProcesses,
     config: { personalOAuth: null, githubApp: null },
   } as unknown as RouteDeps;
   app.use(createFinalizeRoutes(deps));
-  return { app, stmts, broadcast, findProject };
+  return { app, stmts, broadcast, findProject, activeProcesses };
 }
 
 beforeEach(() => {
@@ -109,6 +118,7 @@ beforeEach(() => {
   buildOrchestratorDeps.mockReturnValue({});
   userCanReadSession.mockReturnValue(true);
   userOwnsSession.mockReturnValue(true);
+  cancelSessionChatRun.mockReset();
   execFileAsyncMock.mockReset();
   execFileAsyncMock.mockResolvedValue({ stdout: 'deadbeef\n', stderr: '' });
   dbGetSession.mockReset();
@@ -373,8 +383,8 @@ describe('POST /api/projects/:projectId/finalize/:runId/cancel', () => {
     expect(res.body).toMatchObject({ error: 'terminal', status: 'pushed' });
   });
 
-  it('200 ok cancelled — writes the row and broadcasts the terminal pair', async () => {
-    const { app, findProject, stmts, broadcast } = makeApp();
+  it('200 ok cancelled — writes the row, halts the session turn, broadcasts terminal + interrupted', async () => {
+    const { app, findProject, stmts, broadcast, activeProcesses } = makeApp();
     findProject.mockReturnValue({ id: 'proj-1' });
     stmts.getFinalizeRun.get.mockReturnValue({
       id: 'run-1',
@@ -389,8 +399,19 @@ describe('POST /api/projects/:projectId/finalize/:runId/cancel', () => {
     expect(res.body).toEqual({ ok: true, status: 'cancelled' });
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('cancelled', 'cancelled', 'run-1');
 
+    // The originating session's agent turn is killed so the session falls idle.
+    expect(cancelSessionChatRun).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      activeProcesses,
+    });
+
     const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
     expect(types).toContain('finalize_run_phase_changed');
     expect(types).toContain('finalize_run_completed');
+    // The session UI is told the turn was interrupted so it stops streaming.
+    const interrupted = broadcast.mock.calls
+      .map((c) => c[0] as { type: string; sessionId?: string })
+      .find((e) => e.type === 'interrupted');
+    expect(interrupted).toMatchObject({ type: 'interrupted', sessionId: 'sess-1' });
   });
 });

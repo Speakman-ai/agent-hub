@@ -22,6 +22,7 @@ import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
+import { resolveSessionPrUrl } from './session-title-pr.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2068,6 +2069,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       } catch {
         /* no-op — warning block simply omitted */
       }
+      // Resolve the branch's open PR the same way the session header does:
+      // linked card `pr_url`, else inferred from the session title (Resolve /
+      // Review PR flows or a pasted PR URL). This keeps the "Active Pull
+      // Request — commit & push to the existing branch" prompt guidance in
+      // sync with the ship-gate, which now lets such sessions push directly.
+      const resolvedBranchPrUrl = resolveSessionPrUrl({
+        sessionName: session!.name,
+        githubRepo: (project as ProjectWithCommands & { githubRepo?: string }).githubRepo ?? null,
+        cardPrUrl: linkedCardForPr?.pr_url ?? null,
+      });
       // Detect the repo's default branch (cached) so the Development
       // Lifecycle / Git Workflow guidance branches from / rebases onto the
       // real default (e.g. `master`) rather than a hardcoded `main`. The
@@ -2090,7 +2101,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionId,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
-          branchPrUrl: linkedCardForPr?.pr_url ?? null,
+          branchPrUrl: resolvedBranchPrUrl,
           branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
           defaultBranch: resolvedDefaultBranch,
           sessionHasLinkedCard: !!linkedCardForPr,

@@ -58,6 +58,56 @@ async function defaultResolveHeadSha(worktreePath: string): Promise<string> {
   return sha;
 }
 
+/**
+ * Resolve the worktree's currently checked-out branch name, or `null` when
+ * detached / unresolvable.
+ *
+ * Why this matters: the push gate validates `git rev-parse HEAD` (the
+ * checked-out commit), but a session's stored `worktree_branch` can drift
+ * if an agent creates and checks out a NEW branch mid-session (the column
+ * is not re-synced on checkout). Pushing the stale stored name then targets
+ * a branch that does not contain the validated HEAD — `gh pr create` fails
+ * with "No commits between …", which the push wrapper mislabels as
+ * `github_push_5xx`. Pushing the actually-checked-out branch keeps the push
+ * consistent with what the gate validated. Mirrors `auto-git.ts`, which
+ * already resolves the current branch the same way.
+ */
+async function defaultResolveCurrentBranch(worktreePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktreePath,
+      timeout: 30_000,
+      maxBuffer: 1 * 1024 * 1024,
+    });
+    const branch = stdout.trim();
+    return branch && branch !== 'HEAD' ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the branch to push: the worktree's checked-out branch when resolvable
+ * (it holds the validated HEAD), otherwise the session's stored branch. Logs
+ * when the two disagree so the stale-branch condition is visible in the logs.
+ */
+async function resolvePushBranch(
+  worktreePath: string,
+  storedBranch: string,
+  runOrSessionLabel: string,
+  resolveCurrentBranch: (worktreePath: string) => Promise<string | null>,
+): Promise<string> {
+  const current = await resolveCurrentBranch(worktreePath);
+  if (current && current !== storedBranch) {
+    console.warn(
+      `[finalize-push] checked-out branch '${current}' differs from stored worktree_branch ` +
+        `'${storedBranch}' for ${runOrSessionLabel}; pushing the checked-out branch ` +
+        `(it holds the validated HEAD)`,
+    );
+  }
+  return current ?? storedBranch;
+}
+
 export interface RunFinalizePushArgs {
   deps: RouteDeps;
   project: Project;
@@ -65,6 +115,8 @@ export interface RunFinalizePushArgs {
   card: KanbanCardRow;
   session: SessionRow;
   resolveHeadSha?: (worktreePath: string) => Promise<string>;
+  /** Resolve the worktree's checked-out branch (injectable for tests). */
+  resolveCurrentBranch?: (worktreePath: string) => Promise<string | null>;
   pushAndCreatePr?: PushAndCreatePrFn;
   /** Operator override — skip ready_to_push and push-gate checks. */
   force?: boolean;
@@ -77,10 +129,12 @@ async function executePush(args: {
   card: KanbanCardRow;
   session: SessionRow;
   validatedHeadSha: string;
+  /** Branch to push — the worktree's checked-out branch (holds validated HEAD). */
+  pushBranch: string;
   pushAndCreatePr?: PushAndCreatePrFn;
   lifecycle?: CardLifecycle;
 }): Promise<FinalizePushOutcome> {
-  const { deps, project, run, card, session, validatedHeadSha } = args;
+  const { deps, project, run, card, session, validatedHeadSha, pushBranch } = args;
   const { stmts, broadcast } = deps;
   const pushFn =
     args.pushAndCreatePr ?? buildOrchestratorDeps(deps, card, project.id).pushAndCreatePr;
@@ -106,6 +160,7 @@ async function executePush(args: {
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: run.id,
+    session_id: session.id,
     phase: 'push',
     status: 'pushing',
   });
@@ -120,7 +175,7 @@ async function executePush(args: {
     pushResult = await pushFn({
       runId: run.id,
       worktreePath: session.worktree_path,
-      branch: session.worktree_branch,
+      branch: pushBranch,
       baseBranch,
       headSha: validatedHeadSha,
       card,
@@ -128,6 +183,9 @@ async function executePush(args: {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[finalize-push] github_push_5xx run=${run.id} branch=${pushBranch} project=${project.id}: ${msg}`,
+    );
     try {
       stmts.failFinalizeRun.run('infra_error', 'github_push_5xx', run.id);
     } catch {
@@ -136,11 +194,17 @@ async function executePush(args: {
     broadcast({
       type: 'finalize_run_phase_changed',
       run_id: run.id,
+      session_id: session.id,
       phase: null,
       status: 'infra_error',
       failure_reason: 'github_push_5xx',
     });
-    broadcast({ type: 'finalize_run_completed', run_id: run.id, status: 'infra_error' });
+    broadcast({
+      type: 'finalize_run_completed',
+      run_id: run.id,
+      session_id: session.id,
+      status: 'infra_error',
+    });
     return {
       ok: false,
       httpStatus: 502,
@@ -150,6 +214,9 @@ async function executePush(args: {
   }
 
   if (!pushResult.prUrl) {
+    console.error(
+      `[finalize-push] github_push_5xx run=${run.id} branch=${pushBranch} project=${project.id}: push step returned no PR URL`,
+    );
     return {
       ok: false,
       httpStatus: 502,
@@ -163,6 +230,9 @@ async function executePush(args: {
     stmts.markFinalizeRunPushed.run(run.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[finalize-push] persist_failed run=${run.id} branch=${pushBranch} project=${project.id}: ${msg}`,
+    );
     return {
       ok: false,
       httpStatus: 500,
@@ -174,12 +244,14 @@ async function executePush(args: {
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: run.id,
+    session_id: session.id,
     phase: 'push',
     status: 'pushed',
   });
   broadcast({
     type: 'finalize_run_completed',
     run_id: run.id,
+    session_id: session.id,
     status: 'pushed',
     pr_url: pushResult.prUrl,
   });
@@ -286,6 +358,13 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     validatedHeadSha = gate.validatedHeadSha;
   }
 
+  const pushBranch = await resolvePushBranch(
+    session.worktree_path,
+    session.worktree_branch,
+    `run=${run.id}`,
+    args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
+  );
+
   return executePush({
     deps,
     project,
@@ -293,6 +372,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     card,
     session,
     validatedHeadSha,
+    pushBranch,
     pushAndCreatePr: args.pushAndCreatePr,
   });
 }
@@ -303,6 +383,8 @@ export interface RunSessionPushArgs {
   session: SessionRow;
   card: KanbanCardRow;
   pushAndCreatePr?: PushAndCreatePrFn;
+  /** Resolve the worktree's checked-out branch (injectable for tests). */
+  resolveCurrentBranch?: (worktreePath: string) => Promise<string | null>;
 }
 
 /**
@@ -345,6 +427,13 @@ export async function runSessionPushToGithub(
     };
   }
 
+  const pushBranch = await resolvePushBranch(
+    session.worktree_path,
+    session.worktree_branch,
+    `session=${session.id}`,
+    args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
+  );
+
   const pushFn = args.pushAndCreatePr ?? createPushAndCreatePr({ config: deps.config });
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
@@ -355,13 +444,16 @@ export async function runSessionPushToGithub(
     const pushResult = await pushFn({
       runId: `session-push-${uuidv4()}`,
       worktreePath: session.worktree_path,
-      branch: session.worktree_branch,
+      branch: pushBranch,
       baseBranch,
       headSha: currentHead,
       card,
       project,
     });
     if (!pushResult.prUrl) {
+      console.error(
+        `[finalize-push] github_push_5xx session=${session.id} branch=${pushBranch} project=${project.id}: push step returned no PR URL`,
+      );
       return {
         ok: false,
         httpStatus: 502,
@@ -372,6 +464,9 @@ export async function runSessionPushToGithub(
     return { ok: true, prUrl: pushResult.prUrl };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[finalize-push] github_push_5xx session=${session.id} branch=${pushBranch} project=${project.id}: ${msg}`,
+    );
     return {
       ok: false,
       httpStatus: 502,

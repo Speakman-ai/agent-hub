@@ -799,7 +799,23 @@ export interface FinalizeRunRow {
   validated_head_sha: string | null;
   /** 1-indexed fix-loop iteration; incremented at each rebase pass. */
   loop_round: number;
+  /**
+   * Which phases the run executes (see {@link FinalizeRunMode}). `'full'`
+   * is the historical behavior (rebase + review + checks). The split
+   * manual buttons trigger `'checks'` (rebase + CI) or `'review'`
+   * (rebase + reviewer); automation always runs `'full'`.
+   */
+  mode: FinalizeRunMode;
 }
+
+/**
+ * Which phases a finalize run executes.
+ *
+ *   full   — rebase + reviewer + checks (default; automation + push/merge)
+ *   checks — rebase + CI checks only ("Run Tests" button)
+ *   review — rebase + AI reviewer only ("Reviewer" button)
+ */
+export type FinalizeRunMode = 'full' | 'checks' | 'review';
 
 /** Lifecycle status codes — see {@link FinalizeRunRow}. */
 export type FinalizeRunStatus =
@@ -1444,6 +1460,18 @@ export interface Stmts {
    * the client to track run lifecycle events.
    */
   getLatestFinalizeRunForSession: Stmt;
+  /**
+   * Most-recent `finalize_runs` row for a session that exercised the CI
+   * checks phase — `mode IN ('checks', 'full')`. Drives the "Tested"
+   * done-state on the split Run Tests button.
+   */
+  getLatestChecksRunForSession: Stmt;
+  /**
+   * Most-recent `finalize_runs` row for a session that exercised the
+   * reviewer phase — `mode IN ('review', 'full')`. Drives the "Reviewed"
+   * done-state on the split Reviewer button.
+   */
+  getLatestReviewRunForSession: Stmt;
   /**
    * Most-recent **in-flight** `finalize_runs` row for a session — i.e.
    * the row whose `status` is NOT in the terminal set

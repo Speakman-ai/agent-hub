@@ -22,9 +22,10 @@
  *         before triggering. Creates/links a card on first use.
  *
  *   4. `POST /api/projects/:projectId/finalize/:runId/cancel`
- *      — flips a non-terminal run row to `cancelled` and broadcasts the
- *        terminal pair. v0 is UI-only (the orchestrator's in-process
- *        `CancelSignal` is NOT honored across requests — see §12).
+ *      — flips a non-terminal run row to `cancelled`, trips the orchestrator's
+ *        in-process `CancelSignal` (via the run-abort registry), kills the
+ *        originating session's agent turn, and broadcasts the terminal pair
+ *        plus an `interrupted` event so the session falls idle.
  *
  *   4b. `POST /api/projects/:projectId/finalize/:runId/push`
  *       — after review + checks pass (`ready_to_push`), pushes to GitHub
@@ -40,6 +41,7 @@ import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userCanReadSession, userOwnsSession } from '../session-ownership.js';
 import type {
+  FinalizeRunMode,
   FinalizeRunRow,
   FinalizeRunStatus,
   KanbanBoardRow,
@@ -51,8 +53,11 @@ import type {
 import { type OrchestratorOutcome } from '../finalize/orchestrator.js';
 import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
 import { triggerFinalizeRun } from '../finalize/trigger-run.js';
+import { abortFinalizeRunInProcess } from '../finalize/run-abort-registry.js';
+import { cancelSessionChatRun } from '../session-chat-cancel.js';
 import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js';
-import { evaluateFinalizeShipGate } from '../finalize/ship-gate.js';
+import { evaluateFinalizeShipGate, type FinalizeShipGateAction } from '../finalize/ship-gate.js';
+import { resolveSessionPrUrl } from '../session-title-pr.js';
 import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-output.js';
 import {
   aggregateMetrics,
@@ -73,6 +78,50 @@ const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunSta
   'cancelled',
   'stalled_no_response',
 ]);
+
+const FINALIZE_RUN_MODES: ReadonlySet<string> = new Set(['full', 'checks', 'review']);
+
+/**
+ * Resolve the optional `mode` field on a Finalize trigger request body.
+ * Unknown / missing values default to `'full'` (rebase + review + checks)
+ * so legacy callers and the automation path are unaffected. The split
+ * manual buttons send `'checks'` ("Run Tests") or `'review'` ("Reviewer").
+ */
+function parseFinalizeModeFromBody(body: unknown): FinalizeRunMode {
+  const raw = (body as { mode?: unknown } | null | undefined)?.mode;
+  if (typeof raw === 'string' && FINALIZE_RUN_MODES.has(raw)) {
+    return raw as FinalizeRunMode;
+  }
+  return 'full';
+}
+
+/**
+ * Compact done-state for one Finalize phase (checks or review), surfaced
+ * on the latest-run endpoint so the split buttons can render "Tested" /
+ * "Reviewed" independently. `validated_head_sha` lets the client confirm
+ * both phases validated the *same* commit before treating the branch as
+ * fully validated.
+ */
+interface FinalizePhaseSummary {
+  run_id: string;
+  status: FinalizeRunStatus;
+  mode: FinalizeRunMode;
+  head_sha: string;
+  validated_head_sha: string | null;
+  ended_at: number | null;
+}
+
+function summarizeFinalizePhase(run: FinalizeRunRow | undefined): FinalizePhaseSummary | null {
+  if (!run) return null;
+  return {
+    run_id: run.id,
+    status: run.status,
+    mode: run.mode,
+    head_sha: run.head_sha,
+    validated_head_sha: run.validated_head_sha ?? null,
+    ended_at: run.ended_at ?? null,
+  };
+}
 
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
@@ -116,7 +165,24 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     }
     const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
     const steps = run ? listFinalizeRunSteps(stmts, run.id) : [];
-    return res.json({ run: run ?? null, steps });
+    // Per-phase done-state for the split "Run Tests" / "Reviewer" buttons.
+    // Each phase may be satisfied by its own phase-scoped run OR by a
+    // combined 'full' run, so they're resolved independently here rather
+    // than read off the single latest row.
+    const checksRun = stmts.getLatestChecksRunForSession.get(sessionId) as
+      | FinalizeRunRow
+      | undefined;
+    const reviewRun = stmts.getLatestReviewRunForSession.get(sessionId) as
+      | FinalizeRunRow
+      | undefined;
+    return res.json({
+      run: run ?? null,
+      steps,
+      phases: {
+        checks: summarizeFinalizePhase(checksRun),
+        review: summarizeFinalizePhase(reviewRun),
+      },
+    });
   });
 
   // ───────────────────────────────────────────────────────────────
@@ -167,6 +233,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         project,
         card,
         session,
+        mode: parseFinalizeModeFromBody(req.body),
       });
       return res.status(outcome.httpStatus).json(outcome.body);
     },
@@ -210,6 +277,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         project,
         card,
         session,
+        mode: parseFinalizeModeFromBody(req.body),
       });
       return res.status(outcome.httpStatus).json({ ...outcome.body, card_created: cardCreated });
     },
@@ -242,12 +310,28 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       });
     }
 
-    // Flip status → cancelled. The orchestrator's in-process CancelSignal
-    // is NOT plumbed across requests at v0 (§12) — this DB write is the
-    // authoritative cancel signal for the UI, and the orchestrator's
-    // own attempts will continue but their writes will land on a row
-    // already in terminal state. The UI subscribes to the broadcast pair
-    // we emit below.
+    // Trip the orchestrator's in-process CancelSignal (if the run is owned by
+    // this process) so the fix-dispatch loop and any in-flight reviewer turn
+    // stop instead of dispatching another fix. The DB flip below is still the
+    // authoritative UI signal even when no live handle is registered.
+    abortFinalizeRunInProcess(runId);
+
+    // Halt the originating session's agent turn so the session falls idle and
+    // waits for user input. Aborting the orchestrator stops it from waiting,
+    // but the dev-agent's fix turn keeps running until its process is killed.
+    if (run.session_id) {
+      try {
+        cancelSessionChatRun({ sessionId: run.session_id, activeProcesses: deps.activeProcesses });
+      } catch (err) {
+        console.warn(
+          `[finalize] session turn halt failed for session=${run.session_id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // Flip status → cancelled. The UI subscribes to the broadcast pair below.
     try {
       stmts.failFinalizeRun.run('cancelled', 'cancelled', runId);
     } catch (err) {
@@ -267,6 +351,11 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       run_id: runId,
       status: 'cancelled',
     });
+    // Tell the session UI the agent turn was interrupted so it stops streaming
+    // and waits for user input.
+    if (run.session_id) {
+      deps.broadcast({ type: 'interrupted', sessionId: run.session_id });
+    }
     return res.json({ ok: true, status: 'cancelled' });
   });
 
@@ -534,9 +623,26 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       }
     }
 
+    // Surface any PR already open for this branch (linked card or session
+    // title) so the gate can let `git push` attach commits to it. Mirrors the
+    // PR resolution used by the session summary / header.
+    const githubRepo =
+      lookup.project && typeof lookup.project.githubRepo === 'string'
+        ? lookup.project.githubRepo
+        : null;
+    const linkedCard = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
+    const existingPrUrl = resolveSessionPrUrl({
+      sessionName: session.name,
+      githubRepo,
+      cardPrUrl: linkedCard?.pr_url ?? null,
+    });
+
+    const action: FinalizeShipGateAction =
+      req.query.action === 'git_push' ? 'git_push' : 'gh_pr_create';
+
     const gate = await evaluateFinalizeShipGate(
       { stmts },
-      { session, projectId: lookup.project.id, headSha },
+      { session, projectId: lookup.project.id, headSha, action, existingPrUrl },
     );
     return res.json(gate);
   });

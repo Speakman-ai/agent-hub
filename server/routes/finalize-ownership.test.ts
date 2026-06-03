@@ -29,6 +29,8 @@ function makeStmts() {
   return {
     getFinalizeRun: { get: vi.fn() },
     getLatestFinalizeRunForSession: { get: vi.fn() },
+    getLatestChecksRunForSession: { get: vi.fn() },
+    getLatestReviewRunForSession: { get: vi.fn() },
     listReviewerThreadsForRun: { all: vi.fn().mockReturnValue([]) },
   };
 }
@@ -72,7 +74,11 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       .get('/api/sessions/my-own-session/finalize-runs/latest')
       .expect(200);
 
-    expect(res.body).toEqual({ run: null, steps: [] });
+    expect(res.body).toEqual({
+      run: null,
+      steps: [],
+      phases: { checks: null, review: null },
+    });
     expect(stmts.getLatestFinalizeRunForSession.get).toHaveBeenCalledWith('my-own-session');
   });
 
@@ -99,6 +105,10 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       .expect(200);
 
     expect(unauth.body).toEqual({ error: 'Session not found' });
-    expect(empty.body).toEqual({ run: null, steps: [] });
+    expect(empty.body).toEqual({
+      run: null,
+      steps: [],
+      phases: { checks: null, review: null },
+    });
   });
 });

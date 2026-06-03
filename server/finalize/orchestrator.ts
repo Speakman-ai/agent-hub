@@ -45,6 +45,7 @@ import { promisify } from 'util';
 import type {
   AppConfig,
   BroadcastFn,
+  FinalizeRunMode,
   FinalizeRunPhase,
   FinalizeRunRow,
   FinalizeRunStatus,
@@ -213,6 +214,8 @@ export interface OrchestratorDeps {
     | 'updateFinalizeRunReviewerVerdict'
     | 'failFinalizeRun'
     | 'markFinalizeRunReadyToPush'
+    | 'getLatestChecksRunForSession'
+    | 'getLatestReviewRunForSession'
     | 'markFinalizeRunPushed'
     | 'updateFinalizeRunPrUrl'
     | 'insertReviewerThread'
@@ -318,6 +321,13 @@ export interface OrchestratorOptions {
   sessionId?: string | null;
   /** Trigger surface — see §2. */
   triggerSource: 'ui_button' | 'agent_block';
+  /**
+   * Which phases the run executes. Defaults to `'full'` (rebase + review
+   * + checks). The split manual buttons pass `'checks'` (rebase + CI) or
+   * `'review'` (rebase + reviewer). Folded into the idempotency key so
+   * a checks-only and a review-only run can co-exist on one head SHA.
+   */
+  mode?: FinalizeRunMode;
   /** Acting user id (clicker or autonomous owner). */
   triggeredByUserId: string;
   /** Git identity snapshot at start time — locked into the row. */
@@ -430,11 +440,19 @@ export async function runFinalize(
     sessionId: opts.sessionId ?? null,
   });
 
-  // ─── Idempotency: dedup at the (project, branch, head_sha) level ────
+  // Which phases this run executes. Threaded through the idempotency key
+  // (so checks-only and review-only runs can co-exist on one head SHA)
+  // and the per-iteration phase gating below.
+  const mode: FinalizeRunMode = opts.mode ?? 'full';
+  const reviewRequired = mode !== 'checks';
+  const checksRequired = mode !== 'review';
+
+  // ─── Idempotency: dedup at the (project, branch, head_sha, mode) level ─
   const idempotencyKey = computeIdempotencyKey({
     projectId: opts.project.id,
     branch: opts.branch,
     headSha: opts.headSha,
+    mode,
   });
   const existing = deps.stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
     | FinalizeRunRow
@@ -464,6 +482,7 @@ export async function runFinalize(
       opts.authorEmail,
       opts.retryOfRunId ?? null,
       startedAt,
+      mode,
     );
   } catch (err) {
     // UNIQUE collision race: another caller raced us between the lookup
@@ -918,72 +937,87 @@ export async function runFinalize(
       }
 
       // ── Phase 3: reviewer ──────────────────────────────────────────
-      try {
-        lastReviewerOutcome = await runReview(
-          {
-            stmts: deps.stmts,
-            broadcast: deps.broadcast,
-            runReviewer: deps.runReviewer,
-            transactional: deps.transactional ?? identityTransactional,
-          },
-          {
+      // Skipped entirely in `checks` mode ("Run Tests" button): we
+      // synthesize an `approved` verdict so the combined gate is driven
+      // by the checks phase alone. `reviewRequired` is false only for
+      // `mode === 'checks'`.
+      if (reviewRequired) {
+        try {
+          lastReviewerOutcome = await runReview(
+            {
+              stmts: deps.stmts,
+              broadcast: deps.broadcast,
+              runReviewer: deps.runReviewer,
+              transactional: deps.transactional ?? identityTransactional,
+            },
+            {
+              runId,
+              worktreePath,
+              baseBranch: opts.baseBranch,
+              env: spawnEnv,
+              card: opts.card,
+              project: opts.project,
+              // Plumb the originating session id + cancel signal into the
+              // reviewer driver. The in-session reviewer driver attaches
+              // the reviewer agent to this session and surfaces its turn
+              // in the chat timeline (§10 — session is the canonical log).
+              // Cancel race: if the user cancels while the reviewer turn
+              // is in flight, the signal kills the CLI BEFORE the
+              // tail-parse step, so the run terminal beats the verdict
+              // persistence.
+              sessionId,
+              signal: opts.signal,
+            },
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
             runId,
-            worktreePath,
-            baseBranch: opts.baseBranch,
-            env: spawnEnv,
-            card: opts.card,
-            project: opts.project,
-            // Plumb the originating session id + cancel signal into the
-            // reviewer driver. The in-session reviewer driver attaches
-            // the reviewer agent to this session and surfaces its turn
-            // in the chat timeline (§10 — session is the canonical log).
-            // Cancel race: if the user cancels while the reviewer turn
-            // is in flight, the signal kills the CLI BEFORE the
-            // tail-parse step, so the run terminal beats the verdict
-            // persistence.
-            sessionId,
-            signal: opts.signal,
+            'failed',
+            'review_failed',
+            `reviewer dispatch threw: ${msg}`,
+            log,
+          );
+        }
+        // Emit active-seconds tick after review (success or fail).
+        broadcastActiveSeconds(deps, runId);
+        if (lastReviewerOutcome.kind === 'failed') {
+          return outcomeFromFailed(
+            deps,
+            runId,
+            lastReviewerOutcome.failureReason,
+            lastReviewerOutcome.detail,
+          );
+        }
+        // Mirror the verdict onto the card. Fires on EVERY loop iteration,
+        // not just the first — the user wants to see the back-and-forth when
+        // a `changes_requested` verdict triggers a fix dispatch and the next
+        // pass produces a new verdict.
+        lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
+        // §14 metric: every reviewer verdict, labelled with the 1-indexed
+        // attempt the verdict landed on (`loopCount`). A run that bounces
+        // between `changes_requested` and `approved` over multiple
+        // iterations contributes one row per verdict, not one row total.
+        recordReviewerVerdict(
+          { stmts: deps.stmts, now, log },
+          {
+            projectId: opts.project.id,
+            runId,
+            verdict: lastReviewerOutcome.verdict,
+            attemptIndex: loopCount,
           },
         );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return terminate(
-          deps,
-          runId,
-          'failed',
-          'review_failed',
-          `reviewer dispatch threw: ${msg}`,
-          log,
-        );
+      } else {
+        // `checks` mode: no reviewer ran. Treat as approved so the
+        // combined gate folds to "checks-green only".
+        lastReviewerOutcome = {
+          kind: 'success',
+          verdict: 'approved',
+          threadCount: 0,
+          activeSecondsBilled: 0,
+        };
       }
-      // Emit active-seconds tick after review (success or fail).
-      broadcastActiveSeconds(deps, runId);
-      if (lastReviewerOutcome.kind === 'failed') {
-        return outcomeFromFailed(
-          deps,
-          runId,
-          lastReviewerOutcome.failureReason,
-          lastReviewerOutcome.detail,
-        );
-      }
-      // Mirror the verdict onto the card. Fires on EVERY loop iteration,
-      // not just the first — the user wants to see the back-and-forth when
-      // a `changes_requested` verdict triggers a fix dispatch and the next
-      // pass produces a new verdict.
-      lifecycle.onReviewerVerdict({ runId, verdict: lastReviewerOutcome.verdict });
-      // §14 metric: every reviewer verdict, labelled with the 1-indexed
-      // attempt the verdict landed on (`loopCount`). A run that bounces
-      // between `changes_requested` and `approved` over multiple
-      // iterations contributes one row per verdict, not one row total.
-      recordReviewerVerdict(
-        { stmts: deps.stmts, now, log },
-        {
-          projectId: opts.project.id,
-          runId,
-          verdict: lastReviewerOutcome.verdict,
-          attemptIndex: loopCount,
-        },
-      );
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
@@ -996,7 +1030,12 @@ export async function runFinalize(
       // When the reviewer requests changes, dispatch fixes first — do not
       // burn CI budget on code that is already known not mergeable. CI runs
       // only after a subsequent review pass returns `approved`.
-      if (!reviewerChangesRequested) {
+      //
+      // `review` mode ("Reviewer" button) never runs the tasks phase:
+      // `checksRequired` is false, so an approved review synthesizes a
+      // green step outcome (below) and the combined gate folds to
+      // "review-only".
+      if (!reviewerChangesRequested && checksRequired) {
         // Flip to tasks/running before the (potentially long) step phase so
         // the client shows "running checks" immediately after review completes.
         setPhase(deps, runId, 'tasks', 'running', log);
@@ -1104,6 +1143,15 @@ export async function runFinalize(
             log,
           );
         }
+      } else if (!reviewerChangesRequested && !checksRequired) {
+        // `review` mode, reviewer approved: no checks phase ran.
+        // Synthesize a green step outcome so the combined gate is driven
+        // by the reviewer verdict alone.
+        lastStepOutcome = {
+          status: 'success',
+          stepResults: [],
+          activeSecondsBilled: 0,
+        };
       } else {
         lastStepOutcome = null;
       }
@@ -1182,27 +1230,56 @@ export async function runFinalize(
             log,
           );
         }
+        // A run only announces "ready to push to GitHub" once the branch is
+        // FULLY validated — both the reviewer AND the CI checks passed on the
+        // same commit. A `full` run does that in one pass. A manual
+        // checks-only ("Run Tests") or review-only ("Reviewer") run validates
+        // a single phase; it must NOT claim ready-to-push until its sibling
+        // phase has also passed for the same head (e.g. the operator then
+        // runs the other button). The split-button UI surfaces the per-phase
+        // done-state ("Tested" / "Reviewed") in the meantime. `validated` is
+        // threaded onto the broadcast so live consumers (the sidebar
+        // "ready to push" indicator) can distinguish a real full validation
+        // from a single-phase park.
+        const fullyValidated = isBranchFullyValidated(
+          deps,
+          sessionId,
+          mode,
+          gateOutcome.validatedHeadSha,
+          runId,
+        );
         deps.broadcast({
           type: 'finalize_run_phase_changed',
           run_id: runId,
           session_id: sessionId,
           phase: null,
           status: 'ready_to_push',
+          validated: fullyValidated,
         });
         deps.broadcast({
           type: 'finalize_run_completed',
           run_id: runId,
           session_id: sessionId,
           status: 'ready_to_push',
+          validated: fullyValidated,
         });
-        lifecycle.onReadyToPush({ runId });
-        writeFinalizeReadyToPushTimeline(orchestratorTimelineDeps(deps), {
-          sessionId,
-          runId,
-          validatedHeadSha: gateOutcome.validatedHeadSha,
-          round: loopCount,
-        });
-        notifyReadyToPushAutomationHook(sessionId, runId);
+        if (fullyValidated) {
+          lifecycle.onReadyToPush({ runId });
+          writeFinalizeReadyToPushTimeline(orchestratorTimelineDeps(deps), {
+            sessionId,
+            runId,
+            validatedHeadSha: gateOutcome.validatedHeadSha,
+            round: loopCount,
+          });
+          // Push/merge automation only fires on full validation — auto-pushing
+          // a single-phase run would ship code that skipped the other gate.
+          notifyReadyToPushAutomationHook(sessionId, runId);
+        } else {
+          log(
+            `[finalize-orchestrator] run=${runId} mode=${mode} passed its phase ` +
+              `(head=${gateOutcome.validatedHeadSha}); awaiting sibling phase before ready-to-push`,
+          );
+        }
         return { kind: 'ready_to_push', runId };
       }
 
@@ -1211,7 +1288,10 @@ export async function runFinalize(
       // the §7 trigger and inject the message; await turn-end and re-enter
       // the loop. The watchdog is armed inside `dispatchFixMessage` for
       // `ui_button` triggers only.
-      const trigger = buildFixTrigger(deps, runId, lastStepOutcome, lastReviewerOutcome, log);
+      const trigger = buildFixTrigger(deps, runId, lastStepOutcome, lastReviewerOutcome, log, {
+        reviewRequired,
+        checksRequired,
+      });
       // Mirror a step failure onto the card — exactly when there IS a
       // failed step AND the fix-dispatch loop is about to run. Reviewer-
       // only `changes_requested` cases (no failed step) are already
@@ -1766,6 +1846,40 @@ function mirrorTerminalFailureOnCard(
 }
 
 /**
+ * Whether the branch is FULLY validated (reviewer approved AND CI checks
+ * passed against the same commit) as of this run reaching its push gate.
+ *
+ *   - `full` runs validate both phases in one pass → always true.
+ *   - `checks` / `review` runs validate a single phase. They are only fully
+ *     validated when the SIBLING phase already passed for the same
+ *     `validated_head_sha` (e.g. the operator ran the other split button
+ *     with no commits in between). Otherwise the branch has passed one gate
+ *     but not the other, so we hold back the "ready to push" announcement.
+ *
+ * The sibling lookup reuses the per-phase pickers
+ * (`getLatestChecksRunForSession` / `getLatestReviewRunForSession`), which
+ * each include `full` runs, so a prior full pass also counts as the sibling.
+ */
+function isBranchFullyValidated(
+  deps: OrchestratorDeps,
+  sessionId: string | null,
+  mode: FinalizeRunMode,
+  validatedHeadSha: string,
+  currentRunId: string,
+): boolean {
+  if (mode === 'full') return true;
+  if (!sessionId) return false;
+  const siblingStmt =
+    mode === 'checks'
+      ? deps.stmts.getLatestReviewRunForSession
+      : deps.stmts.getLatestChecksRunForSession;
+  const sibling = siblingStmt.get(sessionId) as FinalizeRunRow | undefined;
+  if (!sibling || sibling.id === currentRunId) return false;
+  const siblingPassed = sibling.status === 'ready_to_push' || sibling.status === 'pushed';
+  return siblingPassed && sibling.validated_head_sha === validatedHeadSha;
+}
+
+/**
  * Build the §7 fix-dispatch trigger from the last step + reviewer
  * outcomes. Pulls reviewer threads from the DB so the composer renders
  * the canonical row shape (not the input shape from `runReviewer`).
@@ -1776,9 +1890,19 @@ function buildFixTrigger(
   stepOutcome: StepRunResult | null,
   reviewerOutcome: ReviewerDispatchOutcome | null,
   log: (msg: string) => void,
+  phases: { reviewRequired: boolean; checksRequired: boolean } = {
+    reviewRequired: true,
+    checksRequired: true,
+  },
 ): FixDispatchTrigger {
   const trigger: FixDispatchTrigger = {};
-  if (stepOutcome?.failedStep) {
+  // Only surface signals from phases this run actually executed. A
+  // `checks`-mode run synthesizes an approved verdict (never ran the
+  // reviewer); a `review`-mode run synthesizes a green step outcome
+  // (never ran CI). Including a synthesized signal would render a
+  // misleading "reviewer approved" / "all checks passed" line in the
+  // fix-dispatch message.
+  if (phases.checksRequired && stepOutcome?.failedStep) {
     trigger.failedStep = {
       phase: 'tasks',
       name: stepOutcome.failedStep.name,
@@ -1786,7 +1910,7 @@ function buildFixTrigger(
       outputTail: stepOutcome.failedStep.outputTail,
     };
   }
-  if (reviewerOutcome?.kind === 'success') {
+  if (phases.reviewRequired && reviewerOutcome?.kind === 'success') {
     trigger.reviewerVerdict = reviewerOutcome.verdict;
     try {
       trigger.reviewerThreads = deps.stmts.listReviewerThreadsForRun.all(runId) as never;

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from './session-title-pr.js';
+import {
+  inferPrUrlFromSessionTitle,
+  isResolvePrSessionTitle,
+  resolveSessionPrUrl,
+} from './session-title-pr.js';
 
 describe('inferPrUrlFromSessionTitle', () => {
   it('returns null for empty / non-string names', () => {
@@ -48,6 +52,44 @@ describe('inferPrUrlFromSessionTitle', () => {
 
   it('does not match Resolve pattern mid-string', () => {
     expect(inferPrUrlFromSessionTitle('prefix [Resolve PR #1] x', 'a/b')).toBeNull();
+  });
+});
+
+describe('resolveSessionPrUrl', () => {
+  it('prefers the linked card pr_url over the title', () => {
+    expect(
+      resolveSessionPrUrl({
+        sessionName: 'https://github.com/o/r/pull/2 ignored title',
+        githubRepo: 'o/r',
+        cardPrUrl: 'https://github.com/o/r/pull/1',
+      }),
+    ).toBe('https://github.com/o/r/pull/1');
+  });
+
+  it('falls back to title inference when no card pr_url', () => {
+    expect(
+      resolveSessionPrUrl({
+        sessionName: 'https://github.com/Speakman-ai/agent-hub/pull/1189 Fix the test',
+        githubRepo: 'Speakman-ai/agent-hub',
+        cardPrUrl: null,
+      }),
+    ).toBe('https://github.com/Speakman-ai/agent-hub/pull/1189');
+  });
+
+  it('treats blank card pr_url as absent', () => {
+    expect(
+      resolveSessionPrUrl({
+        sessionName: '[Resolve PR #7] x',
+        githubRepo: 'a/b',
+        cardPrUrl: '   ',
+      }),
+    ).toBe('https://github.com/a/b/pull/7');
+  });
+
+  it('returns null when neither card nor title yields a PR', () => {
+    expect(
+      resolveSessionPrUrl({ sessionName: 'Fix bug', githubRepo: 'a/b', cardPrUrl: null }),
+    ).toBeNull();
   });
 });
 

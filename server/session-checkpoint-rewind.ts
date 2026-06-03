@@ -21,6 +21,14 @@ export type SessionWireRow = SessionRow & {
    * the field is still present so the type stays uniform across surfaces.
    */
   card_id: string | null;
+  /**
+   * Status of the most-recent Finalize Code Changes run for this session,
+   * or `null` if the session has never been finalized. Surfaced so the
+   * sidebar can render a "ready to push" indicator next to the session
+   * name without a per-session round trip. Populated only when `stmts` is
+   * threaded into `enrichSessionForClient`; otherwise `null`.
+   */
+  finalize_status: string | null;
 };
 
 /**
@@ -35,6 +43,57 @@ function lookupCardIdForSession(stmts: Stmts, sessionId: string): string | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * Best-effort latest-finalize-run status lookup. Wrapped in try/catch so a
+ * unit-test DB lacking the `finalize_runs` table falls back to `null`
+ * rather than throwing.
+ */
+function lookupFinalizeStatusForSession(stmts: Stmts, sessionId: string): string | null {
+  try {
+    const row = stmts.getLatestFinalizeRunForSession.get(sessionId) as
+      | { status?: string; mode?: string }
+      | undefined;
+    if (!row?.status) return null;
+    // A single-phase run ("Run Tests" / "Reviewer") parks at `ready_to_push`
+    // internally, but the branch is only truly ready to push once BOTH phases
+    // passed the same commit. Don't seed the sidebar's "ready to push"
+    // indicator from a partial park — report the phase that passed instead
+    // (a client-inert string the indicator ignores).
+    if (row.status === 'ready_to_push' && row.mode && row.mode !== 'full') {
+      return isSessionFinalizeFullyValidated(stmts, sessionId)
+        ? 'ready_to_push'
+        : `${row.mode}_passed`;
+    }
+    return row.status;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the session's latest finalize phases together amount to a full
+ * validation: both the checks-bearing and review-bearing runs passed
+ * (`ready_to_push` / `pushed`) against the SAME `validated_head_sha`. Mirrors
+ * the orchestrator's `isBranchFullyValidated` and the client's `bothValidated`
+ * so the three surfaces agree on when "ready to push" is legitimate.
+ */
+function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boolean {
+  const checks = stmts.getLatestChecksRunForSession.get(sessionId) as
+    | { status?: string; validated_head_sha?: string | null }
+    | undefined;
+  const review = stmts.getLatestReviewRunForSession.get(sessionId) as
+    | { status?: string; validated_head_sha?: string | null }
+    | undefined;
+  const passed = (r?: { status?: string }) =>
+    r?.status === 'ready_to_push' || r?.status === 'pushed';
+  return (
+    passed(checks) &&
+    passed(review) &&
+    !!checks?.validated_head_sha &&
+    checks.validated_head_sha === review?.validated_head_sha
+  );
 }
 
 /**
@@ -79,5 +138,6 @@ export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionW
     ...row,
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
     card_id: stmts ? lookupCardIdForSession(stmts, row.id) : null,
+    finalize_status: stmts ? lookupFinalizeStatusForSession(stmts, row.id) : null,
   };
 }

@@ -65,6 +65,7 @@ function mergeStepsMaps(existing, incoming) {
  *   {
  *     run:               FinalizeRunRow | null,
  *     steps:             Array<{ index, name, state, exitCode, startedAt, endedAt }>,
+ *     phases:            { checks, review } | null,  // per-phase done-state
  *     phase:             FinalizeRunPhase | null,
  *     status:            FinalizeRunStatus | null,
  *     isActive:          boolean,            // phase still in flight
@@ -116,6 +117,10 @@ export function useFinalizeRun({
   // (including `null`); fall back to the legacy `initialRun` hint.
   const [run, setRun] = useState(prefetchedRun !== undefined ? prefetchedRun : initialRun);
   const [stepsByIndex, setStepsByIndex] = useState(() => new Map());
+  // Independent per-phase done-state ({ checks, review }) for the split
+  // "Run Tests" / "Reviewer" buttons. Populated by the latest-run fetch and
+  // kept live by the same phase-change / completed refetches as `run`.
+  const [phases, setPhases] = useState(null);
   const [loadError, setLoadError] = useState(null);
   // Wall-clock tick driver — bumps every second so the consumer re-renders
   // with a fresh `wallSeconds` value. Cheap (one re-render/sec) and only
@@ -143,6 +148,7 @@ export function useFinalizeRun({
           if (Array.isArray(data?.steps)) {
             setStepsByIndex((prev) => mergeStepsMaps(prev, stepsFromApiRows(data.steps)));
           }
+          setPhases(data?.phases ?? null);
           setLoadError(null);
           return data?.run ?? null;
         })
@@ -162,6 +168,7 @@ export function useFinalizeRun({
     abortRef.current = controller;
     setLoadError(null);
     setStepsByIndex(new Map());
+    setPhases(null);
     if (!enabled || !sessionId) {
       setRun(null);
       return () => controller.abort();
@@ -387,6 +394,7 @@ export function useFinalizeRun({
   return {
     run,
     steps,
+    phases,
     phase,
     status,
     isActive,

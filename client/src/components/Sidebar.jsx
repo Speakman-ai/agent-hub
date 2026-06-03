@@ -22,6 +22,7 @@ import {
   Lock,
   GripVertical,
   MessageCircleQuestion,
+  CheckCircle2,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -85,6 +86,13 @@ export default function Sidebar({
   onSelectDesign,
   subagentsBySession = {},
   changesReadyBySession = {},
+  /**
+   * Map of sessionId → latest Finalize Code Changes status string. When a
+   * session's status is `ready_to_push` (review + checks passed), the
+   * sidebar shows a green check next to the name so the user knows it is
+   * ready to push to GitHub.
+   */
+  finalizeStatusBySession = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
   archivedSessions = [],
@@ -199,7 +207,8 @@ export default function Sidebar({
   const isSessionActionable = (session) =>
     !!activeTaskSessionIds[session.id] ||
     !!changesReadyBySession[session.id] ||
-    !!awaitingInputBySession[session.id];
+    !!awaitingInputBySession[session.id] ||
+    finalizeStatusBySession[session.id] === 'ready_to_push';
 
   const orchestrationSession =
     currentView === 'chat' && activeSessionId
@@ -597,6 +606,8 @@ export default function Sidebar({
                                         !isRunning && !!awaitingInputBySession[session.id];
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
+                                      const isReadyToPush =
+                                        finalizeStatusBySession[session.id] === 'ready_to_push';
                                       const resolvePrHref =
                                         prReady && isResolvePrSessionTitle(session.name)
                                           ? inferPrUrlFromSessionTitle(
@@ -723,6 +734,16 @@ export default function Sidebar({
                                                     title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
                                                   >
                                                     <GitPullRequest size={11} />
+                                                  </span>
+                                                )}
+                                                {isReadyToPush && (
+                                                  <span
+                                                    data-testid={`ready-to-push-indicator-${session.id}`}
+                                                    className="flex items-center text-emerald-400 flex-shrink-0"
+                                                    title="Checks and review passed — ready to push to GitHub"
+                                                    aria-label="Ready to push to GitHub"
+                                                  >
+                                                    <CheckCircle2 size={12} />
                                                   </span>
                                                 )}
                                                 <span className="truncate">{session.name}</span>
@@ -1036,6 +1057,8 @@ export default function Sidebar({
                           const isAwaitingInput =
                             !isRunning && !!awaitingInputBySession[session.id];
                           const prReady = changesReadyBySession[session.id];
+                          const isReadyToPush =
+                            finalizeStatusBySession[session.id] === 'ready_to_push';
                           const resolvePrHref =
                             prReady && isResolvePrSessionTitle(session.name)
                               ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
@@ -1088,6 +1111,16 @@ export default function Sidebar({
                                   aria-hidden
                                 >
                                   <ExternalLink size={11} />
+                                </span>
+                              )}
+                              {isReadyToPush && (
+                                <span
+                                  data-testid={`ready-to-push-indicator-${session.id}`}
+                                  className="flex items-center text-emerald-400 flex-shrink-0"
+                                  title="Checks and review passed — ready to push to GitHub"
+                                  aria-label="Ready to push to GitHub"
+                                >
+                                  <CheckCircle2 size={12} />
                                 </span>
                               )}
                               <span className="truncate">{session.name}</span>

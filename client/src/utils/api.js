@@ -316,21 +316,26 @@ export const api = {
    *     in a finalizable state.
    *   - 404 — project or card not found / cross-project.
    *   - 409 `in_flight` — a non-terminal run already exists for the
-   *     same (project, branch, head_sha).
+   *     same (project, branch, head_sha, mode).
+   *
+   * `mode` selects which phases run: `'full'` (default — rebase + review
+   * + checks), `'checks'` ("Run Tests" button — rebase + CI), or
+   * `'review'` ("Reviewer" button — rebase + reviewer).
    */
-  startFinalizeRun: (projectId, cardId) =>
+  startFinalizeRun: (projectId, cardId, { mode = 'full' } = {}) =>
     fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ mode }),
     }),
   /**
    * Kick off Finalize for an ad-hoc session. Creates a kanban card on first
-   * use when the session is not already card-linked.
+   * use when the session is not already card-linked. See `startFinalizeRun`
+   * for the `mode` contract.
    */
-  startFinalizeRunForSession: (projectId, sessionId) =>
+  startFinalizeRunForSession: (projectId, sessionId, { mode = 'full' } = {}) =>
     fetchJSON(`/projects/${projectId}/sessions/${sessionId}/finalize`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ mode }),
     }),
   pushFinalizeRun: (projectId, runId, { force = false } = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/push`, {

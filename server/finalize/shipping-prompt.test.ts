@@ -22,7 +22,7 @@ describe('shipping-prompt', () => {
     const text = buildDevAgentShippingContract(project);
     expect(text).toContain('Finalize Code Changes');
     expect(text).toContain('git push');
-    expect(text).toContain('Merge Automatically');
+    expect(text).toContain('Send It');
   });
 
   it('appendDevAgentShippingContract is idempotent', () => {

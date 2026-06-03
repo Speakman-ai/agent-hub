@@ -335,6 +335,57 @@ describe('Sidebar — waiting-on-user indicator', () => {
   });
 });
 
+describe('Sidebar — ready-to-push indicator', () => {
+  it('renders a green check only on sessions whose finalize status is ready_to_push', () => {
+    const props = buildProps({
+      sessions: [
+        { id: 's-ready', name: 'Finalized session' },
+        { id: 's-idle', name: 'Idle session' },
+      ],
+      activeTaskSessionIds: {},
+      changesReadyBySession: {},
+      finalizeStatusBySession: { 's-ready': 'ready_to_push', 's-idle': 'reviewing' },
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByTestId('ready-to-push-indicator-s-ready')).toBeInTheDocument();
+    expect(screen.getByTestId('ready-to-push-indicator-s-ready')).toHaveAttribute(
+      'aria-label',
+      'Ready to push to GitHub',
+    );
+    // A session that has a finalize run but is not ready_to_push gets no check.
+    expect(screen.queryByTestId('ready-to-push-indicator-s-idle')).not.toBeInTheDocument();
+  });
+
+  it('shows no check when finalizeStatusBySession is empty', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-1', name: 'Plain session' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: {},
+      finalizeStatusBySession: {},
+    });
+    render(<Sidebar {...props} />);
+    expect(screen.queryByTestId('ready-to-push-indicator-s-1')).not.toBeInTheDocument();
+  });
+
+  it('keeps the ready-to-push check in the project-collapsed actionable list', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-ready', name: 'Finalized session' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: {},
+      finalizeStatusBySession: { 's-ready': 'ready_to_push' },
+    });
+    render(<Sidebar {...props} />);
+
+    fireEvent.click(screen.getByText('Test Project')); // collapse project
+
+    const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
+    expect(
+      within(collapsedPanel).getByTestId('ready-to-push-indicator-s-ready'),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — New Project + Import existing project CTAs', () => {
   it('renders only the primary "+ New Project" CTA when onImportProject is not provided', () => {
     const onOpenProject = vi.fn();

@@ -109,6 +109,52 @@ describe('runFinalizePush force', () => {
   });
 });
 
+describe('runFinalizePush branch resolution', () => {
+  it('pushes the worktree checked-out branch when it differs from stored worktree_branch', async () => {
+    // Regression: the agent switched the worktree onto a new branch
+    // mid-session, but session.worktree_branch stayed stale. The push must
+    // target the checked-out branch (which holds the validated HEAD), not
+    // the stale stored name — otherwise gh pr create fails with
+    // "No commits between …" and is mislabeled github_push_5xx.
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session, // worktree_branch: 'feature/x'
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/actual-work'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr).toHaveBeenCalledOnce();
+    expect(pushAndCreatePr.mock.calls[0][0]).toMatchObject({ branch: 'feature/actual-work' });
+  });
+
+  it('falls back to stored worktree_branch when the worktree is detached (resolver returns null)', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/2' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session, // worktree_branch: 'feature/x'
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue(null),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr.mock.calls[0][0]).toMatchObject({ branch: 'feature/x' });
+  });
+});
+
 describe('resolvePushGateBaseline', () => {
   it('prefers validated_head_sha over trigger-time head_sha', () => {
     const run = { ...baseRun(), head_sha: 'trigger-old', validated_head_sha: 'validated-new' };

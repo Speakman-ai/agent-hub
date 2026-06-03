@@ -7,7 +7,7 @@ GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REAL_GH="${AGENT_HUB_REAL_GH:-gh}"
 
 if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  _finalize_direct_ship_gate "gh pr create" || exit $?
+  _finalize_direct_ship_gate "gh pr create" "gh_pr_create" || exit $?
 fi
 
 exec "$REAL_GH" "$@"

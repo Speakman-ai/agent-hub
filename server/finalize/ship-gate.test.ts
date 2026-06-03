@@ -81,4 +81,69 @@ describe('evaluateFinalizeShipGate', () => {
     expect(gate.allowed).toBe(true);
     expect(gate.code).toBe('allowed');
   });
+
+  it('allows git push to attach to an already-open PR (no finalize run needed)', async () => {
+    const stmts = {
+      // Should not even be consulted — short-circuits on existing PR.
+      getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+      getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+    };
+    const gate = await evaluateFinalizeShipGate(
+      { stmts: stmts as never, ciConfigExists: async () => true },
+      {
+        session: session(),
+        projectId: 'proj',
+        headSha: 'abc123',
+        action: 'git_push',
+        existingPrUrl: 'https://github.com/o/r/pull/42',
+      },
+    );
+    expect(gate.allowed).toBe(true);
+    expect(gate.code).toBe('existing_pr');
+    expect(gate.message).toContain('pull/42');
+    expect(stmts.getFinalizeRunByIdempotencyKey.get).not.toHaveBeenCalled();
+  });
+
+  it('still blocks gh pr create when a PR is already open (no duplicate)', async () => {
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+        ciConfigExists: async () => true,
+      },
+      {
+        session: session(),
+        projectId: 'proj',
+        headSha: 'abc123',
+        action: 'gh_pr_create',
+        existingPrUrl: 'https://github.com/o/r/pull/42',
+      },
+    );
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('existing_pr');
+    expect(gate.message).toContain('duplicate');
+  });
+
+  it('falls back to finalize gating for git push when no PR exists', async () => {
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+        ciConfigExists: async () => true,
+      },
+      {
+        session: session(),
+        projectId: 'proj',
+        headSha: 'abc123',
+        action: 'git_push',
+        existingPrUrl: null,
+      },
+    );
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
+  });
 });

@@ -19,9 +19,29 @@ describe('FinalizeAutomationSelect', () => {
     render(
       <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'push' }} />,
     );
-    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent(
-      'Push Automatically',
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build and Push');
+  });
+
+  it('renders the "review" option as "Build and Review"', () => {
+    render(
+      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'review' }} />,
     );
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build and Review');
+  });
+
+  it('reflects a session automation level changed live mid-session', () => {
+    // Simulate the App-level flow: a `session-updated` WS event swaps the
+    // `session` prop; the select must re-render the new level without a
+    // remount (the user switched modes while coding).
+    const { rerender } = render(
+      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'manual' }} />,
+    );
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build');
+
+    rerender(
+      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'merge' }} />,
+    );
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Send It');
   });
 
   it('persists a new level via PATCH session', async () => {

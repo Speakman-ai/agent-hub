@@ -1318,6 +1318,9 @@ export interface WorktreeChanges {
   hasUncommitted: boolean;
   hasUnpushed: boolean;
   branch: string;
+  /** Current worktree HEAD SHA — used to invalidate stale Finalize phase
+   * done-states ("Tested" / "Reviewed") once new commits land. */
+  headSha: string;
 }
 
 export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges> {
@@ -1360,7 +1363,15 @@ export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges
 
   const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd });
 
-  return { hasUncommitted, hasUnpushed, branch: branchOut.trim() };
+  let headSha = '';
+  try {
+    const { stdout: headOut } = await execAsync('git rev-parse HEAD', { cwd });
+    headSha = headOut.trim();
+  } catch {
+    // Brand-new branch with no commits yet — leave headSha empty.
+  }
+
+  return { hasUncommitted, hasUnpushed, branch: branchOut.trim(), headSha };
 }
 
 // ─── Core commit + PR + review pipeline ─────────────────────────────

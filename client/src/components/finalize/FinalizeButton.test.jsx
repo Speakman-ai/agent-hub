@@ -36,6 +36,7 @@ const setHookState = (state) => {
   useFinalizeRun.mockReturnValue({
     run: null,
     steps: [],
+    phases: null,
     phase: null,
     status: null,
     isActive: false,
@@ -64,6 +65,10 @@ describe('FinalizeButton', () => {
       json: async () => ({ connected: true }),
     });
     setHookState({});
+    // Re-establish the default worktree response — `clearAllMocks` wipes
+    // call history but NOT implementations, so a per-test override (e.g. the
+    // staleness specs that inject a `headSha`) would otherwise leak forward.
+    api.getSessionWorktreeChanges.mockResolvedValue({ committable: true });
     api.startFinalizeRun.mockResolvedValue({
       run_id: 'run-1',
       status: 'queued',
@@ -72,25 +77,37 @@ describe('FinalizeButton', () => {
     api.cancelFinalizeRun.mockResolvedValue({ ok: true, status: 'cancelled' });
   });
 
-  it('renders an enabled "Finalize Code Changes" button when idle', () => {
+  it('renders enabled "Run Tests" and "Reviewer" buttons when idle', () => {
     render(<FinalizeButton {...baseProps} />);
-    const btn = screen.getByTestId('finalize-code-changes-button');
-    expect(btn).toBeInTheDocument();
-    expect(btn).not.toBeDisabled();
-    expect(btn).toHaveTextContent('Finalize Code Changes');
+    const runTests = screen.getByTestId('finalize-run-tests-button');
+    const reviewer = screen.getByTestId('finalize-reviewer-button');
+    expect(runTests).toBeInTheDocument();
+    expect(reviewer).toBeInTheDocument();
+    expect(runTests).not.toBeDisabled();
+    expect(reviewer).not.toBeDisabled();
+    expect(runTests).toHaveTextContent('Run Tests');
+    expect(reviewer).toHaveTextContent('Reviewer');
     // No cancel control while idle.
     expect(screen.queryByTestId('finalize-code-changes-cancel')).not.toBeInTheDocument();
   });
 
-  it('calls api.startFinalizeRun(projectId, cardId) on click', async () => {
+  it('starts a checks-only run when "Run Tests" is clicked', async () => {
     render(<FinalizeButton {...baseProps} />);
-    fireEvent.click(screen.getByTestId('finalize-code-changes-button'));
+    fireEvent.click(screen.getByTestId('finalize-run-tests-button'));
     await waitFor(() => {
-      expect(api.startFinalizeRun).toHaveBeenCalledWith('proj-1', 'card-1');
+      expect(api.startFinalizeRun).toHaveBeenCalledWith('proj-1', 'card-1', { mode: 'checks' });
     });
   });
 
-  it('calls startFinalizeRunForSession when cardId is missing', async () => {
+  it('starts a review-only run when "Reviewer" is clicked', async () => {
+    render(<FinalizeButton {...baseProps} />);
+    fireEvent.click(screen.getByTestId('finalize-reviewer-button'));
+    await waitFor(() => {
+      expect(api.startFinalizeRun).toHaveBeenCalledWith('proj-1', 'card-1', { mode: 'review' });
+    });
+  });
+
+  it('calls startFinalizeRunForSession with the mode when cardId is missing', async () => {
     api.startFinalizeRunForSession.mockResolvedValue({
       run_id: 'run-1',
       status: 'queued',
@@ -99,14 +116,16 @@ describe('FinalizeButton', () => {
       card_created: true,
     });
     render(<FinalizeButton {...baseProps} cardId={null} />);
-    fireEvent.click(screen.getByTestId('finalize-code-changes-button'));
+    fireEvent.click(screen.getByTestId('finalize-run-tests-button'));
     await waitFor(() => {
-      expect(api.startFinalizeRunForSession).toHaveBeenCalledWith('proj-1', 'session-1');
+      expect(api.startFinalizeRunForSession).toHaveBeenCalledWith('proj-1', 'session-1', {
+        mode: 'checks',
+      });
     });
     expect(api.startFinalizeRun).not.toHaveBeenCalled();
   });
 
-  it('disables optimistically as soon as click fires (before WS update)', async () => {
+  it('disables both triggers optimistically as soon as a click fires', async () => {
     // Hold the promise open so the optimistic disable is the only effect.
     let resolveStart;
     api.startFinalizeRun.mockImplementation(
@@ -116,19 +135,23 @@ describe('FinalizeButton', () => {
         }),
     );
     render(<FinalizeButton {...baseProps} />);
-    const btn = screen.getByTestId('finalize-code-changes-button');
-    expect(btn).not.toBeDisabled();
-    fireEvent.click(btn);
+    const runTests = screen.getByTestId('finalize-run-tests-button');
+    const reviewer = screen.getByTestId('finalize-reviewer-button');
+    expect(runTests).not.toBeDisabled();
+    fireEvent.click(runTests);
     await waitFor(() => {
-      expect(btn).toBeDisabled();
+      expect(runTests).toBeDisabled();
+      expect(reviewer).toBeDisabled();
     });
-    expect(btn).toHaveTextContent(/Finalizing/);
+    // The clicked button flips to its Stop label during the optimistic window,
+    // but stays disabled until the run row (with an id) lands.
+    expect(runTests).toHaveTextContent('Stop Tests');
     resolveStart?.({ run_id: 'run-1', status: 'queued', reused: false });
   });
 
-  it('renders disabled "Finalizing: {phase}" with cancel button while in-flight', () => {
+  it('turns the Run Tests button into an enabled "Stop Tests" while a checks run is in flight', () => {
     setHookState({
-      run: { id: 'run-99', status: 'running', phase: 'tasks' },
+      run: { id: 'run-99', status: 'running', phase: 'tasks', mode: 'checks' },
       status: 'running',
       phase: 'tasks',
       isActive: true,
@@ -136,39 +159,163 @@ describe('FinalizeButton', () => {
       activeSeconds: 42,
     });
     render(<FinalizeButton {...baseProps} />);
-    const btn = screen.getByTestId('finalize-code-changes-button');
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveTextContent('Finalizing: running checks');
-    expect(screen.getByTestId('finalize-code-changes-cancel')).toBeInTheDocument();
+    const runTests = screen.getByTestId('finalize-run-tests-button');
+    const reviewer = screen.getByTestId('finalize-reviewer-button');
+    // The active phase becomes a Stop button (enabled); the idle phase stays
+    // disabled while a run is in flight.
+    expect(runTests).toHaveTextContent('Stop Tests');
+    expect(runTests).not.toBeDisabled();
+    expect(reviewer).toBeDisabled();
+    // The standalone cancel control is gone — the trigger button stops the run.
+    expect(screen.queryByTestId('finalize-code-changes-cancel')).not.toBeInTheDocument();
   });
 
-  it('calls api.cancelFinalizeRun(projectId, runId) when cancel clicked', async () => {
+  it('turns the Reviewer button into "Stop Reviewing" while a review run is in flight', () => {
     setHookState({
-      run: { id: 'run-99', status: 'running', phase: 'tasks' },
+      run: { id: 'run-99', status: 'reviewing', phase: 'review', mode: 'review' },
+      status: 'reviewing',
+      phase: 'review',
+      isActive: true,
+      isTerminal: false,
+    });
+    render(<FinalizeButton {...baseProps} />);
+    const reviewer = screen.getByTestId('finalize-reviewer-button');
+    expect(reviewer).toHaveTextContent('Stop Reviewing');
+    expect(reviewer).not.toBeDisabled();
+  });
+
+  it('shows "Tested" only on the Run Tests button when checks passed alone', () => {
+    setHookState({
+      phases: {
+        checks: {
+          run_id: 'r1',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha1',
+        },
+        review: null,
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-run-tests-button')).toHaveTextContent('Tested');
+    // Review has not run, so the reviewer button stays in its idle label.
+    expect(screen.getByTestId('finalize-reviewer-button')).toHaveTextContent('Reviewer');
+  });
+
+  it('shows "Reviewed" only on the Reviewer button when review passed alone', () => {
+    setHookState({
+      phases: {
+        checks: null,
+        review: {
+          run_id: 'r2',
+          status: 'ready_to_push',
+          mode: 'review',
+          validated_head_sha: 'sha1',
+        },
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-reviewer-button')).toHaveTextContent('Reviewed');
+    expect(screen.getByTestId('finalize-run-tests-button')).toHaveTextContent('Run Tests');
+  });
+
+  it('shows both "Tested" and "Reviewed" when both phases passed', () => {
+    setHookState({
+      phases: {
+        checks: { run_id: 'r1', status: 'ready_to_push', mode: 'full', validated_head_sha: 'sha1' },
+        review: { run_id: 'r1', status: 'ready_to_push', mode: 'full', validated_head_sha: 'sha1' },
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-run-tests-button')).toHaveTextContent('Tested');
+    expect(screen.getByTestId('finalize-reviewer-button')).toHaveTextContent('Reviewed');
+  });
+
+  it('resets the Tested badge once a new commit moves HEAD past the validated commit', async () => {
+    api.getSessionWorktreeChanges.mockResolvedValue({ committable: true, headSha: 'sha-NEW' });
+    setHookState({
+      run: { id: 'r1', mode: 'checks', status: 'ready_to_push' },
+      status: 'ready_to_push',
+      phases: {
+        checks: {
+          run_id: 'r1',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha-OLD',
+        },
+        review: null,
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    // Once the worktree poll resolves, HEAD (sha-NEW) no longer matches the
+    // validated commit (sha-OLD), so the stale pass reverts to "Run Tests".
+    await waitFor(() => {
+      expect(screen.getByTestId('finalize-run-tests-button')).toHaveTextContent('Run Tests');
+    });
+  });
+
+  it('keeps the Tested badge while HEAD still matches the validated commit', async () => {
+    api.getSessionWorktreeChanges.mockResolvedValue({ committable: true, headSha: 'sha-OLD' });
+    setHookState({
+      run: { id: 'r1', mode: 'checks', status: 'ready_to_push' },
+      status: 'ready_to_push',
+      phases: {
+        checks: {
+          run_id: 'r1',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha-OLD',
+        },
+        review: null,
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('finalize-run-tests-button')).toHaveTextContent('Tested');
+    });
+  });
+
+  it('calls api.cancelFinalizeRun(projectId, runId) when "Stop Tests" is clicked', async () => {
+    setHookState({
+      run: { id: 'run-99', status: 'running', phase: 'tasks', mode: 'checks' },
       status: 'running',
       phase: 'tasks',
       isActive: true,
       isTerminal: false,
     });
     render(<FinalizeButton {...baseProps} />);
-    fireEvent.click(screen.getByTestId('finalize-code-changes-cancel'));
+    fireEvent.click(screen.getByTestId('finalize-run-tests-button'));
     await waitFor(() => {
       expect(api.cancelFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-99');
     });
   });
 
-  it('re-enables the button once the run reaches a terminal status', () => {
+  it('calls api.cancelFinalizeRun when "Stop Reviewing" is clicked', async () => {
     setHookState({
-      run: { id: 'run-99', status: 'pushed', phase: null },
+      run: { id: 'run-77', status: 'reviewing', phase: 'review', mode: 'review' },
+      status: 'reviewing',
+      phase: 'review',
+      isActive: true,
+      isTerminal: false,
+    });
+    render(<FinalizeButton {...baseProps} />);
+    fireEvent.click(screen.getByTestId('finalize-reviewer-button'));
+    await waitFor(() => {
+      expect(api.cancelFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-77');
+    });
+  });
+
+  it('re-enables the triggers once the run reaches a terminal status', () => {
+    setHookState({
+      run: { id: 'run-99', status: 'pushed', phase: null, mode: 'full' },
       status: 'pushed',
       phase: null,
       isActive: false,
       isTerminal: true,
     });
     render(<FinalizeButton {...baseProps} />);
-    const btn = screen.getByTestId('finalize-code-changes-button');
-    expect(btn).not.toBeDisabled();
-    expect(btn).toHaveTextContent('Finalize Code Changes');
+    const runTests = screen.getByTestId('finalize-run-tests-button');
+    expect(runTests).not.toBeDisabled();
     expect(screen.queryByTestId('finalize-code-changes-cancel')).not.toBeInTheDocument();
   });
 
@@ -177,18 +324,18 @@ describe('FinalizeButton', () => {
     const onError = vi.fn();
     render(<FinalizeButton {...baseProps} onError={onError} />);
     await act(async () => {
-      fireEvent.click(screen.getByTestId('finalize-code-changes-button'));
+      fireEvent.click(screen.getByTestId('finalize-run-tests-button'));
     });
     await waitFor(() => {
       expect(onError).toHaveBeenCalledWith('boom');
     });
   });
 
-  it('forwards cancel errors to onError', async () => {
+  it('forwards stop errors to onError', async () => {
     api.cancelFinalizeRun.mockRejectedValue(new Error('cant cancel'));
     const onError = vi.fn();
     setHookState({
-      run: { id: 'run-99', status: 'running', phase: 'tasks' },
+      run: { id: 'run-99', status: 'running', phase: 'tasks', mode: 'checks' },
       status: 'running',
       phase: 'tasks',
       isActive: true,
@@ -196,7 +343,7 @@ describe('FinalizeButton', () => {
     });
     render(<FinalizeButton {...baseProps} onError={onError} />);
     await act(async () => {
-      fireEvent.click(screen.getByTestId('finalize-code-changes-cancel'));
+      fireEvent.click(screen.getByTestId('finalize-run-tests-button'));
     });
     await waitFor(() => {
       expect(onError).toHaveBeenCalledWith('cant cancel');
@@ -208,48 +355,149 @@ describe('FinalizeButton', () => {
     expect(await screen.findByTestId('finalize-push-to-github-button')).toBeInTheDocument();
   });
 
-  it('calls pushFinalizeRun when ready to push', async () => {
+  it('pushes without a confirm when both phases passed on the same commit', async () => {
     window.confirm = vi.fn(() => true);
     setHookState({
-      run: { id: 'run-ready', status: 'ready_to_push', phase: null },
+      run: { id: 'run-ready', status: 'ready_to_push', phase: null, mode: 'full' },
       status: 'ready_to_push',
       phase: null,
       isActive: false,
       isTerminal: false,
+      phases: {
+        checks: {
+          run_id: 'run-ready',
+          status: 'ready_to_push',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+        review: {
+          run_id: 'run-ready',
+          status: 'ready_to_push',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+      },
     });
     api.pushFinalizeRun.mockResolvedValue({ ok: true, pr_url: 'https://github.com/x/y/pull/1' });
     render(<FinalizeButton {...baseProps} />);
-    const finalizeBtn = screen.getByTestId('finalize-code-changes-button');
-    expect(finalizeBtn).toHaveTextContent('Checks passed');
-    expect(finalizeBtn).not.toHaveAttribute('aria-busy', 'true');
     const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
     fireEvent.click(pushBtn);
     await waitFor(() => {
       expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-ready');
     });
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('still confirms before pushing when only checks passed', async () => {
+    window.confirm = vi.fn(() => true);
+    setHookState({
+      run: { id: 'run-checks', status: 'ready_to_push', phase: null, mode: 'checks' },
+      status: 'ready_to_push',
+      phase: null,
+      isActive: false,
+      isTerminal: false,
+      phases: {
+        checks: {
+          run_id: 'run-checks',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha1',
+        },
+        review: null,
+      },
+    });
+    api.pushFinalizeRun.mockResolvedValue({ ok: true, pr_url: 'https://github.com/x/y/pull/1' });
+    render(<FinalizeButton {...baseProps} />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    fireEvent.click(pushBtn);
+    await waitFor(() => {
+      expect(window.confirm).toHaveBeenCalled();
+    });
+    expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-checks');
+  });
+
+  it('confirms before pushing when the two phases validated different commits', async () => {
+    window.confirm = vi.fn(() => true);
+    setHookState({
+      run: { id: 'run-review', status: 'ready_to_push', phase: null, mode: 'review' },
+      status: 'ready_to_push',
+      phase: null,
+      isActive: false,
+      isTerminal: false,
+      phases: {
+        checks: {
+          run_id: 'run-checks',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha1',
+        },
+        review: {
+          run_id: 'run-review',
+          status: 'ready_to_push',
+          mode: 'review',
+          validated_head_sha: 'sha2',
+        },
+      },
+    });
+    api.pushFinalizeRun.mockResolvedValue({ ok: true, pr_url: 'https://github.com/x/y/pull/1' });
+    render(<FinalizeButton {...baseProps} />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    fireEvent.click(pushBtn);
+    await waitFor(() => {
+      expect(window.confirm).toHaveBeenCalled();
+    });
+  });
+
+  it('aborts the push when the confirm is dismissed', async () => {
+    window.confirm = vi.fn(() => false);
+    setHookState({
+      run: { id: 'run-checks', status: 'ready_to_push', phase: null, mode: 'checks' },
+      status: 'ready_to_push',
+      phase: null,
+      isActive: false,
+      isTerminal: false,
+      phases: {
+        checks: {
+          run_id: 'run-checks',
+          status: 'ready_to_push',
+          mode: 'checks',
+          validated_head_sha: 'sha1',
+        },
+        review: null,
+      },
+    });
+    render(<FinalizeButton {...baseProps} />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    fireEvent.click(pushBtn);
+    await waitFor(() => {
+      expect(window.confirm).toHaveBeenCalled();
+    });
+    expect(api.pushFinalizeRun).not.toHaveBeenCalled();
   });
 
   it('honors the compact variant by applying tighter padding classes', () => {
     render(<FinalizeButton {...baseProps} variant="compact" />);
-    const btn = screen.getByTestId('finalize-code-changes-button');
+    const btn = screen.getByTestId('finalize-run-tests-button');
     expect(btn.className).toMatch(/px-2 py-1/);
     expect(btn.className).toMatch(/text-\[11px\]/);
     // Compact variant suppresses the tooltip wrapper.
     expect(btn.getAttribute('title')).toBeNull();
   });
 
-  it('disables Finalize and Push when the worktree has no committable changes', async () => {
+  it('disables both triggers and Push when the worktree has no committable changes', async () => {
     api.getSessionWorktreeChanges.mockResolvedValue({ committable: false });
     render(<FinalizeButton {...baseProps} pendingChanges={null} />);
-    const finalizeBtn = await screen.findByTestId('finalize-code-changes-button');
+    const runTests = await screen.findByTestId('finalize-run-tests-button');
+    const reviewer = await screen.findByTestId('finalize-reviewer-button');
     const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
     await waitFor(() => {
-      expect(finalizeBtn).toBeDisabled();
+      expect(runTests).toBeDisabled();
+      expect(reviewer).toBeDisabled();
       expect(pushBtn).toBeDisabled();
     });
   });
 
-  it('enables Finalize when pendingChanges reports committable work', async () => {
+  it('enables triggers when pendingChanges reports committable work', async () => {
     api.getSessionWorktreeChanges.mockResolvedValue({ committable: false });
     render(
       <FinalizeButton
@@ -257,7 +505,19 @@ describe('FinalizeButton', () => {
         pendingChanges={{ branch: 'feature/x', hasUncommitted: true, hasUnpushed: false }}
       />,
     );
-    const finalizeBtn = await screen.findByTestId('finalize-code-changes-button');
-    await waitFor(() => expect(finalizeBtn).not.toBeDisabled());
+    const runTests = await screen.findByTestId('finalize-run-tests-button');
+    await waitFor(() => expect(runTests).not.toBeDisabled());
+  });
+
+  it('disables Push when there are no code changes, even at ready_to_push', async () => {
+    // A validated-but-already-pushed branch has nothing left to push.
+    api.getSessionWorktreeChanges.mockResolvedValue({ committable: false });
+    setHookState({
+      run: { id: 'r1', mode: 'full', status: 'ready_to_push' },
+      status: 'ready_to_push',
+    });
+    render(<FinalizeButton {...baseProps} pendingChanges={null} />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    await waitFor(() => expect(pushBtn).toBeDisabled());
   });
 });

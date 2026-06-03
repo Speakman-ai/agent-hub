@@ -218,6 +218,11 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Latest Finalize Code Changes status per session (e.g. 'ready_to_push').
+  // Seeded from the sessions list (`session.finalize_status`) and patched
+  // live by the finalize_run_* WebSocket events. Drives the sidebar
+  // "ready to push" indicator.
+  const [finalizeStatusBySession, setFinalizeStatusBySession] = useState({});
   // Live shell output while verify-before-Done runs (close-card → Done gate).
   const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
@@ -639,6 +644,19 @@ export default function App() {
           } catch {
             /* ignore malformed JSON */
           }
+        }
+        return next;
+      });
+
+      setFinalizeStatusBySession((prev) => {
+        const next = { ...prev };
+        const alive = new Set(data.map((x) => x.id));
+        for (const k of Object.keys(next)) {
+          if (!alive.has(k)) delete next[k];
+        }
+        for (const s of data) {
+          if (s.finalize_status) next[s.id] = s.finalize_status;
+          else delete next[s.id];
         }
         return next;
       });
@@ -1903,6 +1921,27 @@ export default function App() {
         case 'finalize_run_active_seconds':
         case 'finalize_run_created':
         case 'finalize_run_completed':
+          // Keep the sidebar "ready to push" indicator live. Only the
+          // phase-change / completed events carry a status worth mirroring;
+          // they include session_id (see orchestrator.ts ready_to_push emit).
+          if (
+            data.session_id &&
+            typeof data.status === 'string' &&
+            (data.type === 'finalize_run_phase_changed' || data.type === 'finalize_run_completed')
+          ) {
+            setFinalizeStatusBySession((prev) => {
+              // A single-phase run parks at `ready_to_push` but is NOT fully
+              // validated (orchestrator sends `validated: false`). Don't light
+              // the sidebar "ready to push" indicator until both phases pass —
+              // store an inert phase marker instead so the green check waits.
+              const incoming =
+                data.status === 'ready_to_push' && data.validated === false
+                  ? 'phase_passed'
+                  : data.status;
+              if (prev[data.session_id] === incoming) return prev;
+              return { ...prev, [data.session_id]: incoming };
+            });
+          }
           window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
           break;
 
@@ -2358,6 +2397,16 @@ export default function App() {
         }
         if (Object.keys(persisted).length > 0) {
           setChangesReady((prev) => ({ ...prev, ...persisted }));
+        }
+
+        // Hydrate finalize status so the sidebar "ready to push" indicator
+        // survives page refreshes and WebSocket reconnects.
+        const finalizeStatuses = {};
+        for (const s of data) {
+          if (s.finalize_status) finalizeStatuses[s.id] = s.finalize_status;
+        }
+        if (Object.keys(finalizeStatuses).length > 0) {
+          setFinalizeStatusBySession((prev) => ({ ...prev, ...finalizeStatuses }));
         }
 
         // If we were explicitly navigated to a specific session (e.g. from kanban
@@ -3665,6 +3714,7 @@ export default function App() {
             awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
             changesReadyBySession={changesReady}
+            finalizeStatusBySession={finalizeStatusBySession}
             onOpenProject={openAdaptiveProjectWizard}
             onImportProject={openImportProjectWizard}
             onReorderProjects={handleReorderProjects}

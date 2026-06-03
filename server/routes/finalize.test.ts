@@ -36,6 +36,8 @@ interface SeedRunOpts {
   status?: string;
   verdict?: 'approved' | 'changes_requested' | null;
   startedAt?: number;
+  mode?: 'full' | 'checks' | 'review';
+  validatedHeadSha?: string | null;
 }
 
 function seedSession(sessionId: string, projectId: string): void {
@@ -56,8 +58,9 @@ function seedFinalizeRun(opts: SeedRunOpts): string {
         id, card_id, session_id, project_id, branch, head_sha,
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email,
-        reviewer_verdict, active_seconds_consumed, started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        reviewer_verdict, active_seconds_consumed, started_at,
+        mode, validated_head_sha
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -77,6 +80,8 @@ function seedFinalizeRun(opts: SeedRunOpts): string {
       opts.verdict ?? null,
       0,
       startedAt,
+      opts.mode ?? 'full',
+      opts.validatedHeadSha ?? null,
     );
   return id;
 }
@@ -218,7 +223,11 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     const res = await request
       .get('/api/sessions/sess-with-no-runs/finalize-runs/latest')
       .expect(200);
-    expect(res.body).toEqual({ run: null, steps: [] });
+    expect(res.body).toEqual({
+      run: null,
+      steps: [],
+      phases: { checks: null, review: null },
+    });
   });
 
   it('returns persisted steps with the latest run', async () => {
@@ -257,13 +266,83 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body.run.project_id).toBe(projectId);
   });
 
+  it('surfaces only the checks phase when a checks-only run reached ready_to_push', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedFinalizeRun({
+      projectId,
+      sessionId,
+      mode: 'checks',
+      status: 'ready_to_push',
+      validatedHeadSha: 'sha-checks',
+      startedAt: 1_000,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.phases.checks).toMatchObject({
+      status: 'ready_to_push',
+      mode: 'checks',
+      validated_head_sha: 'sha-checks',
+    });
+    expect(res.body.phases.review).toBeNull();
+  });
+
+  it('surfaces both phases from a single full run with the same validated head', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedFinalizeRun({
+      projectId,
+      sessionId,
+      mode: 'full',
+      status: 'ready_to_push',
+      validatedHeadSha: 'sha-full',
+      startedAt: 1_000,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.phases.checks?.validated_head_sha).toBe('sha-full');
+    expect(res.body.phases.review?.validated_head_sha).toBe('sha-full');
+    expect(res.body.phases.checks?.run_id).toBe(res.body.phases.review?.run_id);
+  });
+
+  it('resolves checks and review phases from two separate phase-scoped runs', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedFinalizeRun({
+      projectId,
+      sessionId,
+      mode: 'checks',
+      status: 'ready_to_push',
+      validatedHeadSha: 'sha-1',
+      startedAt: 1_000,
+    });
+    seedFinalizeRun({
+      projectId,
+      sessionId,
+      mode: 'review',
+      status: 'ready_to_push',
+      validatedHeadSha: 'sha-1',
+      startedAt: 2_000,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.phases.checks?.mode).toBe('checks');
+    expect(res.body.phases.review?.mode).toBe('review');
+    expect(res.body.phases.checks?.validated_head_sha).toBe('sha-1');
+    expect(res.body.phases.review?.validated_head_sha).toBe('sha-1');
+  });
+
   it('returns 200 + null without 404, even for arbitrary unknown session ids', async () => {
     // The endpoint never 404s — "no runs yet" is the normal first-load
     // state and the client branches on `run === null`, not on status code.
     const res = await request
       .get('/api/sessions/zzz-totally-fake-session-id/finalize-runs/latest')
       .expect(200);
-    expect(res.body).toEqual({ run: null, steps: [] });
+    expect(res.body).toEqual({
+      run: null,
+      steps: [],
+      phases: { checks: null, review: null },
+    });
   });
 });
 

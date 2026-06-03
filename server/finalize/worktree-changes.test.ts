@@ -9,9 +9,15 @@ import { checkWorktreeChanges } from '../auto-git.js';
 
 describe('isCommittable', () => {
   it('is true when uncommitted or unpushed', () => {
-    expect(isCommittable({ hasUncommitted: true, hasUnpushed: false, branch: 'x' })).toBe(true);
-    expect(isCommittable({ hasUncommitted: false, hasUnpushed: true, branch: 'x' })).toBe(true);
-    expect(isCommittable({ hasUncommitted: false, hasUnpushed: false, branch: 'x' })).toBe(false);
+    expect(
+      isCommittable({ hasUncommitted: true, hasUnpushed: false, branch: 'x', headSha: 'h' }),
+    ).toBe(true);
+    expect(
+      isCommittable({ hasUncommitted: false, hasUnpushed: true, branch: 'x', headSha: 'h' }),
+    ).toBe(true);
+    expect(
+      isCommittable({ hasUncommitted: false, hasUnpushed: false, branch: 'x', headSha: 'h' }),
+    ).toBe(false);
   });
 });
 
@@ -27,6 +33,7 @@ describe('getSessionCommittableChanges', () => {
       hasUncommitted: false,
       hasUnpushed: false,
       branch: 'feature/x',
+      headSha: 'abc123',
     });
     const out = await getSessionCommittableChanges('/tmp/wt');
     expect(out.ok).toBe(false);
@@ -38,6 +45,7 @@ describe('getSessionCommittableChanges', () => {
       hasUncommitted: false,
       hasUnpushed: true,
       branch: 'feature/x',
+      headSha: 'abc123',
     });
     const out = await getSessionCommittableChanges('/tmp/wt');
     expect(out.ok).toBe(true);
