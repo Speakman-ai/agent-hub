@@ -2809,7 +2809,7 @@ export default function SettingsScreen({ navigation }) {
     { id: 'webhooks', label: 'Webhooks' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
-    { id: 'finalize', label: 'Finalize' },
+    { id: 'finalize', label: 'Runner' },
     { id: 'config', label: 'Backup' },
   ];
 

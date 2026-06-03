@@ -155,7 +155,7 @@ export default function FinalizeButton({
         }
         setOptimisticBlock(false);
         setPendingMode(null);
-        onError?.(err?.message || 'Failed to start Finalize run');
+        onError?.(err?.message || 'Failed to start runner');
       }
     },
     [inFlight, canShip, projectId, cardId, sessionId, onError],
@@ -240,7 +240,7 @@ export default function FinalizeButton({
     try {
       await api.cancelFinalizeRun(projectId, runId);
     } catch (err) {
-      onError?.(err?.message || 'Failed to stop Finalize Code Changes');
+      onError?.(err?.message || 'Failed to stop runner');
     } finally {
       setStopping(false);
     }

@@ -1,11 +1,10 @@
 /**
- * FinalizeSettingsSection — Settings → Finalize panel.
+ * FinalizeSettingsSection — Runner panel (per-project sidebar route).
  *
- * Mirrors the PreviewSection adoption path: a single project picker,
- * a "Set up Finalize" button that spawns the wizard session, env-var
- * scan + project secrets editor, and a short prose explanation of what
- * the wizard authors. Secrets stored here are merged into Finalize step
- * runs at execution time.
+ * Mirrors the PreviewSection adoption path: a "Set up Runner" button that
+ * spawns the wizard session, env-var scan + project secrets editor, and a
+ * short prose explanation of what the wizard authors. Secrets stored here
+ * are merged into Runner step runs at execution time.
  */
 import { useState, useEffect, useCallback } from 'react';
 import { ClipboardCheck, Loader2, AlertCircle, Sparkles, Key } from 'lucide-react';
@@ -112,29 +111,15 @@ export default function FinalizeSettingsSection({
       <div>
         <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
           <ClipboardCheck size={18} className="text-emerald-400" />
-          Finalize Code Changes
+          Runner
         </h3>
         <p className="text-xs text-gray-500 max-w-2xl">
           Author <code className="text-gray-300">.agent-hub/ci.yaml</code> — the v1 config that
-          drives the Finalize Code Changes pre-PR pipeline (lint, typecheck, tests, fixture data,
-          etc.). Click <strong className="text-gray-300">Set up Finalize</strong> to scan the repo
-          and walk through a proposed config in chat. Store project secrets below (or in the wizard)
-          so CI steps can read AWS keys, database creds, and other env vars at run time.
+          drives the Runner pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Click{' '}
+          <strong className="text-gray-300">Set up Runner</strong> to scan the repo and walk through
+          a proposed config in chat. Store project secrets below (or in the wizard) so CI steps can
+          read AWS keys, database creds, and other env vars at run time.
         </p>
-        <label className="flex items-center gap-2 text-sm mt-4">
-          <span className="text-gray-400">Project:</span>
-          <select
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name || p.id}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
@@ -183,7 +168,7 @@ export default function FinalizeSettingsSection({
             ) : (
               <Sparkles size={14} />
             )}
-            {wizardStarting ? 'Starting…' : 'Set up Finalize'}
+            {wizardStarting ? 'Starting…' : 'Set up Runner'}
           </button>
         </div>
         {wizardError && (
@@ -198,10 +183,10 @@ export default function FinalizeSettingsSection({
         <div>
           <h4 className="text-sm font-semibold text-gray-300 mb-1 flex items-center gap-2">
             <Key size={14} className="text-amber-400" />
-            Project secrets for Finalize
+            Project secrets for Runner
           </h4>
           <p className="text-xs text-gray-500 max-w-2xl">
-            Finalize steps run as shell commands in the session worktree. v1 ci.yaml has no{' '}
+            Runner steps run as shell commands in the session worktree. v1 ci.yaml has no{' '}
             <code className="text-gray-300">env:</code> block — store values here and they are
             injected when steps run (same store as Preview and chat spawns).
           </p>
@@ -258,7 +243,7 @@ export default function FinalizeSettingsSection({
         {projectId && (
           <ProjectSecretsEditor
             projectId={projectId}
-            hint="Encrypted key/value pairs merged into Finalize step runs, chat spawns, heartbeats, crons, and preview for this project. Leave secret values blank when editing to keep the stored value."
+            hint="Encrypted key/value pairs merged into Runner step runs, chat spawns, heartbeats, crons, and preview for this project. Leave secret values blank when editing to keep the stored value."
           />
         )}
       </div>

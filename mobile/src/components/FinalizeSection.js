@@ -117,11 +117,11 @@ export default function FinalizeSection({ navigation }) {
 
   return (
     <View>
-      <Text style={styles.sectionTitle}>Finalize Code Changes</Text>
+      <Text style={styles.sectionTitle}>Runner</Text>
       <Text style={styles.sectionDesc}>
         Author <Text style={styles.mono}>.agent-hub/ci.yaml</Text> — the v1 config that drives the
-        Finalize Code Changes pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Tap{' '}
-        <Text style={styles.boldText}>Set up Finalize</Text> to spawn a chat session that scans the
+        Runner pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Tap{' '}
+        <Text style={styles.boldText}>Set up Runner</Text> to spawn a chat session that scans the
         repo and walks you through a proposed config. The wizard commits the file to a session that
         already has a worktree.
       </Text>
@@ -199,7 +199,7 @@ export default function FinalizeSection({ navigation }) {
             <ActivityIndicator size="small" color={colors.white} />
           ) : (
             <Text style={styles.primaryButtonText}>
-              {lastSessionId ? 'Re-run wizard' : 'Set up Finalize'}
+              {lastSessionId ? 'Re-run wizard' : 'Set up Runner'}
             </Text>
           )}
         </TouchableOpacity>

@@ -28,7 +28,7 @@ export default function FinalizeAutomationSelect({
       try {
         await api.updateSession(sessionId, { finalize_automation: nextValue });
       } catch (err) {
-        onError?.(err?.message || 'Failed to update finalize automation');
+        onError?.(err?.message || 'Failed to update runner automation');
       } finally {
         setPending(false);
         setOpen(false);
@@ -67,13 +67,13 @@ export default function FinalizeAutomationSelect({
         <>
           <button
             type="button"
-            aria-label="Close finalize automation menu"
+            aria-label="Close runner automation menu"
             className="fixed inset-0 z-40 cursor-default"
             onClick={() => setOpen(false)}
           />
           <ul
             role="listbox"
-            aria-label="Finalize automation"
+            aria-label="Runner automation"
             className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
           >
             {FINALIZE_AUTOMATION_OPTIONS.map((option) => {

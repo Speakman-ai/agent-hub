@@ -693,20 +693,7 @@ export default function PreviewSection({
           <strong className="text-gray-300">Build and run</strong> to save and validate. Use the
           agent walkthrough if you want help choosing entry services in a monorepo.
         </p>
-        <label className="flex items-center gap-2 text-sm mt-4">
-          <span className="text-gray-400">Project:</span>
-          <select
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
-            data-testid="preview-project-select"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center gap-2 text-sm mt-4">
           <button
             type="button"
             onClick={() => project?.id && reloadDraft(project.id)}
@@ -717,7 +704,7 @@ export default function PreviewSection({
             <RefreshCw size={12} className={loadingDraft ? 'animate-spin' : ''} />
             Rescan
           </button>
-        </label>
+        </div>
       </div>
 
       {projectId && <RunningPreviewsPanel projectId={projectId} onOpenSession={onOpenSession} />}

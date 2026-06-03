@@ -24,11 +24,10 @@ describe('FinalizeSettingsSection', () => {
     expect(screen.getByText(/no projects yet/i)).toBeInTheDocument();
   });
 
-  it('renders the project picker and the Set up Finalize button', () => {
+  it('renders the Runner heading and the Set up Runner button', () => {
     render(<FinalizeSettingsSection projects={projects} />);
-    expect(screen.getByRole('heading', { name: /Finalize Code Changes/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Set up Finalize/i })).toBeInTheDocument();
-    expect(screen.getByDisplayValue('Demo')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Runner' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Set up Runner/i })).toBeInTheDocument();
   });
 
   it('calls startFinalizeWizard and opens the session on success', async () => {
@@ -40,7 +39,7 @@ describe('FinalizeSettingsSection', () => {
     const onOpenSession = vi.fn();
     render(<FinalizeSettingsSection projects={projects} onOpenSession={onOpenSession} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
 
     await waitFor(() => {
       expect(api.startFinalizeWizard).toHaveBeenCalledWith('demo');
@@ -57,7 +56,7 @@ describe('FinalizeSettingsSection', () => {
     api.startFinalizeWizard.mockRejectedValueOnce(new Error('boom'));
     render(<FinalizeSettingsSection projects={projects} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
     await waitFor(() => {
       expect(screen.getByText('boom')).toBeInTheDocument();
     });
@@ -67,16 +66,10 @@ describe('FinalizeSettingsSection', () => {
     api.startFinalizeWizard.mockResolvedValueOnce({});
     render(<FinalizeSettingsSection projects={projects} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
     await waitFor(() => {
       expect(screen.getByText(/server did not return a wizard session id/i)).toBeInTheDocument();
     });
-  });
-
-  it('switches to a different project via the picker', () => {
-    render(<FinalizeSettingsSection projects={projects} />);
-    fireEvent.change(screen.getByDisplayValue('Demo'), { target: { value: 'other' } });
-    expect(screen.getByDisplayValue('Other')).toBeInTheDocument();
   });
 
   it('surfaces the resolved commit target returned by the wizard', async () => {
@@ -91,7 +84,7 @@ describe('FinalizeSettingsSection', () => {
     });
     render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/proposed commit target/i)).toBeInTheDocument();
@@ -108,7 +101,7 @@ describe('FinalizeSettingsSection', () => {
     });
     render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Finalize/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/no worktree-bearing session/i)).toBeInTheDocument();

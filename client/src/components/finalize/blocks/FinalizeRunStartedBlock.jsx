@@ -24,7 +24,7 @@ export default function FinalizeRunStartedBlock({ message }) {
         <div className="flex items-center gap-2">
           <GitMerge className="w-4 h-4 text-indigo-400 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-indigo-200">Finalize run started</p>
+            <p className="text-sm font-medium text-indigo-200">Runner started</p>
             <p className="text-xs text-indigo-200/70 mt-0.5">
               Trigger: {describeTriggerSource(meta.triggerSource)}
               {meta.headSha ? (

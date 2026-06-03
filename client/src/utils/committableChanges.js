@@ -11,6 +11,6 @@ export function noCommittableChangesTooltip(branchLabel = '') {
   const branchPart = branchLabel ? ` (${branchLabel})` : '';
   return (
     `No uncommitted or unpushed commits in this session's worktree${branchPart}. ` +
-    'Commit here, not the project checkout, to enable Finalize.'
+    'Commit here, not the project checkout, to enable the runner.'
   );
 }

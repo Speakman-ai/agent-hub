@@ -183,11 +183,11 @@ export default function FinalizeButton({
         }));
       }
     } catch (err) {
-      const message = (err && err.message) || 'Failed to start finalize';
+      const message = (err && err.message) || 'Failed to start runner';
       if (onError) {
         onError(message);
       } else {
-        Alert.alert('Finalize Code Changes', message);
+        Alert.alert('Runner', message);
       }
     } finally {
       if (mountedRef.current) setOptimisticPending(false);
@@ -205,11 +205,11 @@ export default function FinalizeButton({
       // authoritative row shortly.
       setRun((prev) => (prev ? { ...prev, status: 'cancelled' } : prev));
     } catch (err) {
-      const message = (err && err.message) || 'Failed to cancel finalize';
+      const message = (err && err.message) || 'Failed to cancel runner';
       if (onError) {
         onError(message);
       } else {
-        Alert.alert('Cancel Finalize', message);
+        Alert.alert('Cancel Runner', message);
       }
     } finally {
       if (mountedRef.current) setCancelPending(false);
@@ -229,14 +229,14 @@ export default function FinalizeButton({
 
   if (showInFlight) {
     const label = optimisticPending && !blocked
-      ? 'Finalizing: queued'
-      : `Finalizing: ${describeRunPhase(status, phase)}`;
+      ? 'Running: queued'
+      : `Running: ${describeRunPhase(status, phase)}`;
     return (
       <View style={[styles.container, compact && styles.containerCompact]}>
         {!compact && (
           <View style={styles.headerRow}>
             <Text style={styles.icon}>⤴</Text>
-            <Text style={styles.title}>Finalize Code Changes</Text>
+            <Text style={styles.title}>Runner</Text>
             {!!branchLabel && (
               <Text style={styles.branch} numberOfLines={1}>
                 ({branchLabel})
@@ -264,7 +264,7 @@ export default function FinalizeButton({
               disabled={cancelPending}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               accessibilityRole="button"
-              accessibilityLabel="Cancel finalize run"
+              accessibilityLabel="Cancel runner"
               testID="finalize-code-changes-cancel"
               style={styles.cancelButton}
             >
@@ -280,14 +280,14 @@ export default function FinalizeButton({
     );
   }
 
-  const idleLabel = 'Finalize Code Changes';
+  const idleLabel = 'Runner';
   const idleDisabled = initialFetchPending || !canShip;
   return (
     <View style={[styles.container, compact && styles.containerCompact]}>
       {!compact && (
         <View style={styles.headerRow}>
           <Text style={styles.icon}>⤴</Text>
-          <Text style={styles.title}>Finalize Code Changes</Text>
+          <Text style={styles.title}>Runner</Text>
           {!!branchLabel && (
             <Text style={styles.branch} numberOfLines={1}>
               ({branchLabel})

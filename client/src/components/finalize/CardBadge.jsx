@@ -74,8 +74,8 @@ export default function CardBadge({ sessionId, prefetchedRun }) {
   const activeLabel = formatDuration(activeSeconds ?? 0);
   const wallLabel = formatDuration(wallSeconds ?? 0);
   const tooltip = isTerminal
-    ? `Finalize ${label} · active ${activeLabel} · wall ${wallLabel}`
-    : `Finalize ${label} · active ${activeLabel} · wall ${wallLabel} (still running)`;
+    ? `Runner ${label} · active ${activeLabel} · wall ${wallLabel}`
+    : `Runner ${label} · active ${activeLabel} · wall ${wallLabel} (still running)`;
 
   return (
     <span
