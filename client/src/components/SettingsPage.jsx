@@ -22,8 +22,6 @@ import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
-import PreviewSection from './PreviewSection.jsx';
-import FinalizeSettingsSection from './FinalizeSettingsSection.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import ProjectAwsProfilesEditor from './ProjectAwsProfilesEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -8194,8 +8192,7 @@ const SETTINGS_GROUPS = [
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
-      { id: 'preview', iconName: 'Monitor', text: 'Preview' },
-      { id: 'finalize', iconName: 'ClipboardCheck', text: 'Finalize' },
+      // Preview & Finalize moved to per-project sidebar (Preview / Runners).
     ],
   },
   {
@@ -8344,6 +8341,15 @@ export default function SettingsPage({
     }
   }, [tab, isAdminPlus]);
 
+  // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
+  // Old `settings:preview` / `settings:finalize` deep links would otherwise
+  // resolve to a tab that no longer renders anything, so fall back to General.
+  useEffect(() => {
+    if (tab === 'preview' || tab === 'finalize') {
+      setTab('general');
+    }
+  }, [tab]);
+
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
     for (const group of visibleSettingsGroups) {
@@ -8353,23 +8359,11 @@ export default function SettingsPage({
     return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
   }, [tab, visibleSettingsGroups]);
 
-  // Guard registered by the active section to block tab change when it
-  // has unsaved edits. Sections call `registerGuard(fn)` where `fn()`
-  // returns true (allow change) or false (block). Only the active tab
-  // owns the guard; switching tabs clears it.
-  const tabChangeGuardRef = useRef(null);
-  const registerTabChangeGuard = useCallback((fn) => {
-    tabChangeGuardRef.current = typeof fn === 'function' ? fn : null;
-  }, []);
-
   const handleSelectTab = (id) => {
     if (id === tab) {
       setMobileNavOpen(false);
       return;
     }
-    const guard = tabChangeGuardRef.current;
-    if (typeof guard === 'function' && !guard()) return;
-    tabChangeGuardRef.current = null;
     setTab(id);
     setMobileNavOpen(false);
   };
@@ -8478,25 +8472,6 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
-              {tab === 'preview' && (
-                <PreviewSection
-                  projects={projects}
-                  onProjectsChange={onAgentsChange}
-                  registerGuard={registerTabChangeGuard}
-                  onOpenSession={({ sessionId, agentId }) =>
-                    onOpenSession?.({ sessionId, agentId })
-                  }
-                />
-              )}
-              {tab === 'finalize' && (
-                <FinalizeSettingsSection
-                  projects={projects}
-                  onProjectsChange={onAgentsChange}
-                  onOpenSession={({ sessionId, agentId }) =>
-                    onOpenSession?.({ sessionId, agentId })
-                  }
-                />
-              )}
               {tab === 'heartbeats' && (
                 <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
               )}

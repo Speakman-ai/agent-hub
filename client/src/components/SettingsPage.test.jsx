@@ -209,14 +209,17 @@ describe('SettingsPage — tab labels', () => {
     });
   });
 
-  it('exposes a Preview tab in the Workspace group', async () => {
-    // The Preview settings panel is the only place users can configure
-    // the per-session worktree preview without hand-editing
-    // projects.json. It must appear in the sidebar under Workspace.
-    const { findByRole } = render(
+  it('no longer exposes Preview or Finalize tabs (moved to per-project sidebar)', async () => {
+    // Preview and Finalize configuration moved out of Settings and into the
+    // per-project sidebar as "Preview" and "Runners". Guard against the tabs
+    // accidentally reappearing here.
+    const { findByRole, queryByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
-    expect(await findByRole('button', { name: /^Preview$/ })).toBeTruthy();
+    // Wait for the settings nav to render before asserting absence.
+    expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
+    expect(queryByRole('button', { name: /^Preview$/ })).toBeNull();
+    expect(queryByRole('button', { name: /^Finalize$/ })).toBeNull();
   });
 
   it('labels the host-wide CLI auth tab "Global AI Authentication"', async () => {

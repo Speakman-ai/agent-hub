@@ -344,7 +344,7 @@ describe('handlePreviewBlock — gating', () => {
     expect(ev.kind).toBe('preview_unavailable');
     expect(ev.unavailableReason).toBe('no-pr-env');
     // Preferred contract: structured navigation intent.
-    expect(ev.wizard).toEqual({ view: 'settings:preview', projectId: 'p1' });
+    expect(ev.wizard).toEqual({ view: 'preview:p1', projectId: 'p1' });
     // Legacy fallback: string URL retained for one release of compat so
     // older client builds that read `wizardUrl` still render the card.
     expect(ev.wizardUrl).toContain('/projects/p1/settings/');
@@ -369,7 +369,7 @@ describe('handlePreviewBlock — gating', () => {
     const ev = deps.events[0];
     expect(ev.kind).toBe('preview_unavailable');
     expect(ev.unavailableReason).toBe('preview-disabled');
-    expect(ev.wizard).toEqual({ view: 'settings:preview', projectId: 'proj-1' });
+    expect(ev.wizard).toEqual({ view: 'preview:proj-1', projectId: 'proj-1' });
     expect(ev.wizardUrl).toBeTruthy();
   });
 
@@ -382,7 +382,7 @@ describe('handlePreviewBlock — gating', () => {
     // The runtime-null path also needs to carry the navigation intent
     // so the user can resolve the deep-link even when the runtime isn't
     // wired (e.g. on a server whose preview subsystem failed to boot).
-    expect(deps.events[0].wizard).toEqual({ view: 'settings:preview', projectId: 'proj-1' });
+    expect(deps.events[0].wizard).toEqual({ view: 'preview:proj-1', projectId: 'proj-1' });
     expect(deps.events[0].wizardUrl).toBeTruthy();
   });
 
@@ -397,7 +397,7 @@ describe('handlePreviewBlock — gating', () => {
 
     expect(deps.events[0].wizardUrl).toBe('/custom/p1/wizard');
     // Default wizard intent still emitted side-by-side.
-    expect(deps.events[0].wizard).toEqual({ view: 'settings:preview', projectId: 'p1' });
+    expect(deps.events[0].wizard).toEqual({ view: 'preview:p1', projectId: 'p1' });
   });
 
   it('respects an injected buildWizard (preferred intent override)', async () => {

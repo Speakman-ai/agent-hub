@@ -150,7 +150,7 @@ export interface PreviewBroadcastEvent {
    * The Agent Hub web app doesn't use URL routing (see
    * `client/src/App.jsx`), so a string URL like `/projects/.../settings/...`
    * never resolves to a real view. `wizard` is the preferred contract:
-   * `view` is a `currentView` token (e.g. `settings:preview`) the client
+   * `view` is a `currentView` token (e.g. `preview:<projectId>`) the client
    * passes directly to `setCurrentView`, and `projectId` lets the client
    * switch active project before navigating.
    */
@@ -218,7 +218,7 @@ export interface PreviewHandlerDeps {
   buildWizardUrl?: (projectId: string) => string;
   /**
    * Build the structured navigation intent for the client to resolve
-   * via `setCurrentView`. Defaults to `{ view: 'settings:preview',
+   * via `setCurrentView`. Defaults to `{ view: 'preview:<projectId>',
    * projectId }`. Tests can inject a fake to assert on the emitted
    * payload without depending on the client's view-router conventions.
    */
@@ -376,12 +376,12 @@ function defaultBuildWizardUrl(projectId: string): string {
 
 /**
  * Default wizard intent builder. Points the client at the per-project
- * Preview settings tab (`settings:preview` — see
- * `client/src/components/SettingsPage.jsx`), which is what the chat-side
- * CTA actually wants to land on.
+ * Preview view (`preview:<projectId>` — see the sidebar entry in
+ * `client/src/components/Sidebar.jsx` and the route in
+ * `client/src/App.jsx`), which is what the chat-side CTA lands on.
  */
 function defaultBuildWizard(projectId: string): { view: string; projectId: string } {
-  return { view: 'settings:preview', projectId };
+  return { view: `preview:${projectId}`, projectId };
 }
 
 /**

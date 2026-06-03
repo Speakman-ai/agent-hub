@@ -774,3 +774,24 @@ describe('Sidebar — project reordering (drag & drop)', () => {
     expect(onReorderProjects).toHaveBeenCalledWith(['p-beta', 'p-alpha', 'p-gamma']);
   });
 });
+
+describe('Sidebar — per-project Runners/Preview nav', () => {
+  it('renders Runners and Preview entries and routes to the project-scoped views', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
+    const runnersBtn = screen.getByRole('button', { name: 'Runners' });
+    const previewBtn = screen.getByRole('button', { name: 'Preview' });
+
+    fireEvent.click(runnersBtn);
+    expect(onNavigate).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
+
+    fireEvent.click(previewBtn);
+    expect(onNavigate).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
+  });
+
+  it('does not render the Workflows entry (temporarily hidden)', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByRole('button', { name: 'Workflows' })).toBeNull();
+  });
+});

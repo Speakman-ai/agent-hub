@@ -12,6 +12,8 @@ import {
   ExternalLink,
   List,
   ListOrdered,
+  Monitor,
+  Play,
   AlertTriangle,
   BarChart3,
   Plus,
@@ -966,6 +968,7 @@ export default function Sidebar({
                       <span className="truncate">Wiki</span>
                     </button>
 
+                    {/* Workflows — temporarily hidden from the sidebar.
                     <button
                       onClick={() => onNavigate(`workflows:${project.id}`)}
                       className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
@@ -985,6 +988,33 @@ export default function Sidebar({
                           title="Workflow activity"
                         />
                       )}
+                    </button>
+                    */}
+
+                    {/* Project runners (formerly Settings → Finalize) */}
+                    <button
+                      onClick={() => onNavigate(`runners:${project.id}`)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === `runners:${project.id}`
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <Play size={14} className="flex-shrink-0" />
+                      <span className="truncate">Runners</span>
+                    </button>
+
+                    {/* Project preview (formerly Settings → Preview) */}
+                    <button
+                      onClick={() => onNavigate(`preview:${project.id}`)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === `preview:${project.id}`
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <Monitor size={14} className="flex-shrink-0" />
+                      <span className="truncate">Preview</span>
                     </button>
 
                     {/* Project notes */}

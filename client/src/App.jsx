@@ -46,6 +46,8 @@ import NotesEditor from './components/NotesEditor.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
+import FinalizeSettingsSection from './components/FinalizeSettingsSection.jsx';
+import PreviewSection from './components/PreviewSection.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import ReleasesView from './components/ReleasesView.jsx';
@@ -2873,9 +2875,18 @@ export default function App() {
 
   tearDownSessionPreviewRef.current = tearDownSessionPreview;
 
-  const handlePreviewConfigure = useCallback(() => {
-    setCurrentView('settings:preview');
-  }, [setCurrentView]);
+  // Declared ahead of `handlePreviewConfigure` (which closes over it) so the
+  // ref binding is initialized before any consumer can reference it.
+  // `.current` is kept in sync once `activeChatProject` is computed below.
+  const activeChatProjectRef = useRef(null);
+
+  const handlePreviewConfigure = useCallback(
+    (event) => {
+      const projectId = event?.wizard?.projectId || activeChatProjectRef.current?.id;
+      setCurrentView(projectId ? `preview:${projectId}` : 'settings');
+    },
+    [setCurrentView],
+  );
 
   const handleStartSessionPreview = useCallback(
     async (sessionId) => {
@@ -2912,6 +2923,29 @@ export default function App() {
     const agent = agents.find((a) => a.id === agentId);
     return projects.find((p) => p.id === agent?.projectId) ?? null;
   }, [sessions, activeSessionId, activeAgentId, agents, projects, sessionsIndexTick]);
+
+  activeChatProjectRef.current = activeChatProject;
+
+  // Stable refresh used by the per-project Runners/Preview views so the
+  // child sections don't re-subscribe their effects on every App render.
+  const refreshProjects = useCallback(
+    () => api.getProjects().then((data) => setProjects(data)).catch(() => undefined),
+    [],
+  );
+
+  // Single-project arrays for the `runners:`/`preview:` views, memoized so the
+  // prop reference only changes when the project list or active view does.
+  const runnersScopedProjects = useMemo(() => {
+    if (!currentView.startsWith('runners:')) return [];
+    const id = currentView.slice('runners:'.length);
+    return projects.filter((p) => p.id === id);
+  }, [currentView, projects]);
+
+  const previewScopedProjects = useMemo(() => {
+    if (!currentView.startsWith('preview:')) return [];
+    const id = currentView.slice('preview:'.length);
+    return projects.filter((p) => p.id === id);
+  }, [currentView, projects]);
 
   const chatGithubRepo = activeChatProject?.githubRepo ?? null;
   const chatProjectIsWorkflow = activeChatProject?.mode === 'workflow';
@@ -3826,6 +3860,29 @@ export default function App() {
                   onSelectAgent={setActiveAgentId}
                   showToast={showToast}
                 />
+              ) : currentView.startsWith('runners:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <FinalizeSettingsSection
+                    projects={runnersScopedProjects}
+                    onProjectsChange={refreshProjects}
+                    onOpenSession={({ sessionId, agentId }) =>
+                      focusAgentSession(agentId, sessionId)
+                    }
+                  />
+                </div>
+              ) : currentView.startsWith('preview:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  {/* No `registerGuard` here: the Settings tab-change guard was
+                      tab-local. Sidebar navigation away from this view is not
+                      intercepted; PreviewSection treats the prop as optional. */}
+                  <PreviewSection
+                    projects={previewScopedProjects}
+                    onProjectsChange={refreshProjects}
+                    onOpenSession={({ sessionId, agentId }) =>
+                      focusAgentSession(agentId, sessionId)
+                    }
+                  />
+                </div>
               ) : currentView.startsWith('settings') ? (
                 <SettingsPage
                   projects={projects}
