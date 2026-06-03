@@ -1,24 +1,3 @@
-# Finalize Code Changes — pipeline config for the agent-hub repo itself.
-#
-# This is the FIRST repo to dogfood `.agent-hub/ci.yaml` (card 5d68e03e).
-# The schema is locked at v1 by `server/finalize/ci-config.ts`; the wiki
-# page `finalize-code-changes-architecture-v0` §5 is the design contract.
-#
-# Every step runs under `bash -euo pipefail -c <run>` from the orchestrator
-# (no `shell:` override is permitted at v1). The active-time cap is the
-# system default of 60 minutes — we deliberately do not lower it so the
-# first-time install (~3 min) plus the full client+server+mobile+electron
-# test sweep (~8 min cold) plus the OpenAPI freshness regenerate
-# (~10 sec) plus the Vite build (~30 sec) all fit comfortably.
-#
-# Step ordering matches the card description verbatim:
-#   install → typecheck → lint → test → openapi checks → build
-# so reviewers can grep "install, typecheck, lint, test, openapi, build"
-# against the card 5d68e03e and see the contract holds. We intentionally
-# run test BEFORE the openapi gates so a broken test surfaces first; the
-# openapi freshness gate edits no source files and the build step has no
-# runtime side-effects, so their position at the tail is safe.
-
 version: 1
 on:
   - finalize
@@ -26,43 +5,25 @@ on:
 
 steps:
   - name: Install
-    # `npm run install:all` installs root + server + client + mobile with
-    # devDependencies (vitest, tsx, @vitejs/plugin-react, …). Plain
-    # `npm ci` at the root is NOT enough because the workspaces are not
-    # declared in `package.json`'s `workspaces:` field — each is its own
-    # npm install. See CLAUDE.md → Testing → Vitest missing.
     run: npm run install:all
 
-  - name: Typecheck
-    # Runs `tsc --noEmit` on `server/` (strict mode). The client + mobile
-    # are not TypeScript at the repo level so this is server-only.
-    run: npm run typecheck
-
   - name: Lint
-    # `scripts/run-eslint.mjs .` walks the whole repo with the flat config
-    # at `eslint.config.js`. Style is enforced by Prettier separately at
-    # the pre-commit hook; we deliberately do NOT add `format:check` to
-    # this pipeline because the hook already gates every commit.
     run: npm run lint
 
+  - name: Format check
+    run: npm run format:check
+
+  - name: Typecheck
+    run: npm run typecheck
+
+  - name: Skill coupling
+    run: git diff --name-only origin/main...HEAD > changed-files.txt && CHANGED_FILES_PATH=changed-files.txt PR_LABELS='' node .github/scripts/skill-coupling.mjs
+
   - name: Test
-    # Runs client + server + electron + mobile vitest suites.
-    # `server/test/setup.ts` patches child_process so the suite cannot
-    # accidentally spawn real Claude / Cursor / Gemini / Codex CLIs
-    # (CLAUDE.md → Tests MUST NOT spawn the real CLI binaries).
     run: npm test
 
   - name: OpenAPI checks
-    # Coverage ratchet (`scripts/check-openapi-coverage.ts`) plus the
-    # freshness diff (`scripts/check-openapi-freshness.ts`). New routes
-    # without a Zod `registry.registerPath(...)` fail the coverage
-    # ratchet; a stale `docs/api/openapi.yaml` fails freshness. Run
-    # `npm run generate:openapi` locally if freshness fails.
     run: npm run check:openapi
 
   - name: Build
-    # Vite production build of the React client into `client/dist/`. The
-    # server itself has no build step (TypeScript runs through `tsx`),
-    # and this build is required for Electron packaging — keeping it in
-    # the pipeline catches any client compile regressions early.
     run: npm run build
