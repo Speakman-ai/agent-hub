@@ -20,6 +20,11 @@ import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { claudePermissionModeForSpawn } from '../claude-cli-args.js';
+import {
+  ANALYZE_FINALIZE_SHIPPING_GUIDELINES,
+  applyOnboardDevAgentShippingContracts,
+  patchOnboardContextFilesForShipping,
+} from '../finalize/shipping-prompt.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, getUserById, createUser } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
@@ -104,7 +109,7 @@ Guidelines for agents — SINGLE FLAT DEV AGENT:
 - Return EXACTLY ONE agent in the array. Sub-agent hierarchies (lead + frontend + backend, etc.) are deprecated — Agent Hub uses a flat agent model. The user can add additional dev agents from the UI later if they want a multi-specialist setup.
 - The agent's role MUST be "dev".
 - The agent's name should be "[Project] Dev" (e.g. "MyApp Dev") — short and human-readable.
-- The agent's systemPrompt should be a comprehensive, full-stack-capable persona that owns the entire codebase: architecture, frontend, backend, tests, deploy. 3-5 paragraphs that bake in the project's tech stack, conventions, and notable directories so a fresh chat session has the context it needs to ship work without delegating.
+- The agent's systemPrompt should be a comprehensive, full-stack-capable persona that owns the entire codebase: architecture, frontend, backend, tests, deploy. 3-5 paragraphs that bake in the project's tech stack, conventions, and notable directories so a fresh chat session has the context it needs to deliver work without delegating. Do **not** tell the dev agent to push, open PRs, or merge — see the shipping guidelines below.
 - The agent's id should be descriptive kebab-case (e.g. "myapp-dev").
 - Do NOT emit roles "lead" or "sub". Do NOT split work across multiple agents.
 
@@ -117,10 +122,11 @@ Guidelines for commands:
 
 Guidelines for contextFiles:
 - SOUL.md: capture actual coding style (indentation, naming conventions, patterns observed)
-- AGENTS.md: describe the single dev agent and the kinds of work they own. The flat-agent model means there is no team to coordinate — write this from the perspective of one full-stack developer agent.
+- AGENTS.md: describe the single dev agent and the kinds of work they own. The flat-agent model means there is no team to coordinate — write this from the perspective of one full-stack developer agent. Include that GitHub shipping goes through Finalize Code Changes (not dev-agent \`gh pr create\`).
 - TOOLS.md: list actual commands from package.json scripts, Makefile targets, etc.
 - MEMORY.md: note the project structure and key directories
-- All content must be specific to this project, not generic`;
+- All content must be specific to this project, not generic
+${ANALYZE_FINALIZE_SHIPPING_GUIDELINES}`;
 
 const ANALYZE_USER_PROMPT = `Analyze the repository at the current working directory.
 
@@ -2993,6 +2999,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
       } catch (err: unknown) {
         console.warn(`[Onboard] Failed to create webhook config: ${(err as Error).message}`);
       }
+    }
+
+    if (project.githubRepo) {
+      applyOnboardDevAgentShippingContracts(project);
+      patchOnboardContextFilesForShipping(dataDir, project);
     }
 
     const projects = getProjects();

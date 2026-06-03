@@ -85,6 +85,9 @@ async function loadOk(label: string, file: string): Promise<CiConfig> {
         `path=${result.error.path ?? '(root)'} message=${result.error.message}`,
     );
   }
+  if (result.config.version !== 1) {
+    throw new Error(`${label} ci.yaml is not v1 (got version ${result.config.version})`);
+  }
   return result.config;
 }
 
@@ -118,12 +121,12 @@ describe('cross-repo parity: agent-hub vs survey-tracker ci.yaml', () => {
     expect(surveyTracker.on).toContain('finalize');
   });
 
-  it('both files have timeouts within the v1 ceiling [1, 60]', async () => {
+  it('both files have timeouts within the v1 ceiling [1, 240]', async () => {
     const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
     const surveyTracker = await loadOk('survey-tracker', SURVEYTRACKER_CI_YAML);
     for (const cfg of [agentHub, surveyTracker]) {
       expect(cfg.timeoutMinutes).toBeGreaterThanOrEqual(1);
-      expect(cfg.timeoutMinutes).toBeLessThanOrEqual(60);
+      expect(cfg.timeoutMinutes).toBeLessThanOrEqual(240);
     }
   });
 

@@ -288,6 +288,41 @@ Wiki page with full context: `openapi-coverage-enforcement-zod-schema-lint`.
 - Agent configurations are stored in `server/agents.json` and auto-saved
 - See `README.md` for general project documentation; this CLAUDE.md provides AI agent-specific guidance
 
+## Finalize CI Runners (DinD — GHA parity)
+
+ci.yaml v2 jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD runner containers** — one container per job instance (matrix shard), each with its own inner `dockerd`. This matches GitHub Actions (one VM = one Docker daemon) so parallel E2E shards can all bind default ports (`8001`, `4300`) without collision.
+
+### Runner image
+
+- **Image**: `agent-hub/finalize-runner:ubuntu-24.04` (local dev) or `public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner:main` (prod)
+- **Build (local only)**: `server/finalize/runner/build.sh`
+- **CI + deploy**: pushed alongside the server image on every merge to `main` (`.github/workflows/ecr-publish-rollout-docker-dev.yml`). EC2 user-data and `agenthub-server-run.sh` pull the runner on every Hub restart and set `FINALIZE_RUNNER_IMAGE_UBUNTU_24_04` on the Hub container.
+- **One-time ECR setup**: create the `agent-hub-finalize-runner` public repo (see `ops/terraform/ecr-public.tf` runbook). Extend the GitHub OIDC push policy if Terraform is not applied yet.
+
+### How it works
+
+- Agent Hub starts one long-lived runner per job: `docker run -d --privileged ... entrypoint.sh daemon`
+- All steps in that job run via `docker exec` into the same container
+- Nested `docker compose` talks to the **inner** daemon; Cypress hits `127.0.0.1` / `mcsteen.localhost` inside the runner
+- Job teardown: `docker rm -f -v` removes the runner and its inner graph volume
+
+### Host requirements
+
+- The Finalize host must allow **privileged** `docker run` from the Agent Hub process
+- If Agent Hub itself runs in Docker, its container needs host docker access **and** permission to spawn privileged siblings
+- **RAM**: recommend **16GB+** when running backend + frontend + 4 E2E shards concurrently (~6 inner dockerds). Tune `FINALIZE_MAX_PARALLEL_JOBS` (default 4) if needed
+- **Disk**: inner compose images accumulate per job; repo scripts should `docker compose down -v`; outer `docker rm -v` clears the per-job graph volume
+
+### Escape hatch
+
+- `FINALIZE_RUNNER_DOCKER_MODE=host-socket` restores legacy behavior (mount host `/var/run/docker.sock`, one ephemeral container per step, `host.docker.internal` for port probes). Use only for debugging.
+
+### Key files
+
+- `server/finalize/job-container.ts` — job-scoped start / exec / stop
+- `server/finalize/runner/entrypoint.sh` — starts inner dockerd
+- `server/finalize/runner-docker-mode.ts` — `dind` vs `host-socket`
+
 ## Deployment
 
 ### Production Server (generic single-host topology)

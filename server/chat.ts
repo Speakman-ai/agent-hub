@@ -81,6 +81,7 @@ import {
   writeSystemPromptFile,
   applyArgvPromptCap,
   logArgvCapTruncation,
+  SAFE_ARG_STRLEN_BYTES,
 } from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import {
@@ -109,6 +110,12 @@ import {
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
+import {
+  notifyFinalizeSessionTurnEnd,
+  notifyFinalizeSessionSpawnFailed,
+} from './finalize/turn-end.js';
+import { applyFinalizeSpawnShipGuards } from './finalize/spawn-ship-guards.js';
+import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 import {
   detectWikiRequestBlock,
   parseWikiRequestBlock,
@@ -188,9 +195,29 @@ import {
   linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
+import { resolveDefaultBranch } from './git-default-branch.js';
 
 const stmts = _stmts!;
 const MAX_QUEUE_SIZE = 10;
+
+/**
+ * Process-lifetime cache of each checkout's default branch, keyed by cwd.
+ * The agent-facing Development Lifecycle / Git Workflow prompt sections need
+ * to tell the model which branch to branch from and rebase onto. Hardcoding
+ * `main` was wrong for repos whose default is `master` (e.g. surveytracker),
+ * so we detect it via `resolveDefaultBranch`. A repo's default branch changes
+ * essentially never, so caching it for the process lifetime avoids spawning
+ * `git symbolic-ref` on every chat turn. Returns `null` until first resolved.
+ */
+const defaultBranchByCwd = new Map<string, string>();
+export async function getCachedDefaultBranch(cwd: string): Promise<string | null> {
+  if (!cwd) return null;
+  const cached = defaultBranchByCwd.get(cwd);
+  if (cached) return cached;
+  const detected = await resolveDefaultBranch(cwd);
+  if (detected) defaultBranchByCwd.set(cwd, detected);
+  return detected;
+}
 
 // ─── Internal types ─────────────────────────────────────────────
 
@@ -240,6 +267,22 @@ interface BuildEnrichedPromptOptions {
   /** Configured base branch for the PR (from card.pr_base_branch). Optional. */
   branchPrBase?: string | null;
   /**
+   * Detected default branch of the project checkout (e.g. `main` or `master`).
+   * Used for the Development Lifecycle / Git Workflow "branch from / rebase
+   * onto" guidance when no explicit `branchPrBase` override is configured.
+   * Falls back to `main` when neither is provided. Resolve via
+   * `getCachedDefaultBranch(project.cwd)` at the (async) call site.
+   */
+  defaultBranch?: string | null;
+  /**
+   * Suppress the "Development Lifecycle" / "Git Workflow" branch-test-ship
+   * guidance. Set for non-shipping helper agents (in-session reviewer,
+   * multi-agent advisor) that only read/review the worktree — they never
+   * branch, rebase, or open PRs, so the ship mechanics are irrelevant
+   * (and were emitting a wrong `git checkout main` for `master` repos).
+   */
+  omitDevLifecycle?: boolean;
+  /**
    * True when this session is already linked to a kanban card (via
    * `kanban_cards.session_id`). Suppresses the "create a kanban card"
    * instructions in the Development Lifecycle, Kanban Self-Reporting, and
@@ -248,6 +291,16 @@ interface BuildEnrichedPromptOptions {
    * card through the column lifecycle.
    */
   sessionHasLinkedCard?: boolean;
+  /**
+   * True when the session worktree contains `.agent-hub/ci.yaml`. Suppresses
+   * agent-owned push/PR instructions and tells the model to commit only — the
+   * human operator ships via Finalize Code Changes.
+   */
+  finalizeConfigured?: boolean;
+  /** Absolute path to this session's git worktree (when useWorktree). */
+  sessionWorktreePath?: string | null;
+  /** Feature branch checked out in the session worktree. */
+  sessionWorktreeBranch?: string | null;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -802,9 +855,39 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
     } catch {}
   }
 
+  const finalizeConfigured = options.finalizeConfigured === true;
+
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
-    if (isGitHubConnected && projectMode !== 'workflow') {
+    if (finalizeConfigured && isGitHubConnected && projectMode !== 'workflow') {
+      prompt += `\n\n## Finalize Code Changes — No Direct Ship
+This project has \`.agent-hub/ci.yaml\` configured. **You must not run \`git push\` or \`gh pr create\`** — the spawn environment blocks them until the human operator completes **Finalize Code Changes** on the session (rebase, review, tests) and clicks **Push to GitHub**.
+
+Your job ends at a clean local commit on the feature branch after tests pass. Do not ask permission to push or open a PR.`;
+      if (promptWorktree && options.sessionWorktreePath) {
+        const branchHint = options.sessionWorktreeBranch
+          ? ` (\`${options.sessionWorktreeBranch}\`)`
+          : '';
+        prompt += `
+
+**Session worktree only:** All \`git add\` / \`git commit\` / test runs that should ship must happen in this session's worktree — \`${options.sessionWorktreePath}\`${branchHint}. The project checkout at \`${project.cwd}\` is a **different** working copy; commits there do **not** enable Finalize on this session. Never \`cd\` to the project checkout to commit.`;
+      }
+    }
+
+    // Branch the agent should fork from / rebase onto. Prefer an explicit
+    // per-card PR base override, else the detected repo default branch
+    // (resolved by the caller), else `main`. Avoids telling the agent to
+    // `git checkout main` / `rebase on origin/main` in repos whose default
+    // branch is `master`.
+    const lifecycleBaseBranch = (
+      options.branchPrBase?.trim() ||
+      options.defaultBranch?.trim() ||
+      'main'
+    ).trim();
+
+    if (options.omitDevLifecycle) {
+      // Non-shipping helper (reviewer/advisor): emit no branch/ship guidance.
+    } else if (isGitHubConnected && projectMode !== 'workflow') {
       const lifecycleStep1 = options.sessionHasLinkedCard
         ? `1. **Kanban Card**: Your session is **already linked to a card** — do NOT create a new one. Move that card to "In Progress" if it isn't already, and treat its acceptance criteria as the contract for this work.`
         : `1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`. Create a card with a **concise title** (under 60 chars, summarizing the problem) and a description that includes:
@@ -816,19 +899,22 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
 This project is connected to GitHub. Follow this lifecycle for changes:
 
 ${lifecycleStep1}
-2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
+2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
-4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
-5. **Ship**: Rebase on latest \`origin/main\`, run tests/lint, commit, push, and open the PR with \`gh pr create\` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and move the card to "Review" with a comment containing the PR URL. Never merge your own PR.
+4. **Test & Lint**: ${finalizeConfigured ? 'Run **targeted** tests only while iterating (single file / failing case). **Do not run the full `.agent-hub/ci.yaml` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.' : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
+5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ' **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to GitHub** after gates pass.' : ' Commit, push, and open the PR with `gh pr create` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and move the card to "Review" with a comment containing the PR URL.'} Never merge your own PR.
 
-**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit, and push to the same branch. Do not open duplicate PRs. Do NOT merge.
+**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
     } else if (isGitHubConnected && projectMode === 'workflow') {
       prompt += `\n\n## Development — Workflow mode
 This project is in **workflow** mode (not the default dev/kanban automation profile). Prioritize workflow definitions, runs, and step outcomes. Work in the project checkout — **per-session git worktrees are off**, and the autonomous kanban→server-PR lifecycle described elsewhere does not apply. Use Git, tests, and the wiki as usual; coordinate shipping through the product's workflow surfaces rather than Agent Hub session PR automation.`;
     } else if (promptWorktree) {
+      const worktreeShipHint = finalizeConfigured
+        ? `, rebase on \`origin/${lifecycleBaseBranch}\`, run tests, and commit — **do not push or open a PR** (Finalize Code Changes handles ship)`
+        : `, then ship by rebasing on \`origin/${lifecycleBaseBranch}\`, pushing, and opening/updating a PR with \`gh\``;
       prompt += `\n\n## Git Workflow
-You are in a git worktree. Never commit to main. Commit to the current feature branch, then ship by rebasing on \`origin/main\`, pushing, and opening/updating a PR with \`gh\`. Do not merge your own PR.`;
+You are in a git worktree. Never commit to main. Commit to the current feature branch${worktreeShipHint}. Do not merge your own PR.`;
     }
 
     // Bias to Action — single block, parameterized over the three modes
@@ -839,13 +925,24 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
     const biasToActionSteps =
       projectMode === 'workflow'
         ? `**Just do the work:** implement, test, and commit in the project checkout following team conventions.`
-        : options.sessionHasLinkedCard
-          ? `**Just do the work:**
+        : finalizeConfigured
+          ? options.sessionHasLinkedCard
+            ? `**Just do the work:**
+1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
+2. Implement on a feature branch.
+3. Rebase and commit locally — run only targeted tests while fixing. **Do not push or open a PR** (human uses Finalize Code Changes).`
+            : `**Just do the work:**
+1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
+2. Move it to In Progress.
+3. Implement on a feature branch.
+4. Rebase and commit locally — run only targeted tests while fixing. **Do not push or open a PR** (human uses Finalize Code Changes).`
+          : options.sessionHasLinkedCard
+            ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
 2. Implement on a feature branch.
 3. Rebase, test, commit, push, and open/update the PR.
 4. Move card to Review and comment with PR URL.`
-          : `**Just do the work:**
+            : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
 3. Implement on a feature branch.
@@ -854,8 +951,13 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
     const biasToActionScope =
       projectMode === 'workflow'
         ? 'starting implementation'
-        : 'creating a card, shipping a PR, or starting implementation';
-    prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
+        : finalizeConfigured
+          ? 'creating a card or starting implementation'
+          : 'creating a card, shipping a PR, or starting implementation';
+    const biasToActionTitle = finalizeConfigured
+      ? "Bias to Action — Don't Ask, Just Build"
+      : "Bias to Action — Don't Ask, Just Ship";
+    prompt += `\n\n## ${biasToActionTitle}
 When a user describes a problem, feature, or change, **do not ask permission for ${biasToActionScope}.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) lets you act now and be corrected cheaply later. Skip prompts like "Should I implement this?", "Want me to open a PR?", "Should I add a test?", "Do you want me to create a card?".
 
 ${biasToActionSteps}
@@ -1966,6 +2068,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       } catch {
         /* no-op — warning block simply omitted */
       }
+      // Detect the repo's default branch (cached) so the Development
+      // Lifecycle / Git Workflow guidance branches from / rebases onto the
+      // real default (e.g. `master`) rather than a hardcoded `main`. The
+      // worktree and the project checkout share the same remote default, so
+      // either cwd resolves it; non-fatal — falls back to `main` in-builder.
+      let resolvedDefaultBranch: string | null = null;
+      try {
+        resolvedDefaultBranch = await getCachedDefaultBranch(
+          session!.worktree_path || (project as ProjectWithCommands).cwd,
+        );
+      } catch {
+        /* leave null — builder falls back to `main` */
+      }
       let enrichedPrompt = buildEnrichedPrompt(
         project as ProjectWithCommands,
         agent as AgentWithModel,
@@ -1977,7 +2092,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: linkedCardForPr?.pr_url ?? null,
           branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
+          defaultBranch: resolvedDefaultBranch,
           sessionHasLinkedCard: !!linkedCardForPr,
+          finalizeConfigured: worktreeHasFinalizeCi(session!.worktree_path),
+          sessionWorktreePath: session!.worktree_path ?? null,
+          sessionWorktreeBranch: session!.worktree_branch ?? null,
           _getEnrichedAgent: getEnrichedAgent,
         },
       );
@@ -2282,6 +2401,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           p += `${prefix}: ${m.content}\n\n`;
         }
         p += `Human: ${cliContent}`;
+        if (Buffer.byteLength(p, 'utf8') > SAFE_ARG_STRLEN_BYTES) {
+          console.warn(
+            `[chat] session=${sessionId} history bootstrap ${Buffer.byteLength(p, 'utf8')}B ` +
+              `exceeds argv cap ${SAFE_ARG_STRLEN_BYTES}B — using current turn only`,
+          );
+          return cliContent;
+        }
         return p;
       })();
 
@@ -2589,7 +2715,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } else {
           args.push('--resume', engineSessionId!);
         }
-        args.push(finalPrompt);
+        let userPrompt = finalPrompt;
+        const userPromptBytes = Buffer.byteLength(userPrompt, 'utf8');
+        if (userPromptBytes > SAFE_ARG_STRLEN_BYTES) {
+          const capped = applyArgvPromptCap(userPrompt);
+          logArgvCapTruncation(
+            'claude-code-user',
+            sessionId,
+            capped.originalBytes,
+            userPromptBytes,
+          );
+          userPrompt = capped.prompt;
+        }
+        // `--` terminates option parsing so `--disallowed-tools` (variadic) and
+        // trailing flags cannot swallow the positional prompt (Claude CLI 2.x).
+        args.push('--', userPrompt);
         bin = CLAUDE_BIN;
       }
 
@@ -2846,6 +2986,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
         mergeProjectAwsSpawnEnv(base, project, { configPath: projectAwsConfigPath });
+        applyFinalizeSpawnShipGuards(base, session!.worktree_path);
         return base;
       })();
 
@@ -3218,6 +3359,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             chainElapsedMs: Date.now() - chainStartedAtMs,
             detail: 'spawn_errored',
           });
+          try {
+            notifyFinalizeSessionSpawnFailed(sessionId);
+          } catch (err) {
+            console.warn(
+              `[chat] finalize spawn-failed notify threw for ${sessionId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           if (delegationWorkPromise) {
             handleDelegationCancel(sessionId);
             delegationWorkPromise = null;
@@ -4000,6 +4150,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           },
         });
 
+        // Finalize fix-dispatch + rebase conflict waits resolve on turn-end.
+        try {
+          notifyFinalizeSessionTurnEnd(sessionId);
+        } catch (err) {
+          console.warn(
+            `[chat] finalize turn-end notify threw for ${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+
         // §13 active-time budget — Finalize Code Changes.
         //
         // If this session has an in-flight `finalize_runs` row, bill the
@@ -4565,6 +4726,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionId,
           error: errText,
         });
+        try {
+          notifyFinalizeSessionSpawnFailed(sessionId);
+        } catch (notifyErr) {
+          console.warn(
+            `[chat] finalize spawn-failed notify threw for ${sessionId}: ${
+              notifyErr instanceof Error ? notifyErr.message : String(notifyErr)
+            }`,
+          );
+        }
         drainQueue(sessionId);
       });
     } finally {
@@ -4588,7 +4758,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           buildEnrichedPrompt(
             findAgent(agent.id)!.project as ProjectWithCommands,
             agent as AgentWithModel,
-            { useWorktree: false, isFirstMessage: false, _getEnrichedAgent: getEnrichedAgent },
+            {
+              useWorktree: false,
+              isFirstMessage: false,
+              // Advisor reviews/advises; the executor ships. No branch/ship guidance.
+              omitDevLifecycle: true,
+              _getEnrichedAgent: getEnrichedAgent,
+            },
           ),
         getClaudeBin,
         getCursorBin,

@@ -76,12 +76,19 @@ import type { ChildProcess } from 'child_process';
 import type {
   BroadcastFn,
   FinalizeRunPhase,
+  FinalizeRunRow,
   FinalizeRunStatus,
   MessageRow,
   Stmts,
 } from '../types.js';
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import type { CiConfig, CiStep } from './ci-config.js';
+import { listFinalizeRunSteps } from './step-output.js';
+import {
+  readFinalizeLoopRound,
+  writeFinalizeChecksRoundTimeline,
+  type TimelineMessageDeps,
+} from './timeline-message.js';
 
 /**
  * Argv form of {@link FINALIZE_STEP_SHELL}. Parsed once at module load so
@@ -171,6 +178,8 @@ export interface StepRunResult {
     run: string;
     exitCode: number;
     outputTail: string[];
+    jobId?: string;
+    matrixKey?: string;
   };
   /** Every step actually invoked, in declaration order. */
   stepResults: StepResult[];
@@ -211,12 +220,17 @@ export type SpawnStepFn = (args: SpawnStepArgs) => SpawnedStep;
 export interface StepRunnerDeps {
   stmts: Pick<
     Stmts,
+    | 'getFinalizeRun'
     | 'updateFinalizeRunPhase'
     | 'updateFinalizeRunActiveSeconds'
     | 'failFinalizeRun'
     | 'addMessage'
     | 'touchSession'
     | 'getMessageById'
+    | 'upsertFinalizeRunStep'
+    | 'listFinalizeRunStepsForRun'
+    | 'upsertFinalizeRunJob'
+    | 'listFinalizeRunJobsForRun'
   >;
   broadcast: BroadcastFn;
   /**
@@ -224,6 +238,12 @@ export interface StepRunnerDeps {
    * uses {@link defaultSpawnStep}.
    */
   spawnStep?: SpawnStepFn;
+  /**
+   * Override the runner backend that stands up a runner per job instance
+   * (DinD path). Tests inject a fake; production resolves via
+   * {@link resolveRunnerBackend} (local DinD today, remote fleet later).
+   */
+  runnerBackend?: import('./runner-backend.js').RunnerBackend;
   /**
    * Inject a clock so timeout / duration tests are deterministic.
    * Defaults to {@link Date.now}.
@@ -236,10 +256,32 @@ export interface StepRunnerDeps {
   spawnHardTimeoutMs?: number;
 }
 
+export interface StepPersistMeta {
+  jobId?: string;
+  matrixKey?: string;
+}
+
+export interface RunStepsSequenceOptions {
+  runId: string;
+  sessionId: string;
+  worktreePath: string;
+  steps: CiStep[];
+  timeoutMinutes: number;
+  env?: NodeJS.ProcessEnv;
+  /** Prefix for display names (e.g. `e2e / Profiles & Tasks /`). */
+  stepNamePrefix?: string;
+  /** 1-indexed step indices; when omitted, uses 1..steps.length. */
+  stepIndices?: number[];
+  persistMeta?: StepPersistMeta;
+  /** When true, skip setPhase + entry billing (caller owns phase setup). */
+  skipPhaseInit?: boolean;
+  /** When false, skip the checks-round timeline write (v2 job shards). Default true. */
+  emitChecksTimeline?: boolean;
+}
 export interface StepRunnerOptions {
   /** finalize_runs.id. */
   runId: string;
-  /** Parsed ci.yaml. Steps are run in declaration order. */
+  /** Parsed ci.yaml v1. Steps are run in declaration order. */
   config: CiConfig;
   /** Absolute path of the session's worktree (working directory). */
   worktreePath: string;
@@ -278,14 +320,9 @@ export async function runStepPhase(
   deps: StepRunnerDeps,
   opts: StepRunnerOptions,
 ): Promise<StepRunResult> {
-  const { stmts, broadcast } = deps;
-  const spawnStep = deps.spawnStep ?? defaultSpawnStep;
-  const now = deps.now ?? Date.now;
-  const spawnHardTimeoutMs = deps.spawnHardTimeoutMs ?? STEP_SPAWN_HARD_TIMEOUT_MS;
-
   if (!opts.worktreePath) {
     return terminate(
-      stmts,
+      deps.stmts,
       opts.runId,
       'infra_error',
       'worktree_create_failed',
@@ -296,11 +333,8 @@ export async function runStepPhase(
     );
   }
   if (!opts.sessionId) {
-    // The streaming insert path keys off sessionId; without it we cannot
-    // surface output to the user — refuse to start rather than running
-    // blind.
     return terminate(
-      stmts,
+      deps.stmts,
       opts.runId,
       'infra_error',
       'container_unavailable',
@@ -311,51 +345,98 @@ export async function runStepPhase(
     );
   }
 
-  setPhase(stmts, broadcast, opts.runId, 'tasks', 'running');
-  // Charge a small entry cost so the active-seconds counter advances
-  // even for a pipeline with zero steps that pass instantly. Mirrors
-  // how the rebase phase bills a fixed unit per attempt.
-  let activeSecondsBilled = TASKS_PHASE_ENTRY_ACTIVE_SECONDS;
-  stmts.updateFinalizeRunActiveSeconds.run(TASKS_PHASE_ENTRY_ACTIVE_SECONDS, opts.runId);
+  return runStepsSequence(deps, {
+    runId: opts.runId,
+    sessionId: opts.sessionId,
+    worktreePath: opts.worktreePath,
+    steps: opts.config.steps,
+    timeoutMinutes: opts.config.timeoutMinutes,
+    env: opts.env,
+  });
+}
 
-  const budgetMs = opts.config.timeoutMinutes * 60_000;
+/**
+ * Run an ordered list of steps (shared by v1 step phase and v2 job shards).
+ */
+export async function runStepsSequence(
+  deps: StepRunnerDeps,
+  opts: RunStepsSequenceOptions,
+): Promise<StepRunResult> {
+  const { stmts, broadcast } = deps;
+  const spawnStep = deps.spawnStep ?? defaultSpawnStep;
+  const now = deps.now ?? Date.now;
+  const spawnHardTimeoutMs = deps.spawnHardTimeoutMs ?? STEP_SPAWN_HARD_TIMEOUT_MS;
+
+  if (!opts.skipPhaseInit) {
+    setPhase(stmts, broadcast, opts.runId, 'tasks', 'running');
+  }
+
+  let activeSecondsBilled = opts.skipPhaseInit ? 0 : TASKS_PHASE_ENTRY_ACTIVE_SECONDS;
+  if (!opts.skipPhaseInit) {
+    stmts.updateFinalizeRunActiveSeconds.run(TASKS_PHASE_ENTRY_ACTIVE_SECONDS, opts.runId);
+  }
+
+  const budgetMs = opts.timeoutMinutes * 60_000;
   const startedAt = now();
   const stepResults: StepResult[] = [];
+  const persistMeta = opts.persistMeta;
 
-  for (let i = 0; i < opts.config.steps.length; i += 1) {
-    const step = opts.config.steps[i];
-    const stepIndex = i + 1;
+  for (let i = 0; i < opts.steps.length; i += 1) {
+    const step = opts.steps[i];
+    const stepIndex = opts.stepIndices?.[i] ?? i + 1;
+    const displayName = opts.stepNamePrefix ? `${opts.stepNamePrefix}${step.name}` : step.name;
+    persistFinalizeRunStep(
+      stmts,
+      opts.runId,
+      stepIndex,
+      displayName,
+      'queued',
+      null,
+      null,
+      null,
+      persistMeta,
+    );
+  }
+
+  for (let i = 0; i < opts.steps.length; i += 1) {
+    const step = opts.steps[i];
+    const stepIndex = opts.stepIndices?.[i] ?? i + 1;
+    const displayName = opts.stepNamePrefix ? `${opts.stepNamePrefix}${step.name}` : step.name;
+    const stepForRun = { ...step, name: displayName };
     const remainingBudgetMs = budgetMs - (now() - startedAt);
     if (remainingBudgetMs <= 0) {
-      // Budget exhausted before this step could start. We surface as
-      // timeout with this step as the "failed" one so the dispatch body
-      // points the user at the step that didn't even run.
       const tail = ['[timeout] pipeline budget exhausted before step started'];
-      announceLine(deps, opts.sessionId, opts.runId, stepIndex, step, 'stderr', tail[0]);
-      return terminate(
-        stmts,
-        opts.runId,
-        'timeout',
-        'timeout',
-        `pipeline budget of ${opts.config.timeoutMinutes}min exhausted at step ${stepIndex}`,
-        activeSecondsBilled,
-        stepResults,
-        undefined,
-        {
-          index: stepIndex,
-          name: step.name,
-          run: step.run,
-          exitCode: -1,
-          outputTail: tail,
-        },
+      announceLine(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, 'stderr', tail[0]);
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'timeout',
+          'timeout',
+          `pipeline budget of ${opts.timeoutMinutes}min exhausted at step ${stepIndex}`,
+          activeSecondsBilled,
+          stepResults,
+          undefined,
+          {
+            index: stepIndex,
+            name: displayName,
+            run: step.run,
+            exitCode: -1,
+            outputTail: tail,
+            ...(persistMeta?.jobId ? { jobId: persistMeta.jobId } : {}),
+            ...(persistMeta?.matrixKey ? { matrixKey: persistMeta.matrixKey } : {}),
+          },
+        ),
       );
     }
 
     const stepHardTimeoutMs = Math.min(remainingBudgetMs, spawnHardTimeoutMs);
-    announceStepStart(deps, opts.sessionId, opts.runId, stepIndex, step);
+    announceStepStart(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, persistMeta);
 
     const runOutcome = await runSingleStep({
-      step,
+      step: stepForRun,
       stepIndex,
       cwd: opts.worktreePath,
       env: opts.env,
@@ -373,85 +454,144 @@ export async function runStepPhase(
     stepResults.push(runOutcome.result);
 
     if (runOutcome.kind === 'success') {
-      announceStepEnd(deps, opts.sessionId, opts.runId, stepIndex, step, 0);
+      announceStepEnd(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, 0, persistMeta);
       continue;
     }
 
-    // Failure — short-circuit. Surface the failed step in the dispatch
-    // payload and persist the terminal status.
-    announceStepEnd(deps, opts.sessionId, opts.runId, stepIndex, step, runOutcome.result.exitCode);
+    announceStepEnd(
+      deps,
+      opts.sessionId,
+      opts.runId,
+      stepIndex,
+      stepForRun,
+      runOutcome.result.exitCode,
+      persistMeta,
+    );
+
+    const failedStep = {
+      index: stepIndex,
+      name: displayName,
+      run: step.run,
+      exitCode: runOutcome.result.exitCode,
+      outputTail: runOutcome.outputTail,
+      ...(persistMeta?.jobId ? { jobId: persistMeta.jobId } : {}),
+      ...(persistMeta?.matrixKey ? { matrixKey: persistMeta.matrixKey } : {}),
+    };
 
     if (runOutcome.kind === 'timeout') {
-      return terminate(
-        stmts,
-        opts.runId,
-        'timeout',
-        'timeout',
-        `step ${stepIndex} (${step.name}) exceeded the pipeline budget`,
-        activeSecondsBilled,
-        stepResults,
-        undefined,
-        {
-          index: stepIndex,
-          name: step.name,
-          run: step.run,
-          exitCode: runOutcome.result.exitCode,
-          outputTail: runOutcome.outputTail,
-        },
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'timeout',
+          'timeout',
+          `step ${stepIndex} (${displayName}) exceeded the pipeline budget`,
+          activeSecondsBilled,
+          stepResults,
+          undefined,
+          failedStep,
+        ),
       );
     }
 
     if (runOutcome.kind === 'spawn-error') {
-      return terminate(
-        stmts,
-        opts.runId,
-        'infra_error',
-        'container_unavailable',
-        `step ${stepIndex} (${step.name}) failed to spawn: ${runOutcome.detail}`,
-        activeSecondsBilled,
-        stepResults,
-        runOutcome.detail,
-        {
-          index: stepIndex,
-          name: step.name,
-          run: step.run,
-          exitCode: runOutcome.result.exitCode,
-          outputTail: runOutcome.outputTail,
-        },
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'infra_error',
+          'container_unavailable',
+          `step ${stepIndex} (${displayName}) failed to spawn: ${runOutcome.detail}`,
+          activeSecondsBilled,
+          stepResults,
+          runOutcome.detail,
+          failedStep,
+        ),
       );
     }
 
-    // Plain non-zero exit.
-    return terminate(
-      stmts,
-      opts.runId,
-      'failure',
-      'step_failed',
-      `step ${stepIndex} (${step.name}) failed with exit ${runOutcome.result.exitCode}`,
-      activeSecondsBilled,
-      stepResults,
-      undefined,
-      {
-        index: stepIndex,
-        name: step.name,
-        run: step.run,
-        exitCode: runOutcome.result.exitCode,
-        outputTail: runOutcome.outputTail,
-      },
+    return finishStepSequence(
+      deps,
+      opts,
+      terminate(
+        stmts,
+        opts.runId,
+        'failure',
+        'step_failed',
+        `step ${stepIndex} (${displayName}) failed with exit ${runOutcome.result.exitCode}`,
+        activeSecondsBilled,
+        stepResults,
+        undefined,
+        failedStep,
+      ),
     );
   }
 
-  // All steps green. Status remains `running`; the orchestrator advances
-  // to push. We do NOT mark the row terminal here — Finalize is only
-  // "done" after a successful push or a hard failure later.
-  return {
+  return finishStepSequence(deps, opts, {
     status: 'success',
     stepResults,
     activeSecondsBilled,
-  };
+  });
 }
 
 // ─── internals ──────────────────────────────────────────────────────
+
+function stepRunnerTimelineDeps(deps: StepRunnerDeps): TimelineMessageDeps {
+  return { stmts: deps.stmts, broadcast: deps.broadcast };
+}
+
+function emitChecksRoundTimeline(
+  deps: StepRunnerDeps,
+  opts: Pick<StepRunnerOptions, 'runId' | 'sessionId'>,
+): void {
+  const runRow = deps.stmts.getFinalizeRun.get(opts.runId) as FinalizeRunRow | undefined;
+  const steps = listFinalizeRunSteps(deps.stmts, opts.runId);
+  writeFinalizeChecksRoundTimeline(stepRunnerTimelineDeps(deps), {
+    sessionId: opts.sessionId,
+    runId: opts.runId,
+    round: readFinalizeLoopRound(runRow),
+    steps: steps.map((step) => ({
+      index: step.index,
+      name: step.name,
+      state: step.state,
+      exitCode: step.exitCode,
+      startedAt: step.startedAt,
+      endedAt: step.endedAt,
+    })),
+  });
+}
+
+/** Emit one checks-round timeline message after all v2 job shards finish. */
+export function emitFinalizeChecksRoundTimeline(
+  deps: StepRunnerDeps,
+  opts: Pick<RunStepsSequenceOptions, 'runId' | 'sessionId'>,
+): void {
+  emitChecksRoundTimeline(deps, opts);
+}
+
+function finishStepSequence(
+  deps: StepRunnerDeps,
+  opts: Pick<RunStepsSequenceOptions, 'runId' | 'sessionId' | 'emitChecksTimeline'>,
+  result: StepRunResult,
+): StepRunResult {
+  if (opts.emitChecksTimeline !== false) {
+    emitChecksRoundTimeline(deps, opts);
+  }
+  return result;
+}
+
+function finishStepPhase(
+  deps: StepRunnerDeps,
+  opts: StepRunnerOptions,
+  result: StepRunResult,
+): StepRunResult {
+  emitChecksRoundTimeline(deps, opts);
+  return result;
+}
 
 type SingleStepOutcome =
   | { kind: 'success'; result: StepResult; outputTail: string[] }
@@ -492,7 +632,12 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
 
     let child: SpawnedStep;
     try {
-      child = spawnStep({ step, index: stepIndex, cwd: args.cwd, env: args.env });
+      // Merge step-level env over the job env so per-step `env:` (e.g.
+      // FINALIZE_WARMUP) reaches the process. spawnStep passes these as
+      // `docker exec -e` args, so secret values never land in the persisted
+      // `run` string.
+      const stepEnv = step.env ? { ...(args.env ?? {}), ...step.env } : args.env;
+      child = spawnStep({ step, index: stepIndex, cwd: args.cwd, env: stepEnv });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const line = `[spawn-error] ${detail}`;
@@ -724,7 +869,20 @@ function announceStepStart(
   runId: string,
   stepIndex: number,
   step: CiStep,
+  meta?: StepPersistMeta,
 ): void {
+  const startedAt = Date.now();
+  persistFinalizeRunStep(
+    deps.stmts,
+    runId,
+    stepIndex,
+    step.name,
+    'running',
+    null,
+    startedAt,
+    null,
+    meta,
+  );
   try {
     deps.broadcast({
       type: 'finalize_run_step_state',
@@ -733,6 +891,8 @@ function announceStepStart(
       step_index: stepIndex,
       step_name: step.name,
       state: 'running',
+      ...(meta?.jobId ? { job_id: meta.jobId } : {}),
+      ...(meta?.matrixKey ? { matrix_key: meta.matrixKey } : {}),
     });
   } catch (err) {
     console.warn(
@@ -750,7 +910,20 @@ function announceStepEnd(
   stepIndex: number,
   step: CiStep,
   exitCode: number,
+  meta?: StepPersistMeta,
 ): void {
+  const endedAt = Date.now();
+  persistFinalizeRunStep(
+    deps.stmts,
+    runId,
+    stepIndex,
+    step.name,
+    exitCode === 0 ? 'passed' : 'failed',
+    exitCode,
+    null,
+    endedAt,
+    meta,
+  );
   try {
     deps.broadcast({
       type: 'finalize_run_step_state',
@@ -760,6 +933,8 @@ function announceStepEnd(
       step_name: step.name,
       state: exitCode === 0 ? 'passed' : 'failed',
       exit_code: exitCode,
+      ...(meta?.jobId ? { job_id: meta.jobId } : {}),
+      ...(meta?.matrixKey ? { matrix_key: meta.matrixKey } : {}),
     });
   } catch (err) {
     console.warn(
@@ -784,6 +959,38 @@ function setPhase(
     phase,
     status,
   });
+}
+
+function persistFinalizeRunStep(
+  stmts: StepRunnerDeps['stmts'],
+  runId: string,
+  stepIndex: number,
+  name: string,
+  state: 'queued' | 'running' | 'passed' | 'failed' | 'skipped',
+  exitCode: number | null,
+  startedAt: number | null,
+  endedAt: number | null,
+  meta?: StepPersistMeta,
+): void {
+  try {
+    stmts.upsertFinalizeRunStep.run(
+      runId,
+      stepIndex,
+      name,
+      state,
+      exitCode,
+      startedAt,
+      endedAt,
+      meta?.jobId ?? null,
+      meta?.matrixKey ?? null,
+    );
+  } catch (err) {
+    console.warn(
+      `[finalize-step-runner] upsertFinalizeRunStep failed run=${runId} step=${stepIndex}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 /**

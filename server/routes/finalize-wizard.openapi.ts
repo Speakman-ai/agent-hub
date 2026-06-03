@@ -112,6 +112,31 @@ const FinalizeWizardStartResponse = registerComponent(
 );
 
 registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/finalize/environment-draft',
+  tags: ['Finalize'],
+  summary: 'Scan project for Finalize ci.yaml setup signals',
+  description:
+    'Admin+. Returns the same draft shape embedded in the setup wizard kickoff (stack, workflows, env vars, proposed ci.yaml). Used by Settings → Finalize to show required secrets without spawning a wizard session.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Draft scan result.',
+      content: jsonContent(
+        z.object({
+          draft: FinalizeSetupDraftSchema,
+          projectId: z.string(),
+        }),
+      ),
+    },
+    400: errorResponse('Project has no cwd configured.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/finalize/setup-wizard',
   tags: ['Finalize'],
@@ -150,6 +175,17 @@ const FinalizeSetupApplyRequest = registerComponent(
         description:
           'Optional explicit target session id. When omitted the server picks the most-recent project session that has a worktree.',
       }),
+      secrets: z
+        .object({
+          env: z.string().openapi({ description: 'Dotenv blob (`KEY=value` lines).' }),
+          mode: z.enum(['merge', 'replace']).optional(),
+          defaultKind: z.enum(['plain', 'secret']).optional(),
+        })
+        .optional()
+        .openapi({
+          description:
+            'Optional project secrets to persist (same shape as preview setup-apply). Merged into Finalize step runs.',
+        }),
     })
     .openapi({ description: 'Apply payload for the Finalize ci.yaml wizard.' }),
 );
@@ -163,6 +199,9 @@ const FinalizeSetupApplyResponse = registerComponent(
       commit_sha: z.string(),
       branch: z.string(),
       session_id: z.string(),
+      secrets_imported: z.number().int().openapi({
+        description: 'Count of secret keys imported from an optional `secrets` payload.',
+      }),
     })
     .openapi({ description: 'Commit landed on the worktree branch.' }),
 );

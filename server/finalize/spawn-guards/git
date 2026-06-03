@@ -1,0 +1,13 @@
+#!/bin/sh
+# Finalize spawn guard — blocks `git push` when direct ship is not allowed.
+GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$GUARD_DIR/_finalize-ship-gate.sh"
+
+REAL_GIT="${AGENT_HUB_REAL_GIT:-git}"
+
+if [ "$1" = "push" ]; then
+  _finalize_direct_ship_gate "git push" || exit $?
+fi
+
+exec "$REAL_GIT" "$@"

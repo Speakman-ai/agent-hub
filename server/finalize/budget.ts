@@ -1,8 +1,8 @@
 /**
  * budget.ts — Finalize Code Changes, active-time budget accounting.
  *
- * Single source of truth for the §13 "60-min Agent Hub active time"
- * contract. The orchestrator and every phase module reach into this
+ * Single source of truth for the §13 active-time budget contract
+ * (4-hour hard ceiling at v0). The orchestrator and every phase module
  * module rather than each carrying its own copy of the rules so the
  * contract cannot drift across phases.
  *
@@ -22,7 +22,7 @@
  *
  * Cap rules (§13):
  *
- *   - Hard ceiling 60 minutes at v0. `timeout_minutes` in ci.yaml may
+ *   - Hard ceiling 4 hours at v0. `timeout_minutes` in ci.yaml may
  *     lower the cap (e.g. fast-fail at 10 min) but cannot raise it.
  *   - The cap is **shared across the original run and its one infra
  *     retry**. The retry does NOT get a fresh budget — see
@@ -42,22 +42,15 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, FinalizeRunRow, FinalizeRunStatus, Stmts } from '../types.js';
 
-/**
- * Hard ceiling on the active-time budget (seconds). 60 minutes at v0.
- * `timeout_minutes` in ci.yaml may LOWER the cap but never raise it.
- *
- * Exported so callers (orchestrator, tests, future ci.yaml validators)
- * share the same number — there is no other place this constant should
- * be redeclared.
- */
-export const FINALIZE_BUDGET_HARD_CEILING_SECONDS = 60 * 60;
+/** Hard ceiling on the active-time budget (seconds). 4 hours at v0. */
+export const FINALIZE_BUDGET_HARD_CEILING_SECONDS = 4 * 60 * 60;
 
 /**
  * Default budget when ci.yaml is silent on `timeout_minutes`. Matches
  * the hard ceiling at v0; we keep them as two constants so a future
- * "default is 30 min, ceiling is 60" split is a one-line change.
+ * "default is lower than ceiling" split is a one-line change.
  */
-export const FINALIZE_BUDGET_DEFAULT_SECONDS = 60 * 60;
+export const FINALIZE_BUDGET_DEFAULT_SECONDS = 4 * 60 * 60;
 
 /**
  * Terminal statuses on `finalize_runs`. The "active run for a session"
@@ -83,14 +76,14 @@ export const FINALIZE_TERMINAL_STATUSES: ReadonlyArray<FinalizeRunStatus> = [
  * exceed.
  *
  *   - `null` / `undefined` → default budget (hard ceiling at v0).
- *   - Positive integer ≤ 60 → that many minutes, in seconds.
- *   - Positive integer > 60 → clamped down to 60 (the ci.yaml parser
- *     already rejects this at parse time; the clamp is defense-in-depth).
+ *   - Positive integer ≤ ceiling minutes → that many minutes, in seconds.
+ *   - Positive integer above the ceiling → clamped down (the ci.yaml
+ *     parser already rejects this at parse time; the clamp is defense-in-depth).
  *   - Non-positive or non-finite → default budget (also pre-validated;
  *     defensive fallback).
  */
 export function resolveBudgetSeconds(args: {
-  /** ci.yaml's `timeout_minutes`. The parser clamps to [1, 60]. */
+  /** ci.yaml's `timeout_minutes`. The parser clamps to [1, ceiling minutes]. */
   ciTimeoutMinutes?: number | null;
 }): number {
   const raw = args.ciTimeoutMinutes;

@@ -14,6 +14,17 @@ import {
 } from '../utils/prMessage.js';
 import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage.js';
 import { stripAskAnswerBlocks } from '../utils/askAnswers.js';
+import {
+  isFinalizeStepOutputMessage,
+  parseFinalizeTimelineKind,
+} from '../utils/finalizeTimeline.js';
+import FinalizeRunStartedBlock from './finalize/blocks/FinalizeRunStartedBlock.jsx';
+import FinalizeRebaseBlock from './finalize/blocks/FinalizeRebaseBlock.jsx';
+import FinalizeReviewRoundBlock from './finalize/blocks/FinalizeReviewRoundBlock.jsx';
+import FinalizeChecksRoundBlock from './finalize/blocks/FinalizeChecksRoundBlock.jsx';
+import FinalizeReadyToPushBlock from './finalize/blocks/FinalizeReadyToPushBlock.jsx';
+import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock.jsx';
+import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock.jsx';
 
 function ImageLightbox({ src, alt, onClose }) {
   return (
@@ -360,6 +371,7 @@ function SystemPrFailedMessage({ message }) {
 function ChatMessage({
   message,
   agentColor,
+  projectId,
   onDequeue,
   onEditQueued,
   onEditInComposer,
@@ -392,6 +404,31 @@ function ChatMessage({
   }, [message.content, message.attachments, message.role]);
 
   if (isSystem) {
+    if (isFinalizeStepOutputMessage(message.metadata)) {
+      return null;
+    }
+    const finalizeKind = parseFinalizeTimelineKind(message.metadata);
+    if (finalizeKind === 'finalize_run_started') {
+      return <FinalizeRunStartedBlock message={message} />;
+    }
+    if (finalizeKind === 'finalize_rebase_result') {
+      return <FinalizeRebaseBlock message={message} />;
+    }
+    if (finalizeKind === 'finalize_review_round') {
+      return <FinalizeReviewRoundBlock message={message} />;
+    }
+    if (finalizeKind === 'finalize_checks_round') {
+      return <FinalizeChecksRoundBlock message={message} projectId={projectId} />;
+    }
+    if (finalizeKind === 'finalize_ready_to_push') {
+      return <FinalizeReadyToPushBlock message={message} />;
+    }
+    if (finalizeKind === 'finalize_run_terminal') {
+      return <FinalizeTerminalBlock message={message} />;
+    }
+    if (finalizeKind === 'finalize_fix_dispatch') {
+      return <FinalizeFixDispatchBlock message={message} />;
+    }
     if (parseShipRequestedMetadata(message.metadata)) {
       return <SystemShipRequestedMessage message={message} />;
     }

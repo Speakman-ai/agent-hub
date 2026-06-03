@@ -2,6 +2,7 @@ import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
 import { getToken as getJwt, clearToken } from './auth';
+import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 
 async function fetchJSON(url, options = {}) {
   const base = getApiBaseUrl();
@@ -45,7 +46,11 @@ export const api = {
         ...(options.askMode != null ? { ask_mode: !!options.askMode } : {}),
       }),
     }),
-  getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
+  getMessages: async (sessionId, opts = {}) => {
+    const q = opts.limit != null ? `?limit=${encodeURIComponent(String(opts.limit))}` : '';
+    const data = await fetchJSON(`/sessions/${sessionId}/messages${q}`);
+    return normalizeSessionMessagesResponse(data).messages;
+  },
   // Kick off an AI summary of the session transcript. The server spawns a
   // short-lived CLI invocation so this can take a while — callers should
   // surface a loading state. Returns `{ summary: string }`.
@@ -257,11 +262,18 @@ export const api = {
   // bridge for `finalize_run_*` events on mobile yet.
   getLatestFinalizeRunForSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`),
+  getSessionWorktreeChanges: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/worktree-changes`),
   // Kick off a finalize run for a card-linked session. Server returns the
   // run id + status (and a `reused` flag when the existing non-terminal row
   // was returned). Throws on 409 in_flight / 400 no_session etc.
   startFinalizeRun: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  startFinalizeRunForSession: (projectId, sessionId) =>
+    fetchJSON(`/projects/${projectId}/sessions/${sessionId}/finalize`, {
       method: 'POST',
       body: JSON.stringify({}),
     }),

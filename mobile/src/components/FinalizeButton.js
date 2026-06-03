@@ -3,7 +3,10 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } fr
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { isTerminalStatus, isFinalizeBlocked, describeRunPhase } from '../utils/finalizeRun';
+import { hasCommittableChangesFromReady } from '../utils/changesReady';
 import { colors } from '../theme/colors';
+
+const WORKTREE_POLL_MS = 15_000;
 
 /**
  * Mobile counterpart of the web `<FinalizeButton />` (card 2bce78c2).
@@ -35,10 +38,11 @@ export default function FinalizeButton({
   sessionId,
   prefetchedRun,
   branchLabel,
+  pendingChanges = null,
   onError,
   variant = 'default',
 }) {
-  const { startFinalizeRun, cancelFinalizeRun } = useApp();
+  const { startFinalizeRun, startFinalizeRunForSession, cancelFinalizeRun } = useApp();
 
   // `prefetchedRun === undefined` → fetch on mount.
   // `prefetchedRun === null`      → "no run yet" (skip fetch, idle button).
@@ -47,6 +51,7 @@ export default function FinalizeButton({
   const [optimisticPending, setOptimisticPending] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(prefetchedRun !== undefined);
+  const [worktreeCommittable, setWorktreeCommittable] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -90,10 +95,38 @@ export default function FinalizeButton({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!sessionId) {
+      setWorktreeCommittable(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = () => {
+      api
+        .getSessionWorktreeChanges(sessionId)
+        .then((data) => {
+          if (!cancelled && mountedRef.current) setWorktreeCommittable(Boolean(data?.committable));
+        })
+        .catch(() => {
+          if (!cancelled && mountedRef.current) setWorktreeCommittable(false);
+        });
+    };
+    poll();
+    const timer = setInterval(poll, WORKTREE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [sessionId]);
+
   const status = run?.status ?? null;
   const phase = run?.phase ?? null;
   const blocked = isFinalizeBlocked(status);
   const terminal = isTerminalStatus(status);
+  const readyToPush = status === 'ready_to_push';
+  const hasCommittableChanges =
+    worktreeCommittable || hasCommittableChangesFromReady(pendingChanges);
+  const canShip = hasCommittableChanges || readyToPush;
 
   // Polling fallback: while a run is non-terminal, refetch every 2s so the
   // UI tracks phase transitions and terminal flips without WS events.
@@ -121,11 +154,13 @@ export default function FinalizeButton({
   }, [sessionId, run?.id, terminal]);
 
   const handleStart = useCallback(async () => {
-    if (!projectId || !cardId) return;
-    if (blocked || optimisticPending) return;
+    if (!projectId || !sessionId) return;
+    if (blocked || optimisticPending || !canShip) return;
     setOptimisticPending(true);
     try {
-      const result = await startFinalizeRun(projectId, cardId);
+      const result = cardId
+        ? await startFinalizeRun(projectId, cardId)
+        : await startFinalizeRunForSession(projectId, sessionId);
       if (!mountedRef.current) return;
       // Refetch the row so we move into the in-flight render path
       // immediately (the server returns just `{ run_id, status, reused }`,
@@ -157,7 +192,7 @@ export default function FinalizeButton({
     } finally {
       if (mountedRef.current) setOptimisticPending(false);
     }
-  }, [projectId, cardId, sessionId, blocked, optimisticPending, startFinalizeRun, onError]);
+  }, [projectId, cardId, sessionId, blocked, optimisticPending, canShip, startFinalizeRun, startFinalizeRunForSession, onError]);
 
   const handleCancel = useCallback(async () => {
     if (!projectId || !run?.id) return;
@@ -181,10 +216,8 @@ export default function FinalizeButton({
     }
   }, [projectId, run?.id, cancelPending, cancelFinalizeRun, onError]);
 
-  // Gate: this component is a no-op for non-card sessions. The caller is
-  // expected to also gate, but defending here keeps the component honest
-  // if it gets reused elsewhere.
-  if (!projectId || !cardId) return null;
+  // Gate: need a project + session. Card is created server-side on first use.
+  if (!projectId || !sessionId) return null;
 
   // Don't flash an enabled button while the initial fetch is in flight —
   // a tap during that window could double-trigger if the server already
@@ -248,6 +281,7 @@ export default function FinalizeButton({
   }
 
   const idleLabel = 'Finalize Code Changes';
+  const idleDisabled = initialFetchPending || !canShip;
   return (
     <View style={[styles.container, compact && styles.containerCompact]}>
       {!compact && (
@@ -263,44 +297,32 @@ export default function FinalizeButton({
       )}
       <TouchableOpacity
         onPress={handleStart}
-        disabled={initialFetchPending}
+        disabled={idleDisabled}
         style={[
           styles.button,
-          initialFetchPending && styles.buttonDisabled,
+          idleDisabled && styles.buttonDisabled,
           compact && styles.buttonCompact,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={`${idleLabel}. ${V0_REVIEWER_CAVEAT_A11Y}`}
-        accessibilityHint={V0_REVIEWER_CAVEAT_A11Y}
-        accessibilityState={{ disabled: initialFetchPending }}
+        accessibilityLabel={idleLabel}
+        accessibilityHint={
+          canShip
+            ? 'Runs rebase, review, tests, and opens a PR when green.'
+            : 'No committable changes yet.'
+        }
+        accessibilityState={{ disabled: idleDisabled }}
         testID="finalize-code-changes-button"
       >
         <Text style={[styles.buttonText, compact && styles.buttonTextCompact]}>{idleLabel}</Text>
       </TouchableOpacity>
       {!compact && (
-        <>
-          {/* v0 caveat — render a small italic note so users discover the
-              reviewer stub BEFORE clicking. Mirrors the web button's
-              tooltip + adjacent text. Removed when card eeb3380b lands. */}
-          <Text style={styles.v0Caveat} testID="finalize-v0-caveat">
-            v0: reviewer wiring deferred (card eeb3380b)
-          </Text>
-          {/* Polling-lag disclosure — the mobile WS bridge does not yet
-              forward finalize_run_* events (follow-up card 35c49513), so
-              the in-flight UI may trail the server by up to 2s. Naming
-              it here keeps the lag from being misread as a bug. */}
-          <Text style={styles.v0Caveat}>UI updates poll every 2s on mobile.</Text>
-        </>
+        <Text style={styles.v0Caveat}>
+          UI updates poll every 2s on mobile.
+        </Text>
       )}
     </View>
   );
 }
-
-// Mirror of the web `V0_REVIEWER_TOOLTIP_NOTE`. React Native has no
-// `title` attribute so we surface the caveat via inline text + an a11y
-// hint instead.
-const V0_REVIEWER_CAVEAT_A11Y =
-  'v0: reviewer wiring is deferred. Runs terminate at the reviewer phase until card eeb3380b lands.';
 
 // Status helpers (`isTerminalStatus`, `isFinalizeBlocked`,
 // `describeRunPhase`) live in `mobile/src/utils/finalizeRun.js` so they

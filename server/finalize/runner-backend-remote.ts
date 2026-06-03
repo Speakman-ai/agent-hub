@@ -1,0 +1,136 @@
+/**
+ * runner-backend-remote.ts — RunnerBackend that runs a job on the remote fleet.
+ *
+ * acquire() enqueues the job on the control-plane queue and creates a per-job
+ * channel, then waits for a pull-based agent to claim + attach (its first poll).
+ * The returned lease's spawnStep pushes each step to the agent over the channel
+ * and hands back a RemoteSpawnedStep; release() tells the agent to tear down.
+ *
+ * Selected only when FINALIZE_RUNNER_BACKEND=remote (+ per-org allowlist); the
+ * local DinD backend stays the default. The worktree reaches the agent via an
+ * S3 bundle ref added to the wire spec by the worktree-bundle increment.
+ */
+import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
+import { enqueueRunnerJob, reportRunnerJob } from './runner-queue.js';
+import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
+import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
+import type { SpawnStepArgs } from './step-runner.js';
+import {
+  createWorktreeBundle,
+  worktreeBundleKey,
+  type BundleStore,
+  type WorktreeRef,
+} from './worktree-bundle.js';
+
+const DEFAULT_ACQUIRE_TIMEOUT_MS = 10 * 60_000;
+
+/** The job description delivered to the agent (no functions; no Hub-local paths). */
+export interface RunnerJobWireSpec {
+  orgId: string;
+  projectId: string;
+  runId: string;
+  jobId: string;
+  matrixKey: string;
+  image: string;
+  composeProjectName: string;
+  env: Record<string, string>;
+  /** Worktree bundle ref (git bundle in the shared store) the agent fetches. */
+  worktreeRef?: WorktreeRef | null;
+}
+
+function toEnvRecord(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env ?? {})) if (v !== undefined) out[k] = v;
+  return out;
+}
+
+export function createRemoteRunnerBackend(opts?: {
+  store?: BundleStore | null;
+  acquireTimeoutMs?: number;
+  now?: () => number;
+}): RunnerBackend {
+  const now = opts?.now ?? Date.now;
+  const acquireTimeoutMs = opts?.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
+  const store = opts?.store ?? null;
+  // One worktree bundle per run, shared by all its matrix shards.
+  const bundleByRun = new Map<string, Promise<WorktreeRef>>();
+
+  return {
+    kind: 'remote',
+    async acquire(spec: JobClaimSpec): Promise<RunnerLease> {
+      let worktreeRef: WorktreeRef | null = null;
+      if (store) {
+        // Upload one bundle per run (memoized); presign per-acquire so each
+        // matrix shard gets a fresh-TTL credential-free download URL.
+        let pending = bundleByRun.get(spec.runId);
+        if (!pending) {
+          pending = createWorktreeBundle({
+            worktreePath: spec.worktreePath,
+            key: worktreeBundleKey(spec.orgId, spec.runId),
+            store,
+          });
+          bundleByRun.set(spec.runId, pending);
+        }
+        const baseRef = await pending;
+        const getUrl = store.presignGet ? await store.presignGet(baseRef.key) : null;
+        worktreeRef = getUrl ? { ...baseRef, getUrl } : baseRef;
+      }
+      const wire: RunnerJobWireSpec = {
+        orgId: spec.orgId,
+        projectId: spec.projectId,
+        runId: spec.runId,
+        jobId: spec.jobId,
+        matrixKey: spec.matrixKey,
+        image: spec.image,
+        composeProjectName: spec.composeProjectName,
+        env: toEnvRecord(spec.env),
+        worktreeRef,
+      };
+      const queueJobId = enqueueRunnerJob({
+        orgId: spec.orgId || 'default',
+        projectId: spec.projectId || 'default',
+        runId: spec.runId,
+        jobId: spec.jobId,
+        matrixKey: spec.matrixKey,
+        image: spec.image,
+        specJson: JSON.stringify(wire),
+        now: now(),
+      });
+      // Scale the agent fleet up to meet the new queue depth (fast ramp; the
+      // periodic reconcile + scale-down-when-idle is handled by the scaler).
+      void reconcileFleetCapacity();
+      const channel = createJobChannel(queueJobId);
+
+      // Wait for an agent to claim + make its first poll (attach). With a warm
+      // fleet this is sub-second; the timeout guards against an empty fleet.
+      const attached = await Promise.race([
+        channel.ready.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), acquireTimeoutMs)),
+      ]);
+      if (!attached) {
+        removeJobChannel(queueJobId);
+        reportRunnerJob({
+          jobId: queueJobId,
+          state: 'lost',
+          detail: 'no runner-agent claimed in time',
+          now: now(),
+        });
+        throw new Error(
+          `no runner-agent claimed job ${spec.jobId} (${queueJobId}) within ${acquireTimeoutMs}ms`,
+        );
+      }
+
+      return {
+        spawnStep: ({ step, index, env }: SpawnStepArgs) =>
+          channel.runStep(index, step.run, toEnvRecord(env)),
+        release: async () => {
+          channel.finish();
+          // Queue-level "the runner completed its lease" — the authoritative
+          // pass/fail lives in the per-org run state written by runJobInstance.
+          reportRunnerJob({ jobId: queueJobId, state: 'succeeded', now: now() });
+          removeJobChannel(queueJobId);
+        },
+      };
+    },
+  };
+}

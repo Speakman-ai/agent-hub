@@ -49,7 +49,7 @@ Kickoff includes full `draft` JSON. Fields:
 | `npmScripts` | Top-level `package.json` scripts that look like test / lint / typecheck / build |
 | `makefileTargets` | Make targets that look like test / lint / typecheck / build |
 | `readme` | `setupExcerpt`, `readmePath` |
-| `proposedSteps` | Ordered candidate steps the server pre-built from the signals above |
+| `proposedCiYaml` | Server-pre-built v1 ci.yaml — show verbatim; mirrors CI gate workflows when present |
 | `envVars` | Keys + `sources` + `required` (scanned the same way preview-setup does) |
 
 **Do not** re-scan the repo unless the user changed files mid-session.
@@ -87,26 +87,50 @@ When `draft.isMonorepo === true` or `draft.subprojects.length > 1`:
 
 Single-project repos: skip this step.
 
+## CI replacement mode (user scope wins)
+
+Finalize **replaces GitHub Actions CI** as the pre-push gate — including
+heavy steps (Docker stacks, AWS/OIDC jobs, full E2E, permissions sync).
+When the user says Finalize replaces CI, run all workflows, or asks you
+to stop resisting complex steps:
+
+1. Propose **one step per CI gate workflow** in `draft.githubWorkflows`
+   (`lint.yml`, `*.ci.yml`, `e2e.yml`, `permissions-*.yml`,
+   `smoke-test.yml`). Exclude deploy/release/terraform workflows only.
+2. Start from `draft.proposedCiYaml` — the server mirrors those workflows
+   using root gate scripts (`./lint`, `./run_api_tests`, …) and `run:`
+   lines from workflow files when present.
+3. Surface prerequisites (Docker daemon, `.env`, AWS keys, Settings →
+   Secrets) as a **checklist the operator must satisfy** — not as a
+   reason to drop or refuse steps.
+4. **Never** argue that a step "can't run locally", downgrade to a
+   subset, or push the user toward "just lint" unless they explicitly
+   ask for a lighter pipeline. Their explicit scope wins.
+
 ## Step 4 — Step proposal
 
-The server pre-builds `draft.proposedSteps` from the signals it found.
-Typical shape for a Node monorepo:
+The server pre-builds `draft.proposedCiYaml` from CI gate workflows and
+repo signals. Typical shape when mirroring GitHub CI:
 
 ```yaml
 version: 1
 on:
   - finalize
   - manual
-timeout_minutes: 30
+timeout_minutes: 60
 steps:
-  - name: install
-    run: npm ci --include=dev
-  - name: typecheck
-    run: npm run typecheck
   - name: lint
-    run: npm run lint
-  - name: test
-    run: npm test
+    run: ./lint
+  - name: backend-tests
+    run: ./run_api_tests
+  - name: frontend-build
+    run: cd frontend && npm ci && npm run build:production
+  - name: frontend-component-tests
+    run: cd frontend && npx cypress run --component
+  - name: permissions-sync-check
+    run: ./verifypermissionsync
+  - name: e2e
+    run: ./run_e2e_tests
 ```
 
 Show the proposed YAML verbatim in a fenced ```yaml block. Then
@@ -132,18 +156,32 @@ The full cheat sheet is at
 recipes (npm/pnpm/yarn/pip/poetry/cargo/go) are at
 [references/stack-recipes.md](references/stack-recipes.md).
 
-## Step 5 — Env vars (optional)
+## Step 5 — Env vars and secrets
 
-For each entry in `draft.envVars` (especially `required: true`):
+For each entry in `draft.envVars` that CI steps will read:
 
-- Ask in plain prose whether the value should be a project secret.
-- v1 ci.yaml has **no** `env:` field at the step or top level. If the
-  user needs secrets, point them at **Settings → Secrets** (or
-  Settings → Preview → Secrets) — those are injected at run time the
-  same way preview env vars are. Do not invent a non-spec field.
+1. Show a checklist: key name, whether a project secret already exists
+   (the user may have filled these in Settings → Finalize → Project secrets).
+2. For keys still missing, `agenthub:ask`:
+   - **Collect now** — ask for values in plain prose (one round per batch),
+     then persist via `setup-apply` (step 7).
+   - **Skip for now** — user will add them in Settings → Finalize.
+   - **Import .env blob** — collect a paste and bundle as `secrets.env`.
 
-Surface this as a "secrets the steps will need" checklist, not a
-blocker.
+v1 ci.yaml has **no** `env:` field. Secrets are stored per-project and
+merged into the shell env when Finalize steps run.
+
+Persist secrets in the same `setup-apply` call as the ci.yaml commit:
+
+```bash
+curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/finalize/setup-apply" \
+  -H "x-api-key: $AGENT_HUB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"ci_yaml_content\": \"<YAML>\", \"session_id\": \"<id>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"AWS_ACCESS_KEY_ID=...\\nPOSTGRES_DB_PASSWORD=...\\n\", \"defaultKind\": \"secret\"}}"
+```
+
+Use `kind: secret` for tokens/passwords; `plain` for non-sensitive config.
+Never echo decrypted secret values back in chat after apply.
 
 ## Step 6 — Confirm target branch (required, before apply)
 
@@ -166,14 +204,19 @@ is what makes this safe.
 ## Step 7 — Persist
 
 Always pass the confirmed `session_id` so the apply endpoint targets
-the same session the user just approved (no re-resolution race):
+the same session the user just approved (no re-resolution race). When
+that session has no persisted worktree yet — common for resumed card
+sessions working in the project's primary checkout — setup-apply binds
+`project.cwd` and the current git branch automatically.
 
 ```bash
 curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/finalize/setup-apply" \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"ci_yaml_content\": \"<the final YAML>\", \"session_id\": \"<id confirmed in step 6>\"}"
+  -d "{\"ci_yaml_content\": \"<the final YAML>\", \"session_id\": \"<id confirmed in step 6>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"KEY=value\\n\", \"defaultKind\": \"secret\"}}"
 ```
+
+(`secrets` is optional — omit when nothing new to store.)
 
 Response shape:
 
@@ -183,7 +226,8 @@ Response shape:
   "file": ".agent-hub/ci.yaml",
   "commit_sha": "abc123…",
   "branch": "<branch the file was committed on>",
-  "session_id": "<session whose worktree received the commit>"
+  "session_id": "<session whose worktree received the commit>",
+  "secrets_imported": 3
 }
 ```
 

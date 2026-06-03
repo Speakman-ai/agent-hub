@@ -6,7 +6,7 @@
 #
 # Every step runs under `bash -euo pipefail -c <run>` from the orchestrator
 # (no `shell:` override is permitted at v1). The active-time cap is the
-# system default of 60 minutes — we deliberately do not lower it so the
+# system default of 4 hours — we deliberately do not lower it so the
 # first-time install (~3 min) plus the full client+server+mobile+electron
 # test sweep (~8 min cold) plus the OpenAPI freshness regenerate
 # (~10 sec) plus the Vite build (~30 sec) all fit comfortably.

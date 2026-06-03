@@ -221,7 +221,9 @@ describe('detectPreviewDefaults — multi-process layouts', () => {
       name: 'backend',
       cwd: 'backend',
     });
-    expect(result!.processes![0].startScript).toContain('pip install -r requirements-local.txt');
+    expect(result!.processes![0].startScript).toContain(
+      'python3 -m pip install -r requirements-local.txt',
+    );
     expect(result!.processes![0].startScript).toContain('python manage.py runserver');
     expect(result!.processes![1]).toMatchObject({
       name: 'frontend',
@@ -238,7 +240,9 @@ describe('detectPreviewDefaults — multi-process layouts', () => {
     writePkg(path.join(tmpDir, 'frontend'), { devDependencies: { vite: '^5.0.0' } });
 
     const result = detectPreviewDefaults(tmpDir);
-    expect(result!.processes![0].startScript).toContain('pip install -r requirements.txt');
+    expect(result!.processes![0].startScript).toContain(
+      'python3 -m pip install -r requirements.txt',
+    );
   });
 
   it('returns null when only backend/ exists (no frontend)', () => {

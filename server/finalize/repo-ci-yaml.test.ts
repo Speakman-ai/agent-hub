@@ -77,7 +77,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
   it('runs the six contracted steps in the card-5d68e03e ordering', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.config.version !== 1) return;
 
     // The contract from the card description (verbatim, lowercased):
     //   "install, typecheck, lint, test, openapi checks, build"
@@ -111,15 +111,12 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(runs[5]).toMatch(/\bbuild\b/);
   });
 
-  it('does not lower the 60-minute timeout ceiling (first dogfood needs slack)', async () => {
+  it('uses the system default timeout when ci.yaml omits timeout_minutes', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The system ceiling is 60; the config may lower but never raise.
-    // For the first-dogfood deployment we keep the default so a cold
-    // `npm run install:all` (~3 min) + full test sweep (~8 min) has
-    // headroom. If we tighten this later, this assertion needs a
-    // matching update — that's the prompt to re-time the pipeline.
-    expect(result.config.timeoutMinutes).toBe(60);
+    // The system default is 240 minutes (4 hours); per-repo ci.yaml may
+    // lower but never raise. agent-hub's dogfood config omits the field.
+    expect(result.config.timeoutMinutes).toBe(240);
   });
 });

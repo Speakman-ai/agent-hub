@@ -16,12 +16,12 @@
  * `workspaceDir` and returns a JSON-serialisable struct that the wizard
  * route embeds in the kickoff prompt.
  *
- * The proposed YAML always validates against the v1 parser
- * (`server/finalize/ci-config.ts`). The unit tests pin that contract so
- * a parser-breaking change shows up here before it ships to users.
+ * The proposed YAML validates against the v1 or v2 parser depending on
+ * whether the repo's e2e workflow declares a strategy.matrix block.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
+import { parse as parseYaml } from 'yaml';
 import { scanEnvKeys } from './preview-setup-scans.js';
 import { scanReadme, type ReadmeScanResult } from './preview-readme-scan.js';
 
@@ -253,6 +253,14 @@ function statIsDir(p: string): boolean {
   }
 }
 
+function statIsFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function manifestForManager(absDir: string, mgr: FinalizePackageManager): string | null {
   if (mgr === 'npm' || mgr === 'pnpm' || mgr === 'yarn') return 'package.json';
   if (mgr === 'poetry' || mgr === 'pip') {
@@ -321,13 +329,176 @@ interface ProposedStep {
   run: string;
 }
 
+/** Deploy/release/terraform workflows are not CI gates for Finalize. */
+const NON_CI_WORKFLOW_RE = /^(deploy\.|release\.|terraform_|hotfix\.)/i;
+
+/** Workflows that represent pre-merge CI gates (one Finalize step each, in sort order). */
+const CI_GATE_WORKFLOW_RE = /lint|\.ci\.|(^|\/)e2e\.|permissions|smoke-test|^ci\.ya?ml$/i;
+
+function isCiGateWorkflow(filename: string): boolean {
+  if (NON_CI_WORKFLOW_RE.test(filename)) return false;
+  return CI_GATE_WORKFLOW_RE.test(filename);
+}
+
+function workflowSortKey(filename: string): number {
+  const n = filename.toLowerCase();
+  if (n.includes('lint')) return 0;
+  if (n.includes('backend') && n.includes('ci')) return 1;
+  if (n.includes('frontend') && n.includes('ci')) return 2;
+  if (n.includes('permissions')) return 3;
+  if (n.includes('e2e')) return 4;
+  if (n.includes('smoke')) return 5;
+  if (n.endsWith('.ci.yml') || n === 'ci.yml') return 6;
+  return 50;
+}
+
+/** Root-level scripts commonly used as local CI gates (./lint, ./run_api_tests, …). */
+function scanRootGateScripts(workspaceDir: string): Map<string, string> {
+  const scripts = new Map<string, string>();
+  for (const entry of safeReaddir(workspaceDir)) {
+    if (entry.startsWith('.')) continue;
+    const abs = path.join(workspaceDir, entry);
+    if (!statIsFile(abs)) continue;
+    if (/^(lint|run_|build_|test_|verify)/i.test(entry)) {
+      scripts.set(entry.toLowerCase(), `./${entry}`);
+    }
+  }
+  return scripts;
+}
+
+function extractRunCommandsFromWorkflow(workspaceDir: string, filename: string): string[] {
+  const content = safeReadFile(path.join(workspaceDir, '.github', 'workflows', filename));
+  if (!content) return [];
+  const runs: string[] = [];
+  const runRe = /^\s+run:\s*(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = runRe.exec(content)) !== null) {
+    const cmd = m[1].trim().replace(/^['"]|['"]$/g, '');
+    if (cmd && !cmd.includes('${{')) runs.push(cmd);
+  }
+  return runs;
+}
+
+function stepNameFromWorkflow(filename: string): string {
+  return filename
+    .replace(/\.ya?ml$/i, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+}
+
+/**
+ * Mirror GitHub CI gate workflows as Finalize steps. Prefers repo root gate
+ * scripts (./lint, ./run_api_tests) when filenames match; falls back to
+ * `run:` lines parsed from the workflow file.
+ */
+export function buildProposedStepsFromGithubWorkflows(
+  workspaceDir: string,
+  githubWorkflows: string[],
+): ProposedStep[] {
+  const gates = githubWorkflows.filter(isCiGateWorkflow).sort((a, b) => {
+    const d = workflowSortKey(a) - workflowSortKey(b);
+    return d !== 0 ? d : a.localeCompare(b);
+  });
+  if (gates.length === 0) return [];
+
+  const rootScripts = scanRootGateScripts(workspaceDir);
+  const steps: ProposedStep[] = [];
+
+  for (const wf of gates) {
+    const base = wf.replace(/\.ya?ml$/i, '').toLowerCase();
+    const wfRuns = extractRunCommandsFromWorkflow(workspaceDir, wf);
+
+    if (base === 'lint' || base.endsWith('.lint')) {
+      steps.push({ name: 'lint', run: rootScripts.get('lint') ?? wfRuns[0] ?? './lint' });
+      continue;
+    }
+    if (base.includes('backend') && base.includes('ci')) {
+      steps.push({
+        name: 'backend-tests',
+        run: rootScripts.get('run_api_tests') ?? wfRuns[0] ?? './run_api_tests',
+      });
+      continue;
+    }
+    if (base.includes('frontend') && base.includes('ci')) {
+      if (rootScripts.has('run_frontend_tests')) {
+        steps.push({ name: 'frontend-tests', run: rootScripts.get('run_frontend_tests')! });
+      } else {
+        steps.push({
+          name: 'frontend-build',
+          run:
+            wfRuns.find((r) => r.includes('build')) ??
+            'cd frontend && npm ci && npm run build:production',
+        });
+        const cypressRun =
+          wfRuns.find((r) => r.includes('cypress')) ?? 'cd frontend && npx cypress run --component';
+        steps.push({ name: 'frontend-component-tests', run: cypressRun });
+      }
+      continue;
+    }
+    if (base.includes('permissions')) {
+      const permScript =
+        rootScripts.get('verifypermissionsync') ??
+        [...rootScripts.values()].find((s) => s.includes('permission')) ??
+        (existsSync(path.join(workspaceDir, 'scripts', 'verify_permissions_sync.sh'))
+          ? './scripts/verify_permissions_sync.sh'
+          : null);
+      steps.push({
+        name: 'permissions-sync-check',
+        run: permScript ?? wfRuns[0] ?? './verifypermissionsync',
+      });
+      continue;
+    }
+    if (base.includes('e2e')) {
+      const matrix = extractMatrixIncludeFromWorkflow(workspaceDir, wf);
+      if (matrix && matrix.length > 0) {
+        // Signal to caller — e2e uses v2 matrix jobs instead of a single step.
+        steps.push({
+          name: '__e2e_matrix__',
+          run: JSON.stringify({ workflow: wf, matrix }),
+        });
+        continue;
+      }
+      steps.push({
+        name: 'e2e',
+        run: rootScripts.get('run_e2e_tests') ?? wfRuns[0] ?? './run_e2e_tests',
+      });
+      continue;
+    }
+    if (base.includes('smoke')) {
+      steps.push({
+        name: 'smoke-test',
+        run: rootScripts.get('run_smoke_tests') ?? wfRuns[0] ?? './run_smoke_tests',
+      });
+      continue;
+    }
+
+    // Generic ci.yml or other gate — one step per distinct run: line, or a single named step.
+    const name = stepNameFromWorkflow(wf);
+    if (wfRuns.length === 1) {
+      steps.push({ name, run: wfRuns[0] });
+    } else if (wfRuns.length > 1) {
+      wfRuns.forEach((run, i) => steps.push({ name: `${name}-${i + 1}`, run }));
+    } else {
+      steps.push({ name, run: `./${base}` });
+    }
+  }
+
+  return steps;
+}
+
 function buildProposedSteps(
+  workspaceDir: string,
+  githubWorkflows: string[],
   stack: FinalizeStack,
   manager: FinalizePackageManager,
   npmScripts: FinalizeNpmScriptHit[],
   makefileTargets: string[],
   subprojects: FinalizeSubproject[],
 ): ProposedStep[] {
+  const fromWorkflows = buildProposedStepsFromGithubWorkflows(workspaceDir, githubWorkflows);
+  if (fromWorkflows.length > 0) return fromWorkflows;
+
   // Makefile-first: if a Makefile has `test`, lean on it — projects with
   // a real Makefile usually expect it as the entry point.
   if (makefileTargets.includes('test')) {
@@ -424,6 +595,121 @@ function buildProposedSteps(
   ];
 }
 
+function extractMatrixIncludeFromWorkflow(
+  workspaceDir: string,
+  filename: string,
+): Array<Record<string, string>> | null {
+  const content = safeReadFile(path.join(workspaceDir, '.github', 'workflows', filename));
+  if (!content) return null;
+  let doc: unknown;
+  try {
+    doc = parseYaml(content);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+  const jobs = (doc as Record<string, unknown>).jobs;
+  if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) return null;
+  for (const jobRaw of Object.values(jobs as Record<string, unknown>)) {
+    if (!jobRaw || typeof jobRaw !== 'object' || Array.isArray(jobRaw)) continue;
+    const strategy = (jobRaw as Record<string, unknown>).strategy;
+    if (!strategy || typeof strategy !== 'object' || Array.isArray(strategy)) continue;
+    const matrix = (strategy as Record<string, unknown>).matrix;
+    if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)) continue;
+    const include = (matrix as Record<string, unknown>).include;
+    if (!Array.isArray(include) || include.length === 0) continue;
+    const rows: Array<Record<string, string>> = [];
+    for (const entry of include) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+      const row: Record<string, string> = {};
+      for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
+        if (typeof v !== 'string') return null;
+        row[k] = v;
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+  return null;
+}
+
+/**
+ * Serialise v2 ci.yaml with host jobs for simple gates and an optional
+ * matrix e2e job mirroring `.github/workflows/e2e.yml`.
+ */
+export function serializeProposedCiYamlV2(args: {
+  hostJobs: ProposedStep[];
+  e2eMatrix?: Array<Record<string, string>>;
+  timeoutMinutes?: number;
+}): string {
+  const timeoutMinutes = args.timeoutMinutes ?? 60;
+  const lines: string[] = [];
+  lines.push('version: 2');
+  lines.push('on:');
+  lines.push('  - finalize');
+  lines.push('  - manual');
+  if (timeoutMinutes !== 60) {
+    lines.push(`timeout_minutes: ${timeoutMinutes}`);
+  }
+  lines.push('env:');
+  lines.push('  GIT_BRANCH: ${FINALIZE_BRANCH}');
+  lines.push('  GIT_COMMIT_SHA: ${FINALIZE_HEAD_SHA}');
+  lines.push('jobs:');
+
+  for (const step of args.hostJobs) {
+    const jobId = step.name.replace(/[^a-zA-Z0-9._-]+/g, '-').toLowerCase();
+    lines.push(`  ${jobId}:`);
+    lines.push('    runs-on: host');
+    lines.push('    steps:');
+    lines.push(`      - name: ${yamlScalar(step.name)}`);
+    lines.push(`        run: ${yamlScalar(step.run)}`);
+  }
+
+  if (args.e2eMatrix && args.e2eMatrix.length > 0) {
+    lines.push('  e2e:');
+    lines.push('    runs-on: ubuntu-24.04');
+    lines.push('    fail-fast: false');
+    lines.push('    matrix:');
+    lines.push('      include:');
+    for (const row of args.e2eMatrix) {
+      lines.push('        - group: ' + yamlScalar(row.group ?? 'shard'));
+      if (row.specs) lines.push('          specs: ' + yamlScalar(row.specs));
+      for (const [k, v] of Object.entries(row)) {
+        if (k === 'group' || k === 'specs') continue;
+        lines.push(`          ${k}: ${yamlScalar(v)}`);
+      }
+    }
+    lines.push('    steps:');
+    lines.push('      - name: smoke');
+    lines.push('        run: docker version');
+    lines.push('      - name: e2e');
+    lines.push('        run: ./run_e2e_tests');
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function splitProposedStepsForV2(steps: ProposedStep[]): {
+  hostJobs: ProposedStep[];
+  e2eMatrix: Array<Record<string, string>> | null;
+} {
+  const hostJobs: ProposedStep[] = [];
+  let e2eMatrix: Array<Record<string, string>> | null = null;
+  for (const step of steps) {
+    if (step.name === '__e2e_matrix__') {
+      try {
+        const payload = JSON.parse(step.run) as { matrix?: Array<Record<string, string>> };
+        e2eMatrix = payload.matrix ?? null;
+      } catch {
+        /* ignore */
+      }
+      continue;
+    }
+    hostJobs.push(step);
+  }
+  return { hostJobs, e2eMatrix };
+}
+
 /**
  * Serialise a `ProposedStep[]` into a v1-valid ci.yaml document.
  *
@@ -502,13 +788,20 @@ export function collectFinalizeSetupDraft(workspaceDir: string): FinalizeSetupDr
   }));
 
   const proposedSteps = buildProposedSteps(
+    workspaceDir,
+    githubWorkflows,
     stack,
     manager,
     npmScripts,
     makefileTargets,
     subprojects,
   );
-  const proposedCiYaml = serializeProposedCiYaml(proposedSteps);
+  const proposedTimeout = proposedSteps.length >= 3 ? 60 : 30;
+  const { hostJobs, e2eMatrix } = splitProposedStepsForV2(proposedSteps);
+  const proposedCiYaml =
+    e2eMatrix && e2eMatrix.length > 0
+      ? serializeProposedCiYamlV2({ hostJobs, e2eMatrix, timeoutMinutes: proposedTimeout })
+      : serializeProposedCiYaml(proposedSteps, proposedTimeout);
 
   const ciAbs = path.join(workspaceDir, '.agent-hub', 'ci.yaml');
   const existingCi = existsSync(ciAbs);

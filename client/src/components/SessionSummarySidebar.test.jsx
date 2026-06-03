@@ -181,3 +181,59 @@ describe('<SessionSummarySidebar /> — linked PR', () => {
     expect(screen.getAllByText('wiki-search')).toHaveLength(1);
   });
 });
+
+describe('<SessionSummarySidebar /> — finalize strip removal', () => {
+  beforeEach(() => {
+    api.getSessionSummary.mockReset();
+    api.getProjectPullDetail.mockReset();
+    api.getProjectPullDetail.mockResolvedValue({
+      pr: { title: 'PR', state: 'open', merged_at: null },
+      reviews: [],
+    });
+  });
+
+  it('does not mount ChecksPanel when session has linked PR', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'c1',
+        title: 'Card',
+        pr_url: 'https://github.com/acme/widgets/pull/12',
+        review_status: null,
+        columnName: 'Review',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 'sess-fin', name: 'Finalize session' },
+      skills: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-fin" isLive={false} />);
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    expect(screen.queryByTestId('finalize-checks-panel')).toBeNull();
+    expect(screen.getByTestId('session-linked-pr')).toBeInTheDocument();
+  });
+
+  it('does not show finalize phase pill in collapsed header', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'c1',
+        title: 'Card',
+        pr_url: 'https://github.com/acme/widgets/pull/12',
+        review_status: null,
+        columnName: 'Review',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      skills: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-collapsed" isLive={false} />);
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
+    expect(screen.queryByTestId('finalize-phase-pill-collapsed')).toBeNull();
+  });
+});

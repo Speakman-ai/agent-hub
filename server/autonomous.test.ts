@@ -28,6 +28,7 @@ vi.mock('./config.js', () => ({
 
 vi.mock('./session-ship.js', () => ({
   markSessionAutoShipOnComplete: vi.fn(),
+  markSessionFinalizeAutomation: vi.fn(),
 }));
 
 vi.mock('./session-ownership.js', () => ({

@@ -1,0 +1,517 @@
+import { describe, expect, it, vi } from 'vitest';
+import { parseCiConfig } from './ci-config.js';
+import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-v2.js';
+import { runJobPhase, sanitizeComposeProjectName } from './job-runner.js';
+import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
+
+vi.mock('./job-container.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./job-container.js')>();
+  let execRuns: ((run: string) => void) | undefined;
+  return {
+    ...actual,
+    startJobContainer: vi.fn().mockResolvedValue(undefined),
+    stopJobContainer: vi.fn().mockResolvedValue(undefined),
+    createJobScopedSpawnStep: vi.fn(() => {
+      return ({ step }: { step: { run: string } }) => {
+        execRuns?.(step.run);
+        const child: SpawnedStep = {
+          stdout: null,
+          stderr: null,
+          on(event: 'close' | 'error', listener: (arg: never) => void) {
+            if (event === 'close')
+              queueMicrotask(() => (listener as (code: number | null) => void)(0));
+            return child;
+          },
+          kill: vi.fn(() => true),
+        };
+        return child;
+      };
+    }),
+    __setExecRuns: (fn: (run: string) => void) => {
+      execRuns = fn;
+    },
+  };
+});
+
+function makeFakeSpawnStep(onRun?: (run: string) => void): SpawnStepFn {
+  return ({ step }) => {
+    onRun?.(step.run);
+    const child: SpawnedStep = {
+      stdout: null,
+      stderr: null,
+      on(event: 'close' | 'error', listener: (arg: never) => void) {
+        if (event === 'close') queueMicrotask(() => (listener as (code: number | null) => void)(0));
+        return child;
+      },
+      kill: vi.fn(() => true),
+    };
+    return child;
+  };
+}
+
+describe('job-runner', () => {
+  it('sanitizeComposeProjectName produces lowercase unique shard prefixes', () => {
+    expect(sanitizeComposeProjectName('run-1', 'e2e', 'Profiles & Tasks')).toMatch(
+      /^finalize-run-1-e2e-profiles-tasks$/,
+    );
+    expect(sanitizeComposeProjectName('run-1', 'e2e', 'Core_Workflows')).toBe(
+      'finalize-run-1-e2e-core_workflows',
+    );
+  });
+
+  it('smoke: single container job runs docker version step', async () => {
+    const spawnCalls: string[] = [];
+    const spawnStep = vi.fn(makeFakeSpawnStep((run) => spawnCalls.push(run)));
+
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  smoke:
+    runs-on: host
+    steps:
+      - run: docker version
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const deps: StepRunnerDeps = {
+      stmts: {
+        getFinalizeRun: { get: vi.fn() },
+        updateFinalizeRunPhase: { run: vi.fn() },
+        updateFinalizeRunActiveSeconds: { run: vi.fn() },
+        failFinalizeRun: { run: vi.fn() },
+        addMessage: { run: vi.fn() },
+        touchSession: { run: vi.fn() },
+        getMessageById: { get: vi.fn() },
+        upsertFinalizeRunStep: { run: vi.fn() },
+        listFinalizeRunStepsForRun: { all: vi.fn(() => []) },
+        upsertFinalizeRunJob: { run: vi.fn() },
+        listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
+      } as unknown as StepRunnerDeps['stmts'],
+      broadcast: vi.fn(),
+      spawnStep,
+    };
+
+    const result = await runJobPhase(deps, {
+      runId: 'smoke-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(spawnCalls).toEqual(['docker version']);
+  });
+
+  const makeDeps = (spawnStep: SpawnStepFn): StepRunnerDeps => ({
+    stmts: {
+      getFinalizeRun: { get: vi.fn() },
+      updateFinalizeRunPhase: { run: vi.fn() },
+      updateFinalizeRunActiveSeconds: { run: vi.fn() },
+      failFinalizeRun: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+      upsertFinalizeRunStep: { run: vi.fn() },
+      listFinalizeRunStepsForRun: { all: vi.fn(() => []) },
+      upsertFinalizeRunJob: { run: vi.fn() },
+      listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
+    } as unknown as StepRunnerDeps['stmts'],
+    broadcast: vi.fn(),
+    spawnStep,
+  });
+
+  const WARMUP_CONFIG = `
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    warmup: true
+    steps:
+      - run: warmup-cmd
+  e2e:
+    runs-on: host
+    matrix:
+      include:
+        - group: A
+          specs: a.cy.ts
+        - group: B
+          specs: b.cy.ts
+    steps:
+      - run: test-cmd \${FINALIZE_MATRIX_SPECS}
+`;
+
+  it('routes a container job through the injected RunnerBackend (scheduler is backend-agnostic)', async () => {
+    const order: string[] = [];
+    const acquired: Array<{ jobId: string; image: string }> = [];
+    let released = 0;
+    const fakeBackend = {
+      kind: 'fake',
+      acquire: async (spec: { jobId: string; image: string }) => {
+        acquired.push({ jobId: spec.jobId, image: spec.image });
+        return {
+          spawnStep: makeFakeSpawnStep((run) => order.push(run)),
+          release: async () => {
+            released += 1;
+          },
+        };
+      },
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const deps = { ...makeDeps(vi.fn()), runnerBackend: fakeBackend } as StepRunnerDeps;
+    const result = await runJobPhase(deps, {
+      runId: 'backend-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    // Steps ran through the backend's lease, not local DinD; teardown happened.
+    expect(acquired).toHaveLength(1);
+    expect(acquired[0].jobId).toBe('e2e');
+    expect(acquired[0].image).toBeTruthy();
+    expect(order).toEqual(['e2e-cmd']);
+    expect(released).toBe(1);
+  });
+
+  it('runs warmup job to completion before any fan-out shard', async () => {
+    const order: string[] = [];
+    const spawnStep = vi.fn(makeFakeSpawnStep((run) => order.push(run)));
+    const parsed = parseCiConfig(WARMUP_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(spawnStep), {
+      runId: 'warm-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    // Warmup ran first; both fan-out shards ran after it.
+    expect(order[0]).toBe('warmup-cmd');
+    expect(order).toContain('test-cmd a.cy.ts');
+    expect(order).toContain('test-cmd b.cy.ts');
+    expect(order.indexOf('warmup-cmd')).toBeLessThan(order.indexOf('test-cmd a.cy.ts'));
+    expect(order.indexOf('warmup-cmd')).toBeLessThan(order.indexOf('test-cmd b.cy.ts'));
+  });
+
+  it('skips fan-out shards when the warmup job fails', async () => {
+    const order: string[] = [];
+    // warmup-cmd exits non-zero; everything else would exit 0.
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      order.push(step.run);
+      const code = step.run === 'warmup-cmd' ? 1 : 0;
+      const child: SpawnedStep = {
+        stdout: null,
+        stderr: null,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close')
+            queueMicrotask(() => (listener as (c: number | null) => void)(code));
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+    const parsed = parseCiConfig(WARMUP_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'warm-fail-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).not.toBe('success');
+    // The fan-out shards never ran — only the warmup step was spawned.
+    expect(order).toEqual(['warmup-cmd']);
+  });
+
+  it('passes step-level env to the spawned step (e.g. FINALIZE_WARMUP)', async () => {
+    const seen: Array<Record<string, string | undefined> | undefined> = [];
+    const spawnStep: SpawnStepFn = ({ step, env }) => {
+      seen.push(env as Record<string, string | undefined> | undefined);
+      const child: SpawnedStep = {
+        stdout: null,
+        stderr: null,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') queueMicrotask(() => (listener as (c: number | null) => void)(0));
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      void step;
+      return child;
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    steps:
+      - name: warm
+        env:
+          FINALIZE_WARMUP: "1"
+        run: prepare-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'stepenv-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(seen[0]?.FINALIZE_WARMUP).toBe('1');
+  });
+
+  it('needs: a dependent job waits for its prerequisite while independent jobs run free', async () => {
+    const order: string[] = [];
+    const spawnStep = vi.fn(makeFakeSpawnStep((run) => order.push(run)));
+    // backend has no needs (runs immediately); e2e needs prepare.
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    steps:
+      - run: prepare-cmd
+  backend:
+    runs-on: host
+    steps:
+      - run: backend-cmd
+  e2e:
+    runs-on: host
+    needs: [prepare]
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(spawnStep), {
+      runId: 'needs-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    // e2e ran only after prepare; backend was not gated by prepare.
+    expect(order).toContain('prepare-cmd');
+    expect(order).toContain('backend-cmd');
+    expect(order.indexOf('prepare-cmd')).toBeLessThan(order.indexOf('e2e-cmd'));
+  });
+
+  it('needs: skips a dependent job when its prerequisite fails', async () => {
+    const order: string[] = [];
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      order.push(step.run);
+      const code = step.run === 'prepare-cmd' ? 1 : 0;
+      const child: SpawnedStep = {
+        stdout: null,
+        stderr: null,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close')
+            queueMicrotask(() => (listener as (c: number | null) => void)(code));
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    steps:
+      - run: prepare-cmd
+  e2e:
+    runs-on: host
+    needs: [prepare]
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'needs-fail-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).not.toBe('success');
+    expect(order).toEqual(['prepare-cmd']); // e2e never ran
+  });
+
+  it('persists every planned step as queued up front (pending display)', async () => {
+    const spawnStep = vi.fn(makeFakeSpawnStep(() => {}));
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  alpha:
+    runs-on: host
+    steps:
+      - run: echo one
+      - run: echo two
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const upsertStep = vi.fn();
+    const deps: StepRunnerDeps = {
+      stmts: {
+        getFinalizeRun: { get: vi.fn() },
+        updateFinalizeRunPhase: { run: vi.fn() },
+        updateFinalizeRunActiveSeconds: { run: vi.fn() },
+        failFinalizeRun: { run: vi.fn() },
+        addMessage: { run: vi.fn() },
+        touchSession: { run: vi.fn() },
+        getMessageById: { get: vi.fn() },
+        upsertFinalizeRunStep: { run: upsertStep },
+        listFinalizeRunStepsForRun: { all: vi.fn(() => []) },
+        upsertFinalizeRunJob: { run: vi.fn() },
+        listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
+      } as unknown as StepRunnerDeps['stmts'],
+      broadcast: vi.fn(),
+      spawnStep,
+    };
+
+    await runJobPhase(deps, {
+      runId: 'queue-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    // upsertFinalizeRunStep.run(runId, stepIndex, name, state, ...): state is arg[3].
+    // Both planned steps (indices 1 and 2) must get an early `queued` row so the
+    // checks panel can show them as pending before their job starts running.
+    const queuedIndices = upsertStep.mock.calls.filter((c) => c[3] === 'queued').map((c) => c[1]);
+    expect(queuedIndices).toEqual(expect.arrayContaining([1, 2]));
+  });
+
+  it('expandJobInstances assigns FINALIZE_MATRIX_* env vars', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: A
+          specs: x.cy.ts
+    steps:
+      - run: echo
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    const [instance] = expandJobInstances(
+      parsed.config,
+      buildFinalizeBuiltinEnv({ branch: 'b', headSha: 's' }),
+    );
+    expect(instance.env.FINALIZE_MATRIX_SPECS).toBe('x.cy.ts');
+    expect(instance.env.FINALIZE_JOB_KEY).toBe('e2e');
+  });
+
+  it('dind ubuntu job: starts one container and execs each step', async () => {
+    const jobContainer = await import('./job-container.js');
+    const { startJobContainer, stopJobContainer, createJobScopedSpawnStep } = jobContainer;
+    const execRuns: string[] = [];
+    (jobContainer as { __setExecRuns?: (fn: (run: string) => void) => void }).__setExecRuns?.(
+      (run) => execRuns.push(run),
+    );
+
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: step one
+        run: echo one
+      - name: step two
+        run: echo two
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const deps: StepRunnerDeps = {
+      stmts: {
+        getFinalizeRun: { get: vi.fn() },
+        updateFinalizeRunPhase: { run: vi.fn() },
+        updateFinalizeRunActiveSeconds: { run: vi.fn() },
+        failFinalizeRun: { run: vi.fn() },
+        addMessage: { run: vi.fn() },
+        touchSession: { run: vi.fn() },
+        getMessageById: { get: vi.fn() },
+        upsertFinalizeRunStep: { run: vi.fn() },
+        listFinalizeRunStepsForRun: { all: vi.fn(() => []) },
+        upsertFinalizeRunJob: { run: vi.fn() },
+        listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
+      } as unknown as StepRunnerDeps['stmts'],
+      broadcast: vi.fn(),
+    };
+
+    const result = await runJobPhase(deps, {
+      runId: 'dind-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(startJobContainer).toHaveBeenCalledTimes(1);
+    expect(stopJobContainer).toHaveBeenCalledTimes(1);
+    expect(createJobScopedSpawnStep).toHaveBeenCalledTimes(1);
+    expect(execRuns).toEqual(['echo one', 'echo two']);
+  });
+});

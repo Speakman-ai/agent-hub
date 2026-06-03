@@ -16,7 +16,7 @@
  *     non-empty `run` string. `name` defaults to `step <index>`.
  *   - `steps[].shell:` (or any other unknown step-level key) is
  *     rejected — the orchestrator hard-codes `bash -euo pipefail -c`.
- *   - `timeout_minutes` may LOWER the system 60-min cap but never
+ *   - `timeout_minutes` may LOWER the system 4-hour cap but never
  *     raise it; out-of-range values error.
  *   - The file loader works against an arbitrary path (the "file lives
  *     at non-root location" criterion).
@@ -58,8 +58,8 @@ describe('parseCiConfig — exported constants', () => {
 
   it('locks the timeout floor / ceiling / default', () => {
     expect(FINALIZE_TIMEOUT_MIN_MINUTES).toBe(1);
-    expect(FINALIZE_TIMEOUT_MAX_MINUTES).toBe(60);
-    expect(FINALIZE_TIMEOUT_DEFAULT_MINUTES).toBe(60);
+    expect(FINALIZE_TIMEOUT_MAX_MINUTES).toBe(240);
+    expect(FINALIZE_TIMEOUT_DEFAULT_MINUTES).toBe(240);
   });
 
   it('locks the supported trigger set at v1', () => {
@@ -84,7 +84,7 @@ describe('parseCiConfig — valid configs', () => {
     });
   });
 
-  it('defaults timeout_minutes to 60 when the field is omitted', () => {
+  it('defaults timeout_minutes to 240 when the field is omitted', () => {
     const result = parseCiConfig(`
 version: 1
 on: [finalize]
@@ -93,7 +93,7 @@ steps:
 `);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.config.timeoutMinutes).toBe(60);
+    expect(result.config.timeoutMinutes).toBe(240);
   });
 
   it('defaults step name to "step <1-indexed-position>" when omitted', () => {
@@ -107,7 +107,7 @@ steps:
   - run: echo third
 `);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.config.version !== 1) return;
     expect(result.config.steps.map((s) => s.name)).toEqual(['step 1', 'Explicit', 'step 3']);
   });
 
@@ -135,7 +135,7 @@ steps:
     expect(result.config.on).toEqual(['manual']);
   });
 
-  it('accepts the timeout floor (1) and ceiling (60)', () => {
+  it('accepts the timeout floor (1) and ceiling (240)', () => {
     const floor = parseCiConfig(`
 version: 1
 on: [finalize]
@@ -149,12 +149,12 @@ steps:
     const ceil = parseCiConfig(`
 version: 1
 on: [finalize]
-timeout_minutes: 60
+timeout_minutes: 240
 steps:
   - run: echo hi
 `);
     expect(ceil.ok).toBe(true);
-    if (ceil.ok) expect(ceil.config.timeoutMinutes).toBe(60);
+    if (ceil.ok) expect(ceil.config.timeoutMinutes).toBe(240);
   });
 });
 
@@ -201,16 +201,19 @@ steps:
     expect(result.error.path).toBe('version');
   });
 
-  it('rejects version 2 with invalid_version', () => {
+  it('accepts version 2 when jobs are declared', () => {
     const result = parseCiConfig(`
 version: 2
 on: [finalize]
-steps:
-  - run: npm test
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: docker version
 `);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe('invalid_version');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.version).toBe(2);
   });
 
   it('rejects string "1" with invalid_version (no coercion)', () => {
@@ -269,7 +272,7 @@ steps:
     expect(result.error.message).toMatch(/autofix is not a v1 field/i);
   });
 
-  it('rejects `jobs:` (GitHub Actions vocabulary leaking in)', () => {
+  it('rejects `jobs:` on v1 with a hint to use version 2', () => {
     const result = parseCiConfig(`
 version: 1
 on: [finalize]
@@ -283,6 +286,54 @@ steps:
     if (result.ok) return;
     expect(result.error.code).toBe('unknown_top_level_key');
     expect(result.error.path).toBe('jobs');
+    expect(result.error.message).toMatch(/version: 2/i);
+  });
+});
+
+describe('parseCiConfig — v2 jobs + matrix', () => {
+  it('parses jobs with matrix.include and step env', () => {
+    const result = parseCiConfig(`
+version: 2
+on: [finalize, manual]
+timeout_minutes: 240
+env:
+  GIT_BRANCH: \${FINALIZE_BRANCH}
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    fail-fast: false
+    matrix:
+      include:
+        - group: Profiles
+          specs: "a.cy.ts,b.cy.ts"
+        - group: Core
+          specs: "c.cy.ts"
+    steps:
+      - name: pull
+        run: docker compose pull
+      - name: cypress
+        run: npx cypress run --spec "\${FINALIZE_MATRIX_SPECS}"
+        env:
+          CYPRESS_E2E_HEALTH_URL: http://localhost/health
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.version).toBe(2);
+    if (result.config.version !== 2) return;
+    expect(result.config.jobs.e2e.runsOn).toBe('ubuntu-24.04');
+    expect(result.config.jobs.e2e.failFast).toBe(false);
+    expect(result.config.jobs.e2e.matrixInclude).toHaveLength(2);
+    expect(result.config.jobs.e2e.steps).toHaveLength(2);
+  });
+
+  it('errors when v2 is missing jobs', () => {
+    const result = parseCiConfig(`
+version: 2
+on: [finalize]
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_jobs');
   });
 });
 
@@ -403,18 +454,18 @@ steps:
     expect(result.error.code).toBe('timeout_out_of_range');
   });
 
-  it('rejects 61 (above the v1 hard ceiling — config may lower, never raise)', () => {
+  it('rejects 241 (above the v1 hard ceiling — config may lower, never raise)', () => {
     const result = parseCiConfig(`
 version: 1
 on: [finalize]
-timeout_minutes: 61
+timeout_minutes: 241
 steps:
   - run: npm test
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('timeout_out_of_range');
-    expect(result.error.message).toMatch(/never raise/i);
+    expect(result.error.message).toMatch(/out of range/i);
   });
 
   it('rejects a string value (no coercion)', () => {
@@ -635,7 +686,7 @@ describe('loadCiConfigFromFile — arbitrary path', () => {
 
     const result = await loadCiConfigFromFile(filePath);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.config.version !== 1) return;
     expect(result.config.steps).toHaveLength(3);
     expect(result.config.steps[0]).toEqual({ name: 'Install', run: 'npm ci --include=dev' });
   });
@@ -651,10 +702,10 @@ describe('loadCiConfigFromFile — arbitrary path', () => {
 
   it('propagates validation errors from parseCiConfig', async () => {
     const filePath = path.join(tmpDir, 'bad.yaml');
-    await fs.writeFile(filePath, 'version: 2\non: [finalize]\nsteps:\n  - run: x\n', 'utf8');
+    await fs.writeFile(filePath, 'version: 2\non: [finalize]\n', 'utf8');
     const result = await loadCiConfigFromFile(filePath);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe('invalid_version');
+    expect(result.error.code).toBe('missing_jobs');
   });
 });

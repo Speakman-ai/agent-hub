@@ -4,20 +4,48 @@
 # `route53_zone_id` (or optional public_fqdn) (to issue/validate an ACM cert via DNS).
 
 data "aws_route53_zone" "base" {
-  count = var.enable_dedicated_alb && var.lookup_route53_zone_in_this_account && (var.route53_zone_id == null || var.route53_zone_id == "") ? 1 : 0
+  count = var.enable_dedicated_alb && !var.create_route53_zone && var.lookup_route53_zone_in_this_account && (var.route53_zone_id == null || var.route53_zone_id == "") ? 1 : 0
 
   name         = "${var.base_domain}."
   private_zone = false
 }
 
+# Dedicated-account / prod model: create + own the public hosted zone for
+# base_domain in THIS account (e.g. agenthub.surveytracker.io in the agent-hub
+# account). The NS delegation into the root apex zone is written below.
+resource "aws_route53_zone" "owned" {
+  count = var.enable_dedicated_alb && var.create_route53_zone ? 1 : 0
+  name  = var.base_domain
+}
+
+# Delegate base_domain from the ROOT apex zone (surveytracker.io) to the zone we
+# just created — mirrors surveytracker's terraform/main route53 module: an NS
+# record in the root zone, written cross-account via the assumed root role.
+resource "aws_route53_record" "owned_zone_delegation" {
+  count           = var.enable_dedicated_alb && var.create_route53_zone && trimspace(var.root_delegation_role_arn) != "" && trimspace(var.root_delegation_zone_id) != "" ? 1 : 0
+  provider        = aws.root_dns
+  zone_id         = var.root_delegation_zone_id
+  name            = var.base_domain
+  type            = "NS"
+  ttl             = 30
+  records         = aws_route53_zone.owned[0].name_servers
+  allow_overwrite = true
+}
+
 locals {
   # Avoid coalesce(…, try(data[0]…)) when the data block has count=0 — not all nulls/empty.
   route53_zone_id_effective = (
-    var.route53_zone_id != null && var.route53_zone_id != "" ? var.route53_zone_id : (
-      length(data.aws_route53_zone.base) > 0 ? data.aws_route53_zone.base[0].zone_id : null
+    length(aws_route53_zone.owned) > 0 ? aws_route53_zone.owned[0].zone_id : (
+      var.route53_zone_id != null && var.route53_zone_id != "" ? var.route53_zone_id : (
+        length(data.aws_route53_zone.base) > 0 ? data.aws_route53_zone.base[0].zone_id : null
+      )
     )
   )
-  has_route53_zone = local.route53_zone_id_effective != null && local.route53_zone_id_effective != ""
+  # Determined from INTENT (known at plan time), not route53_zone_id_effective —
+  # which, when create_route53_zone is set, is the created zone's computed zone_id
+  # (unknown until apply) and would make count-gated cert/record resources fail
+  # with "Invalid count argument".
+  has_route53_zone = var.create_route53_zone || (var.route53_zone_id != null && var.route53_zone_id != "") || length(data.aws_route53_zone.base) > 0
   has_public_fqdn  = var.public_fqdn != null && trimspace(var.public_fqdn) != ""
   # When public_fqdn is not set: dns_subdomain.name.base_domain (requires var.name)
   composed_fqdn = var.name != "" ? "${var.dns_subdomain}.${var.name}.${var.base_domain}" : null

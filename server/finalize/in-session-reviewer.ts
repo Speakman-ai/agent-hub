@@ -317,7 +317,7 @@ export async function runReviewerTurn(
   const parsed = detectReviewVerdictBlock(rawText);
   if (!parsed.present) {
     throw new Error(
-      `reviewer turn ended without a <agenthub:review-verdict> tail block (run=${runId})`,
+      `reviewer turn ended without a parseable review verdict (run=${runId}) — expected a <agenthub:review-verdict> block or trailing {"verdict":...} JSON`,
     );
   }
   if (!parsed.task) {
@@ -453,6 +453,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           codexDangerBypass: args.codexDangerBypass,
           codexProfile: args.codexProfile,
           advisory: true,
+          sessionId: args.sessionId,
         });
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -544,6 +545,9 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
 
       proc.on('close', (code: number | null) => {
         clearTimeout(timer);
+        if (plan.systemPromptFileCleanup) {
+          plan.systemPromptFileCleanup();
+        }
         if (unsubscribeAbort) {
           try {
             unsubscribeAbort();
@@ -584,6 +588,9 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
       proc.on('error', (err: Error) => {
         spawnErrored = true;
         clearTimeout(timer);
+        if (plan.systemPromptFileCleanup) {
+          plan.systemPromptFileCleanup();
+        }
         if (args.activeProcesses) args.activeProcesses.delete(args.sessionId);
         reject(err);
       });

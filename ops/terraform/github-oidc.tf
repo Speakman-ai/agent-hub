@@ -87,7 +87,10 @@ resource "aws_iam_role_policy" "gha_ecr_push" {
           "ecr-public:DescribeImageTags"
         ]
         # Note: ECR Public repo ARNs are account-scoped, not region-scoped.
-        Resource = "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_repo_name}"
+        Resource = [
+          "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_repo_name}",
+          "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_finalize_runner_repo_name}",
+        ]
       }
     ]
   })

@@ -21,11 +21,7 @@ vi.mock('../../hooks/useFinalizeRun.js', async () => {
 vi.mock('../../utils/api.js', () => ({
   api: {
     getLatestFinalizeRunForSession: vi.fn().mockResolvedValue({ run: null }),
-    // ChecksPanel now passes a resolved `prefetchedRun` down to the
-    // embedded <ReviewerThreadsPanel /> (PR #1169 NB1 fix), which causes
-    // the sidecar to skip its own latest-run lookup and go straight to
-    // the threads-load step. Default the threads call to an empty resolved
-    // shape so each test doesn't have to repeat it.
+    getFinalizeStepOutput: vi.fn().mockResolvedValue({ lines: [] }),
     getReviewerThreads: vi.fn().mockResolvedValue({
       run_id: 'run-1',
       reviewer_verdict: null,
@@ -35,6 +31,7 @@ vi.mock('../../utils/api.js', () => ({
 }));
 
 import { useFinalizeRun } from '../../hooks/useFinalizeRun.js';
+import { api } from '../../utils/api.js';
 
 function setHook(overrides = {}) {
   useFinalizeRun.mockReturnValue({
@@ -107,7 +104,7 @@ describe('<ChecksPanel />', () => {
     expect(wall.textContent).toMatch(/6m/);
 
     // Active tooltip explains it fires the 60-min cap.
-    expect(active.getAttribute('title')).toMatch(/60-minute cap/);
+    expect(active.getAttribute('title')).toMatch(/4-hour cap/);
   });
 
   it('surfaces the pause indicator when the run is waiting on session turn-end', () => {
@@ -207,12 +204,12 @@ describe('<ChecksPanel />', () => {
     // Every row carries the deep-link affordance.
     const jumps = screen.getAllByTestId('finalize-step-jump');
     expect(jumps).toHaveLength(3);
-    expect(jumps[0].getAttribute('href')).toBe('#finalize-step-run-1-1');
+    expect(jumps[0].textContent).toMatch(/view logs/i);
   });
 
-  it('dispatches finalize:jump-to-step-output when the deep-link is clicked', () => {
+  it('dispatches log modal open when view logs is clicked', async () => {
     setHook({
-      run: fakeRun({ status: 'running', phase: 'tasks' }),
+      run: fakeRun({ status: 'running', phase: 'tasks', project_id: 'proj-1' }),
       status: 'running',
       phase: 'tasks',
       isActive: true,
@@ -229,20 +226,15 @@ describe('<ChecksPanel />', () => {
         },
       ],
     });
-    const onJump = vi.fn();
-    window.addEventListener('finalize:jump-to-step-output', onJump);
-    try {
-      render(<ChecksPanel sessionId="s1" />);
-      const link = screen.getByTestId('finalize-step-jump');
-      fireEvent.click(link);
-      expect(onJump).toHaveBeenCalled();
-      const detail = onJump.mock.calls[0][0].detail;
-      expect(detail.run_id).toBe('run-1');
-      expect(detail.step_index).toBe(4);
-      expect(detail.step_name).toBe('typecheck');
-    } finally {
-      window.removeEventListener('finalize:jump-to-step-output', onJump);
-    }
+    api.getFinalizeStepOutput.mockResolvedValue({
+      run_id: 'run-1',
+      step_index: 4,
+      lines: [{ stream: 'stderr', text: 'error TS2304', created_at: '2026-05-29T12:00:00.000Z' }],
+    });
+    render(<ChecksPanel sessionId="s1" projectId="proj-1" />);
+    fireEvent.click(screen.getByTestId('finalize-step-jump'));
+    expect(await screen.findByTestId('finalize-step-log-modal')).toBeInTheDocument();
+    expect(await screen.findByText('error TS2304')).toBeInTheDocument();
   });
 
   it('renders trigger source = "agent block" when triggered from inside a session', () => {
@@ -290,6 +282,22 @@ describe('<ChecksPanel />', () => {
     );
   });
 
+  it('explains review_failed with no CI steps in the empty-steps panel', () => {
+    setHook({
+      run: fakeRun({ status: 'failed', failure_reason: 'review_failed', phase: 'review' }),
+      status: 'failed',
+      phase: 'review',
+      steps: [],
+      isTerminal: true,
+      activeSeconds: 97,
+      wallSeconds: 109,
+    });
+    render(<ChecksPanel sessionId="s1" />);
+    const empty = screen.getByTestId('finalize-steps-empty');
+    expect(empty.textContent).toMatch(/Review failed before CI steps ran/);
+    expect(empty.textContent).toMatch(/agenthub:review-verdict/);
+  });
+
   it('renders a PR link when the run has pushed', () => {
     setHook({
       run: fakeRun({ status: 'pushed', pr_url: 'https://github.com/x/y/pull/42' }),
@@ -302,5 +310,24 @@ describe('<ChecksPanel />', () => {
     render(<ChecksPanel sessionId="s1" />);
     const link = screen.getByTestId('finalize-run-pr-link');
     expect(link).toHaveAttribute('href', 'https://github.com/x/y/pull/42');
+  });
+
+  it('renders nothing in embedded mode when there is no finalize run', () => {
+    setHook({ run: null });
+    const { container } = render(<ChecksPanel sessionId="s1" variant="embedded" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('marks embedded variant on the panel when a run exists', () => {
+    setHook({
+      run: fakeRun(),
+      status: 'reviewing',
+      phase: 'review',
+      isActive: true,
+      activeSeconds: 1,
+      wallSeconds: 2,
+    });
+    render(<ChecksPanel sessionId="s1" variant="embedded" />);
+    expect(screen.getByTestId('finalize-checks-panel')).toHaveAttribute('data-variant', 'embedded');
   });
 });

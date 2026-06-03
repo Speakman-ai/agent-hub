@@ -30,14 +30,7 @@ import {
   buildPrEnvPatchFromWizardApply,
   type PreviewSetupApplyBody,
 } from '../preview-setup-apply.js';
-import {
-  listRawPreviewSecretRows,
-  parseDotEnv,
-  replacePreviewSecrets,
-  replacePreviewSecretsMixed,
-  PreviewSecretValidationError,
-} from '../preview/preview-secrets-store.js';
-import type { PreviewSecretInput } from '../preview/preview-secrets-store.js';
+import { applyWizardSecrets } from '../wizard-secrets-apply.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
 
@@ -283,34 +276,16 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
 
       let secretsImported = 0;
       if (body.secrets && typeof body.secrets.env === 'string') {
-        try {
-          const rawMode = body.secrets.mode;
-          if (rawMode !== undefined && rawMode !== 'merge' && rawMode !== 'replace') {
-            res.status(400).json({ error: 'secrets.mode must be "merge" or "replace"' });
-            return;
-          }
-          const mode = rawMode === 'replace' ? 'replace' : 'merge';
-          const defaultKind = body.secrets.defaultKind === 'plain' ? 'plain' : 'secret';
-          const parsed = parseDotEnv(body.secrets.env);
-          const inputs: PreviewSecretInput[] = parsed.map((p) => ({
-            ...p,
-            kind: p.kind ?? defaultKind,
-          }));
-          const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
-          if (mode === 'merge') {
-            const existingRaw = listRawPreviewSecretRows(project.id);
-            replacePreviewSecretsMixed(project.id, inputs, existingRaw, actorUserId);
-          } else {
-            replacePreviewSecrets(project.id, inputs, actorUserId);
-          }
-          secretsImported = inputs.length;
-        } catch (err) {
-          if (err instanceof PreviewSecretValidationError) {
-            res.status(err.statusCode).json({ error: err.message });
-            return;
-          }
-          throw err;
+        const secretsResult = applyWizardSecrets(
+          project.id,
+          body.secrets,
+          (req as AuthenticatedRequest).authUserId ?? null,
+        );
+        if (!secretsResult.ok) {
+          res.status(secretsResult.statusCode).json({ error: secretsResult.error });
+          return;
         }
+        secretsImported = secretsResult.secretsImported;
       }
 
       res.json({ ok: true, secretsImported });

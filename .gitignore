@@ -73,3 +73,4 @@ server/server.log
 .codex/
 .claude/
 .cursor/
+server/finalize/runner/runner-agent.mjs

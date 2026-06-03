@@ -714,7 +714,8 @@ function initDb(dataDir: string): void {
       active_seconds_consumed INTEGER NOT NULL DEFAULT 0,
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
-      pr_url TEXT
+      pr_url TEXT,
+      validated_head_sha TEXT
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
@@ -737,12 +738,79 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS reviewer_threads_run
       ON reviewer_threads(run_id, file_path, line_start);
+
+    -- Per-step CI task state for Finalize runs (checks panel + log viewer).
+    CREATE TABLE IF NOT EXISTS finalize_run_steps (
+      run_id TEXT NOT NULL REFERENCES finalize_runs(id),
+      step_index INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      state TEXT NOT NULL,
+      exit_code INTEGER,
+      started_at INTEGER,
+      ended_at INTEGER,
+      PRIMARY KEY (run_id, step_index)
+    );
+    CREATE INDEX IF NOT EXISTS finalize_run_steps_run
+      ON finalize_run_steps(run_id, step_index);
   `);
 
   // Finalize Code Changes adoption metrics — append-only event log.
   // See `server/finalize/metrics-schema.ts` for the column contract and
   // `server/finalize/metrics.ts` for the emitter / aggregation surface.
   db.exec(FINALIZE_METRICS_SCHEMA);
+
+  try {
+    db.prepare('SELECT step_index FROM finalize_run_steps LIMIT 1').get();
+  } catch {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS finalize_run_steps (
+        run_id TEXT NOT NULL REFERENCES finalize_runs(id),
+        step_index INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        started_at INTEGER,
+        ended_at INTEGER,
+        PRIMARY KEY (run_id, step_index)
+      );
+      CREATE INDEX IF NOT EXISTS finalize_run_steps_run
+        ON finalize_run_steps(run_id, step_index);
+    `);
+  }
+
+  try {
+    db.prepare('SELECT validated_head_sha FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN validated_head_sha TEXT');
+  }
+
+  try {
+    db.prepare('SELECT loop_round FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN loop_round INTEGER NOT NULL DEFAULT 0');
+  }
+
+  try {
+    db.prepare('SELECT job_id FROM finalize_run_steps LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN job_id TEXT');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN matrix_key TEXT');
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS finalize_run_jobs (
+      run_id TEXT NOT NULL REFERENCES finalize_runs(id),
+      job_id TEXT NOT NULL,
+      matrix_key TEXT NOT NULL DEFAULT '',
+      state TEXT NOT NULL,
+      exit_code INTEGER,
+      started_at INTEGER,
+      ended_at INTEGER,
+      PRIMARY KEY (run_id, job_id, matrix_key)
+    );
+    CREATE INDEX IF NOT EXISTS finalize_run_jobs_run
+      ON finalize_run_jobs(run_id, job_id);
+  `);
 
   try {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
@@ -1000,6 +1068,12 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT auto_ship_on_complete FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN auto_ship_on_complete INTEGER NOT NULL DEFAULT 0');
+  }
+
+  try {
+    db.prepare('SELECT finalize_automation FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec("ALTER TABLE sessions ADD COLUMN finalize_automation TEXT NOT NULL DEFAULT 'manual'");
   }
 
   // Soft-delete ("archive") column. When set, the session is hidden from the
@@ -2013,6 +2087,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionAutoShipOnComplete: db.prepare(
       "UPDATE sessions SET auto_ship_on_complete = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionFinalizeAutomation: db.prepare(
+      "UPDATE sessions SET finalize_automation = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
@@ -3246,6 +3323,14 @@ function initDb(dataDir: string): void {
               ended_at = unixepoch() * 1000
         WHERE id = ?`,
     ),
+    markFinalizeRunReadyToPush: db.prepare(
+      `UPDATE finalize_runs
+          SET status = 'ready_to_push',
+              phase = NULL,
+              validated_head_sha = ?,
+              ended_at = unixepoch() * 1000
+        WHERE id = ?`,
+    ),
     // Update the session id on a finalize_runs row. The orchestrator calls
     // this when it spawns or resolves a session after the row has been
     // inserted (the session may not exist at trigger time; see §6).
@@ -3256,6 +3341,7 @@ function initDb(dataDir: string): void {
     updateFinalizeRunWorktreePath: db.prepare(
       `UPDATE finalize_runs SET worktree_path = ? WHERE id = ?`,
     ),
+    updateFinalizeRunLoopRound: db.prepare(`UPDATE finalize_runs SET loop_round = ? WHERE id = ?`),
     // Most-recent finalize run for a session. Used by the session-scoped
     // reviewer-threads side-panel to discover which run id to pull threads
     // for without forcing the client to track run lifecycle events. Returns
@@ -3285,7 +3371,7 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -3384,6 +3470,41 @@ function initDb(dataDir: string): void {
     // Presence = orchestrator-pushed (internal); absence triggers the
     // PR-body-marker fallback. See `server/finalize/provenance.ts`.
     getFinalizeRunByPrUrl: db.prepare('SELECT * FROM finalize_runs WHERE pr_url = ? LIMIT 1'),
+    upsertFinalizeRunStep: db.prepare(
+      `INSERT INTO finalize_run_steps (
+        run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, step_index) DO UPDATE SET
+        name = excluded.name,
+        state = excluded.state,
+        exit_code = excluded.exit_code,
+        started_at = COALESCE(finalize_run_steps.started_at, excluded.started_at),
+        ended_at = excluded.ended_at,
+        job_id = excluded.job_id,
+        matrix_key = excluded.matrix_key`,
+    ),
+    listFinalizeRunStepsForRun: db.prepare(
+      `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key
+         FROM finalize_run_steps
+        WHERE run_id = ?
+        ORDER BY step_index ASC`,
+    ),
+    upsertFinalizeRunJob: db.prepare(
+      `INSERT INTO finalize_run_jobs (
+        run_id, job_id, matrix_key, state, exit_code, started_at, ended_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, job_id, matrix_key) DO UPDATE SET
+        state = excluded.state,
+        exit_code = excluded.exit_code,
+        started_at = COALESCE(finalize_run_jobs.started_at, excluded.started_at),
+        ended_at = excluded.ended_at`,
+    ),
+    listFinalizeRunJobsForRun: db.prepare(
+      `SELECT run_id, job_id, matrix_key, state, exit_code, started_at, ended_at
+         FROM finalize_run_jobs
+        WHERE run_id = ?
+        ORDER BY job_id ASC, matrix_key ASC`,
+    ),
 
     // reviewer_threads — diff-anchored notes produced by the reviewer
     // agent during the review phase. See wiki §8.

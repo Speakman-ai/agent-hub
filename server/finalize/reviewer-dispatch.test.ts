@@ -45,6 +45,9 @@ interface FakeStmts {
   insertReviewerThread: { run: ReturnType<typeof vi.fn> };
   deleteReviewerThreadsForRun: { run: ReturnType<typeof vi.fn> };
   failFinalizeRun: { run: ReturnType<typeof vi.fn> };
+  addMessage: { run: ReturnType<typeof vi.fn> };
+  touchSession: { run: ReturnType<typeof vi.fn> };
+  getMessageById: { get: ReturnType<typeof vi.fn> };
 }
 
 interface ThreadStoreState {
@@ -54,10 +57,20 @@ interface ThreadStoreState {
 function makeStmts(store?: ThreadStoreState): FakeStmts {
   const inMemory = store ?? { rows: [] };
   return {
-    getFinalizeRun: { get: vi.fn().mockReturnValue({ session_id: 'sess-1' }) },
+    getFinalizeRun: { get: vi.fn().mockReturnValue({ session_id: 'sess-1', loop_round: 1 }) },
     updateFinalizeRunPhase: { run: vi.fn() },
     updateFinalizeRunActiveSeconds: { run: vi.fn() },
     updateFinalizeRunReviewerVerdict: { run: vi.fn() },
+    addMessage: { run: vi.fn() },
+    touchSession: { run: vi.fn() },
+    getMessageById: {
+      get: vi.fn().mockImplementation((id: string) => ({
+        id,
+        session_id: 'sess-1',
+        role: 'system',
+        content: 'Review · round 1 · approved',
+      })),
+    },
     insertReviewerThread: {
       run: vi.fn(
         (
@@ -176,6 +189,7 @@ describe('runReviewerDispatch — approved verdict, no threads', () => {
       inputs: fakeInputs,
       card: fakeCard,
       project: fakeProject,
+      sessionId: 'sess-1',
     });
 
     expect(outcome).toEqual({
@@ -183,6 +197,14 @@ describe('runReviewerDispatch — approved verdict, no threads', () => {
       verdict: 'approved',
       threadCount: 0,
       activeSecondsBilled: REVIEW_PHASE_ACTIVE_SECONDS,
+    });
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string)).toMatchObject({
+      kind: 'finalize_review_round',
+      runId: 'run-1',
+      round: 1,
+      verdict: 'approved',
+      threads: [],
     });
     expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith('review', 'reviewing', 'run-1');
     expect(stmts.updateFinalizeRunReviewerVerdict.run).toHaveBeenCalledWith('approved', 'run-1');

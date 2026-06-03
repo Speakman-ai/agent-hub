@@ -2159,7 +2159,7 @@ describe.skip('autoCommitAndPR — nothing_to_publish log severity', () => {
           return ok('1\n');
         if (cmd.startsWith('git fetch')) return ok('');
         // The rebase itself fails with a conflict-shaped error.
-        if (cmd.startsWith('git rebase origin/main')) {
+        if (cmd.startsWith('git rebase') && cmd.includes('origin/main')) {
           return fail(
             'CONFLICT (content): Merge conflict in file.ts\nerror: could not apply abc... change',
           );

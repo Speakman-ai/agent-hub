@@ -13,6 +13,11 @@ import { loadSkillByName } from './skill-invoke.js';
 import { resolveWorkspaceSkillsDir } from './project-paths.js';
 import { getProjectMode } from './project-mode.js';
 import { isResolvePrSessionTitle } from './session-title-pr.js';
+import {
+  FINALIZE_AUTOMATION_ASSIGNED_DEFAULT,
+  type FinalizeAutomationLevel,
+} from './finalize/automation.js';
+import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 
 export const SHIP_SKILL_ID = 'create-ticket-and-pr';
 
@@ -237,6 +242,16 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
     };
   }
 
+  if (worktreeHasFinalizeCi(session.worktree_path)) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        'This project uses Finalize Code Changes (.agent-hub/ci.yaml). Use **Finalize Code Changes** on the session instead of Create ticket & PR.',
+      code: 'finalize_configured',
+    };
+  }
+
   const skillsDir = resolveWorkspaceSkillsDir(project, agent);
   const injection = loadSkillByName({
     name: SHIP_SKILL_ID,
@@ -383,6 +398,21 @@ export function markSessionAutoShipOnComplete(stmts: Stmts, sessionId: string): 
   } catch (err) {
     console.warn(
       `[session-ship] updateSessionAutoShipOnComplete failed for ${sessionId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
+export function markSessionFinalizeAutomation(
+  stmts: Stmts,
+  sessionId: string,
+  level: FinalizeAutomationLevel = FINALIZE_AUTOMATION_ASSIGNED_DEFAULT,
+): void {
+  try {
+    stmts.updateSessionFinalizeAutomation.run(level, sessionId);
+  } catch (err) {
+    console.warn(
+      `[session-ship] updateSessionFinalizeAutomation failed for ${sessionId}:`,
       (err as Error).message,
     );
   }

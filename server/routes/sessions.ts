@@ -21,6 +21,11 @@ import {
   buildAggregationSkippedRunSnapshot,
   getSnapshotAggregateLimit,
 } from '../session-run-snapshot.js';
+import {
+  applyMessagesLimitQuery,
+  buildSessionMessagesHttpBody,
+  sendSessionMessagesJson,
+} from '../session-messages-response.js';
 import type {
   RouteDeps,
   AppConfig,
@@ -42,6 +47,7 @@ import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { checkWorktreeChanges } from '../auto-git.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -456,8 +462,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/sessions/:sessionId/messages', (req: Request, res: Response) => {
-    const messages = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
-    res.json(messages);
+    const all = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
+    const limited = applyMessagesLimitQuery(all, req.query.limit);
+    const body = buildSessionMessagesHttpBody(limited);
+    if (!Array.isArray(body) && body.truncated) {
+      console.warn(
+        `[Sessions] Truncated messages for session ${req.params.sessionId}: ${body.omitted}/${body.total} omitted`,
+      );
+    }
+    sendSessionMessagesJson(res, body);
   });
 
   router.post('/api/tasks', (req: Request, res: Response) => {
@@ -660,6 +673,39 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
   });
 
+  /**
+   * Live git status for Finalize / push affordances — uncommitted or unpushed
+   * commits in the session worktree.
+   */
+  router.get('/api/sessions/:sessionId/worktree-changes', async (req: Request, res: Response) => {
+    const id = req.params.sessionId as string;
+    if (!userOwnsSession(req as AuthenticatedRequest, id)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const session = stmts.getSession.get(id) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!session.worktree_path) {
+      return res.json({
+        branch: session.worktree_branch ?? null,
+        hasUncommitted: false,
+        hasUnpushed: false,
+        committable: false,
+      });
+    }
+    try {
+      const changes = await checkWorktreeChanges(session.worktree_path);
+      res.json({
+        branch: changes.branch,
+        hasUncommitted: changes.hasUncommitted,
+        hasUnpushed: changes.hasUnpushed,
+        committable: changes.hasUncommitted || changes.hasUnpushed,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'worktree_status_failed', message: msg });
+    }
+  });
+
   router.get('/api/messages/:messageId/events', (req: Request, res: Response) => {
     // Resolve the parent session and gate by ownership — events leak the
     // full tool-use stream of someone else's chat otherwise.
@@ -816,8 +862,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (parsed.max_turns !== undefined) {
       stmts.updateSessionMaxTurns.run(parsed.max_turns, req.params.sessionId);
     }
+    if (parsed.finalize_automation !== undefined) {
+      stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, req.params.sessionId);
+    }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionWithAgents(session, stmts, getEnrichedAgent));
+    const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);
+    deps.broadcast({ type: 'session-updated', session: enriched });
+    res.json(enriched);
   });
 
   router.post('/api/sessions/:sessionId/agents', (req: Request, res: Response) => {

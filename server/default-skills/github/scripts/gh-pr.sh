@@ -110,12 +110,41 @@ LOCKED
   exit 2
 }
 
+# Block `gh pr create` when the session is on a Finalize-configured project
+# and the run has not completed successfully. Checked via Agent Hub API so
+# agents cannot bypass the Finalize button with a direct gh invocation.
+_finalize_ship_gate() {
+  if [[ -z "${AGENT_HUB_SESSION_ID:-}" || -z "${AGENT_HUB_URL:-}" || -z "${AGENT_HUB_API_KEY:-}" ]]; then
+    return 0
+  fi
+  local resp allowed
+  resp=$(curl -sS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \
+    "$AGENT_HUB_URL/api/sessions/${AGENT_HUB_SESSION_ID}/finalize-ship-gate" 2>/dev/null) || return 0
+  allowed=$(printf '%s' "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print('1' if d.get('allowed') else '0')" 2>/dev/null) || return 0
+  if [[ "$allowed" == "1" ]]; then
+    return 0
+  fi
+  local msg
+  msg=$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message','Finalize ship gate blocked direct PR creation.'))" 2>/dev/null) \
+    || msg="Finalize ship gate blocked direct PR creation."
+  cat >&2 <<GATE
+error: gh-pr.sh create blocked — ${msg}
+
+Use **Finalize Code Changes** on the session instead of \`gh pr create\` when
+\`.agent-hub/ci.yaml\` is configured for this project.
+
+Gate API: GET $AGENT_HUB_URL/api/sessions/$AGENT_HUB_SESSION_ID/finalize-ship-gate
+GATE
+  exit 2
+}
+
 # ---------------------------------------------------------------------------
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
   _reviewer_role_locked "gh-pr.sh create"
   _pr_create_locked
+  _finalize_ship_gate
   local title="" base="" body="" draft=false reviewer="" label=""
   while [[ $# -gt 0 ]]; do
     case "$1" in

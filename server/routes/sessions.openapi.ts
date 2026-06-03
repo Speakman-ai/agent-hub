@@ -104,6 +104,21 @@ export const MessageComponent = registerComponent(
     .openapi({ description: 'A single message row inside a session.' }),
 );
 
+export const SessionMessagesListComponent = registerComponent(
+  'SessionMessagesList',
+  z
+    .object({
+      messages: z.array(MessageComponent),
+      truncated: z.literal(true),
+      omitted: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+    })
+    .openapi({
+      description:
+        'Truncated message list when the full transcript exceeds the JSON response budget. Oldest rows are omitted; `messages` is oldest-first within the returned slice.',
+    }),
+);
+
 export const SessionErrorResponseComponent = registerComponent(
   'SessionErrorResponse',
   z
@@ -146,10 +161,11 @@ export const CreateSessionRequestSchema = z.object({
   ask_mode: z.boolean().optional(),
 });
 
-/** PATCH /api/sessions/:sessionId — `name` and/or `max_turns`. */
+/** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */
 export const PatchSessionRequestSchema = z.object({
   name: z.string().optional(),
   max_turns: z.number().int().min(0).optional(),
+  finalize_automation: z.enum(['manual', 'review', 'push', 'merge']).optional(),
 });
 
 export const AddSessionAgentRequestSchema = z.object({
@@ -282,10 +298,22 @@ registerPath({
   method: 'get',
   path: '/api/sessions/{sessionId}/messages',
   tags: ['Sessions'],
-  summary: 'List every message in a session (oldest first)',
-  request: { params: sessionIdParams },
+  summary: 'List messages in a session (oldest first)',
+  description:
+    'Returns the full transcript when it fits the JSON response budget; otherwise returns a truncated envelope with the newest rows. Use `limit` to request only the newest N messages.',
+  request: {
+    params: sessionIdParams,
+    query: z.object({
+      limit: z.string().optional().openapi({
+        description: 'When set, return only the newest N messages (positive integer).',
+      }),
+    }),
+  },
   responses: {
-    200: { description: 'Array of messages.', content: jsonContent(z.array(MessageComponent)) },
+    200: {
+      description: 'Message rows, or a truncated envelope for very large transcripts.',
+      content: jsonContent(z.union([z.array(MessageComponent), SessionMessagesListComponent])),
+    },
     404: errorResponse('Session not found (or hidden by ownership).'),
   },
 });

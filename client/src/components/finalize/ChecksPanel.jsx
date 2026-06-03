@@ -9,8 +9,10 @@ import {
   GitMerge,
   ExternalLink,
 } from 'lucide-react';
+import { useState } from 'react';
 import { useFinalizeRun, describeRunPhase, formatDuration } from '../../hooks/useFinalizeRun.js';
 import ReviewerThreadsPanel from './ReviewerThreadsPanel.jsx';
+import FinalizeStepLogModal from './FinalizeStepLogModal.jsx';
 
 /**
  * GitHub-Actions-style checks panel for a Finalize Code Changes run.
@@ -39,28 +41,35 @@ import ReviewerThreadsPanel from './ReviewerThreadsPanel.jsx';
  * as <ReviewerThreadsPanel /> so the chat view stays clean for every
  * session that has never been finalized.
  */
-export default function ChecksPanel({ sessionId, onJumpToSession }) {
+export default function ChecksPanel({
+  sessionId,
+  projectId,
+  onJumpToSession,
+  variant = 'standalone',
+}) {
   const { run, steps, phase, status, isPaused, isTerminal, activeSeconds, wallSeconds } =
     useFinalizeRun({ sessionId });
+  const [logStep, setLogStep] = useState(null);
 
   if (!run) {
-    // We already resolved "there is no run for this session" via the
-    // hook above. Hand that down to the sidecar so it doesn't repeat
-    // the same `getLatestFinalizeRunForSession` call (PR #1169 reviewer
-    // feedback NB1). The sidecar will render nothing in this case but
-    // will still attach to `reviewer_thread_added` events for any later
-    // run that lands on this session.
+    if (variant === 'embedded') return null;
     return <ReviewerThreadsPanel sessionId={sessionId} prefetchedRun={null} />;
   }
+
+  const sectionClass =
+    variant === 'embedded'
+      ? 'rounded-lg border border-gray-800/80 bg-gray-900/40 text-xs min-w-[14rem] shrink-0'
+      : 'border-t border-slate-700 bg-slate-900/60';
 
   return (
     <section
       data-testid="finalize-checks-panel"
+      data-variant={variant}
       data-run-id={run.id}
       data-status={status || undefined}
       data-phase={phase || undefined}
       data-paused={isPaused ? 'true' : undefined}
-      className="border-t border-slate-700 bg-slate-900/60"
+      className={sectionClass}
     >
       <RunHeader
         run={run}
@@ -72,15 +81,26 @@ export default function ChecksPanel({ sessionId, onJumpToSession }) {
         wallSeconds={wallSeconds}
         onJumpToSession={onJumpToSession}
       />
-      <StepsList runId={run.id} sessionId={run.session_id} steps={steps} />
-      {/*
-        Pass the resolved run down so the sidecar reuses our latest-run
-        lookup instead of firing a second identical GET on every session-
-        view open (PR #1169 reviewer feedback NB1). The sidecar still
-        fetches `reviewer-threads` for the run id; only the latest-run
-        discovery is shared.
-      */}
+      <StepsList
+        runId={run.id}
+        sessionId={run.session_id}
+        projectId={projectId ?? run.project_id}
+        steps={steps}
+        run={run}
+        isTerminal={isTerminal}
+        phase={phase}
+        onOpenLog={setLogStep}
+      />
       <ReviewerThreadsPanel sessionId={sessionId} prefetchedRun={run} />
+      <FinalizeStepLogModal
+        open={Boolean(logStep)}
+        projectId={projectId ?? run.project_id}
+        runId={run.id}
+        stepIndex={logStep?.index}
+        stepName={logStep?.name}
+        stepState={logStep?.state}
+        onClose={() => setLogStep(null)}
+      />
     </section>
   );
 }
@@ -148,7 +168,7 @@ function RunHeader({
 
       {/*
         Active vs. wall — both visible and distinctly labelled. Active is
-        the clock that fires the 60-minute cap; wall is the human-elapsed
+        the clock that fires the 4-hour cap; wall is the human-elapsed
         time. Splitting them is the acceptance criterion that lets the
         user see a paused run sitting (wall ticking, active flat) without
         opening any drawer.
@@ -160,7 +180,7 @@ function RunHeader({
         <span
           className="inline-flex items-center gap-1"
           data-testid="finalize-run-active"
-          title="Active seconds consumed — counts only time the orchestrator is actively working. The 60-minute cap fires off this number, not wall-clock."
+          title="Active seconds consumed — counts only time the orchestrator is actively working. The 4-hour cap fires off this number, not wall-clock."
         >
           <Clock size={12} className="text-slate-500" />
           <span className="text-slate-500">active</span>
@@ -196,71 +216,67 @@ function RunHeader({
   );
 }
 
-function StepsList({ runId, sessionId, steps }) {
+function StepsList({ runId, sessionId, projectId, steps, run, isTerminal, phase, onOpenLog }) {
   if (steps.length === 0) {
+    const hint = describeEmptySteps(run, isTerminal, phase);
     return (
       <div className="px-4 pb-3 text-xs text-slate-500" data-testid="finalize-steps-empty">
-        No steps reported yet.
+        {hint}
       </div>
     );
   }
   return (
-    <ol
-      data-testid="finalize-steps-list"
-      className="border-t border-slate-700/60 divide-y divide-slate-700/60"
-    >
-      {steps.map((s) => (
-        <StepRow key={s.index} step={s} runId={runId} sessionId={sessionId} />
-      ))}
-    </ol>
+    <div className="border-t border-slate-700/60">
+      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wide text-slate-500">
+        Checks
+      </div>
+      <ol data-testid="finalize-steps-list" className="divide-y divide-slate-700/60">
+        {steps.map((s) => (
+          <StepRow
+            key={s.index}
+            step={s}
+            runId={runId}
+            sessionId={sessionId}
+            projectId={projectId}
+            onOpenLog={onOpenLog}
+          />
+        ))}
+      </ol>
+    </div>
   );
 }
 
-function StepRow({ step, runId, sessionId }) {
+function StepRow({ step, runId, sessionId, projectId, onOpenLog }) {
   const duration = computeStepDuration(step);
   const tone = stepToneFor(step.state);
   const Icon = stepIconFor(step.state);
-  const onJump = () => {
-    // The session message holding this step's output tail lives inside
-    // the chat log; surface a CustomEvent so SessionTail (or any other
-    // listener) can scroll to the matching `metadata.kind ===
-    // 'finalize_step_output'` row. The event is fire-and-forget — even
-    // when nothing's wired the click still produces a usable hash that
-    // the operator can copy.
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('finalize:jump-to-step-output', {
-          detail: {
-            run_id: runId,
-            session_id: sessionId,
-            step_index: step.index,
-            step_name: step.name,
-          },
-        }),
-      );
-      try {
-        // Best-effort native scroll for the (already-implemented) data
-        // attribute on step-output messages. Failing silently when the
-        // target isn't on screen yet is fine — the WS event will paint
-        // it shortly.
-        const target = document.querySelector(
-          `[data-finalize-step-output="${runId}-${step.index}"]`,
-        );
-        if (target?.scrollIntoView) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      } catch {
-        /* defensive */
-      }
-    }
+  const canOpenLog = Boolean(projectId && runId);
+  const openLog = () => {
+    if (!canOpenLog) return;
+    onOpenLog?.({ index: step.index, name: step.name, state: step.state });
   };
-  const deepLinkHash = `#finalize-step-${runId}-${step.index}`;
+  const isFailed = step.state === 'failed';
   return (
     <li
       data-testid="finalize-step-row"
       data-step-index={step.index}
       data-step-state={step.state}
-      className="flex items-center gap-2 px-4 py-1.5 text-xs hover:bg-slate-800/40"
+      className={`flex items-center gap-2 px-4 py-1.5 text-xs ${
+        canOpenLog ? 'cursor-pointer hover:bg-slate-800/40' : ''
+      } ${isFailed ? 'bg-red-950/20' : ''}`}
+      onClick={canOpenLog ? openLog : undefined}
+      onKeyDown={
+        canOpenLog
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openLog();
+              }
+            }
+          : undefined
+      }
+      role={canOpenLog ? 'button' : undefined}
+      tabIndex={canOpenLog ? 0 : undefined}
     >
       <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${tone}`}>
         <Icon size={12} className={step.state === 'running' ? 'animate-spin' : ''} />
@@ -282,27 +298,23 @@ function StepRow({ step, runId, sessionId }) {
             exit {step.exitCode}
           </span>
         ) : null}
-        <a
-          href={deepLinkHash}
-          onClick={(e) => {
-            e.preventDefault();
-            onJump();
-            // Update the URL hash so the user can copy the deep link.
-            try {
-              if (window.history?.replaceState) {
-                window.history.replaceState(null, '', deepLinkHash);
-              }
-            } catch {
-              /* ignore */
-            }
-          }}
-          className="text-slate-500 hover:text-slate-200 inline-flex items-center gap-1"
-          data-testid="finalize-step-jump"
-          title="Jump to this step's output in the session log"
-        >
-          view output
-          <ChevronRight size={10} />
-        </a>
+        {canOpenLog ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openLog();
+            }}
+            className={`inline-flex items-center gap-1 ${
+              isFailed ? 'text-red-300 hover:text-red-100' : 'text-slate-500 hover:text-slate-200'
+            }`}
+            data-testid="finalize-step-jump"
+            title="View step logs"
+          >
+            view logs
+            <ChevronRight size={10} />
+          </button>
+        ) : null}
       </span>
     </li>
   );
@@ -380,6 +392,17 @@ function describeTriggerSource(source) {
     default:
       return source ? String(source).replace(/_/g, ' ') : 'unknown';
   }
+}
+
+function describeEmptySteps(run, isTerminal, phase) {
+  if (!isTerminal) return 'No steps reported yet.';
+  if (run?.failure_reason === 'review_failed' && (phase === 'review' || run?.phase === 'review')) {
+    return 'Review failed before CI steps ran — the reviewer message may be missing a parseable verdict block. Check the reviewer turn in chat (expected <agenthub:review-verdict> or trailing {"verdict":...} JSON).';
+  }
+  if (run?.failure_reason) {
+    return `Run ended with ${run.failure_reason} before any CI steps completed.`;
+  }
+  return 'No steps reported yet.';
 }
 
 function headerToneFor(status, isPaused) {

@@ -12,6 +12,20 @@ version: 1.0.0
 
 Use this when code is implemented and ready to publish.
 
+## Finalize-first projects
+
+If the session is **card-linked** and the worktree contains `.agent-hub/ci.yaml`,
+do **not** run `gh pr create`. The `gh-pr.sh create` subcommand is blocked by the
+Finalize ship gate. Instead:
+
+1. Ensure changes are committed on the session branch.
+2. Ask the operator to click **Finalize Code Changes** on the session (or use the
+   Finalize API if you are automating with explicit approval).
+3. Finalize runs rebase → in-hub review → ci.yaml steps → fix loop → push.
+
+Only use the legacy flow below when there is **no** `.agent-hub/ci.yaml` in the
+worktree (project not on Finalize yet).
+
 ## Guardrails
 
 - Never commit to `main`.
@@ -19,7 +33,7 @@ Use this when code is implemented and ready to publish.
 - Use the existing session worktree branch; do not create a second branch unless asked.
 - If an open PR already exists for the branch, push commits to it; do not create a duplicate PR.
 
-## Required sequence
+## Required sequence (legacy — no ci.yaml)
 
 1. Sync and rebase:
 ```bash

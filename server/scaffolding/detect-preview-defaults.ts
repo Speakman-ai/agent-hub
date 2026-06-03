@@ -258,9 +258,9 @@ function detectFullstackDjangoReact(workspaceDir: string): DetectedPreviewDefaul
   const reqLocal = existsSync(path.join(backendDir, 'requirements-local.txt'));
   const reqDefault = existsSync(path.join(backendDir, 'requirements.txt'));
   const pipPrefix = reqLocal
-    ? 'pip install -r requirements-local.txt && '
+    ? 'python3 -m pip install -r requirements-local.txt && '
     : reqDefault
-      ? 'pip install -r requirements.txt && '
+      ? 'python3 -m pip install -r requirements.txt && '
       : '';
   const hasManage = existsSync(path.join(backendDir, 'manage.py'));
   const backendStart = hasManage

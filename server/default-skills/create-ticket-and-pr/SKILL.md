@@ -12,6 +12,19 @@ version: 1.0.0
 
 Use when the user wants ad-hoc session work published through a clean branch workflow with kanban tracking.
 
+## Finalize-first projects
+
+If the session is **card-linked** and the worktree contains `.agent-hub/ci.yaml`,
+do **not** run `gh pr create`. The `gh-pr.sh create` subcommand is blocked by the
+Finalize ship gate. Instead:
+
+1. Ensure changes are committed on the session branch.
+2. Ask the operator to click **Finalize Code Changes** on the session.
+3. Finalize runs rebase → in-hub review → ci.yaml steps → fix loop → push.
+
+Only use the legacy workflow below when there is **no** `.agent-hub/ci.yaml` in the
+worktree.
+
 ## Guardrails
 
 - Never commit to `main`.
@@ -20,7 +33,7 @@ Use when the user wants ad-hoc session work published through a clean branch wor
 - If an open PR already exists for the branch, push commits to it; do not create a duplicate PR.
 - If a kanban card is already linked to this session, reuse it — do not create a duplicate card.
 
-## Workflow
+## Workflow (legacy — no ci.yaml)
 
 1. Ensure the working tree is clean or explicitly handled (commit or stash as appropriate).
 2. **Kanban ticket** — If no card is linked to this session, create one via the `agent-hub` / `kanban` skill (In Progress column, link `session_id`, sensible title from session name or diff). If a card exists, note its id in the PR body.
@@ -59,5 +72,4 @@ git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
 
 - Kanban card id (new or reused)
 - Branch name
-- PR summary and test notes
 - PR URL

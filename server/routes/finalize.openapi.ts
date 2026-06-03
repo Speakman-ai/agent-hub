@@ -18,6 +18,7 @@ const FINALIZE_RUN_STATUSES = [
   'running',
   'dispatching',
   'pushing',
+  'ready_to_push',
   'pushed',
   'failed',
   'timed_out',
@@ -102,12 +103,29 @@ export const FinalizeRunComponent = registerComponent(
     .openapi({ description: 'A single finalize_runs row.' }),
 );
 
+export const FinalizeRunStepComponent = registerComponent(
+  'FinalizeRunStep',
+  z
+    .object({
+      index: z.number().int(),
+      name: z.string(),
+      state: z.enum(['queued', 'running', 'passed', 'failed', 'skipped']),
+      exitCode: z.number().int().nullable(),
+      startedAt: z.number().int().nullable(),
+      endedAt: z.number().int().nullable(),
+    })
+    .openapi({ description: 'One CI step row from a Finalize run.' }),
+);
+
 export const LatestFinalizeRunResponseSchema = registerComponent(
   'LatestFinalizeRunForSessionResponse',
   z
     .object({
       run: FinalizeRunComponent.nullable().openapi({
         description: '`null` when the session has never triggered a Finalize run.',
+      }),
+      steps: z.array(FinalizeRunStepComponent).openapi({
+        description: 'Persisted CI step states for the latest run; empty when no run.',
       }),
     })
     .openapi({ description: 'Latest Finalize run for a given session.' }),
@@ -281,11 +299,86 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/sessions/{sessionId}/finalize',
+  tags: ['Finalize'],
+  summary: 'Start Finalize for a session (auto-creates kanban card)',
+  description: [
+    'Same pipeline as the card-scoped finalize trigger, but accepts a session id',
+    'directly. When the session has no linked kanban card, one is created on the',
+    'project board (In Progress column, titled from the session name) before the',
+    'run starts.',
+  ].join('\n'),
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      sessionId: z.string(),
+    }),
+    body: { content: jsonContent(StartFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'Run created or terminal row reused. Includes `card_id` and `card_created`.',
+      content: jsonContent(
+        StartFinalizeRunResponse.extend({
+          card_id: z.string(),
+          card_created: z.boolean(),
+        }),
+      ),
+    },
+    202: {
+      description: 'Run started but row not yet visible.',
+      content: jsonContent(
+        StartFinalizeRunPending.extend({
+          card_id: z.string(),
+          card_created: z.boolean(),
+        }),
+      ),
+    },
+    400: errorResponse('Missing worktree, branch, or HEAD SHA.'),
+    404: errorResponse('Project or session not found, or caller does not own the session.'),
+    409: {
+      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      content: jsonContent(StartFinalizeRunInFlight),
+    },
+  },
+});
+
 // ─── POST /api/projects/:projectId/finalize/:runId/cancel ──────────────
 
 const CancelFinalizeRunRequest = registerComponent(
   'CancelFinalizeRunRequest',
   z.object({}).openapi({ description: 'Body is empty.' }),
+);
+
+const PushFinalizeRunRequest = registerComponent(
+  'PushFinalizeRunRequest',
+  z
+    .object({
+      force: z.boolean().optional().openapi({
+        description: 'Operator override — push even when gates have not passed.',
+      }),
+    })
+    .openapi({ description: 'Optional push overrides.' }),
+);
+
+const FinalizeStepOutputLine = registerComponent(
+  'FinalizeStepOutputLine',
+  z.object({
+    stream: z.enum(['stdout', 'stderr']),
+    text: z.string(),
+    created_at: z.string(),
+  }),
+);
+
+const FinalizeStepOutputResponse = registerComponent(
+  'FinalizeStepOutputResponse',
+  z.object({
+    run_id: z.string(),
+    step_index: z.number().int(),
+    lines: z.array(FinalizeStepOutputLine),
+  }),
 );
 
 const CancelFinalizeRunResponse = registerComponent(
@@ -445,6 +538,166 @@ registerPath({
     },
     400: errorResponse('Range or metrics filter could not be parsed.'),
     404: errorResponse('Project not found.'),
+  },
+});
+
+const FinalizeShipGateResponseSchema = registerComponent(
+  'FinalizeShipGateResponse',
+  z
+    .object({
+      allowed: z.boolean(),
+      code: z.string(),
+      message: z.string(),
+      run_id: z.string().nullable().optional(),
+      failure_reason: z.string().nullable().optional(),
+    })
+    .openapi({
+      description:
+        'Whether `gh pr create` is permitted for this session. Projects with `.agent-hub/ci.yaml` must ship via Finalize.',
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/finalize-ship-gate',
+  tags: ['Finalize'],
+  summary: 'Check whether direct PR creation is allowed',
+  description:
+    'Returns whether spawned agents may run `gh pr create` for this session. Blocked when Finalize is configured and the run has not completed successfully.',
+  request: {
+    params: z.object({ sessionId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Ship-gate decision.',
+      content: jsonContent(FinalizeShipGateResponseSchema),
+    },
+    404: errorResponse('Session not found or not readable.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/sessions/{sessionId}/finalize',
+  tags: ['Finalize'],
+  summary: 'Start Finalize for a session (auto-creates kanban card)',
+  description: [
+    'Same pipeline as the card-scoped finalize trigger, but accepts a session id',
+    'directly. When the session has no linked kanban card, one is created on the',
+    'project board (In Progress column, titled from the session name) before the',
+    'run starts.',
+  ].join('\n'),
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      sessionId: z.string(),
+    }),
+    body: { content: jsonContent(StartFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'Run created or terminal row reused. Includes `card_id` and `card_created`.',
+      content: jsonContent(
+        StartFinalizeRunResponse.extend({
+          card_id: z.string(),
+          card_created: z.boolean(),
+        }),
+      ),
+    },
+    202: {
+      description: 'Run started but row not yet visible.',
+      content: jsonContent(
+        StartFinalizeRunPending.extend({
+          card_id: z.string(),
+          card_created: z.boolean(),
+        }),
+      ),
+    },
+    400: errorResponse('Missing worktree, branch, or HEAD SHA.'),
+    404: errorResponse('Project or session not found, or caller does not own the session.'),
+    409: {
+      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      content: jsonContent(StartFinalizeRunInFlight),
+    },
+  },
+});
+
+const PushFinalizeRunResponse = registerComponent(
+  'PushFinalizeRunResponse',
+  z
+    .object({
+      ok: z.literal(true),
+      pr_url: z.string(),
+      status: z.literal('pushed'),
+    })
+    .openapi({ description: 'Push + PR creation succeeded.' }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/finalize/{runId}/push',
+  tags: ['Finalize'],
+  summary: 'Push to GitHub after checks pass',
+  description:
+    'Runs git push + gh pr create for a `ready_to_push` finalize run. Requires an explicit operator click — Finalize itself does not push.',
+  request: {
+    params: z.object({ projectId: z.string(), runId: z.string() }),
+    body: { content: jsonContent(PushFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'PR opened.',
+      content: jsonContent(PushFinalizeRunResponse),
+    },
+    404: errorResponse('Project, run, or session not found.'),
+    409: errorResponse(
+      'Run is not ready_to_push (unless force=true), or HEAD moved since checks passed.',
+    ),
+    502: errorResponse('GitHub push or PR creation failed.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/finalize/{runId}/steps/{stepIndex}/output',
+  tags: ['Finalize'],
+  summary: 'CI step output log',
+  description: 'Returns streamed stdout/stderr lines captured for one finalize CI step.',
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      runId: z.string(),
+      stepIndex: z.coerce.number().int().min(1),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Step log lines.',
+      content: jsonContent(FinalizeStepOutputResponse),
+    },
+    404: errorResponse('Project or run not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/sessions/{sessionId}/push-to-github',
+  tags: ['Finalize'],
+  summary: 'Push session work to GitHub',
+  description:
+    'Operator-initiated push for a session worktree. Uses the latest finalize run when ready; `force: true` bypasses gate checks.',
+  request: {
+    params: z.object({ projectId: z.string(), sessionId: z.string() }),
+    body: { content: jsonContent(PushFinalizeRunRequest) },
+  },
+  responses: {
+    200: {
+      description: 'PR opened.',
+      content: jsonContent(PushFinalizeRunResponse),
+    },
+    404: errorResponse('Project or session not found.'),
+    409: errorResponse('Finalize checks have not passed (confirm with force=true).'),
+    502: errorResponse('GitHub push or PR creation failed.'),
   },
 });
 

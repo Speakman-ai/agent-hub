@@ -129,7 +129,7 @@ describe('resolveBudgetSeconds', () => {
   });
 
   it('clamps any value ABOVE the hard ceiling — ci.yaml may lower, never raise', () => {
-    expect(resolveBudgetSeconds({ ciTimeoutMinutes: 61 })).toBe(
+    expect(resolveBudgetSeconds({ ciTimeoutMinutes: 241 })).toBe(
       FINALIZE_BUDGET_HARD_CEILING_SECONDS,
     );
     expect(resolveBudgetSeconds({ ciTimeoutMinutes: 9999 })).toBe(
@@ -152,8 +152,8 @@ describe('resolveBudgetSeconds', () => {
     expect(resolveBudgetSeconds({ ciTimeoutMinutes: 10.7 })).toBe(600);
   });
 
-  it('hard ceiling is exactly 60 minutes', () => {
-    expect(FINALIZE_BUDGET_HARD_CEILING_SECONDS).toBe(3600);
+  it('hard ceiling is exactly 4 hours', () => {
+    expect(FINALIZE_BUDGET_HARD_CEILING_SECONDS).toBe(14_400);
   });
 });
 

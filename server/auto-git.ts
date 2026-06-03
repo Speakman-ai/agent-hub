@@ -21,6 +21,7 @@ import {
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
+import { resolveDefaultBranch } from './git-default-branch.js';
 import {
   applyGithubSpawnCredentials,
   resolveOAuthAppCredentials,
@@ -29,12 +30,13 @@ import {
 import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
-import { rebaseOntoBase } from './pre-push-rebase.js';
+import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 import {
   shouldAutoShipSessionAtEnd,
   clearSessionAutoShipOnComplete,
   clearChangesReadyAndNotifyPrCreated,
 } from './session-ship.js';
+import { rebaseOntoBase } from './pre-push-rebase.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1318,38 +1320,6 @@ export interface WorktreeChanges {
   branch: string;
 }
 
-/**
- * Detect the repo's default branch (e.g. `main` or `master`). Mirrors the
- * logic in `worktree.ts` so `checkWorktreeChanges` doesn't silently assume
- * `main` and miss "has commits ahead of default branch" for master repos
- * (or any fresh local branch whose upstream is not yet set).
- *
- * Order:
- *   1. `origin/HEAD` symbolic ref (most reliable; tracks remote's default).
- *   2. Local `main` if it exists.
- *   3. Local `master` if it exists.
- *   4. `null` — caller should treat this as "unknown" rather than silently
- *      assuming `hasUnpushed = false`.
- */
-async function resolveDefaultBranch(cwd: string): Promise<string | null> {
-  try {
-    const { stdout } = await execAsync('git symbolic-ref refs/remotes/origin/HEAD', { cwd });
-    const ref = stdout.trim().replace('refs/remotes/origin/', '');
-    if (ref) return ref;
-  } catch {
-    // origin/HEAD not set — try local branches
-  }
-  for (const candidate of ['main', 'master']) {
-    try {
-      await execAsync(`git rev-parse --verify ${candidate}`, { cwd });
-      return candidate;
-    } catch {
-      // branch doesn't exist locally
-    }
-  }
-  return null;
-}
-
 export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges> {
   const { stdout: status } = await execAsync('git status --porcelain', { cwd });
   const hasUncommitted = !!status.trim();
@@ -2399,11 +2369,13 @@ export async function autoCommitAndPR(
     // not raw `epic_id`.
     const sessionRow = d.stmts.getSession?.get?.(sessionId) as SessionRow | undefined;
     const autoShipAtEnd = shouldAutoShipSessionAtEnd(sessionRow, card);
+    const finalizeBlocksShip = worktreeHasFinalizeCi(effectiveCwd);
 
-    // User-initiated sessions (and cards linked mid-stream without assign/dispatch):
-    // never commit/push at session end — surface `changes_ready` so the operator
-    // clicks Create ticket & PR (loads the skill via POST /sessions/:id/ship).
-    if (!autoShipAtEnd) {
+    // User-initiated sessions (and cards linked mid-stream without assign/dispatch),
+    // plus any session whose worktree has Finalize configured: never commit/push at
+    // session end — surface `changes_ready` so the operator uses Finalize or Create
+    // ticket & PR (legacy projects only).
+    if (!autoShipAtEnd || finalizeBlocksShip) {
       if (await sessionHasNoPublishableWork(sessionId, effectiveCwd, d.stmts)) {
         console.log(
           `[auto-commit] Session ${sessionId} — no code change in session (clean worktree), skipping ad-hoc PR path`,
@@ -2455,6 +2427,15 @@ export async function autoCommitAndPR(
         sessionName,
         ...changesReadyData,
       });
+      if (finalizeBlocksShip) {
+        // Lazy import: keep `auto-git.js` free of the finalize orchestrator +
+        // db.ts/project-model.ts module-load side effects (those auto-init at
+        // import). A static import here dragged that whole graph into every
+        // module that imports auto-git, crashing tests that mock config/db.
+        void import('./finalize/automation-runner.js').then((m) =>
+          m.maybeAutoStartFinalizeForSession(sessionId),
+        );
+      }
       return;
     }
 

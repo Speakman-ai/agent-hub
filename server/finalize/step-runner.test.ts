@@ -27,21 +27,61 @@ import {
 // ─── Fakes ──────────────────────────────────────────────────────────
 
 interface FakeStmts {
+  getFinalizeRun: { get: ReturnType<typeof vi.fn> };
   updateFinalizeRunPhase: { run: ReturnType<typeof vi.fn> };
   updateFinalizeRunActiveSeconds: { run: ReturnType<typeof vi.fn> };
   failFinalizeRun: { run: ReturnType<typeof vi.fn> };
   addMessage: { run: ReturnType<typeof vi.fn> };
   touchSession: { run: ReturnType<typeof vi.fn> };
   getMessageById: { get: ReturnType<typeof vi.fn> };
+  upsertFinalizeRunStep: { run: ReturnType<typeof vi.fn> };
+  listFinalizeRunStepsForRun: { all: ReturnType<typeof vi.fn> };
 }
 
 function makeStmts(): FakeStmts {
+  const steps: Array<{
+    step_index: number;
+    name: string;
+    state: string;
+    exit_code: number | null;
+    started_at: number | null;
+    ended_at: number | null;
+  }> = [];
   return {
+    getFinalizeRun: { get: vi.fn().mockReturnValue({ loop_round: 1 }) },
     updateFinalizeRunPhase: { run: vi.fn() },
     updateFinalizeRunActiveSeconds: { run: vi.fn() },
     failFinalizeRun: { run: vi.fn() },
     addMessage: { run: vi.fn() },
     touchSession: { run: vi.fn() },
+    upsertFinalizeRunStep: {
+      run: vi.fn(
+        (
+          _runId: string,
+          stepIndex: number,
+          name: string,
+          state: string,
+          exitCode: number | null,
+          startedAt: number | null,
+          endedAt: number | null,
+        ) => {
+          const existing = steps.find((s) => s.step_index === stepIndex);
+          const row = {
+            step_index: stepIndex,
+            name,
+            state,
+            exit_code: exitCode,
+            started_at: startedAt,
+            ended_at: endedAt,
+          };
+          if (existing) Object.assign(existing, row);
+          else steps.push(row);
+        },
+      ),
+    },
+    listFinalizeRunStepsForRun: {
+      all: vi.fn(() => [...steps].sort((a, b) => a.step_index - b.step_index)),
+    },
     getMessageById: {
       get: vi.fn().mockImplementation((id: string) => ({
         id,
@@ -175,8 +215,8 @@ describe('runStepPhase — happy path', () => {
       }),
     );
 
-    // 6 output lines total → 6 addMessage rows.
-    expect(stmts.addMessage.run).toHaveBeenCalledTimes(6);
+    // 6 output lines + 1 checks-round summary message.
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(7);
     const firstCall = stmts.addMessage.run.mock.calls[0];
     expect(firstCall[2]).toBe('system'); // role
     expect(firstCall[3]).toBe('[stdout] hello'); // content
@@ -190,6 +230,17 @@ describe('runStepPhase — happy path', () => {
       stream: 'stdout',
     });
 
+    const checksRoundCall = stmts.addMessage.run.mock.calls.find((call) => {
+      const m = JSON.parse(call[7] as string);
+      return m.kind === 'finalize_checks_round';
+    });
+    expect(checksRoundCall).toBeTruthy();
+    expect(JSON.parse(checksRoundCall![7] as string)).toMatchObject({
+      kind: 'finalize_checks_round',
+      runId: RUN_ID,
+      round: 1,
+    });
+
     // Warn line from step 2 is recorded as stderr.
     const warnCall = stmts.addMessage.run.mock.calls.find(
       (c: unknown[]) => c[3] === '[stderr] warn',
@@ -201,7 +252,7 @@ describe('runStepPhase — happy path', () => {
     const messageBroadcasts = broadcast.mock.calls.filter(
       (c: unknown[]) => (c[0] as { type?: string }).type === 'message',
     );
-    expect(messageBroadcasts).toHaveLength(6);
+    expect(messageBroadcasts).toHaveLength(7);
 
     // step_state events: 2 starts + 2 passes = 4
     const stepStates = broadcast.mock.calls.filter(
@@ -667,7 +718,7 @@ describe('runStepPhase — guard rails', () => {
     const result = await resultP;
     expect(result.status).toBe('success');
     // Two lines attempted; first threw, second succeeded.
-    expect(stmts.addMessage.run).toHaveBeenCalledTimes(2);
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(3);
   });
 });
 

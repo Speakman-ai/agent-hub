@@ -129,9 +129,22 @@ locals {
       "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal",
       "AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=600000",
     ],
+    # Remote Finalize fleet wiring (backend=remote, worktree bucket, autoscaler
+    # cluster/service + bounds, fleet token) — empty unless enable_finalize_runners.
+    local.finalize_hub_fleet_env,
   ))
 
   agent_hub_image_uri_trim = trimspace(var.agent_hub_image_uri)
+  # Same tag as the server image; CI pushes both repos on every main merge.
+  agent_hub_finalize_runner_image_uri = (
+    length(local.agent_hub_image_uri_trim) > 0
+    ? replace(
+      local.agent_hub_image_uri_trim,
+      "/${var.ecr_public_repo_name}:",
+      "/${var.ecr_public_finalize_runner_repo_name}:",
+    )
+    : ""
+  )
   use_ecr_pull             = var.bootstrap_agent_hub && length(local.agent_hub_image_uri_trim) > 0
   # When ECR pull is active it takes precedence over docker-build-from-clone.
   use_docker_bootstrap = var.bootstrap_agent_hub && var.agent_hub_bootstrap_docker && !local.use_ecr_pull
@@ -164,8 +177,13 @@ locals {
       env_b64                = local.agent_hub_bootstrap_env_b64
       docker_env_b64         = local.docker_bootstrap_env_b64
       image_uri              = local.agent_hub_image_uri_trim
+      finalize_runner_image_uri = local.agent_hub_finalize_runner_image_uri
       ssm_deb_url            = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
       libprofiler_stub_c_b64 = local.libprofiler_stub_c_b64
+      # Finalize fleet base-image pull-through cache (registry:2 proxy on this Hub).
+      enable_finalize_registry_mirror = var.enable_finalize_registry_mirror
+      finalize_dockerhub_secret_arn   = var.finalize_dockerhub_secret_arn
+      aws_region                      = var.aws_region
     }
   )
 }

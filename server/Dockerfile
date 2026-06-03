@@ -177,7 +177,13 @@ COPY --chown=node:node --from=build /app/package.json ./
 COPY --chown=node:node --from=client-build /app/client/dist ./client/dist
 
 # Writable mount points only (not all of /app).
-RUN mkdir -p /data /app/uploads && chown node:node /data /app/uploads
+# Pre-create /home/node/.agent-hub (and its projects/workspaces children) owned by
+# node. Without this, docker auto-creates the parent as ROOT when the run script
+# bind-mounts .agent-hub/workspaces, so the node user (uid 1000) then can't mkdir
+# .agent-hub/projects/<id> at project-onboarding time (EACCES at projects.ts).
+RUN mkdir -p /data /app/uploads /home/node/.agent-hub/projects /home/node/.agent-hub/workspaces \
+    && chown node:node /data /app/uploads \
+    && chown -R node:node /home/node/.agent-hub
 
 # Cursor Agent CLI — official installer drops the `agent` symlink at
 # ~/.local/bin/agent; config.ts defaults cursorBin there for HOME=/home/node so

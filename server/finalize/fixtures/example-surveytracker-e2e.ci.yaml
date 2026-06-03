@@ -1,0 +1,67 @@
+# v2 Finalize pipeline for survey-tracker E2E (GHA parity, DinD).
+#
+# Mirrors `.github/workflows/e2e.yml`: 4 parallel matrix shards on
+# ubuntu-24.04 with inner dockerd + docker-compose.ci.agenthub.yml + Cypress.
+# Requires project secrets (AWS_*) configured in Settings → Finalize.
+#
+# Copy to `<repo-root>/.agent-hub/ci.yaml` for full E2E dogfood.
+#
+# `prepare` runs once BEFORE the e2e shards (they declare `needs: [prepare]`),
+# building the app images + seeding the DB snapshot + installing frontend deps
+# into the shared /finalize-cache (FINALIZE_WARMUP=1 makes run_e2e_ci.sh stop
+# after caching, before tests). The 4 e2e shards then load every cache instead
+# of all building/seeding concurrently — so the heavy prepare runs as a single
+# stack and you can raise FINALIZE_MAX_PARALLEL_JOBS for the lighter test phase.
+#
+# `needs:` scopes the wait to e2e only: any sibling jobs you add (backend,
+# frontend, …) that don't list `needs: [prepare]` run immediately, in parallel
+# with prepare. (A `warmup: true` job is the broader hammer — it gates EVERY
+# non-warmup job — use it only when every job should wait.)
+
+version: 2
+on:
+  - finalize
+  - manual
+
+timeout_minutes: 240
+
+env:
+  GIT_BRANCH: ${FINALIZE_BRANCH}
+  GIT_COMMIT_SHA: ${FINALIZE_HEAD_SHA}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Warm caches (build + seed + deps)
+        env:
+          FINALIZE_WARMUP: "1"
+          AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+          AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+          AWS_REGION: ${AWS_REGION}
+          AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+          AWS_S3_LOCATION: ${AWS_S3_LOCATION}
+        run: ./run_e2e_ci.sh
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: [prepare]
+    fail-fast: false
+    matrix:
+      include:
+        - group: "Profiles & Tasks"
+          specs: "cypress/e2e/profiles/**/*.cy.ts,cypress/e2e/settings/**/*.cy.ts,cypress/e2e/tasks/**/*.cy.ts,cypress/e2e/workflows/signup.cy.ts,cypress/e2e/workflows/quoting.cy.ts"
+        - group: "Core Workflows"
+          specs: "cypress/e2e/workflows/accounting.cy.ts,cypress/e2e/workflows/clients.cy.ts"
+        - group: "MLS & Routing"
+          specs: "cypress/e2e/workflows/mls.cy.ts,cypress/e2e/workflows/mls-commercial.cy.ts,cypress/e2e/workflows/routing.cy.ts"
+        - group: "Inspection"
+          specs: "cypress/e2e/workflows/inspection.cy.ts"
+    steps:
+      - name: E2E (${FINALIZE_MATRIX_GROUP})
+        env:
+          AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+          AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+          AWS_REGION: ${AWS_REGION}
+          AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+          AWS_S3_LOCATION: ${AWS_S3_LOCATION}
+        run: ./run_e2e_ci.sh

@@ -38,6 +38,15 @@ interface SeedRunOpts {
   startedAt?: number;
 }
 
+function seedSession(sessionId: string, projectId: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO sessions (id, agent_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+    )
+    .run(sessionId, `agent-${uuidv4().slice(0, 8)}`, 'Test session');
+}
+
 function seedFinalizeRun(opts: SeedRunOpts): string {
   const id = `run-${uuidv4().slice(0, 8)}`;
   const startedAt = opts.startedAt ?? Date.now();
@@ -209,7 +218,29 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     const res = await request
       .get('/api/sessions/sess-with-no-runs/finalize-runs/latest')
       .expect(200);
-    expect(res.body).toEqual({ run: null });
+    expect(res.body).toEqual({ run: null, steps: [] });
+  });
+
+  it('returns persisted steps with the latest run', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const runId = seedFinalizeRun({ projectId, sessionId, status: 'running', startedAt: 2_000 });
+    getStmts().upsertFinalizeRunStep.run(
+      runId,
+      1,
+      'backend-tests',
+      'failed',
+      127,
+      1000,
+      2000,
+      null,
+      null,
+    );
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.steps).toHaveLength(1);
+    expect(res.body.steps[0].name).toBe('backend-tests');
+    expect(res.body.steps[0].state).toBe('failed');
   });
 
   it('returns the most-recent run by started_at when several exist', async () => {
@@ -232,7 +263,42 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     const res = await request
       .get('/api/sessions/zzz-totally-fake-session-id/finalize-runs/latest')
       .expect(200);
-    expect(res.body).toEqual({ run: null });
+    expect(res.body).toEqual({ run: null, steps: [] });
+  });
+});
+
+describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output', () => {
+  it('returns log lines for a step', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedSession(sessionId, projectId);
+    const runId = seedFinalizeRun({ projectId, sessionId });
+    const stmts = getStmts();
+    const msgId = `msg-${uuidv4().slice(0, 8)}`;
+    stmts.addMessage.run(
+      msgId,
+      sessionId,
+      'system',
+      '[stderr] command not found',
+      null,
+      null,
+      null,
+      JSON.stringify({
+        kind: 'finalize_step_output',
+        runId,
+        stepIndex: 1,
+        stream: 'stderr',
+      }),
+      null,
+      null,
+      null,
+    );
+
+    const res = await request
+      .get(`/api/projects/${projectId}/finalize/${runId}/steps/1/output`)
+      .expect(200);
+    expect(res.body.lines).toHaveLength(1);
+    expect(res.body.lines[0].text).toBe('command not found');
   });
 });
 

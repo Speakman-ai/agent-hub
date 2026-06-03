@@ -228,21 +228,23 @@ export function AppProvider({ children }) {
       }
       case 'message':
         if (msgForActiveSession && data.message?.id) {
-          if (data.message.role === 'user') {
+          const msg = data.message;
+          const appendable =
+            msg.role === 'user' ||
+            msg.role === 'system' ||
+            (msg.role === 'assistant' && msg.agent_id);
+          if (appendable) {
             setMessages((prev) => {
-              if (prev.some((m) => m.id === data.message.id)) return prev;
-              return [...prev, data.message];
+              if (prev.some((m) => m.id === msg.id)) return prev;
+              return [...prev, msg];
             });
-          } else if (data.message.role === 'assistant' && data.message.agent_id) {
-            setMessages((prev) => {
-              if (prev.some((m) => m.id === data.message.id)) return prev;
-              return [...prev, data.message];
-            });
-            setThinking(false);
-            setStreamingContent('');
-            setStreamingMsgId(null);
-            setStreamingEngine(null);
-            setStreamingAgent(null);
+            if (msg.role === 'assistant' && msg.agent_id) {
+              setThinking(false);
+              setStreamingContent('');
+              setStreamingMsgId(null);
+              setStreamingEngine(null);
+              setStreamingAgent(null);
+            }
           }
         }
         break;
@@ -1565,6 +1567,13 @@ export function AppProvider({ children }) {
     return api.startFinalizeRun(projectId, cardId);
   }, []);
 
+  const startFinalizeRunForSession = useCallback(async (projectId, sessionId) => {
+    if (!projectId || !sessionId) {
+      throw new Error('Project id and session id are required');
+    }
+    return api.startFinalizeRunForSession(projectId, sessionId);
+  }, []);
+
   // UI-only cancel: flips the DB row to `cancelled` and broadcasts. The
   // orchestrator's CancelSignal is in-process only, so a long-running run
   // may still emit subsequent events for a moment after this resolves.
@@ -1642,6 +1651,7 @@ export function AppProvider({ children }) {
     triggerCreateTicketAndPr,
     // Finalize Code Changes (card 2bce78c2)
     startFinalizeRun,
+    startFinalizeRunForSession,
     cancelFinalizeRun,
     // Ask-prompt (`agenthub:ask`) submission state and handler
     askSubmitted,

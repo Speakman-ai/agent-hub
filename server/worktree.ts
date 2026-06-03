@@ -614,6 +614,16 @@ const installChildEnv: NodeJS.ProcessEnv = {
   PIP_BREAK_SYSTEM_PACKAGES: '1',
 };
 
+/**
+ * macOS and minimal Linux images often ship `python3` but not a `pip` shim.
+ * Project install commands conventionally use `pip install …`; rewrite to
+ * `python3 -m pip install …` so the same strings work in dev and in Docker
+ * (where we symlink `pip → pip3`).
+ */
+export function normalizeInstallCommandForHost(cmd: string): string {
+  return cmd.replace(/\bpip(\s+install\b)/g, 'python3 -m pip$1');
+}
+
 interface NodeModulesEntry {
   relative: string;
   absolute: string;
@@ -745,14 +755,11 @@ async function setupDependencies(
     }
   }
 
-  const installCmd = resolveInstallCommand(
-    cloneDir,
-    installCommand,
-    options.preferInstallAllScript,
-  );
-  if (!installCmd) {
+  const resolved = resolveInstallCommand(cloneDir, installCommand, options.preferInstallAllScript);
+  if (!resolved) {
     return;
   }
+  const installCmd = normalizeInstallCommandForHost(resolved);
 
   const timeoutMs = options.awaitInstall
     ? SESSION_INSTALL_TIMEOUT_MS
@@ -1296,7 +1303,10 @@ async function detectAndHandleBaseBranchDrift(
   // prior state — never leave the tree in a half-rebased "rebase in progress"
   // limbo where the agent's next git command will produce confusing errors.
   try {
-    await runGit(['rebase', `origin/${baseBranch}`], {
+    // `--empty=drop`: drop commits that become empty against the advanced base
+    // instead of pausing the rebase ("no conflicted files (possibly an empty
+    // commit)"), which would leave the worktree wedged mid-rebase.
+    await runGit(['rebase', '--empty=drop', `origin/${baseBranch}`], {
       cwd: cloneDir,
       // Rebase can take several seconds on a large stack; give it the
       // fetch budget rather than the 5s short-op budget.
@@ -1880,6 +1890,7 @@ export const __test = {
   cleanupPartialClone,
   defaultResolveInstallationToken,
   detectAndHandleBaseBranchDrift,
+  normalizeInstallCommandForHost,
   detectInstallCommand,
   resolveSessionInstallCommand,
   needsDependencyInstall,

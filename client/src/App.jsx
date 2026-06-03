@@ -14,7 +14,6 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
-import ChecksPanel from './components/finalize/ChecksPanel.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
@@ -24,6 +23,8 @@ import {
   shouldShowSessionPreviewPane,
 } from './utils/sessionPreviewState.js';
 import FinalizeButton from './components/finalize/FinalizeButton.jsx';
+import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect.jsx';
+import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock.jsx';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
 import {
   inferPrUrlFromSessionTitle,
@@ -112,6 +113,7 @@ import {
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail.js';
 import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
 import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor.js';
+import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -770,22 +772,27 @@ export default function App() {
         }
         case 'message':
           if (msgForActiveSession && data.message?.id) {
-            if (data.message.role === 'user') {
+            const msg = data.message;
+            const appendable =
+              msg.role === 'user' ||
+              msg.role === 'system' ||
+              (msg.role === 'assistant' && msg.agent_id);
+            if (appendable) {
               setMessages((prev) => {
-                if (prev.some((m) => m.id === data.message.id)) return prev;
-                return [...prev, data.message];
+                if (prev.some((m) => m.id === msg.id)) return prev;
+                return [...prev, msg];
               });
-            } else if (data.message.role === 'assistant' && data.message.agent_id) {
-              // Advisor turn — executor messages arrive on `done` instead.
-              setMessages((prev) => {
-                if (prev.some((m) => m.id === data.message.id)) return prev;
-                return [...prev, data.message];
-              });
-              setThinking(false);
-              setStreamingContent('');
-              setStreamingMsgId(null);
-              setStreamingEngine(null);
-              setStreamingAgent(null);
+              if (msg.role === 'assistant' && msg.agent_id) {
+                // Advisor turn — executor messages arrive on `done` instead.
+                setThinking(false);
+                setStreamingContent('');
+                setStreamingMsgId(null);
+                setStreamingEngine(null);
+                setStreamingAgent(null);
+              }
+              if (msg.role === 'system') {
+                notifyFinalizeRunFromTimelineMessage(msg);
+              }
             }
           }
           break;
@@ -3726,20 +3733,6 @@ export default function App() {
                 />
               )}
 
-              {currentView === 'chat' && activeSessionId && (
-                <ChecksPanel
-                  sessionId={activeSessionId}
-                  onJumpToSession={(targetSessionId) => {
-                    if (!targetSessionId) return;
-                    // Cross-link to the originating session from a fix-
-                    // dispatch run. No-op when it's the active session.
-                    if (targetSessionId === activeSessionId) return;
-                    pendingSessionIdRef.current = targetSessionId;
-                    setActiveSessionId(targetSessionId);
-                  }}
-                />
-              )}
-
               {currentView.startsWith('kanban:') ? (
                 <KanbanBoard
                   projectId={currentView.split(':')[1]}
@@ -4060,9 +4053,16 @@ export default function App() {
                                       key={msg.id}
                                       message={msg}
                                       agentColor={chatAccentColor}
+                                      projectId={activeChatProject?.id}
                                     />
                                   ),
                                 )}
+                                {activeSessionId && activeChatProject?.id ? (
+                                  <FinalizeChecksLiveBlock
+                                    sessionId={activeSessionId}
+                                    projectId={activeChatProject.id}
+                                  />
+                                ) : null}
                                 {sessionRoundProcessing && (
                                   <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
                                     <div className="text-xs text-amber-400/90 bg-amber-950/20 border border-amber-800/40 rounded-lg px-3 py-2">
@@ -4185,6 +4185,7 @@ export default function App() {
                                     key={msg.id}
                                     message={{ ...msg, queued: true }}
                                     agentColor={chatAccentColor}
+                                    projectId={activeChatProject?.id}
                                     onDequeue={handleDequeue}
                                     onEditQueued={handleEditQueuedMessage}
                                     onEditInComposer={handleEditInComposer}
@@ -4269,27 +4270,23 @@ export default function App() {
                             onConfigure={handlePreviewConfigure}
                           />
                           {/* Finalize Code Changes — replaces the legacy ship affordance. */}
-                          {activeSession?.card_id && activeChatProject?.id ? (
-                            <FinalizeButton
-                              projectId={activeChatProject.id}
-                              cardId={activeSession.card_id}
-                              sessionId={activeSessionId}
-                              branchLabel={activeSession?.worktree_branch || ''}
-                              onError={(msg) => showToast(msg, 'error', 8000)}
-                            />
-                          ) : activeSessionId && activeChatProject?.id ? (
-                            // Card-less session — surface the new requirement
-                            // explicitly. Before this PR, ad-hoc sessions had
-                            // the "Create ticket & PR" shortcut; that shortcut
-                            // is gone, so we point users at the board instead
-                            // of silently dropping the affordance.
-                            <span
-                              className="inline-flex items-center gap-1 text-[11px] italic text-gray-500"
-                              title="Finalize Code Changes targets a specific kanban card. Link this session to a card on the board to enable the affordance."
-                              data-testid="finalize-no-card-hint"
-                            >
-                              Link a card to use Finalize Code Changes
-                            </span>
+                          {activeSessionId && activeChatProject?.id ? (
+                            <>
+                              <FinalizeAutomationSelect
+                                sessionId={activeSessionId}
+                                session={activeSession}
+                                disabled={!connected}
+                                onError={(msg) => showToast(msg, 'error', 8000)}
+                              />
+                              <FinalizeButton
+                                projectId={activeChatProject.id}
+                                cardId={activeSession?.card_id ?? null}
+                                sessionId={activeSessionId}
+                                branchLabel={activeSession?.worktree_branch || ''}
+                                pendingChanges={changesReady[activeSessionId] ?? null}
+                                onError={(msg) => showToast(msg, 'error', 8000)}
+                              />
+                            </>
                           ) : null}
                         </div>
                       )}

@@ -27,6 +27,8 @@
  *   - `onPushed` — terminal success.
  *   - `onStalled` — terminal stalled-no-response (the "human walked away"
  *     branch, see card `490d6c41`).
+ *   - `onTerminalFailed` — any other terminal failure (review_failed,
+ *     step_failed, ci_config_invalid, timed_out, infra_error, …).
  *
  * **Comment author and shape.** Comments are posted with `author='finalize'`
  * (configurable via `opts.author`) so the comment timeline can group them
@@ -85,6 +87,10 @@ export interface CardLifecycle {
   /** A step failed and a fix-dispatch is about to be issued for it. */
   onStepFailed(args: { runId: string; stepName: string; exitCode: number }): void;
   /**
+   * Review + checks passed; run is parked until the operator clicks Push.
+   */
+  onReadyToPush(args: { runId: string }): void;
+  /**
    * Terminal push success. Delegates to the §15 post-push detach module
    * (`./post-push-detach.ts`): posts the handoff comment, then moves the
    * card to Review. `triggerSource` is forwarded so the comment can name
@@ -99,6 +105,17 @@ export interface CardLifecycle {
    * comment names the two human actions: cancel the run or re-trigger.
    */
   onStalled(args: { runId: string }): void;
+  /**
+   * Terminal failure other than push success or stall. Surfaces the
+   * `failure_reason` on the card timeline so a failed Finalize click is
+   * visible without opening the checks panel.
+   */
+  onTerminalFailed(args: {
+    runId: string;
+    status: string;
+    failureReason: string;
+    detail?: string;
+  }): void;
 }
 
 /**
@@ -112,9 +129,11 @@ export const NOOP_CARD_LIFECYCLE: CardLifecycle = {
   onRebaseAborted: () => undefined,
   onReviewerVerdict: () => undefined,
   onStepFailed: () => undefined,
+  onReadyToPush: () => undefined,
   onPushed: (_args: { runId: string; prUrl: string; triggerSource: PostPushTriggerSource }) =>
     undefined,
   onStalled: () => undefined,
+  onTerminalFailed: () => undefined,
 };
 
 export interface CardLifecycleDeps {
@@ -268,6 +287,15 @@ export function createCardLifecycle(
     },
     onStalled({ runId }) {
       postComment(`Stalled — no session response in 24hr; cancel or retrigger (run ${runId})`);
+    },
+    onReadyToPush({ runId }) {
+      postComment(
+        `Checks passed — click **Push to GitHub** on the session when you are ready to open the PR (run ${runId})`,
+      );
+    },
+    onTerminalFailed({ runId, status, failureReason, detail }) {
+      const extra = detail?.trim() ? ` — ${detail.trim()}` : '';
+      postComment(`Finalize failed: ${failureReason} (${status}, run ${runId})${extra}`);
     },
   };
 }

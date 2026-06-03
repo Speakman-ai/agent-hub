@@ -17,6 +17,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
+import { envRowsFromDraftAndSecrets } from '../utils/projectEnvRows.js';
 
 const PREVIEW_IDLE_TTL_MIN = 60;
 const PREVIEW_IDLE_TTL_MAX = 86400;
@@ -128,26 +129,7 @@ export function mergeDraftIntoForm(form, draft) {
   return next;
 }
 
-export function envRowsFromDraftAndSecrets(draft, secrets = []) {
-  const secretByKey = new Map((secrets || []).map((s) => [s.key, s]));
-  const suggestions = draft?.envVars || [];
-  const keys = new Set(suggestions.map((s) => s.key));
-  for (const s of secrets || []) keys.add(s.key);
-  return [...keys]
-    .sort((a, b) => a.localeCompare(b))
-    .map((key) => {
-      const sug = suggestions.find((s) => s.key === key);
-      const saved = secretByKey.get(key);
-      return {
-        key,
-        value: saved?.kind === 'plain' ? saved.value || '' : '',
-        kind: saved?.kind === 'plain' ? 'plain' : 'secret',
-        hadSecret: saved?.kind === 'secret',
-        sources: sug?.sources || (saved ? ['saved'] : []),
-        required: !!sug?.required,
-      };
-    });
-}
+export { envRowsFromDraftAndSecrets };
 
 export function validateComposeForm(form) {
   const entryService = (form.composeEntryService || '').trim();

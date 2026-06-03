@@ -427,6 +427,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       let bin: string;
       let args: string[];
       let stdinPrompt: string | null;
+      let systemPromptFileCleanup: (() => void) | null = null;
       try {
         const plan = buildSessionMultiSpawnArgs({
           engine,
@@ -444,10 +445,12 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
           codexDangerBypass: !!config.codexDangerBypass,
           codexProfile: config.codexProfile,
           advisory: true,
+          sessionId,
         });
         bin = plan.bin;
         args = plan.args;
         stdinPrompt = plan.stdinPrompt;
+        systemPromptFileCleanup = plan.systemPromptFileCleanup ?? null;
       } catch (err: unknown) {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
@@ -520,6 +523,10 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       proc.on('close', (code: number | null) => {
         clearTimeout(timer);
         roundState.proc = null;
+        if (systemPromptFileCleanup) {
+          systemPromptFileCleanup();
+          systemPromptFileCleanup = null;
+        }
         if (roundState.cancelled) {
           reject(new Error('Cancelled'));
           return;
@@ -537,6 +544,10 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
         spawnErrored = true;
         clearTimeout(timer);
         roundState.proc = null;
+        if (systemPromptFileCleanup) {
+          systemPromptFileCleanup();
+          systemPromptFileCleanup = null;
+        }
         reject(err);
       });
     };

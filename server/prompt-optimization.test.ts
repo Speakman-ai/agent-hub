@@ -645,6 +645,37 @@ describe('buildEnrichedPrompt — agent-owned PR shipping', () => {
     expect(prompt).toMatch(/Summary.*Test plan/i);
   });
 
+  it('uses the detected default branch (e.g. master) instead of hardcoded main', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      defaultBranch: 'master',
+    });
+    expect(prompt).toMatch(/git checkout master && git pull/i);
+    expect(prompt).toMatch(/rebase on latest `origin\/master`/i);
+    expect(prompt).not.toMatch(/git checkout main &&/i);
+  });
+
+  it('omits all branch/ship guidance for non-shipping helpers (omitDevLifecycle)', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      omitDevLifecycle: true,
+    });
+    expect(prompt).not.toMatch(/Development Lifecycle/i);
+    expect(prompt).not.toMatch(/git checkout/i);
+    expect(prompt).not.toMatch(/origin\/(main|master)/i);
+    expect(prompt).not.toMatch(/gh pr create/i);
+  });
+
+  it('prefers an explicit branchPrBase override over the detected default branch', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      defaultBranch: 'master',
+      branchPrBase: 'release/2.0',
+    });
+    expect(prompt).toMatch(/git checkout release\/2\.0 && git pull/i);
+    expect(prompt).toMatch(/rebase on latest `origin\/release\/2\.0`/i);
+  });
+
   it('requires shipping while forbidding self-merge', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,

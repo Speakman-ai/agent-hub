@@ -1047,6 +1047,23 @@ describe('Sessions', () => {
       expect(Array.isArray(res.body)).toBe(true);
       expect(res.body.length).toBe(0);
     });
+
+    it('honors ?limit= to return only the newest messages', async () => {
+      const session = await createSession();
+      const sessionId = session.id as string;
+      const { getDb } = await import('../db.js');
+      const db = getDb();
+      const insert = db.prepare(
+        `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`,
+      );
+      insert.run('m1', sessionId, 'first', '2026-01-01T00:00:00.000Z');
+      insert.run('m2', sessionId, 'second', '2026-01-01T00:01:00.000Z');
+      insert.run('m3', sessionId, 'third', '2026-01-01T00:02:00.000Z');
+
+      const res = await request.get(`/api/sessions/${sessionId}/messages?limit=2`).expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.map((m: { content: string }) => m.content)).toEqual(['second', 'third']);
+    });
   });
 
   describe('GET /api/sessions/:sessionId/summary', () => {

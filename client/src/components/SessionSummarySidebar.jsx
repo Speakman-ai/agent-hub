@@ -224,7 +224,7 @@ export default function SessionSummarySidebar({
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-          {collapsed && linkedPrUrl && prStatus && (
+          {collapsed && linkedPrUrl && prStatus ? (
             <span
               data-testid="linked-pr-status-pill-collapsed"
               className={`text-[10px] px-1.5 py-0.5 rounded border border-gray-700/40 ${prStatus.color} ${prStatus.bg}`}
@@ -232,7 +232,7 @@ export default function SessionSummarySidebar({
               {prNum ? `#${prNum} · ` : ''}
               {prStatus.label}
             </span>
-          )}
+          ) : null}
           {collapsed && skills.length > 0 && (
             <span className="text-[10px] text-gray-400 tabular-nums">
               {skills.length} skill{skills.length === 1 ? '' : 's'}

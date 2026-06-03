@@ -143,6 +143,7 @@ DATA_ROOT="${data_root_for_docker}"
 # ── ECR pull branch ─────────────────────────────────────────────────────────
 # No git clone, no docker build. Just pull the tagged image and run it.
 IMAGE_URI="${image_uri}"
+RUNNER_IMAGE_URI="${finalize_runner_image_uri}"
 
 # The container image runs as the `node` user (uid/gid 1000) from node:22-slim.
 # Bind mounts preserve *host* ownership, so if we create these dirs as root the
@@ -185,6 +186,39 @@ if [ -n "${docker_env_b64}" ]; then
   chmod 600 "$REPO_DIR/.env"
 fi
 
+# Finalize fleet base-image pull-through cache (registry:2 proxy). Shared, fleet-
+# wide: every project's job containers mirror docker.io pulls through this, so base
+# images (node/python/postgres) are cached in-VPC and rate-limit-safe. The mirror
+# URL is this host's own private IP (only known at boot), appended to the Hub .env
+# here so it propagates to job containers; the runner entrypoint configures the
+# inner dockerd. Optional authenticated upstream via a Docker Hub secret.
+if [ "${enable_finalize_registry_mirror}" = "true" ]; then
+  IMDS_TOK="$(curl -fsS -m5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 120' || true)"
+  SELF_IP="$(curl -fsS -m5 -H "X-aws-ec2-metadata-token: $IMDS_TOK" http://169.254.169.254/latest/meta-data/local-ipv4 || true)"
+  PROXY_AUTH=""
+  if [ -n "${finalize_dockerhub_secret_arn}" ]; then
+    creds="$(aws secretsmanager get-secret-value --region ${aws_region} --secret-id '${finalize_dockerhub_secret_arn}' --query SecretString --output text 2>/dev/null || true)"
+    u="$(printf '%s' "$creds" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    p="$(printf '%s' "$creds" | sed -n 's/.*"accessToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    [ -n "$u" ] && [ -n "$p" ] && PROXY_AUTH="-e REGISTRY_PROXY_USERNAME=$u -e REGISTRY_PROXY_PASSWORD=$p"
+  fi
+  mkdir -p /var/lib/finalize-registry-cache
+  docker rm -f finalize-registry-mirror 2>/dev/null || true
+  docker run -d --restart unless-stopped --name finalize-registry-mirror -p 5000:5000 \
+    -v /var/lib/finalize-registry-cache:/var/lib/registry \
+    -e REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io $PROXY_AUTH registry:2 || \
+    echo "WARN: finalize registry mirror failed to start" >&2
+  if [ -n "$SELF_IP" ] && [ -f "$REPO_DIR/.env" ]; then
+    if ! grep -q '^FINALIZE_REGISTRY_MIRROR=' "$REPO_DIR/.env"; then
+      # The .env is built with join("\n", …) so it has NO trailing newline —
+      # guarantee one before appending, else this line globs onto the last var
+      # (e.g. FINALIZE_RUNNER_FLEET_TOKEN), corrupting both.
+      [ -n "$(tail -c1 "$REPO_DIR/.env")" ] && printf '\n' >> "$REPO_DIR/.env"
+      printf 'FINALIZE_REGISTRY_MIRROR=http://%s:5000\n' "$SELF_IP" >> "$REPO_DIR/.env"
+    fi
+  fi
+fi
+
 # Anonymous pull from ECR Public — no docker login needed. Retry a couple
 # times in case the image was just pushed and the CDN is still warming.
 for i in 1 2 3; do
@@ -192,6 +226,15 @@ for i in 1 2 3; do
   echo "docker pull failed (attempt $i); retrying in 10s..." >&2
   sleep 10
 done
+
+# Finalize CI DinD runner — same tag as the server image; pulled on every start.
+if [ -n "$RUNNER_IMAGE_URI" ]; then
+  for i in 1 2 3; do
+    docker pull "$RUNNER_IMAGE_URI" && break
+    echo "finalize runner pull failed (attempt $i); retrying in 10s..." >&2
+    sleep 10
+  done
+fi
 
 # Install a systemd-managed container instead of `docker run --restart=unless-stopped`.
 # Rationale: the daemon's auto-restart simply re-launches the *cached* image, which
@@ -203,6 +246,7 @@ cat >/usr/local/bin/agenthub-server-run.sh <<RUNSCRIPT
 #!/bin/bash
 set -e
 IMAGE_URI="$IMAGE_URI"
+RUNNER_IMAGE_URI="$RUNNER_IMAGE_URI"
 REPO_DIR="$REPO_DIR"
 DATA_ROOT="$DATA_ROOT"
 APP_PORT="${app_port}"
@@ -229,6 +273,26 @@ if [ "\$PULL_OK" != "1" ]; then
   echo "FATAL: docker pull \$IMAGE_URI failed after 3 attempts. Refusing to start with stale local image." >&2
   echo "       Check disk space (df -h /var/lib/docker) and ECR connectivity." >&2
   exit 1
+fi
+
+if [ -n "\$RUNNER_IMAGE_URI" ]; then
+  RUNNER_PULL_OK=0
+  for i in 1 2 3; do
+    if docker pull --quiet "\$RUNNER_IMAGE_URI"; then
+      RUNNER_PULL_OK=1
+      break
+    fi
+    echo "finalize runner pull failed (attempt \$i); retrying in 10s..." >&2
+    sleep 10
+  done
+  if [ "\$RUNNER_PULL_OK" != "1" ]; then
+    # The finalize runner image is OPTIONAL (in-box Finalize CI only). Never let a
+    # missing/unpublished runner image block the server — that would restart-loop
+    # the whole Hub. Warn, drop the image, and start the server without it;
+    # remote-fleet CI is unaffected.
+    echo "WARN: docker pull \$RUNNER_IMAGE_URI failed after 3 attempts — starting WITHOUT the in-box finalize runner image." >&2
+    RUNNER_IMAGE_URI=""
+  fi
 fi
 
 docker rm -f agenthub-server 2>/dev/null || true
@@ -265,6 +329,7 @@ exec docker run --rm --name agenthub-server \
   -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
   -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
   -e "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal" \
+  \$${RUNNER_IMAGE_URI:+-e "FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=\$RUNNER_IMAGE_URI"} \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT

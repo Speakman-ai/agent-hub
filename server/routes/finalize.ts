@@ -17,10 +17,22 @@
  *        when the run was created or reused (terminal), 409 when a
  *        non-terminal row already exists for the same key.
  *
+ *   3b. `POST /api/projects/:projectId/sessions/:sessionId/finalize`
+ *       — same as (3) but ensures a kanban card exists for ad-hoc sessions
+ *         before triggering. Creates/links a card on first use.
+ *
  *   4. `POST /api/projects/:projectId/finalize/:runId/cancel`
  *      — flips a non-terminal run row to `cancelled` and broadcasts the
  *        terminal pair. v0 is UI-only (the orchestrator's in-process
  *        `CancelSignal` is NOT honored across requests — see §12).
+ *
+ *   4b. `POST /api/projects/:projectId/finalize/:runId/push`
+ *       — after review + checks pass (`ready_to_push`), pushes to GitHub
+ *         and opens the PR. Separate explicit step from Finalize.
+ *
+ *   5. `GET /api/sessions/:sessionId/finalize-ship-gate`
+ *      — whether `gh pr create` is allowed for this session (Finalize
+ *        projects with ci.yaml must ship through the Finalize button).
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -36,12 +48,12 @@ import type {
   RouteDeps,
   SessionRow,
 } from '../types.js';
-import {
-  computeIdempotencyKey,
-  runFinalize,
-  type OrchestratorOutcome,
-} from '../finalize/orchestrator.js';
-import { buildOrchestratorDeps } from '../finalize/orchestrator-deps.js';
+import { type OrchestratorOutcome } from '../finalize/orchestrator.js';
+import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
+import { triggerFinalizeRun } from '../finalize/trigger-run.js';
+import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js';
+import { evaluateFinalizeShipGate } from '../finalize/ship-gate.js';
+import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-output.js';
 import {
   aggregateMetrics,
   isMetricName,
@@ -61,14 +73,6 @@ const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunSta
   'cancelled',
   'stalled_no_response',
 ]);
-
-/** Max time we'll poll for the inserted finalize_runs row before responding. */
-const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
-const ROW_VISIBILITY_POLL_MAX_ATTEMPTS = 15; // 15 * 20ms = 300ms cap
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
@@ -111,7 +115,8 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       return res.status(404).json({ error: 'Session not found' });
     }
     const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
-    return res.json({ run: run ?? null });
+    const steps = run ? listFinalizeRunSteps(stmts, run.id) : [];
+    return res.json({ run: run ?? null, steps });
   });
 
   // ───────────────────────────────────────────────────────────────
@@ -156,116 +161,57 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           .status(400)
           .json({ error: 'no_session', message: 'Linked session was not found.' });
       }
-      if (!session.worktree_path) {
-        return res
-          .status(400)
-          .json({ error: 'no_worktree', message: 'Session has no worktree_path.' });
-      }
-      if (!session.worktree_branch) {
-        return res
-          .status(400)
-          .json({ error: 'no_branch', message: 'Session has no worktree_branch.' });
-      }
 
-      // Resolve HEAD SHA inside the worktree.
-      let headSha: string;
-      try {
-        const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-          cwd: session.worktree_path,
-          timeout: 30_000,
-          maxBuffer: 1 * 1024 * 1024,
-        });
-        headSha = stdout.trim();
-        if (!headSha) throw new Error('empty rev-parse output');
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return res
-          .status(400)
-          .json({ error: 'no_head_sha', message: `Could not resolve HEAD: ${msg}` });
-      }
-
-      // Compute idempotency key + check for an existing row. Two outcomes:
-      //   - existing & non-terminal → 409 in_flight
-      //   - existing & terminal → treat as reused (200, reused: true)
-      //   - missing → fire runFinalize() in the background and poll for the
-      //     row to appear so we can respond with its id
-      const idempotencyKey = computeIdempotencyKey({
-        projectId: project.id,
-        branch: session.worktree_branch,
-        headSha,
-      });
-      const existing = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
-        | FinalizeRunRow
-        | undefined;
-      if (existing) {
-        if (!TERMINAL_STATUSES.has(existing.status)) {
-          return res.status(409).json({
-            error: 'in_flight',
-            run_id: existing.id,
-            status: existing.status,
-            message: 'A Finalize run is already in flight for this branch + head SHA.',
-          });
-        }
-        // Terminal row — treat as reused; clicking again on a terminal run
-        // is a no-op without churn (the orchestrator would also short-circuit
-        // here via its own `getFinalizeRunByIdempotencyKey` check).
-        return res.status(200).json({ run_id: existing.id, status: existing.status, reused: true });
-      }
-
-      // Background-fire the orchestrator. The row insert happens inside
-      // runFinalize; we poll for it so the HTTP response can carry the
-      // row id. Errors during the background run are logged — they'll
-      // surface as terminal status writes on the row.
-      const orchestratorDeps = buildOrchestratorDeps(deps, card, project.id);
-      const ownerId = (req as AuthenticatedRequest).authUserId ?? card.created_by ?? 'unknown';
-      const orchestratorPromise = runFinalize(orchestratorDeps, {
-        card,
+      const outcome = await triggerFinalizeRun(deps, {
+        req: req as AuthenticatedRequest,
         project,
-        branch: session.worktree_branch,
-        headSha,
-        baseBranch: card.pr_base_branch ?? 'main',
-        worktreePath: session.worktree_path,
-        sessionId: session.id,
-        triggerSource: 'ui_button',
-        triggeredByUserId: ownerId,
-        // We don't have author identity readily available here; use the
-        // owner id as a stable placeholder. The orchestrator stores
-        // these on the row for provenance; the push step uses git's
-        // own configured identity inside the worktree at push time.
-        authorName: ownerId,
-        authorEmail: `${ownerId}@local`,
+        card,
+        session,
       });
-      // Detach: never await. Catch swallowed — the orchestrator is non-throwing.
-      orchestratorPromise.catch((err: unknown) => {
-        console.warn(
-          `[finalize] background runFinalize threw for card=${cardId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+      return res.status(outcome.httpStatus).json(outcome.body);
+    },
+  );
 
-      // Poll for the row to appear so we can return its id synchronously.
-      for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
-        const created = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
-          | FinalizeRunRow
-          | undefined;
-        if (created) {
-          return res
-            .status(200)
-            .json({ run_id: created.id, status: created.status, reused: false });
-        }
-        await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
+  // ───────────────────────────────────────────────────────────────
+  // POST /api/projects/:projectId/sessions/:sessionId/finalize
+  // ───────────────────────────────────────────────────────────────
+  router.post(
+    '/api/projects/:projectId/sessions/:sessionId/finalize',
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const sessionId = req.params.sessionId as string;
+
+      const project = findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
       }
 
-      // The poll timed out — the run started but the row was not visible
-      // within ~300ms. The client can fall back to the WS event stream or
-      // re-query latest.
-      return res.status(202).json({
-        ok: true,
-        run_id: null,
-        status: 'queued',
-        message: 'Finalize run started; row not yet visible.',
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+
+      const lookup = deps.findAgent(session.agent_id);
+      if (!lookup || lookup.project.id !== project.id) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      const { card, created: cardCreated } = ensureKanbanCardForSession(
+        { stmts, broadcast: deps.broadcast, findAgent: deps.findAgent },
+        {
+          projectId: project.id,
+          session,
+          createdBy: (req as AuthenticatedRequest).authUserId ?? null,
+        },
+      );
+
+      const outcome = await triggerFinalizeRun(deps, {
+        req: req as AuthenticatedRequest,
+        project,
+        card,
+        session,
       });
+      return res.status(outcome.httpStatus).json({ ...outcome.body, card_created: cardCreated });
     },
   );
 
@@ -323,6 +269,162 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     });
     return res.json({ ok: true, status: 'cancelled' });
   });
+
+  // ───────────────────────────────────────────────────────────────
+  // POST /api/projects/:projectId/finalize/:runId/push
+  // ───────────────────────────────────────────────────────────────
+  router.post(
+    '/api/projects/:projectId/finalize/:runId/push',
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const runId = req.params.runId as string;
+
+      const project = findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const run = stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+      if (!run || run.project_id !== project.id) {
+        return res.status(404).json({ error: 'Finalize run not found' });
+      }
+
+      if (run.session_id && !userOwnsSession(req as AuthenticatedRequest, run.session_id)) {
+        return res.status(404).json({ error: 'Finalize run not found' });
+      }
+
+      const card = stmts.getKanbanCard.get(run.card_id) as KanbanCardRow | undefined;
+      if (!card) return res.status(404).json({ error: 'Card not found' });
+
+      const sessionId = run.session_id ?? card.session_id;
+      if (!sessionId) {
+        return res.status(400).json({ error: 'no_session', message: 'Run has no linked session.' });
+      }
+
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) {
+        return res
+          .status(400)
+          .json({ error: 'no_session', message: 'Linked session was not found.' });
+      }
+
+      const force = req.body?.force === true;
+      const outcome = await runFinalizePush({ deps, project, run, card, session, force });
+      if (!outcome.ok) {
+        return res.status(outcome.httpStatus).json({
+          error: outcome.error,
+          message: outcome.message,
+        });
+      }
+      return res.json({ ok: true, pr_url: outcome.prUrl, status: 'pushed' });
+    },
+  );
+
+  // ───────────────────────────────────────────────────────────────
+  // GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output
+  // ───────────────────────────────────────────────────────────────
+  router.get(
+    '/api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const runId = req.params.runId as string;
+      const stepIndex = Number.parseInt(String(req.params.stepIndex), 10);
+
+      const project = findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (!Number.isFinite(stepIndex) || stepIndex < 1) {
+        return res.status(400).json({ error: 'invalid_step_index' });
+      }
+
+      const run = stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+      if (!run || run.project_id !== project.id) {
+        return res.status(404).json({ error: 'Finalize run not found' });
+      }
+
+      const sessionId = run.session_id;
+      if (!sessionId) {
+        return res.json({ run_id: runId, step_index: stepIndex, lines: [] });
+      }
+      if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      const lines = loadFinalizeStepOutput(stmts, { sessionId, runId, stepIndex });
+      return res.json({ run_id: runId, step_index: stepIndex, lines });
+    },
+  );
+
+  // ───────────────────────────────────────────────────────────────
+  // POST /api/projects/:projectId/sessions/:sessionId/push-to-github
+  // ───────────────────────────────────────────────────────────────
+  router.post(
+    '/api/projects/:projectId/sessions/:sessionId/push-to-github',
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const sessionId = req.params.sessionId as string;
+      const force = req.body?.force === true;
+
+      const project = findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+
+      const { card } = ensureKanbanCardForSession(
+        { stmts, broadcast: deps.broadcast, findAgent: deps.findAgent },
+        {
+          projectId: project.id,
+          session,
+          createdBy: (req as AuthenticatedRequest).authUserId ?? null,
+        },
+      );
+
+      const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
+      if (run) {
+        if (run.status === 'ready_to_push') {
+          const outcome = await runFinalizePush({ deps, project, run, card, session });
+          if (!outcome.ok) {
+            return res.status(outcome.httpStatus).json({
+              error: outcome.error,
+              message: outcome.message,
+            });
+          }
+          return res.json({ ok: true, pr_url: outcome.prUrl, status: 'pushed' });
+        }
+        if (force) {
+          const outcome = await runFinalizePush({ deps, project, run, card, session, force: true });
+          if (!outcome.ok) {
+            return res.status(outcome.httpStatus).json({
+              error: outcome.error,
+              message: outcome.message,
+            });
+          }
+          return res.json({ ok: true, pr_url: outcome.prUrl, status: 'pushed' });
+        }
+        return res.status(409).json({
+          error: 'not_ready_to_push',
+          message: 'Finalize checks have not passed. Confirm to push anyway.',
+        });
+      }
+
+      if (!force) {
+        return res.status(409).json({
+          error: 'not_ready_to_push',
+          message: 'Finalize checks have not passed. Confirm to push anyway.',
+        });
+      }
+
+      const outcome = await runSessionPushToGithub({ deps, project, session, card });
+      if (!outcome.ok) {
+        return res.status(outcome.httpStatus).json({
+          error: outcome.error,
+          message: outcome.message,
+        });
+      }
+      return res.json({ ok: true, pr_url: outcome.prUrl, status: 'pushed' });
+    },
+  );
 
   // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/metrics
@@ -399,6 +501,44 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       sample_count: rows.length,
       metrics: aggregates,
     });
+  });
+
+  // ───────────────────────────────────────────────────────────────
+  // GET /api/sessions/:sessionId/finalize-ship-gate
+  // ───────────────────────────────────────────────────────────────
+  router.get('/api/sessions/:sessionId/finalize-ship-gate', async (req: Request, res: Response) => {
+    const sessionId = req.params.sessionId as string;
+    if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    const lookup = deps.findAgent(session.agent_id);
+    if (!lookup) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    let headSha: string | null = null;
+    if (session.worktree_path) {
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+          cwd: session.worktree_path,
+          timeout: 30_000,
+          maxBuffer: 1 * 1024 * 1024,
+        });
+        headSha = stdout.trim() || null;
+      } catch {
+        headSha = null;
+      }
+    }
+
+    const gate = await evaluateFinalizeShipGate(
+      { stmts },
+      { session, projectId: lookup.project.id, headSha },
+    );
+    return res.json(gate);
   });
 
   return router;

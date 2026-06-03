@@ -46,6 +46,22 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Cross-account provider for writing this env's NS delegation into the ROOT
+# account's apex zone (e.g. surveytracker.io in 797611956947). Only used when
+# create_route53_zone = true (prod owns its own delegated subdomain zone). The
+# assume_role block is omitted when no role ARN is set, so non-prod envs (which
+# look up an existing zone and never reference this provider) are unaffected.
+provider "aws" {
+  alias  = "root_dns"
+  region = var.aws_region
+  dynamic "assume_role" {
+    for_each = trimspace(var.root_delegation_role_arn) != "" ? [1] : []
+    content {
+      role_arn = var.root_delegation_role_arn
+    }
+  }
+}
+
 # Resolve the latest ECS-optimized Amazon Linux 2023 AMI from SSM. This AMI has
 # Docker + SSM agent + the ECR credential helper preinstalled, which is what the
 # ECR-pull bootstrap path needs. AWS publishes the same parameter in every

@@ -232,7 +232,7 @@ export default function FinalizeSection({ navigation }) {
         </Text>
         <Text style={styles.bullet}>
           • One step per check you want to run before pushing — install, typecheck, lint, test, etc.
-          Hard cap: 60 minutes of active time.
+          Hard cap: 4 hours of active time.
         </Text>
         <Text style={styles.bullet}>
           • Re-run the wizard any time — it overwrites the existing file.

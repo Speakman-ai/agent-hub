@@ -39,10 +39,11 @@
  * promise — phase runners that throw are caught here and surfaced as
  * `infra_error` for the trigger to log + present.
  */
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type {
+  AppConfig,
   BroadcastFn,
   FinalizeRunPhase,
   FinalizeRunRow,
@@ -51,10 +52,13 @@ import type {
   Project,
   Stmts,
 } from '../types.js';
+import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { getActiveOrgId } from '../orgs.js';
+import { mergeFinalizeGitSpawnEnv } from './finalize-git-env.js';
 import { FINALIZE_BUDGET_SECONDS, runRebasePhase } from './rebase.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import { loadCiConfigFromFile } from './ci-config.js';
-import type { CiConfig, CiConfigParseResult } from './ci-config.js';
+import type { AnyCiConfig, CiConfigParseResult } from './ci-config.js';
 import { runReviewerDispatch } from './reviewer-dispatch.js';
 import type {
   ReviewerDispatchOutcome,
@@ -63,14 +67,14 @@ import type {
 } from './reviewer-dispatch.js';
 import { runStepPhase } from './step-runner.js';
 import type { StepRunResult } from './step-runner.js';
-import { dispatchFixMessage } from './fix-dispatch.js';
+import { runJobPhase } from './job-runner.js';
+import { dispatchFixMessage, type SpawnFixTurnFn } from './fix-dispatch.js';
 import type {
   CancelSignal,
   FixDispatchResult,
   FixDispatchTrigger,
   TurnEndSubscriber,
 } from './fix-dispatch.js';
-import { writeFinalizeRunPrUrl } from './provenance.js';
 import { evaluatePushGate } from './push-gate.js';
 import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import type { CardLifecycle } from './card-lifecycle.js';
@@ -97,8 +101,43 @@ import {
   recordStalledNoResponse,
   recordStepResult,
 } from './metrics.js';
+import {
+  readFinalizeLoopRound,
+  writeFinalizeReadyToPushTimeline,
+  writeFinalizeRebaseResultTimeline,
+  writeFinalizeRunStartedTimeline,
+  writeFinalizeRunTerminalTimeline,
+  type TimelineMessageDeps,
+} from './timeline-message.js';
+import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
+
+export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
 
 const execFileAsync = promisify(execFile);
+
+type ReadyToPushAutomationHook = (sessionId: string, runId: string) => void;
+let readyToPushAutomationHook: ReadyToPushAutomationHook | null = null;
+
+/** Wired from `index.ts` to avoid orchestrator ↔ automation-runner import cycle. */
+export function setReadyToPushAutomationHook(fn: ReadyToPushAutomationHook | null): void {
+  readyToPushAutomationHook = fn;
+}
+
+function notifyReadyToPushAutomationHook(
+  sessionId: string | null | undefined,
+  runId: string,
+): void {
+  if (!sessionId || !readyToPushAutomationHook) return;
+  try {
+    readyToPushAutomationHook(sessionId, runId);
+  } catch (err) {
+    console.warn(
+      `[finalize-orchestrator] ready-to-push automation hook failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
 
 // ─── Public constants ─────────────────────────────────────────────────
 
@@ -110,9 +149,6 @@ const execFileAsync = promisify(execFile);
  * a healthy run almost never exceeds 5 loops.
  */
 export const MAX_FIX_DISPATCH_LOOPS = 50;
-
-/** Default path of `.agent-hub/ci.yaml` relative to the worktree root. */
-export const DEFAULT_CI_CONFIG_RELATIVE_PATH = '.agent-hub/ci.yaml';
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -163,6 +199,7 @@ export interface SpawnedSession {
 export type SpawnSessionFn = (args: SpawnSessionArgs) => Promise<SpawnedSession | null>;
 
 export interface OrchestratorDeps {
+  config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
   stmts: Pick<
     Stmts,
     | 'getFinalizeRun'
@@ -172,8 +209,10 @@ export interface OrchestratorDeps {
     | 'updateFinalizeRunActiveSeconds'
     | 'updateFinalizeRunSessionId'
     | 'updateFinalizeRunWorktreePath'
+    | 'updateFinalizeRunLoopRound'
     | 'updateFinalizeRunReviewerVerdict'
     | 'failFinalizeRun'
+    | 'markFinalizeRunReadyToPush'
     | 'markFinalizeRunPushed'
     | 'updateFinalizeRunPrUrl'
     | 'insertReviewerThread'
@@ -181,6 +220,10 @@ export interface OrchestratorDeps {
     | 'addMessage'
     | 'touchSession'
     | 'getMessageById'
+    | 'upsertFinalizeRunStep'
+    | 'listFinalizeRunStepsForRun'
+    | 'upsertFinalizeRunJob'
+    | 'listFinalizeRunJobsForRun'
     | 'listReviewerThreadsForRun'
     | 'insertFinalizeMetric'
   >;
@@ -239,7 +282,10 @@ export interface OrchestratorDeps {
   loadCiConfigFromFile?: typeof loadCiConfigFromFile;
   runReviewerDispatch?: typeof runReviewerDispatch;
   runStepPhase?: typeof runStepPhase;
+  runJobPhase?: typeof runJobPhase;
   dispatchFixMessage?: typeof dispatchFixMessage;
+  /** Spawn originating agent after §7 fix dispatch (see `spawn-fix-turn.ts`). */
+  spawnFixTurn?: SpawnFixTurnFn;
   /** Override the active-time budget cap (seconds). Defaults to {@link FINALIZE_BUDGET_SECONDS}. */
   budgetSeconds?: number;
   /** Deterministic clock injection (defaults to `Date.now`). */
@@ -303,6 +349,7 @@ export interface OrchestratorOptions {
  */
 export type OrchestratorOutcome =
   | { kind: 'pushed'; runId: string; prUrl: string }
+  | { kind: 'ready_to_push'; runId: string }
   | {
       kind: 'failed';
       runId: string;
@@ -315,24 +362,6 @@ export type OrchestratorOutcome =
   | { kind: 'reused'; runId: string; status: FinalizeRunStatus };
 
 // ─── Public API ───────────────────────────────────────────────────────
-
-/**
- * Compute the idempotency key for a finalize run. SHA-256 over
- * `<project_id>|<branch>|<head_sha>` hex-encoded — matches the design
- * doc's §4 contract and the UNIQUE constraint on `finalize_runs`.
- *
- * Exposed so trigger routes / dispatch paths can pre-compute the key for
- * a uniqueness lookup before they call into the orchestrator.
- */
-export function computeIdempotencyKey(args: {
-  projectId: string;
-  branch: string;
-  headSha: string;
-}): string {
-  return createHash('sha256')
-    .update(`${args.projectId}|${args.branch}|${args.headSha}`)
-    .digest('hex');
-}
 
 /**
  * Drive a finalize run end-to-end. The function returns when the run
@@ -369,6 +398,7 @@ export async function runFinalize(
   const loadCi = deps.loadCiConfigFromFile ?? loadCiConfigFromFile;
   const runReview = deps.runReviewerDispatch ?? runReviewerDispatch;
   const runSteps = deps.runStepPhase ?? runStepPhase;
+  const runJobs = deps.runJobPhase ?? runJobPhase;
   const dispatchFix = deps.dispatchFixMessage ?? dispatchFixMessage;
   const resolveHead = deps.resolveHeadSha ?? defaultResolveHeadSha;
   // `transactional` is technically optional on the type so unit tests can
@@ -387,6 +417,18 @@ export async function runFinalize(
         'from better-sqlite3 at the production call-site.',
     );
   }
+
+  const spawnEnv: NodeJS.ProcessEnv = { ...(opts.env ?? process.env) };
+  mergeProjectSecretsSpawnEnv(spawnEnv, {
+    projectId: opts.project.id,
+    sessionId: opts.sessionId ?? null,
+    overwriteExisting: true,
+  });
+  await mergeFinalizeGitSpawnEnv(spawnEnv, {
+    config: deps.config,
+    project: opts.project,
+    sessionId: opts.sessionId ?? null,
+  });
 
   // ─── Idempotency: dedup at the (project, branch, head_sha) level ────
   const idempotencyKey = computeIdempotencyKey({
@@ -643,6 +685,13 @@ export async function runFinalize(
       );
     }
 
+    writeFinalizeRunStartedTimeline(orchestratorTimelineDeps(deps), {
+      sessionId,
+      runId,
+      triggerSource: opts.triggerSource,
+      headSha: opts.headSha,
+    });
+
     const ciConfigPath = opts.ciConfigPath ?? `${worktreePath}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
 
     // ─── Main loop: rebase → parse → review → tasks → combined gate ─────
@@ -655,10 +704,20 @@ export async function runFinalize(
     // re-read state from the DB (which would race with the live row).
     let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
     let lastStepOutcome: StepRunResult | null = null;
-    let parsedCi: CiConfig | null = null;
+    let parsedCi: AnyCiConfig | null = null;
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
+
+      try {
+        deps.stmts.updateFinalizeRunLoopRound.run(loopCount, runId);
+      } catch (err) {
+        log(
+          `[finalize-orchestrator] loop_round write failed for run=${runId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
@@ -682,7 +741,7 @@ export async function runFinalize(
             worktreePath,
             baseBranch: opts.baseBranch,
             featureBranch: opts.branch,
-            env: opts.env,
+            env: spawnEnv,
             card: opts.card,
             project: opts.project,
           },
@@ -703,6 +762,13 @@ export async function runFinalize(
       // directly; we read back + broadcast.
       broadcastActiveSeconds(deps, runId);
       if (rebaseOutcome.kind === 'failed') {
+        writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
+          sessionId,
+          runId,
+          round: loopCount,
+          ok: false,
+          detail: rebaseOutcome.detail,
+        });
         // Mirror the rebase failure onto the card BEFORE we propagate the
         // failure — `outcomeFromFailed` writes the terminal broadcasts but
         // does not touch the card surface. Only on first iteration to
@@ -738,6 +804,13 @@ export async function runFinalize(
             detail: 'rebase skipped — base branch unavailable or unsafe',
           });
         }
+        writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
+          sessionId,
+          runId,
+          round: loopCount,
+          ok: false,
+          detail: 'rebase skipped — base branch unavailable or unsafe',
+        });
         return terminate(
           deps,
           runId,
@@ -774,7 +847,7 @@ export async function runFinalize(
       // the tree the reviewer and step runner saw.
       let headValidatedAgainst: string;
       try {
-        headValidatedAgainst = await resolveHead(worktreePath, opts.env);
+        headValidatedAgainst = await resolveHead(worktreePath, spawnEnv);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return terminate(
@@ -786,6 +859,15 @@ export async function runFinalize(
           log,
         );
       }
+
+      writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
+        sessionId,
+        runId,
+        round: loopCount,
+        ok: true,
+        conflict: (rebaseOutcome.conflictsDispatchedCount ?? 0) > 0,
+        headSha: headValidatedAgainst,
+      });
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
@@ -848,7 +930,7 @@ export async function runFinalize(
             runId,
             worktreePath,
             baseBranch: opts.baseBranch,
-            env: opts.env,
+            env: spawnEnv,
             card: opts.card,
             project: opts.project,
             // Plumb the originating session id + cancel signal into the
@@ -907,78 +989,123 @@ export async function runFinalize(
         return cancelTerminal(deps, runId, log);
       }
 
-      // ── Phase 4: tasks ──────────────────────────────────────────────
-      try {
-        lastStepOutcome = await runSteps(
-          {
-            stmts: deps.stmts,
-            broadcast: deps.broadcast,
-          },
-          {
-            runId,
-            config: parsedCi,
-            worktreePath,
-            sessionId,
-            env: opts.env,
-          },
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return terminate(
-          deps,
-          runId,
-          'infra_error',
-          'container_unavailable',
-          `step phase threw: ${msg}`,
-          log,
-        );
-      }
+      const reviewerChangesRequested =
+        lastReviewerOutcome.kind === 'success' &&
+        lastReviewerOutcome.verdict === 'changes_requested';
 
-      // Emit active-seconds tick after the tasks phase (success or fail).
-      broadcastActiveSeconds(deps, runId);
-      // §14 metric: one row per CI step the runner actually executed.
-      // Labels include exit_code so a flaky step's exit-code distribution
-      // surfaces directly without re-derivation. `failedStep` carries the
-      // first failure; every result before it is a `passed` row.
-      {
-        const metricDeps = { stmts: deps.stmts, now, log };
-        for (const result of lastStepOutcome.stepResults) {
-          const failed =
-            lastStepOutcome.failedStep != null && lastStepOutcome.failedStep.index === result.index;
-          recordStepResult(metricDeps, {
-            projectId: opts.project.id,
+      // When the reviewer requests changes, dispatch fixes first — do not
+      // burn CI budget on code that is already known not mergeable. CI runs
+      // only after a subsequent review pass returns `approved`.
+      if (!reviewerChangesRequested) {
+        // Flip to tasks/running before the (potentially long) step phase so
+        // the client shows "running checks" immediately after review completes.
+        setPhase(deps, runId, 'tasks', 'running', log);
+
+        // ── Phase 4: tasks ──────────────────────────────────────────────
+        try {
+          if (parsedCi.version === 2) {
+            // Tenant identity for the remote runner queue (local backend ignores
+            // it). getActiveOrgId throws before an org is selected — default to
+            // '' so the local path / tests are unaffected.
+            let orgId = '';
+            try {
+              orgId = getActiveOrgId();
+            } catch {
+              /* no active org — fine for the local backend */
+            }
+            lastStepOutcome = await runJobs(
+              {
+                stmts: deps.stmts,
+                broadcast: deps.broadcast,
+              },
+              {
+                runId,
+                config: parsedCi,
+                worktreePath,
+                sessionId,
+                branch: opts.branch,
+                headSha: headValidatedAgainst,
+                env: spawnEnv,
+                orgId,
+                projectId: opts.project.id,
+              },
+            );
+          } else {
+            lastStepOutcome = await runSteps(
+              {
+                stmts: deps.stmts,
+                broadcast: deps.broadcast,
+              },
+              {
+                runId,
+                config: parsedCi,
+                worktreePath,
+                sessionId,
+                env: spawnEnv,
+              },
+            );
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
             runId,
-            stepName: result.name,
-            status: failed ? 'failed' : 'passed',
-            exitCode: result.exitCode,
-          });
+            'infra_error',
+            'container_unavailable',
+            `step phase threw: ${msg}`,
+            log,
+          );
         }
-      }
-      // Step terminal classes: the runner already wrote `failed` /
-      // `timed_out` to the row for those classes, but NOT for `infra_error`
-      // (§10 leaves that to the orchestrator).
-      if (lastStepOutcome.status === 'timeout') {
-        // §13: surface with the timeout-class dispatch message.
-        postBudgetTimeoutMessageIfPossible(
-          deps,
-          runId,
-          opts,
-          sessionId,
-          budgetSeconds,
-          lastStepOutcome,
-          log,
-        );
-        return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
-      }
-      if (lastStepOutcome.status === 'infra_error') {
-        return terminate(
-          deps,
-          runId,
-          'infra_error',
-          'container_unavailable',
-          lastStepOutcome.infraErrorDetail ?? 'step phase reported infra_error',
-          log,
-        );
+
+        // Emit active-seconds tick after the tasks phase (success or fail).
+        broadcastActiveSeconds(deps, runId);
+        // §14 metric: one row per CI step the runner actually executed.
+        // Labels include exit_code so a flaky step's exit-code distribution
+        // surfaces directly without re-derivation. `failedStep` carries the
+        // first failure; every result before it is a `passed` row.
+        {
+          const metricDeps = { stmts: deps.stmts, now, log };
+          for (const result of lastStepOutcome.stepResults) {
+            const failed =
+              lastStepOutcome.failedStep != null &&
+              lastStepOutcome.failedStep.index === result.index;
+            recordStepResult(metricDeps, {
+              projectId: opts.project.id,
+              runId,
+              stepName: result.name,
+              status: failed ? 'failed' : 'passed',
+              exitCode: result.exitCode,
+            });
+          }
+        }
+        // Step terminal classes: the runner already wrote `failed` /
+        // `timed_out` to the row for those classes, but NOT for `infra_error`
+        // (§10 leaves that to the orchestrator).
+        if (lastStepOutcome.status === 'timeout') {
+          // §13: surface with the timeout-class dispatch message.
+          postBudgetTimeoutMessageIfPossible(
+            deps,
+            runId,
+            opts,
+            sessionId,
+            budgetSeconds,
+            lastStepOutcome,
+            log,
+          );
+          return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
+        }
+        if (lastStepOutcome.status === 'infra_error') {
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'container_unavailable',
+            lastStepOutcome.infraErrorDetail ?? 'step phase reported infra_error',
+            log,
+          );
+        }
+      } else {
+        lastStepOutcome = null;
       }
 
       // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
@@ -989,9 +1116,10 @@ export async function runFinalize(
       // When either of the first two fails we drop straight into fix
       // dispatch with the iteration's stale signals — that's the §6
       // behavior the loop invariant guarantees is safe.
-      const stepsGreen = lastStepOutcome.status === 'success';
+      const stepsGreen = lastStepOutcome?.status === 'success';
       const reviewerApproved = lastReviewerOutcome.verdict === 'approved';
       if (stepsGreen && reviewerApproved) {
+        const stepOutcome = lastStepOutcome!;
         // ── Phase 7: push gate (§9) ─────────────────────────────────
         // Refusal here is a TOCTOU outcome: HEAD moved BETWEEN the
         // post-rebase snapshot (`headValidatedAgainst`) and right now —
@@ -1002,7 +1130,7 @@ export async function runFinalize(
         // actually validated, so it is the authoritative baseline.
         let currentHead: string;
         try {
-          currentHead = await resolveHead(worktreePath, opts.env);
+          currentHead = await resolveHead(worktreePath, spawnEnv);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return terminate(
@@ -1015,7 +1143,7 @@ export async function runFinalize(
           );
         }
         const gateOutcome = evaluatePushGate({
-          stepStatus: lastStepOutcome.status,
+          stepStatus: stepOutcome.status,
           reviewerVerdict: lastReviewerOutcome.verdict,
           headBeforePhases: headValidatedAgainst,
           headAtPushGate: currentHead,
@@ -1038,91 +1166,44 @@ export async function runFinalize(
           continue;
         }
 
-        // ── Phase 8: push ───────────────────────────────────────────
-        // `headSha` passed downstream is the gate-validated sha — the sha
-        // the reviewer approved and the steps ran green against, NOT the
-        // trigger-time sha. Production's
-        // `git push --force-with-lease=<branch>:<headSha>` uses this as
-        // the expected remote ref, so it must reflect what's actually on
-        // disk now.
-        setPhase(deps, runId, 'push', 'pushing', log);
-        let pushResult: PushAndCreatePrResult;
+        // ── Phase 8: park for human push ────────────────────────────
+        // Review + checks passed. Stop before git push / gh pr create —
+        // the operator confirms via POST .../finalize/:runId/push.
         try {
-          pushResult = await deps.pushAndCreatePr({
-            runId,
-            worktreePath,
-            branch: opts.branch,
-            baseBranch: opts.baseBranch,
-            headSha: gateOutcome.validatedHeadSha,
-            card: opts.card,
-            project: opts.project,
-            env: opts.env,
-          });
+          deps.stmts.markFinalizeRunReadyToPush.run(gateOutcome.validatedHeadSha, runId);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return terminate(
             deps,
             runId,
             'infra_error',
-            'github_push_5xx',
-            `push step threw: ${msg}`,
-            log,
-          );
-        }
-        if (!pushResult.prUrl) {
-          return terminate(
-            deps,
-            runId,
-            'infra_error',
-            'github_push_5xx',
-            'push step returned empty pr_url',
-            log,
-          );
-        }
-
-        // Persist atomically: the provenance helper writes pr_url; we
-        // then mark the row pushed + ended_at. Order matters — the
-        // markFinalizeRunPushed write closes the lifecycle, so pr_url
-        // MUST be persisted first so any read-back during the same tick
-        // sees a complete row.
-        try {
-          writeFinalizeRunPrUrl({ stmts: deps.stmts }, { runId, prUrl: pushResult.prUrl });
-          deps.stmts.markFinalizeRunPushed.run(runId);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return terminate(
-            deps,
-            runId,
-            'infra_error',
-            'github_push_5xx',
-            `persisting pr_url / pushed failed: ${msg}`,
+            'container_unavailable',
+            `markFinalizeRunReadyToPush failed: ${msg}`,
             log,
           );
         }
         deps.broadcast({
           type: 'finalize_run_phase_changed',
           run_id: runId,
-          phase: 'push',
-          status: 'pushed',
+          session_id: sessionId,
+          phase: null,
+          status: 'ready_to_push',
         });
         deps.broadcast({
           type: 'finalize_run_completed',
           run_id: runId,
-          status: 'pushed',
-          pr_url: pushResult.prUrl,
+          session_id: sessionId,
+          status: 'ready_to_push',
         });
-        // Mirror onto the card: post the handoff comment and move the
-        // card → Review (§15 post-push detach). The lifecycle method
-        // delegates to `./post-push-detach.ts`; we forward `triggerSource`
-        // so the comment surfaces the autonomous trigger when applicable.
-        // Order inside the impl is comment-then-move so the comment is in
-        // place by the time the column re-render hits the UI.
-        lifecycle.onPushed({
+        lifecycle.onReadyToPush({ runId });
+        writeFinalizeReadyToPushTimeline(orchestratorTimelineDeps(deps), {
+          sessionId,
           runId,
-          prUrl: pushResult.prUrl,
-          triggerSource: opts.triggerSource,
+          validatedHeadSha: gateOutcome.validatedHeadSha,
+          round: loopCount,
         });
-        return { kind: 'pushed', runId, prUrl: pushResult.prUrl };
+        notifyReadyToPushAutomationHook(sessionId, runId);
+        return { kind: 'ready_to_push', runId };
       }
 
       // ── Phase 6: fix dispatch ───────────────────────────────────────
@@ -1136,7 +1217,7 @@ export async function runFinalize(
       // only `changes_requested` cases (no failed step) are already
       // covered by `onReviewerVerdict` above; we deliberately don't
       // double-comment.
-      if (lastStepOutcome.failedStep) {
+      if (lastStepOutcome?.failedStep) {
         lifecycle.onStepFailed({
           runId,
           stepName: lastStepOutcome.failedStep.name,
@@ -1171,6 +1252,7 @@ export async function runFinalize(
             stmts: deps.stmts,
             broadcast: deps.broadcast,
             turnEnd: deps.turnEnd,
+            spawnFixTurn: deps.spawnFixTurn,
           },
           {
             runId,
@@ -1220,6 +1302,16 @@ export async function runFinalize(
       }
       if (fix.outcome === 'cancelled') {
         return cancelTerminal(deps, runId, log);
+      }
+      if (fix.outcome === 'spawn_failed') {
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'dispatch_failure',
+          'agent CLI spawn failed during fix dispatch',
+          log,
+        );
       }
       // `turn_ended` — the session committed (or at least ended its turn).
       // We re-enter at the top of the loop. The next iteration's rebase
@@ -1373,6 +1465,10 @@ export async function runFinalize(
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+function orchestratorTimelineDeps(deps: OrchestratorDeps): TimelineMessageDeps {
+  return { stmts: deps.stmts, broadcast: deps.broadcast, log: undefined };
+}
+
 function setPhase(
   deps: OrchestratorDeps,
   runId: string,
@@ -1414,6 +1510,7 @@ function terminate(
       }`,
     );
   }
+  mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
@@ -1427,6 +1524,18 @@ function terminate(
     status,
     failure_reason: failureReason,
   });
+  try {
+    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    writeFinalizeRunTerminalTimeline(orchestratorTimelineDeps(deps), {
+      sessionId: row?.session_id,
+      runId,
+      status,
+      failureReason,
+      round: readFinalizeLoopRound(row),
+    });
+  } catch {
+    /* best-effort */
+  }
   return { kind: 'failed', runId, status, failureReason, detail };
 }
 
@@ -1456,6 +1565,18 @@ function cancelTerminal(
     run_id: runId,
     status: 'cancelled',
   });
+  try {
+    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    writeFinalizeRunTerminalTimeline(orchestratorTimelineDeps(deps), {
+      sessionId: row?.session_id,
+      runId,
+      status: 'cancelled',
+      failureReason: 'cancelled',
+      round: readFinalizeLoopRound(row),
+    });
+  } catch {
+    /* best-effort */
+  }
   return { kind: 'cancelled', runId };
 }
 
@@ -1600,6 +1721,7 @@ function outcomeFromFailed(
           failureReason === 'github_push_5xx'
         ? 'infra_error'
         : 'failed';
+  mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
   // Mirror what `terminate()` emits so subscribers see the same shape on
   // every terminal path, regardless of which phase produced the failure.
   // The sub-phase already wrote the row's terminal status (status,
@@ -1618,6 +1740,29 @@ function outcomeFromFailed(
     failure_reason: failureReason,
   });
   return { kind: 'failed', runId, status, failureReason, detail };
+}
+
+/**
+ * Post a compact failure comment on the kanban card. Skips statuses that
+ * have their own dedicated lifecycle hooks (`onStalled`, `onPushed`) or
+ * that are user-initiated (`cancelled`).
+ */
+function mirrorTerminalFailureOnCard(
+  deps: OrchestratorDeps,
+  runId: string,
+  status: FinalizeRunStatus,
+  failureReason: string,
+  detail?: string,
+): void {
+  if (status === 'cancelled' || status === 'stalled_no_response' || status === 'pushed') {
+    return;
+  }
+  const lifecycle = deps.cardLifecycle ?? NOOP_CARD_LIFECYCLE;
+  try {
+    lifecycle.onTerminalFailed({ runId, status, failureReason, detail });
+  } catch {
+    // Card comments are cosmetic — never fail the run.
+  }
 }
 
 /**
@@ -1672,6 +1817,8 @@ function isTriggerEmpty(trigger: FixDispatchTrigger): boolean {
  */
 function statusFromOutcome(outcome: OrchestratorOutcome): string | undefined {
   switch (outcome.kind) {
+    case 'ready_to_push':
+      return 'ready_to_push';
     case 'pushed':
       return 'pushed';
     case 'cancelled':

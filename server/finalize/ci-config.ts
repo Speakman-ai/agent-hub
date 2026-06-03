@@ -15,7 +15,7 @@
  *     `shell:` override and providing one is an error.
  *   - `steps[].name` is optional and defaults to `step <index>`
  *     (1-indexed), matching what a human would write in a worklog.
- *   - `timeout_minutes` is optional. The runtime cap is 60. The config
+ *   - `timeout_minutes` is optional. The runtime cap is 4 hours. The config
  *     may LOWER the cap (e.g. fast-fail at 10 minutes) but never RAISE
  *     it — and the floor is 1 minute. Out-of-range values error.
  *   - Unknown top-level keys are a HARD ERROR rather than a silent
@@ -35,18 +35,20 @@
 
 import { promises as fs } from 'fs';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
+import { FINALIZE_BUDGET_DEFAULT_SECONDS, FINALIZE_BUDGET_HARD_CEILING_SECONDS } from './budget.js';
+import { parseCiConfigV2Root } from './ci-config-v2.js';
 
 /** Shell prefix the orchestrator uses to execute every `run` step. */
 export const FINALIZE_STEP_SHELL = 'bash -euo pipefail -c';
 
 /** Hard ceiling on `timeout_minutes`. Config may lower; never raise. */
-export const FINALIZE_TIMEOUT_MAX_MINUTES = 60;
+export const FINALIZE_TIMEOUT_MAX_MINUTES = FINALIZE_BUDGET_HARD_CEILING_SECONDS / 60;
 
 /** Floor on `timeout_minutes`. A zero/negative budget is meaningless. */
 export const FINALIZE_TIMEOUT_MIN_MINUTES = 1;
 
 /** Default for `timeout_minutes` when the field is omitted entirely. */
-export const FINALIZE_TIMEOUT_DEFAULT_MINUTES = 60;
+export const FINALIZE_TIMEOUT_DEFAULT_MINUTES = FINALIZE_BUDGET_DEFAULT_SECONDS / 60;
 
 /** Triggers the orchestrator recognises at v1. */
 export const SUPPORTED_TRIGGERS = ['finalize', 'manual'] as const;
@@ -70,6 +72,13 @@ export interface CiStep {
    * `bash -euo pipefail -c <run>` by the orchestrator.
    */
   run: string;
+  /**
+   * Resolved (env-substituted) step-level environment variables. Injected into
+   * the step's process environment (for container jobs, as `docker exec -e`
+   * args — never inlined into `run`, which is persisted/displayed). Absent when
+   * the step declared no `env:`.
+   */
+  env?: Record<string, string>;
 }
 
 export interface CiConfig {
@@ -85,6 +94,12 @@ export interface CiConfig {
   /** Non-empty list of steps in declaration order. */
   steps: CiStep[];
 }
+
+/** v1 config alias for clarity in v2 call-sites. */
+export type CiConfigV1 = CiConfig;
+
+export type { CiConfigV2, CiJobV2, CiStepV2, JobInstance } from './ci-config-v2.js';
+export type AnyCiConfig = CiConfigV1 | import('./ci-config-v2.js').CiConfigV2;
 
 /**
  * Machine-readable error codes for parse / validation failures.
@@ -113,7 +128,8 @@ export type CiConfigErrorCode =
   | 'missing_step_run'
   | 'invalid_step_run'
   | 'invalid_step_name'
-  | 'unknown_step_key';
+  | 'unknown_step_key'
+  | import('./ci-config-v2.js').CiConfigV2ErrorCode;
 
 export interface CiConfigParseError {
   code: CiConfigErrorCode;
@@ -126,7 +142,7 @@ export interface CiConfigParseError {
 }
 
 export type CiConfigParseResult =
-  | { ok: true; config: CiConfig }
+  | { ok: true; config: AnyCiConfig }
   | { ok: false; error: CiConfigParseError };
 
 /**
@@ -167,39 +183,20 @@ export function parseCiConfig(text: string): CiConfigParseResult {
   }
   const root = parsed as Record<string, unknown>;
 
-  // ─── Stage 3: unknown top-level keys (fail closed) ──────────────────
-  for (const key of Object.keys(root)) {
-    if (!SUPPORTED_TOP_LEVEL_KEYS.has(key)) {
-      // `autofix:` gets the same treatment as any other unknown key but
-      // we tag it with extra prose because we know users coming from
-      // the older design will reach for it. The code stays generic so
-      // tests can match the broader contract.
-      const hint =
-        key === 'autofix'
-          ? ' (autofix is not a v1 field — fixes flow into the originating session)'
-          : '';
-      return err_(
-        'unknown_top_level_key',
-        `Unknown top-level key in ci.yaml: '${key}'${hint}.`,
-        key,
-      );
-    }
-  }
-
-  // ─── Stage 4: version ratchet ───────────────────────────────────────
+  // ─── Stage 3: version ───────────────────────────────────────────────
   if (!('version' in root)) {
     return err_('missing_version', "ci.yaml is missing the required 'version' field.", 'version');
   }
   const version = root.version;
-  if (version !== 1) {
+  if (version !== 1 && version !== 2) {
     return err_(
       'invalid_version',
-      `ci.yaml 'version' must be 1 (got ${describeValue(version)}); v1 is the only accepted schema.`,
+      `ci.yaml 'version' must be 1 or 2 (got ${describeValue(version)}).`,
       'version',
     );
   }
 
-  // ─── Stage 5: on: triggers ──────────────────────────────────────────
+  // ─── Stage 4: on: triggers (shared v1 + v2) ─────────────────────────
   if (!('on' in root)) {
     return err_('missing_on', "ci.yaml is missing the required 'on' field.", 'on');
   }
@@ -240,7 +237,7 @@ export function parseCiConfig(text: string): CiConfigParseResult {
     on.push(entry);
   }
 
-  // ─── Stage 6: timeout_minutes ───────────────────────────────────────
+  // ─── Stage 5: timeout_minutes (shared v1 + v2) ──────────────────────
   let timeoutMinutes: number = FINALIZE_TIMEOUT_DEFAULT_MINUTES;
   if ('timeout_minutes' in root) {
     const raw = root.timeout_minutes;
@@ -255,15 +252,35 @@ export function parseCiConfig(text: string): CiConfigParseResult {
       return err_(
         'timeout_out_of_range',
         `ci.yaml 'timeout_minutes' = ${raw} is out of range; must be ` +
-          `between ${FINALIZE_TIMEOUT_MIN_MINUTES} and ${FINALIZE_TIMEOUT_MAX_MINUTES} ` +
-          `(the v1 hard ceiling — config may lower the cap but never raise it).`,
+          `between ${FINALIZE_TIMEOUT_MIN_MINUTES} and ${FINALIZE_TIMEOUT_MAX_MINUTES}.`,
         'timeout_minutes',
       );
     }
     timeoutMinutes = raw;
   }
 
-  // ─── Stage 7: steps ─────────────────────────────────────────────────
+  if (version === 2) {
+    return parseCiConfigV2Root(root, on, timeoutMinutes);
+  }
+
+  // ─── v1-only: unknown top-level keys ────────────────────────────────
+  for (const key of Object.keys(root)) {
+    if (!SUPPORTED_TOP_LEVEL_KEYS.has(key)) {
+      const hint =
+        key === 'autofix'
+          ? ' (autofix is not a v1 field — fixes flow into the originating session)'
+          : key === 'jobs'
+            ? ' (use version: 2 for jobs/matrix)'
+            : '';
+      return err_(
+        'unknown_top_level_key',
+        `Unknown top-level key in ci.yaml: '${key}'${hint}.`,
+        key,
+      );
+    }
+  }
+
+  // ─── v1-only: steps ─────────────────────────────────────────────────
   if (!('steps' in root)) {
     return err_('missing_steps', "ci.yaml is missing the required 'steps' field.", 'steps');
   }

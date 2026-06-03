@@ -5,6 +5,12 @@
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
+import {
+  applyArgvPromptCap,
+  logArgvCapTruncation,
+  SAFE_ARG_STRLEN_BYTES,
+  writeSystemPromptFile,
+} from './spawn-prompt-payload.js';
 
 export const SESSION_MULTI_ENGINES = [
   'claude-code',
@@ -49,12 +55,16 @@ export interface BuildSessionMultiSpawnArgsInput {
   codexProfile?: string | null;
   /** When true, force read-only / ask-mode spawn (advisor turns). */
   advisory?: boolean;
+  /** Used for `--system-prompt-file` temp paths and argv-cap logging. */
+  sessionId?: string;
 }
 
 export interface SessionMultiSpawnPlan {
   bin: string;
   args: string[];
   stdinPrompt: string | null;
+  /** Best-effort rm of per-spawn system-prompt temp dir (claude-code). */
+  systemPromptFileCleanup?: (() => void) | null;
 }
 
 export function buildSessionMultiSpawnArgs(
@@ -79,12 +89,16 @@ export function buildSessionMultiSpawnArgs(
         'buildSessionMultiSpawnArgs: cursor-agent requires cursorChatId (call createCursorChat first)',
       );
     }
-    const prompt = `${systemPrompt}\n\n${userPrompt}`;
+    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const capped = applyArgvPromptCap(rawPrompt);
+    if (capped.truncated && input.sessionId) {
+      logArgvCapTruncation('cursor-agent', input.sessionId, capped.originalBytes, rawPrompt.length);
+    }
     return {
       bin: bins.cursor,
       args: [
         '-p',
-        prompt,
+        capped.prompt,
         ...(advisory ? [] : ['--force']),
         '--model',
         model,
@@ -95,19 +109,24 @@ export function buildSessionMultiSpawnArgs(
         '--stream-partial-output',
       ],
       stdinPrompt: null,
+      systemPromptFileCleanup: null,
     };
   }
 
   if (engine === 'gemini-cli') {
-    const prompt = `${systemPrompt}\n\n${userPrompt}`;
-    const args = ['-p', prompt, '--output-format', 'stream-json'];
+    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const capped = applyArgvPromptCap(rawPrompt);
+    if (capped.truncated && input.sessionId) {
+      logArgvCapTruncation('gemini-cli', input.sessionId, capped.originalBytes, rawPrompt.length);
+    }
+    const args = ['-p', capped.prompt, '--output-format', 'stream-json'];
     if (model && model !== 'auto') {
       args.push('--model', model);
     }
     if (!advisory) {
       args.push('--yolo');
     }
-    return { bin: bins.gemini, args, stdinPrompt: null };
+    return { bin: bins.gemini, args, stdinPrompt: null, systemPromptFileCleanup: null };
   }
 
   if (engine === 'codex-cli') {
@@ -134,24 +153,49 @@ export function buildSessionMultiSpawnArgs(
     }
     args.push('-');
     const prompt = `${systemPrompt}\n\n${userPrompt}`;
-    return { bin: bins.codex, args, stdinPrompt: prompt };
+    return { bin: bins.codex, args, stdinPrompt: prompt, systemPromptFileCleanup: null };
   }
 
+  let systemPromptFileCleanup: (() => void) | null = null;
+  let claudeSystemPromptArg: string;
+  if (input.sessionId) {
+    const promptFile = writeSystemPromptFile(systemPrompt, input.sessionId);
+    systemPromptFileCleanup = promptFile.cleanup;
+    claudeSystemPromptArg = promptFile.path;
+  } else {
+    claudeSystemPromptArg = systemPrompt;
+  }
+
+  // The claude CLI takes the user prompt as a positional argv argument, so a
+  // large prompt — e.g. a fix turn that embeds verbose CI step logs, or a big
+  // local-diff reviewer prompt — overflows ARG_MAX and the spawn dies with
+  // `spawn E2BIG`. Cap it exactly like the chat path does (the system prompt is
+  // already file-backed above, so it's never the culprit).
+  const cappedUserPrompt = applyArgvPromptCap(userPrompt);
+  if (cappedUserPrompt.truncated && input.sessionId) {
+    logArgvCapTruncation(
+      'session-multi-user',
+      input.sessionId,
+      cappedUserPrompt.originalBytes,
+      SAFE_ARG_STRLEN_BYTES,
+    );
+  }
   const args: string[] = [
     '--print',
     '--permission-mode',
     claudePermissionModeForSpawn(advisory ? 'plan' : 'bypassPermissions'),
     '--model',
     model,
-    '--system-prompt',
-    systemPrompt,
+    ...(input.sessionId
+      ? (['--system-prompt-file', claudeSystemPromptArg] as const)
+      : (['--system-prompt', claudeSystemPromptArg] as const)),
     '--output-format',
     'stream-json',
     '--include-partial-messages',
     '--verbose',
     ...disableNativeSkillToolArgs(),
     '--',
-    userPrompt,
+    cappedUserPrompt.prompt,
   ];
-  return { bin: bins.claude, args, stdinPrompt: null };
+  return { bin: bins.claude, args, stdinPrompt: null, systemPromptFileCleanup };
 }

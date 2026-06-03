@@ -71,6 +71,7 @@ defaults:
 env:
   AWS_REGION: us-east-1 # ECR Public API is us-east-1 only
   ECR_PUBLIC_URI: public.ecr.aws/h9t4v7h0/agent-hub
+  ECR_PUBLIC_RUNNER_URI: public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner
   AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
 
 jobs:
@@ -134,8 +135,17 @@ jobs:
             fi
             echo "DOCKER_TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "runner_tags_multi<<RUNNER_TAGS_EOF"
+            echo "${ECR_PUBLIC_RUNNER_URI}:${SHA_SHORT}"
+            echo "${ECR_PUBLIC_RUNNER_URI}:${BRANCH}"
+            if [[ -n "$EXTRA_TAG" ]]; then
+              echo "${ECR_PUBLIC_RUNNER_URI}:${EXTRA_TAG}"
+            fi
+            echo "RUNNER_TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Build + push image
+      - name: Build + push server image
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -144,23 +154,57 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ${{ steps.tags.outputs.docker_tags_multi }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=agent-hub-server
+          cache-to: type=gha,mode=max,scope=agent-hub-server
+
+      - name: Set up Node (for runner-agent bundle)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Bundle runner-agent into the runner build context
+        # The runner Dockerfile COPYs runner-agent.mjs; generate it (esbuild
+        # resolves the TS directly, no npm ci needed) before the image build.
+        run: |
+          cd server
+          npx --yes esbuild@0.27.7 finalize/runner-agent-cli.ts \
+            --bundle --platform=node --format=esm --target=node22 \
+            --banner:js="import{createRequire as __cr}from'module';const require=__cr(import.meta.url);" \
+            --outfile=finalize/runner/runner-agent.mjs
+
+      - name: Build + push Finalize runner image
+        id: build_runner
+        uses: docker/build-push-action@v5
+        with:
+          context: server/finalize/runner
+          file: server/finalize/runner/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.runner_tags_multi }}
+          cache-from: type=gha,scope=agent-hub-finalize-runner
+          cache-to: type=gha,mode=max,scope=agent-hub-finalize-runner
 
       - name: Summary
         env:
           ST_SHA: ${{ steps.tags.outputs.sha_short }}
           ST_BRANCH: ${{ steps.tags.outputs.branch }}
+          ECR_PUBLIC_RUNNER_URI: public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner
         run: |
           {
-            echo "### Pushed image"
+            echo "### Pushed images"
             echo ""
+            echo "**Server**"
             echo "- \`${ECR_PUBLIC_URI}:${ST_SHA}\`"
             echo "- \`${ECR_PUBLIC_URI}:${ST_BRANCH}\`"
+            echo ""
+            echo "**Finalize runner (DinD)**"
+            echo "- \`${ECR_PUBLIC_RUNNER_URI}:${ST_SHA}\`"
+            echo "- \`${ECR_PUBLIC_RUNNER_URI}:${ST_BRANCH}\`"
             echo ""
             echo "Pull:"
             echo '```'
             echo "docker pull ${ECR_PUBLIC_URI}:${ST_SHA}"
+            echo "docker pull ${ECR_PUBLIC_RUNNER_URI}:${ST_BRANCH}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

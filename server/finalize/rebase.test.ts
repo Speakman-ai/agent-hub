@@ -171,7 +171,7 @@ describe('runRebasePhase — trivial conflict auto-resolved', () => {
     const runGit = vi.fn(async (args: string[]) => {
       // Reject the "re-issue rebase" inside attemptInlineConflictFix so the
       // conflict-listing branch runs. Other commands succeed.
-      if (args[0] === 'rebase' && args[1] === 'origin/main') {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
         throw new Error('CONFLICT');
       }
       if (args[0] === 'diff' && args.includes('--diff-filter=U')) {
@@ -245,7 +245,7 @@ describe('runRebasePhase — trivial conflict auto-resolved', () => {
     let activeConflict: string | null = relA;
 
     const runGit = vi.fn(async (args: string[]) => {
-      if (args[0] === 'rebase' && args[1] === 'origin/main') {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
         // The re-issued rebase fails with conflict #1.
         throw new Error('CONFLICT');
       }
@@ -321,7 +321,7 @@ describe('runRebasePhase — trivial conflict auto-resolved', () => {
     );
 
     const runGit = vi.fn(async (args: string[]) => {
-      if (args[0] === 'rebase' && args[1] === 'origin/main') {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
         throw new Error('CONFLICT');
       }
       if (args[0] === 'diff' && args.includes('--diff-filter=U')) {
@@ -385,7 +385,7 @@ describe('runRebasePhase — dispatch path', () => {
     );
 
     const runGit = vi.fn(async (args: string[]) => {
-      if (args[0] === 'rebase' && args[1] === 'origin/main') {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
         throw new Error('CONFLICT');
       }
       if (args[0] === 'diff' && args.includes('--diff-filter=U')) {
@@ -459,7 +459,7 @@ describe('runRebasePhase — dispatch path', () => {
     );
 
     const runGit = vi.fn(async (args: string[]) => {
-      if (args[0] === 'rebase' && args[1] === 'origin/main') throw new Error('CONFLICT');
+      if (args[0] === 'rebase' && args.includes('origin/main')) throw new Error('CONFLICT');
       if (args[0] === 'diff') return { stdout: `${rel}\n`, stderr: '' };
       return { stdout: '', stderr: '' };
     });
@@ -508,7 +508,7 @@ describe('runRebasePhase — budget exhaustion', () => {
     );
 
     const runGit = vi.fn(async (args: string[]) => {
-      if (args[0] === 'rebase' && args[1] === 'origin/main') throw new Error('CONFLICT');
+      if (args[0] === 'rebase' && args.includes('origin/main')) throw new Error('CONFLICT');
       if (args[0] === 'diff') return { stdout: `${rel}\n`, stderr: '' };
       return { stdout: '', stderr: '' };
     });

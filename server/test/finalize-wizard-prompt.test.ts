@@ -129,7 +129,7 @@ describe('finalize-wizard kickoff prompt', () => {
     expect(promptWithTarget).toMatch(/2\. \*\*Existing config\*\*/);
     expect(promptWithTarget).toMatch(/3\. \*\*Monorepo \/ sub-projects\*\*/);
     expect(promptWithTarget).toMatch(/4\. \*\*Step proposal\*\*/);
-    expect(promptWithTarget).toMatch(/5\. \*\*Env vars\*\*/);
+    expect(promptWithTarget).toMatch(/5\. \*\*Env vars \/ secrets\*\*/);
     // Round-1 fix: confirm-before-apply guard.
     expect(promptWithTarget).toMatch(/6\. \*\*Confirm target branch\*\*/);
     expect(promptWithTarget).toMatch(/7\. \*\*Persist\*\*/);
@@ -145,6 +145,13 @@ describe('finalize-wizard kickoff prompt', () => {
     expect(promptWithTarget).toMatch(/`name`\+`run` per step only/);
     expect(promptWithTarget).toMatch(/`timeout_minutes` in `\[1, 60\]`/);
     expect(promptWithTarget).toMatch(/Never.*propose.*shell:.*env:.*uses:.*with:.*matrix:/);
+  });
+
+  it('documents CI replacement mode so the wizard does not refuse complex steps', () => {
+    expect(promptWithTarget).toMatch(/CI replacement mode/i);
+    expect(promptWithTarget).toMatch(/replace GitHub Actions CI/i);
+    expect(promptWithTarget).toMatch(/stop downgrading scope/i);
+    expect(promptWithTarget).toMatch(/Never.*refuse, argue feasibility, or shrink/i);
   });
 
   it('loads the finalize-setup skill via the gateway block', () => {

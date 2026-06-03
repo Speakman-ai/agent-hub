@@ -47,3 +47,8 @@ export function hydrateChangesReady(sessions) {
   }
   return out;
 }
+
+export function hasCommittableChangesFromReady(changes) {
+  if (!changes || typeof changes !== 'object') return false;
+  return Boolean(changes.hasUncommitted || changes.hasUnpushed);
+}

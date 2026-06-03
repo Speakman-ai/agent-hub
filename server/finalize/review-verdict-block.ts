@@ -39,7 +39,11 @@
  * reviewers stay well below both limits; the cap exists only so a
  * misbehaving model can't blow up the side-panel UI.
  */
-import { extractJsonFromTagBody } from '../action-block-parsing.js';
+import {
+  extractJsonFromTagBody,
+  normalizeControlCharsInsideStrings,
+  sliceFirstBalancedJson,
+} from '../action-block-parsing.js';
 
 /** Mirror of `reviewer-dispatch.REVIEWER_THREAD_HARD_CAP` — see that file. */
 export const REVIEWER_THREAD_HARD_CAP_DEFAULT = 200;
@@ -98,24 +102,37 @@ export function detectReviewVerdictBlock(text: string): ReviewVerdictDetectionRe
     return { present: false, task: null, reason: null, rawBody: null };
   }
   const match = text.match(/<agenthub:review-verdict>\s*([\s\S]*?)\s*<\/agenthub:review-verdict>/);
-  if (!match) return { present: false, task: null, reason: null, rawBody: null };
-  const rawBody = match[1] ?? '';
+  if (match) {
+    return parseReviewVerdictPayload(match[1] ?? '', { present: true });
+  }
 
+  const bare = findBareReviewVerdictTail(text);
+  if (bare) {
+    return parseReviewVerdictPayload(bare.rawBody, { present: true });
+  }
+
+  return { present: false, task: null, reason: null, rawBody: null };
+}
+
+function parseReviewVerdictPayload(
+  rawBody: string,
+  opts: { present: boolean },
+): ReviewVerdictDetectionResult {
   const normalized = extractJsonFromTagBody(rawBody);
   let parsed: unknown;
   try {
     parsed = normalized === null ? JSON.parse(rawBody) : JSON.parse(normalized);
   } catch {
-    return { present: true, task: null, reason: 'invalid-json', rawBody };
+    return { present: opts.present, task: null, reason: 'invalid-json', rawBody };
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { present: true, task: null, reason: 'not-object', rawBody };
+    return { present: opts.present, task: null, reason: 'not-object', rawBody };
   }
   const obj = parsed as Record<string, unknown>;
 
   const rawVerdict = typeof obj.verdict === 'string' ? obj.verdict.trim().toLowerCase() : '';
   if (!rawVerdict) {
-    return { present: true, task: null, reason: 'missing-verdict', rawBody };
+    return { present: opts.present, task: null, reason: 'missing-verdict', rawBody };
   }
   let verdict: ReviewVerdict | null = null;
   if (rawVerdict === 'approved' || rawVerdict === 'approve') verdict = 'approved';
@@ -128,7 +145,7 @@ export function detectReviewVerdictBlock(text: string): ReviewVerdictDetectionRe
   )
     verdict = 'changes_requested';
   if (!verdict) {
-    return { present: true, task: null, reason: 'invalid-verdict', rawBody };
+    return { present: opts.present, task: null, reason: 'invalid-verdict', rawBody };
   }
 
   // `threads` is optional; default to []. Allowing absent means "approved
@@ -136,12 +153,56 @@ export function detectReviewVerdictBlock(text: string): ReviewVerdictDetectionRe
   let threads: ReviewThreadInput[] = [];
   if (obj.threads !== undefined && obj.threads !== null) {
     if (!Array.isArray(obj.threads)) {
-      return { present: true, task: null, reason: 'threads-not-array', rawBody };
+      return { present: opts.present, task: null, reason: 'threads-not-array', rawBody };
     }
     threads = sanitiseThreadInputs(obj.threads as unknown[]);
   }
 
-  return { present: true, task: { verdict, threads }, reason: null, rawBody };
+  return { present: opts.present, task: { verdict, threads }, reason: null, rawBody };
+}
+
+/**
+ * Fallback when the reviewer omits `<agenthub:review-verdict>` tags but
+ * still ends the turn with a trailing JSON object `{ "verdict": ... }`.
+ * Common when models follow the prose + fenced-json pattern from the skill
+ * prompt without wrapping the fence in the action block.
+ */
+function findBareReviewVerdictTail(text: string): { rawBody: string; startIndex: number } | null {
+  const trimmed = text.trimEnd();
+
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```\s*$/i);
+  if (fenceMatch && fenceMatch.index != null) {
+    const inner = fenceMatch[1] ?? '';
+    const normalized = extractJsonFromTagBody(inner);
+    if (normalized && hasVerdictField(normalized)) {
+      return { rawBody: inner, startIndex: fenceMatch.index };
+    }
+  }
+
+  const lastBrace = trimmed.lastIndexOf('{');
+  if (lastBrace < 0) return null;
+  const tailSlice = trimmed.slice(lastBrace);
+  const balanced = sliceFirstBalancedJson(tailSlice);
+  if (!balanced) return null;
+  const endPos = lastBrace + balanced.length;
+  if (trimmed.slice(endPos).trim() !== '') return null;
+  const normalized = normalizeControlCharsInsideStrings(balanced);
+  if (!hasVerdictField(normalized)) return null;
+  return { rawBody: balanced, startIndex: lastBrace };
+}
+
+function hasVerdictField(jsonStr: string): boolean {
+  try {
+    const parsed = JSON.parse(jsonStr) as unknown;
+    return (
+      !!parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as Record<string, unknown>).verdict === 'string'
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function describeReviewVerdictReason(reason: ReviewVerdictMalformedReason): string {
@@ -222,9 +283,15 @@ function truncateBody(body: string): string {
  */
 export function stripReviewVerdictBlock(text: string): string {
   if (typeof text !== 'string') return text;
-  const stripped = text.replace(
+  const tagStripped = text.replace(
     /\s*<agenthub:review-verdict>\s*[\s\S]*?\s*<\/agenthub:review-verdict>\s*$/,
     '',
   );
-  return stripped.trim();
+  if (tagStripped !== text) return tagStripped.trim();
+
+  const bare = findBareReviewVerdictTail(text);
+  if (bare && bare.startIndex >= 0) {
+    return text.trimEnd().slice(0, bare.startIndex).trimEnd();
+  }
+  return text;
 }

@@ -72,7 +72,11 @@ export const DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS = 1;
  * end of the structured prompt.
  */
 export const DISPATCH_TRAILER =
-  'Please fix and commit. The pipeline will re-run automatically when you finish your turn.';
+  'Please fix and commit. The pipeline will re-run automatically when you finish your turn. Do not re-run the full `.agent-hub/ci.yaml` suite locally — read pass/fail and step logs in the session strip; run only targeted tests for the failing case if needed.';
+
+/** Trailer for reviewer-only dispatches — CI is deferred until approval. */
+export const DISPATCH_TRAILER_REVIEWER =
+  'Please address the reviewer feedback and commit. When you finish your turn, review will run again; CI runs only after the reviewer approves. Do not re-run the full `.agent-hub/ci.yaml` suite locally unless you need a targeted check for a specific change.';
 
 /**
  * Payload describing the failed step that triggered this dispatch.
@@ -132,8 +136,14 @@ export interface FixDispatchTrigger {
  *   - `'cancelled'` — the caller (or a parent abort signal) requested
  *     cancellation. Watchdog timers cleared; no terminal status written
  *     here — the cancel path owns that.
+ *   - `'spawn_failed'` — the agent CLI never started (E2BIG, ENOENT, …).
+ *     Orchestrator should fail the run — not re-enter the loop with no fix.
  */
-export type FixDispatchOutcome = 'turn_ended' | 'stalled_no_response' | 'cancelled';
+export type FixDispatchOutcome =
+  | 'turn_ended'
+  | 'stalled_no_response'
+  | 'cancelled'
+  | 'spawn_failed';
 
 export interface FixDispatchResult {
   outcome: FixDispatchOutcome;
@@ -153,7 +163,10 @@ export interface FixDispatchResult {
  * exit path so we never leak listeners.
  */
 export interface TurnEndSubscriber {
-  subscribe(sessionId: string, onTurnEnd: () => void): () => void;
+  subscribe(
+    sessionId: string,
+    onTurnEnd: (outcome: 'turn_ended' | 'spawn_failed') => void,
+  ): () => void;
 }
 
 /**
@@ -168,6 +181,10 @@ export interface CancelSignal {
   onAbort(listener: () => void): () => void;
 }
 
+export interface SpawnFixTurnFn {
+  (args: { sessionId: string; body: string }): Promise<{ spawned: boolean }>;
+}
+
 export interface FixDispatchDeps {
   stmts: Pick<
     Stmts,
@@ -180,6 +197,12 @@ export interface FixDispatchDeps {
   >;
   broadcast: BroadcastFn;
   turnEnd: TurnEndSubscriber;
+  /**
+   * Spawn the originating session agent after the §7 system message is
+   * inserted. Production wires `createSpawnFinalizeFixTurn`; without it
+   * the run parks at "awaiting fix" forever.
+   */
+  spawnFixTurn?: SpawnFixTurnFn;
   /** Dep bundle handed to the stall watchdog; see {@link StallWatchdogDeps}. */
   stallWatchdog?: Omit<StallWatchdogDeps, 'broadcast' | 'stmts'>;
   /** Injectable clock for tests. */
@@ -364,6 +387,20 @@ export async function dispatchFixMessage(
     );
   }
 
+  if (deps.spawnFixTurn) {
+    const spawnResult = await deps.spawnFixTurn({ sessionId: opts.sessionId, body });
+    if (!spawnResult.spawned) {
+      log(
+        `[finalize-fix-dispatch] agent spawn did not start for session=${opts.sessionId} run=${opts.runId}`,
+      );
+      return { outcome: 'spawn_failed', messageId, activeSecondsBilled };
+    }
+  } else {
+    log(
+      `[finalize-fix-dispatch] spawnFixTurn not wired — session ${opts.sessionId} will not auto-respond`,
+    );
+  }
+
   // Pre-cancel: caller already aborted before we set up the wait
   // primitives. Skip both watchdog and turn-end subscription.
   if (opts.signal?.aborted) {
@@ -403,7 +440,9 @@ export async function dispatchFixMessage(
     // Subscribe to turn-end first so a same-tick `done` event that
     // fires synchronously during watchdog setup is not missed.
     try {
-      unsubscribeTurnEnd = deps.turnEnd.subscribe(opts.sessionId, () => finish('turn_ended'));
+      unsubscribeTurnEnd = deps.turnEnd.subscribe(opts.sessionId, (outcome) =>
+        finish(outcome === 'spawn_failed' ? 'spawn_failed' : 'turn_ended'),
+      );
     } catch (err) {
       log(
         `[finalize-fix-dispatch] turn-end subscribe failed for session=${opts.sessionId}: ${
@@ -523,7 +562,7 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
   }
 
   lines.push('');
-  lines.push(DISPATCH_TRAILER);
+  lines.push(hasFailedStep ? DISPATCH_TRAILER : DISPATCH_TRAILER_REVIEWER);
 
   return lines.join('\n');
 }

@@ -43,7 +43,7 @@
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
-import { loadCiConfigFromFile } from './ci-config.js';
+import { loadCiConfigFromFile, FINALIZE_TIMEOUT_DEFAULT_MINUTES } from './ci-config.js';
 
 // `server/finalize/repo-ci-yaml-example-surveytracker.test.ts` and the
 // fixture file `server/finalize/fixtures/example-surveytracker.ci.yaml`
@@ -77,7 +77,7 @@ describe('survey-tracker reference: example-surveytracker.ci.yaml', () => {
   it('runs the documented v1-dogfood step set in order', async () => {
     const result = await loadCiConfigFromFile(FIXTURE_PATH);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.config.version !== 1) return;
 
     // Contract (from the file header + wiki appendix):
     //   1. install backend venv + flake8 + black
@@ -123,20 +123,22 @@ describe('survey-tracker reference: example-surveytracker.ci.yaml', () => {
     expect(runs[4]).toMatch(/build:production/);
   });
 
-  it('does not lower the 60-minute timeout (cold Angular install + Cypress needs slack)', async () => {
+  it('inherits the default timeout (cold Angular install + Cypress needs slack)', async () => {
     const result = await loadCiConfigFromFile(FIXTURE_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Matches the agent-hub config: cold `npm ci` on the Angular
-    // 18 dependency graph + a Cypress run is ~5 min on a fresh
-    // runner; ceiling stays at the v1 default.
-    expect(result.config.timeoutMinutes).toBe(60);
+    // The fixture omits `timeout_minutes`, so it inherits the parser
+    // default. That default was raised from 60m to 240m (4h) to give
+    // cold `npm ci` on the Angular 18 dependency graph + a Cypress run
+    // plenty of slack on a fresh runner.
+    expect(result.config.timeoutMinutes).toBe(FINALIZE_TIMEOUT_DEFAULT_MINUTES);
+    expect(result.config.timeoutMinutes).toBe(240);
   });
 
   it('does NOT include backend pytest at v1 (Postgres + AWS secrets deferred)', async () => {
     const result = await loadCiConfigFromFile(FIXTURE_PATH);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.config.version !== 1) return;
     // Tripwire: the moment someone adds a backend pytest step here,
     // they must also wire the service-container / env-passthrough
     // mechanism documented in the wiki appendix (and in this card's

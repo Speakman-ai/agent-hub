@@ -59,7 +59,7 @@ describe('ECR publish + push-image deploy contract', () => {
     // The push job must assign an `id` to the build step and surface its
     // digest output, otherwise needs.push.outputs.digest is empty.
     expect(yml, 'build step needs `id: build` so its outputs are addressable').toMatch(
-      /-\s+name: Build \+ push image\s*\n\s+id: build/,
+      /-\s+name: Build \+ push server image\s*\n\s+id: build/,
     );
     expect(yml, 'push job must export digest in `outputs:`').toMatch(
       /outputs:\s*\n\s*digest:\s*\$\{\{\s*steps\.build\.outputs\.digest\s*\}\}/,

@@ -85,3 +85,16 @@ output "ec2_docker_howto" {
 # PR-env outputs removed in PR-Env Removal #6 alongside the wildcard ACM
 # cert, DNS-01 validation, and *.preview.<alb_fqdn> A-record. See alb.tf
 # for the teardown note.
+
+# Created (owned) public hosted zone for base_domain (create_route53_zone). The
+# NS delegation into the root apex zone is written automatically when
+# root_delegation_role_arn/zone_id are set; these are for verification.
+output "owned_zone_id" {
+  description = "Zone ID of the hosted zone created for base_domain (empty unless create_route53_zone)."
+  value       = length(aws_route53_zone.owned) > 0 ? aws_route53_zone.owned[0].zone_id : ""
+}
+
+output "owned_zone_name_servers" {
+  description = "Nameservers of the created base_domain zone (the NS delegation written into the root apex zone)."
+  value       = length(aws_route53_zone.owned) > 0 ? aws_route53_zone.owned[0].name_servers : []
+}

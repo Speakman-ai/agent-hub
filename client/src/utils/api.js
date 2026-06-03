@@ -1,5 +1,6 @@
 import { getApiBase, getAuthHeaders } from './connection.js';
 import { getToken as getJwt, clearToken } from './auth.js';
+import { normalizeSessionMessagesResponse } from './sessionMessagesResponse.js';
 
 // Session-scoped flag we set right before a 401-triggered reload so that the
 // first request after reload (e.g. the bootstrap `getAuthStatus` probe in
@@ -152,6 +153,8 @@ export const api = {
   // Settings → Preview: repo scan + compose draft (no agent session).
   getPreviewEnvironmentDraft: (projectId) =>
     fetchJSON(`/projects/${projectId}/preview/environment-draft`),
+  getFinalizeEnvironmentDraft: (projectId) =>
+    fetchJSON(`/projects/${projectId}/finalize/environment-draft`),
   // Default guided setup — spawns wizard session; opens chat in UI.
   startPreviewWizard: (projectId) =>
     fetchJSON(`/projects/${projectId}/preview/setup-wizard`, {
@@ -170,12 +173,13 @@ export const api = {
   // `sessionId` overrides the "most recent project session with a
   // worktree" heuristic. Returns `{ ok, file, commit_sha, branch,
   // session_id }`.
-  applyFinalizeWizardConfig: (projectId, { ciYamlContent, sessionId } = {}) =>
+  applyFinalizeWizardConfig: (projectId, { ciYamlContent, sessionId, secrets } = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/setup-apply`, {
       method: 'POST',
       body: JSON.stringify({
         ci_yaml_content: ciYamlContent,
         ...(sessionId ? { session_id: sessionId } : {}),
+        ...(secrets ? { secrets } : {}),
       }),
     }),
   // Notify Settings that the Finalize wizard finished.
@@ -271,7 +275,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, ask_mode: askMode || false }),
     }),
-  getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
+  getMessages: async (sessionId, opts = {}) => {
+    const q = opts.limit != null ? `?limit=${encodeURIComponent(String(opts.limit))}` : '';
+    const data = await fetchJSON(`/sessions/${sessionId}/messages${q}`);
+    return normalizeSessionMessagesResponse(data).messages;
+  },
   getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
   /**
    * Historical delegations for this session, ordered `started_at DESC`.
@@ -282,6 +290,9 @@ export const api = {
   getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
   /** Session sidebar: linked kanban card, skills, aggregated run snapshot from message events. */
   getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
+  /** Live git status — uncommitted or unpushed work in the session worktree. */
+  getSessionWorktreeChanges: (sessionId, opts = {}) =>
+    fetchJSON(`/sessions/${sessionId}/worktree-changes`, { signal: opts.signal }),
   /**
    * Most-recent Finalize run for a session. Returns `{ run: null }` when
    * the session has never triggered a Finalize run — used by the read-only
@@ -311,6 +322,29 @@ export const api = {
     fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+  /**
+   * Kick off Finalize for an ad-hoc session. Creates a kanban card on first
+   * use when the session is not already card-linked.
+   */
+  startFinalizeRunForSession: (projectId, sessionId) =>
+    fetchJSON(`/projects/${projectId}/sessions/${sessionId}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  pushFinalizeRun: (projectId, runId, { force = false } = {}) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/push`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
+  pushSessionToGithub: (projectId, sessionId, { force = false } = {}) =>
+    fetchJSON(`/projects/${projectId}/sessions/${sessionId}/push-to-github`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
+  getFinalizeStepOutput: (projectId, runId, stepIndex, opts = {}) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/steps/${stepIndex}/output`, {
+      signal: opts.signal,
     }),
   /**
    * Cancel an in-flight Finalize run. UI-only at v0 — flips the DB row to

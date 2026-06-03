@@ -40,7 +40,7 @@ import { setSessionOwner, resolveAutonomousOwnerUserId } from './session-ownersh
 import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
-import { markSessionAutoShipOnComplete } from './session-ship.js';
+import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from './session-ship.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1004,6 +1004,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const wt = defaultSessionUseWorktreeFlag(projRow);
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       markSessionAutoShipOnComplete(d.stmts, sessionId);
+      markSessionFinalizeAutomation(d.stmts, sessionId);
       // Autonomous-dispatch sessions are created by the system (no
       // human caller in scope), but we still want to attribute them to
       // the real human responsible so per-user GitHub tokens, CLI

@@ -23,10 +23,11 @@
  *
  * Lookup order for the target worktree (apply endpoint):
  *   - Request body `session_id` (when the chat session knows its own id)
- *   - The wizard's own session id (when the apply call originates from
- *     the wizard's `[Finalize Setup]` session, which itself has no
- *     worktree). We fall back to the most-recent session for the project
- *     that has both a `worktree_path` and a `worktree_branch`.
+ *     → use persisted worktree when set; otherwise bind the project's primary
+ *       git checkout (`project.cwd` + current branch) for resumed sessions
+ *       that chat in the main repo without a dedicated worktree clone yet.
+ *   - Otherwise the most-recent session for the project that has both a
+ *     `worktree_path` and a `worktree_branch`.
  *
  * Tests live in `server/routes/finalize-wizard.test.ts`.
  */
@@ -42,6 +43,12 @@ import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectFinalizeSetupDraft, type FinalizeSetupDraft } from '../finalize-setup-draft.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
+import { applyWizardSecrets, type WizardApplySecrets } from '../wizard-secrets-apply.js';
+import {
+  pickSessionWithWorktreeForHint,
+  resolveApplyTarget,
+  type ResolvedApplyTarget,
+} from '../finalize/finalize-setup-apply-target.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { Project, RouteDeps, SessionRow } from '../types.js';
 
@@ -80,65 +87,16 @@ interface ApplyBody {
   ci_yaml_content?: string;
   /**
    * Optional explicit session id whose worktree should receive the file.
-   * Falls through to the "most recent session for this project with a
-   * worktree" heuristic when missing — the wizard session itself does
-   * not have a worktree, so the originating session id is the canonical
-   * pointer.
+   * When the session has no persisted worktree yet, setup-apply binds
+   * the project's primary git checkout (`project.cwd` + current branch).
    */
   session_id?: string;
+  /** Optional project secrets to persist alongside the ci.yaml commit. */
+  secrets?: WizardApplySecrets;
 }
 
-interface SessionWithWorktree {
-  id: string;
-  worktree_path: string;
-  worktree_branch: string;
-}
-
-function pickSessionWithWorktree(
-  stmts: RouteDeps['stmts'],
-  project: Project,
-  preferredSessionId: string | undefined,
-): SessionWithWorktree | null {
-  if (preferredSessionId) {
-    const row = stmts.getSession.get(preferredSessionId) as SessionRow | undefined;
-    if (row && row.worktree_path && row.worktree_branch) {
-      return {
-        id: row.id,
-        worktree_path: row.worktree_path,
-        worktree_branch: row.worktree_branch,
-      };
-    }
-  }
-  // Walk the project's agents and look for the most-recent session with a
-  // worktree. `getSessions` is `SELECT * FROM sessions WHERE agent_id = ?
-  // … ORDER BY updated_at DESC`, so the first hit per agent is the
-  // freshest one. We pick the freshest hit across all agents.
-  // updated_at is an ISO string; lexical comparison matches chronological.
-  let best: { row: SessionRow; updated: string } | null = null;
-  for (const agent of project.agents ?? []) {
-    const rows = stmts.getSessions.all(agent.id) as SessionRow[];
-    for (const row of rows) {
-      if (!row.worktree_path || !row.worktree_branch) continue;
-      const updated = row.updated_at ?? '';
-      if (!best || updated > best.updated) {
-        best = { row, updated };
-      }
-      break; // rows are pre-sorted DESC; first hit per agent is freshest
-    }
-  }
-  if (!best) return null;
-  return {
-    id: best.row.id,
-    worktree_path: best.row.worktree_path as string,
-    worktree_branch: best.row.worktree_branch as string,
-  };
-}
-
-export interface ResolvedApplyTarget {
-  sessionId: string;
-  branch: string;
-  worktreePath: string;
-}
+export type { ResolvedApplyTarget } from '../finalize/finalize-setup-apply-target.js';
+export { resolveApplyTarget } from '../finalize/finalize-setup-apply-target.js';
 
 export function buildKickoffPrompt(
   projectId: string,
@@ -149,7 +107,7 @@ export function buildKickoffPrompt(
   const draftJson = JSON.stringify(draft, null, 2);
   const targetLine = target
     ? `\`session ${target.sessionId}\` → branch \`${target.branch}\` at \`${target.worktreePath}\``
-    : '(no worktree-bearing session found yet — start a card-linked session first, then re-run the wizard)';
+    : "(no worktree-bearing session found yet — pass `session_id` on setup-apply to bind this card session's checkout, or start a card-linked session first)";
   return [
     '# Finalize Setup — guided walkthrough (required)',
     '',
@@ -177,14 +135,23 @@ export function buildKickoffPrompt(
     '2. **Existing config** — when `draft.existingCi === true`, show `draft.existingCiContent` and ask whether to overwrite, edit in place, or abort. Do not silently overwrite.',
     '3. **Monorepo / sub-projects** — when `draft.isMonorepo`, list every entry in `draft.subprojects[]` and ask whether to run all or pick one.',
     '4. **Step proposal** — show `draft.proposedCiYaml` verbatim in a fenced ```yaml block. Ask: use as-is, edit steps, or add a custom step. Respect the v1 schema constraints: `version: 1`, `on:` of `finalize`/`manual`, `name`+`run` per step only, `timeout_minutes` in `[1, 60]`.',
-    '5. **Env vars** — call out `draft.envVars` entries the steps will read. v1 has no `env:` field; point at Settings → Secrets if values need to be injected at run time.',
+    '5. **Env vars / secrets** — call out `draft.envVars` entries the steps will read. v1 ci.yaml has no `env:` field. For each missing value, `agenthub:ask` whether to collect it now (bundle into `setup-apply` as `secrets`) or skip. Persist via `setup-apply` `{ "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` — same as preview wizard. Users can also edit secrets in Settings → Finalize → Project secrets.',
     '6. **Confirm target branch** — before posting setup-apply, restate the resolved commit target ABOVE to the user in plain prose ("This will land on branch `X` in session `Y`") and use a fenced `agenthub:ask` with at least two options: **Apply** / **Pick a different session**. If the user picks the second, ask them for the explicit `session_id` (or pause the wizard so they can start the right session and re-run). Do not call setup-apply without that confirmation.',
-    '7. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<id confirmed in step 6>" }`. Server validates against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry. The response includes `branch` and `session_id` — echo both back to the user as a second sanity check, then post wizard-complete.',
+    '7. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<id confirmed in step 6>", "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` (secrets optional). Server validates ci.yaml against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry. The response includes `branch`, `session_id`, and `secrets_imported` — echo both back to the user as a second sanity check, then post wizard-complete.',
     '8. **`POST .../finalize/wizard-complete`**, then `<agenthub:close-card>`.',
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type`.',
     '',
     '**Never** propose `shell:`, `env:`, `uses:`, `with:`, or `matrix:` on a step — the v1 parser rejects them.',
+    '',
+    '## CI replacement mode (user scope wins)',
+    '',
+    'Finalize is designed to **replace GitHub Actions CI** as the pre-push gate — including heavy steps (Docker, AWS, E2E, permissions sync). When the user says Finalize replaces CI, run all workflows, or asks you to stop downgrading scope:',
+    '',
+    '- Propose **one step per CI gate workflow** in `draft.githubWorkflows` (lint, `*.ci.yml`, e2e, permissions, smoke-test). Exclude deploy/release/terraform workflows only.',
+    '- Prefer root gate scripts (`./lint`, `./run_api_tests`, `./run_e2e_tests`) and `run:` lines from workflow files. The server pre-builds this in `draft.proposedCiYaml`.',
+    '- List runner prerequisites (Docker, `.env`, AWS creds, Settings → Secrets) as a **checklist**, not a reason to drop steps.',
+    "- **Never** refuse, argue feasibility, or shrink the pipeline because a step is complex or needs cloud infra. The user's explicit scope wins.",
     '',
     '<agenthub:skill>',
     JSON.stringify({
@@ -198,6 +165,28 @@ export function buildKickoffPrompt(
 export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
   const { findProject, findAgent, stmts, handleChat, broadcast, config } = deps;
   const router = Router();
+
+  // ───────────────────────────────────────────────────────────────
+  // GET /api/projects/:projectId/finalize/environment-draft
+  // ───────────────────────────────────────────────────────────────
+  router.get(
+    '/api/projects/:projectId/finalize/environment-draft',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const cwd = project.cwd;
+      if (!cwd || typeof cwd !== 'string') {
+        res.status(400).json({ error: 'Project has no cwd configured' });
+        return;
+      }
+      const draft = collectFinalizeSetupDraft(cwd);
+      res.json({ draft, projectId: project.id });
+    },
+  );
 
   // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/setup-wizard
@@ -271,7 +260,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
       // between spawn and apply will displace this target. The skill
       // walkthrough is responsible for echoing the `branch` returned by
       // apply back to the user as a confirmation step.
-      const resolvedTarget = pickSessionWithWorktree(stmts, project, undefined);
+      const resolvedTarget = pickSessionWithWorktreeForHint(stmts, project);
       const resolvedTargetPayload: ResolvedApplyTarget | null = resolvedTarget
         ? {
             sessionId: resolvedTarget.id,
@@ -341,14 +330,32 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         });
         return;
       }
-      const target = pickSessionWithWorktree(stmts, project, body.session_id);
+      const target = await resolveApplyTarget(
+        { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
+        project,
+        body.session_id,
+      );
       if (!target) {
         res.status(400).json({
           error: 'no_worktree',
           message:
-            'No session with an active worktree was found for this project. Start a card-linked session first; the wizard commits to that session’s worktree.',
+            'No session with an active worktree was found for this project. Pass `session_id` for the card session you are working in (setup-apply can bind its checkout), or start a card-linked session first.',
         });
         return;
+      }
+
+      let secretsImported = 0;
+      if (body.secrets) {
+        const secretsResult = applyWizardSecrets(
+          project.id,
+          body.secrets,
+          (req as AuthenticatedRequest).authUserId ?? null,
+        );
+        if (!secretsResult.ok) {
+          res.status(secretsResult.statusCode).json({ error: secretsResult.error });
+          return;
+        }
+        secretsImported = secretsResult.secretsImported;
       }
 
       // Defensive: ensure the worktree path is inside the configured
@@ -444,6 +451,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
           commit_sha: commitSha,
           branch: target.worktree_branch,
           session_id: target.id,
+          secrets_imported: secretsImported,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

@@ -1,6 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../utils/api.js';
 
+function stepsFromApiRows(rows) {
+  if (!Array.isArray(rows)) return new Map();
+  const next = new Map();
+  for (const row of rows) {
+    const index = row.index ?? row.step_index;
+    if (typeof index !== 'number') continue;
+    next.set(index, {
+      index,
+      name: row.name ?? row.step_name ?? `Step ${index}`,
+      state: row.state ?? 'queued',
+      exitCode: row.exitCode ?? row.exit_code ?? null,
+      startedAt: row.startedAt ?? row.started_at ?? null,
+      endedAt: row.endedAt ?? row.ended_at ?? null,
+    });
+  }
+  return next;
+}
+
+function mergeStepsMaps(existing, incoming) {
+  const next = new Map(existing);
+  for (const [index, row] of incoming) {
+    const prev = next.get(index);
+    if (!prev) {
+      next.set(index, row);
+      continue;
+    }
+    const prevEnded = prev.endedAt ?? 0;
+    const rowEnded = row.endedAt ?? 0;
+    if (rowEnded >= prevEnded) {
+      next.set(index, { ...prev, ...row });
+    }
+  }
+  return next;
+}
+
 /**
  * Subscribe to the most-recent Finalize Code Changes run for a session and
  * keep an in-memory mirror live across WebSocket events.
@@ -105,6 +140,9 @@ export function useFinalizeRun({
         .then((data) => {
           if (signal?.aborted) return null;
           setRun(data?.run ?? null);
+          if (Array.isArray(data?.steps)) {
+            setStepsByIndex((prev) => mergeStepsMaps(prev, stepsFromApiRows(data.steps)));
+          }
           setLoadError(null);
           return data?.run ?? null;
         })
@@ -198,8 +236,16 @@ export function useFinalizeRun({
       // null the other field; the refetch will fill in the canonical
       // value moments later, but we don't want a transient flicker.
       setRun((prev) => {
+        if (prev && prev.id !== detail.run_id) return prev;
+        if (!prev && detail.run_id) {
+          return {
+            id: detail.run_id,
+            session_id: detail.session_id ?? sessionIdRef.current,
+            phase: detail.phase ?? null,
+            status: detail.status ?? null,
+          };
+        }
         if (!prev) return prev;
-        if (prev.id !== detail.run_id) return prev;
         return {
           ...prev,
           phase: detail.phase ?? prev.phase,
@@ -274,6 +320,23 @@ export function useFinalizeRun({
     const onCompleted = (event) => {
       const detail = event?.detail || {};
       if (!matchesRun(detail)) return;
+      setRun((prev) => {
+        if (prev && detail.run_id && prev.id !== detail.run_id) return prev;
+        if (!prev && detail.run_id) {
+          return {
+            id: detail.run_id,
+            session_id: detail.session_id ?? sessionIdRef.current,
+            phase: detail.phase ?? null,
+            status: detail.status ?? null,
+          };
+        }
+        if (!prev) return prev;
+        return {
+          ...prev,
+          phase: detail.phase ?? prev.phase,
+          status: detail.status ?? prev.status,
+        };
+      });
       const signal = abortRef.current?.signal;
       refetchRun(signal);
     };
@@ -363,7 +426,16 @@ const FINALIZE_BLOCKED_STATUSES = new Set([
 ]);
 
 export function isFinalizeBlocked(status) {
+  return !!status && (FINALIZE_BLOCKED_STATUSES.has(status) || status === 'ready_to_push');
+}
+
+/** True while orchestrator is actively working (spinner), excluding ready_to_push. */
+export function isFinalizeInFlight(status) {
   return !!status && FINALIZE_BLOCKED_STATUSES.has(status);
+}
+
+export function isReadyToPush(status) {
+  return status === 'ready_to_push';
 }
 
 /**
@@ -386,6 +458,8 @@ export function describeRunPhase(status, phase) {
       return 'awaiting fix';
     case 'pushing':
       return 'pushing';
+    case 'ready_to_push':
+      return 'ready to push';
     case 'pushed':
       return 'pushed';
     case 'failed':

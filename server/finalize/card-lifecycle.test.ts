@@ -372,6 +372,24 @@ describe('createCardLifecycle.onStalled', () => {
   });
 });
 
+// ─── onTerminalFailed ────────────────────────────────────────────────
+
+describe('createCardLifecycle.onTerminalFailed', () => {
+  it('posts the failure_reason on the card timeline', () => {
+    const { deps, comments } = makeDeps();
+    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
+    lc.onTerminalFailed({
+      runId: 'r1',
+      status: 'failed',
+      failureReason: 'review_failed',
+      detail: 'stub threw',
+    });
+    expect(comments[0].content).toBe(
+      'Finalize failed: review_failed (failed, run r1) — stub threw',
+    );
+  });
+});
+
 // ─── Non-throwing contract ───────────────────────────────────────────
 
 describe('createCardLifecycle — non-throwing', () => {

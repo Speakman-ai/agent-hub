@@ -160,6 +160,7 @@ function makeStmts(): {
             failed_step_name: null,
             failed_step_exit_code: null,
             pr_url: null,
+            loop_round: 0,
           };
           rows.set(id, row);
           byKey.set(idempotencyKey, row);
@@ -194,6 +195,12 @@ function makeStmts(): {
         if (row) row.worktree_path = path;
       }),
     } as unknown as OrchestratorDeps['stmts']['updateFinalizeRunWorktreePath'],
+    updateFinalizeRunLoopRound: {
+      run: vi.fn((round: number, id: string) => {
+        const row = rows.get(id);
+        if (row) row.loop_round = round;
+      }),
+    } as unknown as OrchestratorDeps['stmts']['updateFinalizeRunLoopRound'],
     updateFinalizeRunReviewerVerdict: {
       run: vi.fn((verdict: string | null, id: string) => {
         const row = rows.get(id);
@@ -221,6 +228,17 @@ function makeStmts(): {
         }
       }),
     } as unknown as OrchestratorDeps['stmts']['markFinalizeRunPushed'],
+    markFinalizeRunReadyToPush: {
+      run: vi.fn((validatedHeadSha: string, id: string) => {
+        const row = rows.get(id);
+        if (row) {
+          row.status = 'ready_to_push';
+          row.phase = null;
+          row.validated_head_sha = validatedHeadSha;
+          row.ended_at = Date.now();
+        }
+      }),
+    } as unknown as OrchestratorDeps['stmts']['markFinalizeRunReadyToPush'],
     updateFinalizeRunPrUrl: {
       run: vi.fn((prUrl: string, id: string) => {
         const row = rows.get(id);
@@ -242,6 +260,18 @@ function makeStmts(): {
     getMessageById: {
       get: vi.fn(() => undefined),
     } as unknown as OrchestratorDeps['stmts']['getMessageById'],
+    upsertFinalizeRunStep: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunStep'],
+    listFinalizeRunStepsForRun: {
+      all: vi.fn(() => []),
+    } as unknown as OrchestratorDeps['stmts']['listFinalizeRunStepsForRun'],
+    upsertFinalizeRunJob: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunJob'],
+    listFinalizeRunJobsForRun: {
+      all: vi.fn(() => []),
+    } as unknown as OrchestratorDeps['stmts']['listFinalizeRunJobsForRun'],
     listReviewerThreadsForRun: {
       all: vi.fn(() => threads),
     } as unknown as OrchestratorDeps['stmts']['listReviewerThreadsForRun'],
@@ -344,6 +374,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
   let counter = 0;
 
   const deps: OrchestratorDeps = {
+    config: { personalOAuth: null, githubApp: null },
     stmts: stmts.stmts,
     broadcast,
     runReviewer: vi.fn() as never,
@@ -402,34 +433,36 @@ describe('computeIdempotencyKey', () => {
 });
 
 describe('runFinalize — happy path', () => {
-  it('runs rebase → parse → review → tasks → push and resolves with pushed', async () => {
+  it('runs rebase → parse → review → tasks and parks at ready_to_push', async () => {
     const { deps, broadcast, stmts, pushed } = makeDeps();
 
     const result = await runFinalize(deps, baseOpts());
 
-    expect(result.kind).toBe('pushed');
-    if (result.kind === 'pushed') {
-      expect(result.prUrl).toBe('https://github.com/o/r/pull/1');
+    expect(result.kind).toBe('ready_to_push');
+    if (result.kind === 'ready_to_push') {
+      expect(result.runId).toBeTruthy();
     }
 
     // Insert happened exactly once.
     expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
 
-    // Push step received the expected args.
-    expect(pushed).toHaveBeenCalledTimes(1);
-    const pushArgs = pushed.mock.calls[0][0];
-    expect(pushArgs.branch).toBe('feature/x');
-    expect(pushArgs.headSha).toBe('deadbeefcafebabe');
+    // Push step is deferred — operator confirms via POST .../push.
+    expect(pushed).not.toHaveBeenCalled();
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.markFinalizeRunPushed.run).not.toHaveBeenCalled();
 
-    // Terminal pushed events broadcast in order.
+    // Terminal ready_to_push events broadcast.
     const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
     expect(types).toContain('finalize_run_created');
     expect(types).toContain('finalize_run_phase_changed');
     expect(types).toContain('finalize_run_completed');
 
-    // markFinalizeRunPushed + updateFinalizeRunPrUrl invoked.
-    expect(stmts.stmts.markFinalizeRunPushed.run).toHaveBeenCalledTimes(1);
-    expect(stmts.stmts.updateFinalizeRunPrUrl.run).toHaveBeenCalledTimes(1);
+    const timelineMetaKinds = (
+      stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>
+    ).mock.calls.map((call) => JSON.parse(call[7] as string).kind);
+    expect(timelineMetaKinds).toContain('finalize_run_started');
+    expect(timelineMetaKinds).toContain('finalize_rebase_result');
+    expect(timelineMetaKinds).toContain('finalize_ready_to_push');
   });
 });
 
@@ -514,7 +547,7 @@ describe('runFinalize — failed step triggers fix dispatch', () => {
 
     const result = await runFinalize(deps, baseOpts());
 
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     expect(runSteps).toHaveBeenCalledTimes(2);
     // The dispatch fn should have fired once with the failed step in the trigger.
     expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
@@ -540,13 +573,19 @@ describe('runFinalize — reviewer requests changes triggers fix dispatch', () =
       })
       .mockResolvedValueOnce(REVIEW_OK);
 
+    const runSteps = vi
+      .fn<(...args: unknown[]) => Promise<StepRunResult>>()
+      .mockResolvedValue(STEPS_OK);
+
     const { deps } = makeDeps({
       runReviewerDispatch: runReview as never,
+      runStepPhase: runSteps as never,
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     expect(runReview).toHaveBeenCalledTimes(2);
+    expect(runSteps).toHaveBeenCalledTimes(1);
     expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
     const dispatchArgs = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0][1];
@@ -618,16 +657,10 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     // Rebase ran twice — once for the initial pass, once after gate refusal.
     expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
-    // Push only fired after the second iteration's gate matched.
-    expect(deps.pushAndCreatePr).toHaveBeenCalledTimes(1);
-    // Most importantly: push received the iteration-2 sha (what review +
-    // steps actually validated), NOT the original trigger sha.
-    const pushArgs = (deps.pushAndCreatePr as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(pushArgs.headSha).toBe('iter2-snapshot');
-    // resolveHead invoked 4× total (2 per iteration).
+    expect(deps.pushAndCreatePr).not.toHaveBeenCalled();
     expect(resolveHead).toHaveBeenCalledTimes(4);
   });
 
@@ -651,11 +684,9 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
       deps,
       baseOpts({ headSha: 'original-trigger-sha-that-no-longer-exists' }),
     );
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     expect(deps.runRebasePhase).toHaveBeenCalledTimes(1);
-    expect(deps.pushAndCreatePr).toHaveBeenCalledTimes(1);
-    const pushArgs = (deps.pushAndCreatePr as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(pushArgs.headSha).toBe(postRebaseSha);
+    expect(deps.pushAndCreatePr).not.toHaveBeenCalled();
   });
 
   it('pushes after fix dispatch produces new commits', async () => {
@@ -695,13 +726,10 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
     expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
-    expect(deps.pushAndCreatePr).toHaveBeenCalledTimes(1);
-    // Push uses the iteration-2 sha — the one the fix actually produced.
-    const pushArgs = (deps.pushAndCreatePr as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(pushArgs.headSha).toBe('sha-post-fix');
+    expect(deps.pushAndCreatePr).not.toHaveBeenCalled();
   });
 });
 
@@ -781,7 +809,7 @@ describe('runFinalize — idempotency', () => {
   it('returns reused when a row for the same (project, branch, head_sha) already exists', async () => {
     const { deps, stmts } = makeDeps();
     const first = await runFinalize(deps, baseOpts());
-    expect(first.kind).toBe('pushed');
+    expect(first.kind).toBe('ready_to_push');
 
     // Second invocation with the same triple — the orchestrator should
     // find the existing row by idempotency key and return `reused`.
@@ -789,7 +817,7 @@ describe('runFinalize — idempotency', () => {
     expect(second.kind).toBe('reused');
     if (second.kind === 'reused') {
       expect(second.runId).toBe((first as { runId: string }).runId);
-      expect(second.status).toBe('pushed');
+      expect(second.status).toBe('ready_to_push');
     }
     // Only one row inserted.
     expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
@@ -819,7 +847,7 @@ describe('runFinalize — idempotency', () => {
     // One ran to terminal, one surfaced as reused.
     const kinds = [a.kind, b.kind].sort();
     expect(kinds).toContain('reused');
-    expect(kinds).toContain('pushed');
+    expect(kinds).toContain('ready_to_push');
   });
 
   it('a UNIQUE collision races at insert time and is surfaced as reused', async () => {
@@ -901,7 +929,7 @@ describe('runFinalize — spawns session when card has none', () => {
       deps,
       baseOpts({ card: cardNoSession, sessionId: null, worktreePath: null }),
     );
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     expect(deps.spawnSession).toHaveBeenCalledTimes(1);
     expect(stmts.stmts.updateFinalizeRunSessionId.run).toHaveBeenCalled();
     expect(stmts.stmts.updateFinalizeRunWorktreePath.run).toHaveBeenCalled();
@@ -946,16 +974,13 @@ describe('runFinalize — error containment', () => {
     }
   });
 
-  it('surfaces a thrown push step as infra_error/github_push_5xx', async () => {
-    const { deps } = makeDeps({
+  it('does not invoke push during orchestrator — push is a separate human step', async () => {
+    const { deps, pushed } = makeDeps({
       pushAndCreatePr: vi.fn().mockRejectedValue(new Error('502 from github')),
     });
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('failed');
-    if (result.kind === 'failed') {
-      expect(result.failureReason).toBe('github_push_5xx');
-      expect(result.status).toBe('infra_error');
-    }
+    expect(result.kind).toBe('ready_to_push');
+    expect(pushed).not.toHaveBeenCalled();
   });
 });
 
@@ -1083,29 +1108,25 @@ function makeSpyLifecycle(): CardLifecycle & {
     onStepFailed: record('onStepFailed'),
     onPushed: record('onPushed'),
     onStalled: record('onStalled'),
+    onReadyToPush: record('onReadyToPush'),
+    onTerminalFailed: record('onTerminalFailed'),
   };
 }
 
 describe('runFinalize — card lifecycle integration', () => {
-  it('happy path emits onStarted → onRebaseClean → onReviewerVerdict → onPushed in order', async () => {
+  it('happy path emits onStarted → onRebaseClean → onReviewerVerdict → onReadyToPush in order', async () => {
     const lifecycle = makeSpyLifecycle();
     const { deps } = makeDeps({ cardLifecycle: lifecycle });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
 
     const methods = lifecycle.calls.map((c) => c.method);
-    expect(methods).toEqual(['onStarted', 'onRebaseClean', 'onReviewerVerdict', 'onPushed']);
+    expect(methods).toEqual(['onStarted', 'onRebaseClean', 'onReviewerVerdict', 'onReadyToPush']);
 
-    // Carry the right payloads.
     expect(lifecycle.calls[0].args).toMatchObject({ triggerSource: 'ui_button' });
     expect(lifecycle.calls[2].args).toMatchObject({ verdict: 'approved' });
-    // §15 post-push detach: the orchestrator forwards triggerSource so
-    // the detach module can name the autonomous trigger in the comment.
-    expect(lifecycle.calls[3].args).toMatchObject({
-      prUrl: 'https://github.com/o/r/pull/1',
-      triggerSource: 'ui_button',
-    });
+    expect(lifecycle.calls[3].args).toMatchObject({ runId: expect.any(String) });
   });
 
   it('rebase with dispatched conflict emits onRebaseConflictDispatched (not clean)', async () => {
@@ -1122,7 +1143,7 @@ describe('runFinalize — card lifecycle integration', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
 
     const methods = lifecycle.calls.map((c) => c.method);
     expect(methods).toContain('onRebaseConflictDispatched');
@@ -1143,7 +1164,7 @@ describe('runFinalize — card lifecycle integration', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
 
     const methods = lifecycle.calls.map((c) => c.method);
     expect(methods).toContain('onRebaseClean');
@@ -1208,7 +1229,7 @@ describe('runFinalize — card lifecycle integration', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
 
     const verdicts = lifecycle.calls
       .filter((c) => c.method === 'onReviewerVerdict')
@@ -1244,7 +1265,7 @@ describe('runFinalize — card lifecycle integration', () => {
     });
 
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
 
     const stepFail = lifecycle.calls.find((c) => c.method === 'onStepFailed');
     expect(stepFail).toBeDefined();
@@ -1288,7 +1309,7 @@ describe('runFinalize — card lifecycle integration', () => {
 
     // First run drives the full pipeline.
     const first = await runFinalize(deps, baseOpts());
-    expect(first.kind).toBe('pushed');
+    expect(first.kind).toBe('ready_to_push');
     const firstCallCount = lifecycle.calls.length;
     expect(firstCallCount).toBeGreaterThan(0);
 
@@ -1312,7 +1333,7 @@ describe('runFinalize — card lifecycle integration', () => {
     // edits cannot accidentally require the dep.
     const { deps } = makeDeps();
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
   });
 });
 
@@ -1478,7 +1499,7 @@ describe('runFinalize — §13 budget integration', () => {
   it('emits finalize_run_active_seconds broadcasts after each phase', async () => {
     const { deps, broadcast } = makeDeps();
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
     const evtTypes = broadcast.mock.calls
       .map((c) => (c[0] as { type: string }).type)
       .filter((t) => t === 'finalize_run_active_seconds');
@@ -1542,28 +1563,20 @@ describe('runFinalize — §10 infra retry on first infra failure', () => {
     expect(spawnSession).toHaveBeenCalledTimes(2);
   });
 
-  it('first push_5xx failure opens a retry row that succeeds → outcome is pushed', async () => {
-    // Push throws on attempt 1 then resolves successfully on attempt 2.
-    const pushed = vi
+  it('orchestrator parks at ready_to_push — push failures are handled in push-run.ts', async () => {
+    const pushMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('502 from github'))
       .mockResolvedValueOnce({
         prUrl: 'https://github.com/o/r/pull/2',
       } satisfies PushAndCreatePrResult);
-    const { deps, stmts } = makeDeps({ pushAndCreatePr: pushed });
+    const { deps, stmts, pushed } = makeDeps({ pushAndCreatePr: pushMock });
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('pushed');
-    if (result.kind === 'pushed') {
-      expect(result.prUrl).toBe('https://github.com/o/r/pull/2');
-    }
-    // Two rows: original (infra_error/github_push_5xx) + retry (pushed).
-    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(2);
-    const rows = Array.from(stmts.rows.values());
-    const original = rows.find((r) => !r.retry_of_run_id);
-    const retry = rows.find((r) => r.retry_of_run_id);
-    expect(original!.status).toBe('infra_error');
-    expect(original!.failure_reason).toBe('github_push_5xx');
-    expect(retry!.status).toBe('pushed');
+    expect(result.kind).toBe('ready_to_push');
+    expect(pushed).not.toHaveBeenCalled();
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
+    const row = Array.from(stmts.rows.values())[0];
+    expect(row?.status).toBe('ready_to_push');
   });
 
   it('CI-class failure (review_failed thrown) does NOT auto-retry', async () => {
@@ -1758,32 +1771,13 @@ describe('runFinalize — §10 second infra failure terminates as infra_error + 
     expect(body).toContain('Re-trigger Finalize Code Changes');
   });
 
-  it('two consecutive github_push_5xx → posts terminal session message + retry row marked infra_error', async () => {
-    const pushed = vi.fn().mockRejectedValue(new Error('502 from github'));
-    const { deps, stmts } = makeDeps({ pushAndCreatePr: pushed });
+  it('orchestrator does not auto-retry push — github_push_5xx is push-run.ts scope', async () => {
+    const pushMock = vi.fn().mockRejectedValue(new Error('502 from github'));
+    const { deps, stmts, pushed } = makeDeps({ pushAndCreatePr: pushMock });
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('failed');
-    if (result.kind === 'failed') {
-      expect(result.failureReason).toBe('github_push_5xx');
-      expect(result.status).toBe('infra_error');
-    }
-    expect(pushed).toHaveBeenCalledTimes(2);
-    const rows = Array.from(stmts.rows.values());
-    expect(rows).toHaveLength(2);
-    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
-    const infraTerminalInsert = inserts.find((c) => {
-      const metadataRaw = c[7] as string | null;
-      let metadata: Record<string, unknown> | null = null;
-      try {
-        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
-      } catch {
-        metadata = null;
-      }
-      return metadata?.kind === 'finalize_infra_terminal';
-    });
-    expect(infraTerminalInsert).toBeDefined();
-    const meta = JSON.parse(infraTerminalInsert![7] as string) as Record<string, unknown>;
-    expect(meta.failureReason).toBe('github_push_5xx');
+    expect(result.kind).toBe('ready_to_push');
+    expect(pushed).not.toHaveBeenCalled();
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2037,7 +2031,7 @@ describe('__test.statusFromOutcome', () => {
 });
 
 describe('runFinalize — §14 metric emission', () => {
-  it('emits started + every terminal metric on a single-attempt pushed run', async () => {
+  it('emits started + every terminal metric on a single-attempt ready_to_push run', async () => {
     const { deps, stmts } = makeDeps();
     await runFinalize(deps, baseOpts());
     const rows = readMetricCalls(stmts);
@@ -2050,7 +2044,10 @@ describe('runFinalize — §14 metric emission', () => {
     expect(names.filter((n) => n === 'finalize_run_wall_seconds')).toHaveLength(1);
     expect(names.filter((n) => n === 'finalize_fix_dispatch_count')).toHaveLength(1);
     const completed = rows.find((r) => r.name === 'finalize_run_completed');
-    expect(completed?.labels).toMatchObject({ status: 'pushed', trigger_source: 'ui_button' });
+    expect(completed?.labels).toMatchObject({
+      status: 'ready_to_push',
+      trigger_source: 'ui_button',
+    });
     const started = rows.find((r) => r.name === 'finalize_run_started');
     expect(started?.labels).toMatchObject({ trigger_source: 'ui_button' });
   });

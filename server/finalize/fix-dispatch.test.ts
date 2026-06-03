@@ -16,6 +16,7 @@ import type { ReviewerThreadRow } from '../types.js';
 import {
   DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS,
   DISPATCH_TRAILER,
+  DISPATCH_TRAILER_REVIEWER,
   composeDispatchBody,
   dispatchFixMessage,
   type CancelSignal,
@@ -66,6 +67,7 @@ describe('composeDispatchBody', () => {
     );
     expect(body).toContain('Reviewer notes:');
     expect(body).toContain('server/foo.ts:42 — **[6/10]** Off by one');
+    expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
   });
 
   it('combines step failure + reviewer threads into one body', () => {
@@ -180,7 +182,7 @@ interface TurnEndHandle {
 }
 
 function makeTurnEnd(): TurnEndHandle {
-  const map = new Map<string, Set<() => void>>();
+  const map = new Map<string, Set<(outcome: 'turn_ended' | 'spawn_failed') => void>>();
   return {
     subscriber: {
       subscribe(sessionId, listener) {
@@ -193,10 +195,10 @@ function makeTurnEnd(): TurnEndHandle {
         };
       },
     },
-    fireFor(sessionId) {
+    fireFor(sessionId, outcome: 'turn_ended' | 'spawn_failed' = 'turn_ended') {
       const set = map.get(sessionId);
       if (!set) return;
-      for (const fn of [...set]) fn();
+      for (const fn of [...set]) fn(outcome);
     },
     subscribers(sessionId) {
       return map.get(sessionId)?.size ?? 0;
@@ -271,6 +273,7 @@ const baseOpts = (overrides: Partial<FixDispatchOptions> = {}): FixDispatchOptio
 function makeDeps(args?: {
   dispatchPush?: ReturnType<typeof vi.fn>;
   schedule?: ReturnType<typeof makeTimerBus>['schedule'];
+  spawnFixTurn?: FixDispatchDeps['spawnFixTurn'];
 }): {
   deps: FixDispatchDeps;
   stmts: FakeStmts;
@@ -296,6 +299,7 @@ function makeDeps(args?: {
     now: () => 1_700_000_000_000,
     newId: () => `fix-msg-${++counter}`,
     log: vi.fn(),
+    spawnFixTurn: args?.spawnFixTurn,
   };
   return { deps, stmts, broadcast, turnEnd, dispatchPush };
 }
@@ -350,6 +354,30 @@ describe('dispatchFixMessage — turn-end resolves the dispatch', () => {
     expect(result.activeSecondsBilled).toBe(DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS);
 
     // Cleanup: subscriber is removed.
+    expect(turnEnd.subscribers('sess-1')).toBe(0);
+  });
+
+  it('invokes spawnFixTurn after inserting the system message', async () => {
+    const spawnFixTurn = vi.fn().mockResolvedValue({ spawned: true });
+    const { deps, turnEnd } = makeDeps({ spawnFixTurn });
+    const promise = dispatchFixMessage(deps, baseOpts());
+    await Promise.resolve();
+    expect(spawnFixTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sess-1',
+        body: expect.stringContaining('phase=tasks'),
+      }),
+    );
+    expect(turnEnd.subscribers('sess-1')).toBe(1);
+    turnEnd.fireFor('sess-1');
+    await promise;
+  });
+
+  it('returns spawn_failed when spawnFixTurn does not start the agent', async () => {
+    const spawnFixTurn = vi.fn().mockResolvedValue({ spawned: false });
+    const { deps, turnEnd } = makeDeps({ spawnFixTurn });
+    const result = await dispatchFixMessage(deps, baseOpts());
+    expect(result.outcome).toBe('spawn_failed');
     expect(turnEnd.subscribers('sess-1')).toBe(0);
   });
 

@@ -283,6 +283,29 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(messages[0]?.content).toBe('Looks fine.');
     expect(messages[0]?.agentId).toBe('rev-1');
   });
+
+  it('accepts bare trailing fenced JSON when agenthub tags are omitted', async () => {
+    const assistantText = `The change is clean overall.
+
+\`\`\`json
+{"verdict":"approved","threads":[{"file_path":"server/foo.ts","line_start":1,"line_end":2,"body":"**[3/10]** nit"}]}
+\`\`\``;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps, messages } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-bare',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(result.threads).toHaveLength(1);
+    expect(messages[0]?.content).toBe('The change is clean overall.');
+  });
 });
 
 describe('runReviewerTurn — changes_requested with threads', () => {
@@ -405,7 +428,7 @@ describe('runReviewerTurn — defensive errors', () => {
         inputs: fakeInputs,
         sessionId: 'sess-1',
       }),
-    ).rejects.toThrow(/without a <agenthub:review-verdict> tail block/);
+    ).rejects.toThrow(/without a parseable review verdict/);
   });
 
   it('throws when tail block is malformed', async () => {

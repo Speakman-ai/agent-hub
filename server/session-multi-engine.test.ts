@@ -33,6 +33,22 @@ describe('buildSessionMultiSpawnArgs', () => {
     expect(plan.args).toContain('bypassPermissions');
   });
 
+  it('caps an oversized claude userPrompt so the spawn does not hit E2BIG', () => {
+    // A fix turn embedding verbose CI logs (or a huge diff) would otherwise be
+    // passed raw as a positional argv arg and overflow ARG_MAX (spawn E2BIG).
+    const huge = 'x'.repeat(300_000);
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'claude-code',
+      model: 'claude-opus-4-6',
+      systemPrompt: 'sys',
+      userPrompt: huge,
+      bins,
+      advisory: true,
+    });
+    const positional = plan.args[plan.args.length - 1];
+    expect(Buffer.byteLength(positional, 'utf8')).toBeLessThanOrEqual(101_000);
+  });
+
   it('codex-cli appends --profile when codexProfile is set', () => {
     const plan = buildSessionMultiSpawnArgs({
       engine: 'codex-cli',

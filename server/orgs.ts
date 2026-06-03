@@ -6,6 +6,7 @@ import type { OrgRow } from './types.js';
 import { MCP_SERVERS_SCHEMA } from './mcp-servers-schema.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
+import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -152,6 +153,8 @@ export function initOrgsDb(): void {
   orgsDb.exec(MCP_SERVERS_SCHEMA);
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
+  // Multi-tenant Finalize runner control-plane queue (shared across orgs).
+  orgsDb.exec(RUNNER_QUEUE_SCHEMA);
 
   // Add `masked_preview` to user_skill_credentials on installs predating the
   // pre-computed mask. Nullable column → backfill happens lazily on the

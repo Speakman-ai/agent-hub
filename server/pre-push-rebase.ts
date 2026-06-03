@@ -309,10 +309,13 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
     /* informational; never block the rebase on this */
   }
 
-  // Attempt the rebase.
-  prLog?.(`$ git rebase origin/${baseBranch}  (${commitsBehind} commit(s) behind)\n`);
+  // Attempt the rebase. `--empty=drop`: if a branch commit becomes empty against
+  // an advanced base (its change already upstream, or a redundant 3-way result),
+  // drop it and continue instead of pausing with "no conflicted files (possibly
+  // an empty commit)" — which otherwise wedges the rebase and blocks Finalize.
+  prLog?.(`$ git rebase --empty=drop origin/${baseBranch}  (${commitsBehind} commit(s) behind)\n`);
   try {
-    await runGit(['rebase', `origin/${baseBranch}`], {
+    await runGit(['rebase', '--empty=drop', `origin/${baseBranch}`], {
       cwd,
       env,
       timeoutMs: PRE_PUSH_REBASE_TIMEOUT_MS,

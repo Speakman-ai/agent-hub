@@ -22,7 +22,7 @@ function emptyRow() {
  * Per-project env secrets editor (Settings → Projects).
  * Secret-kind values are masked on load; saving sends MASK for unchanged rows.
  */
-export default function ProjectSecretsEditor({ projectId }) {
+export default function ProjectSecretsEditor({ projectId, hint }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -123,10 +123,13 @@ export default function ProjectSecretsEditor({ projectId }) {
           <Key size={12} /> Project secrets
         </h5>
         <p className="text-xs text-gray-500">
-          Encrypted key/value pairs merged into every session spawn for this project (chat,
-          heartbeat, cron, preview). Values marked secret are never returned in clear — leave blank
-          when editing to keep the stored value. Keys in the{' '}
-          <code className="font-mono">AGENT_HUB_*</code> namespace are rejected.
+          {hint ??
+            'Encrypted key/value pairs merged into every session spawn for this project (chat, heartbeat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the '}
+          {!hint && (
+            <>
+              <code className="font-mono">AGENT_HUB_*</code> namespace are rejected.
+            </>
+          )}
         </p>
       </div>
 

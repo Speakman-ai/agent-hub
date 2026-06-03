@@ -70,8 +70,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+import { FINALIZE_BUDGET_DEFAULT_SECONDS } from './budget.js';
+
 /** Hard cap on Finalize active time. Mirrors design §13. */
-export const FINALIZE_BUDGET_SECONDS = 60 * 60;
+export const FINALIZE_BUDGET_SECONDS = FINALIZE_BUDGET_DEFAULT_SECONDS;
 /** Budget billed per rebase attempt that didn't conflict-loop (cheap path). */
 const REBASE_ATTEMPT_ACTIVE_SECONDS = 5;
 /** Budget billed per trivial-conflict auto-resolve pass. */
@@ -453,7 +455,7 @@ async function attemptInlineConflictFix(args: InlineFixArgs): Promise<InlineFixO
   // the conflict resolution loop.
   let rebaseRunning = false;
   try {
-    await runGit(['rebase', `origin/${baseBranch}`], {
+    await runGit(['rebase', '--empty=drop', `origin/${baseBranch}`], {
       cwd: worktreePath,
       env,
       timeoutMs: 120_000,

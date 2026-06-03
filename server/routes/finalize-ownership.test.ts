@@ -72,7 +72,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       .get('/api/sessions/my-own-session/finalize-runs/latest')
       .expect(200);
 
-    expect(res.body).toEqual({ run: null });
+    expect(res.body).toEqual({ run: null, steps: [] });
     expect(stmts.getLatestFinalizeRunForSession.get).toHaveBeenCalledWith('my-own-session');
   });
 
@@ -99,6 +99,6 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       .expect(200);
 
     expect(unauth.body).toEqual({ error: 'Session not found' });
-    expect(empty.body).toEqual({ run: null });
+    expect(empty.body).toEqual({ run: null, steps: [] });
   });
 });

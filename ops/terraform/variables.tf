@@ -170,6 +170,12 @@ variable "ecr_public_repo_name" {
   default     = "agent-hub"
 }
 
+variable "ecr_public_finalize_runner_repo_name" {
+  description = "ECR Public repository for the Finalize CI DinD runner image (ubuntu-24.04). Tagged in lockstep with agent-hub (same :main / :sha tags)."
+  type        = string
+  default     = "agent-hub-finalize-runner"
+}
+
 variable "ecr_public_registry_alias" {
   description = "ECR Public registry alias — the URL path between public.ecr.aws/ and the repo name. AWS auto-assigned \"h9t4v7h0\" on first repo creation in this account; a vanity alias like \"agenthub\" can be requested via the console (same-day AWS approval) and both URIs keep working."
   type        = string
@@ -265,6 +271,24 @@ variable "lookup_route53_zone_in_this_account" {
   default     = false
 }
 
+variable "create_route53_zone" {
+  description = "If true, CREATE a public hosted zone for base_domain in THIS account (instead of looking one up), use it for the ACM cert + ALB A-record, and (when root_delegation_role_arn is set) write the NS delegation into the root apex zone. The dedicated-account / prod model (e.g. own zone for agenthub.surveytracker.io), vs. the piggy-back model (lookup_route53_zone_in_this_account)."
+  type        = bool
+  default     = false
+}
+
+variable "root_delegation_zone_id" {
+  description = "Zone ID of the ROOT apex domain (e.g. surveytracker.io) in the root account, into which this env's NS delegation record is written. Only used with create_route53_zone + root_delegation_role_arn."
+  type        = string
+  default     = ""
+}
+
+variable "root_delegation_role_arn" {
+  description = "ARN of a role in the ROOT account this account can assume to write the NS delegation (e.g. arn:aws:iam::797611956947:role/agenthub_env_role_assume). Empty = don't write the delegation (look it up / add manually)."
+  type        = string
+  default     = ""
+}
+
 variable "acm_certificate_arn" {
   description = "Existing ACM certificate ARN in this region (e.g. imported or shared). If set, no new ACM cert is created; route53_zone_id is still used if you want Terraform to create the A alias. The cert must include the public hostname (public_fqdn or composed FQDN)."
   type        = string
@@ -331,3 +355,83 @@ variable "enable_cross_hub_secrets_iam" {
 # PR-env variables (pr_env_preview_subdomain, cert_renewal_email,
 # enable_pr_env_host_nginx) were removed in PR-Env Removal #6 alongside the
 # rest of the PR-env Terraform stack. See alb.tf for the teardown note.
+
+# ── Finalize remote-runner fleet (modules/finalize-runners) ──────────────────
+# All default-off so only the env that sets enable_finalize_runners builds it.
+variable "enable_finalize_runners" {
+  type        = bool
+  default     = false
+  description = "Stand up the ECS-on-EC2 Finalize runner fleet in this env."
+}
+
+variable "manage_shared_finalize_infra" {
+  type        = bool
+  default     = false
+  description = "Create account-wide finalize S3 buckets + ECR repos here (ONE env only)."
+}
+
+variable "finalize_runner_instance_type" {
+  type    = string
+  default = "r7i.xlarge"
+}
+
+variable "finalize_runner_min_size" {
+  type        = number
+  default     = 0
+  description = "ASG min (0 = scale-to-zero; set 1 for a warm pool / Phase-2a)."
+}
+
+variable "finalize_runner_max_size" {
+  type    = number
+  default = 4
+}
+
+variable "finalize_runner_root_volume_size" {
+  type    = number
+  default = 200
+}
+
+variable "finalize_agent_desired_count" {
+  type    = number
+  default = 1
+}
+
+variable "finalize_agent_image_uri" {
+  type        = string
+  default     = ""
+  description = "Image running the runner-agent; defaults to the finalize-runner image."
+}
+
+variable "finalize_fleet_token_secret_arn" {
+  type        = string
+  default     = ""
+  description = "Secrets Manager ARN of an EXISTING shared fleet token. Leave empty to have Terraform generate the token + create the secret (the dedicated-account / prod model)."
+}
+
+variable "finalize_max_parallel_jobs" {
+  type        = number
+  default     = 12
+  description = "Hub's FINALIZE_MAX_PARALLEL_JOBS — how many job instances the orchestrator dispatches concurrently (the fleet agent count is the real limiter; keep >= max_size)."
+}
+
+variable "enable_finalize_registry_mirror" {
+  type        = bool
+  default     = false
+  description = "Run a registry:2 pull-through cache on the Hub (port 5000) for base images, shared fleet-wide; sets FINALIZE_REGISTRY_MIRROR in the job env. Inner dockerds mirror docker.io through it."
+}
+
+variable "finalize_dockerhub_secret_arn" {
+  type        = string
+  default     = ""
+  description = "Optional Secrets Manager ARN ({username,accessToken}) for authenticating the registry mirror's Docker Hub upstream (avoids anonymous 429s). Empty = anonymous proxy."
+}
+
+variable "finalize_cache_bucket_name" {
+  type    = string
+  default = ""
+}
+
+variable "finalize_worktree_bucket_name" {
+  type    = string
+  default = ""
+}

@@ -56,6 +56,14 @@ services:
       # Health polls reach host-published preview ports; iframe URLs stay localhost.
       - AGENT_HUB_PREVIEW_HEALTH_HOST=${AGENT_HUB_PREVIEW_HEALTH_HOST:-host.docker.internal}
       - AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=${AGENT_HUB_PREVIEW_READY_TIMEOUT_MS:-600000}
+      # Finalize CI DinD runner — local build tag by default; prod uses ECR via user-data.
+      - FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=${FINALIZE_RUNNER_IMAGE_UBUNTU_24_04:-agent-hub/finalize-runner:ubuntu-24.04}
+      # Cap concurrent Finalize jobs (default 4); lower on memory-constrained hosts.
+      - FINALIZE_MAX_PARALLEL_JOBS=${FINALIZE_MAX_PARALLEL_JOBS:-4}
+      # Registry pull-through cache for the runner's inner dockerd (avoids Docker
+      # Hub rate limits). Local: http://host.docker.internal:5001; prod: ECR
+      # pull-through endpoint. Unset = pull straight from Docker Hub.
+      - FINALIZE_REGISTRY_MIRROR=${FINALIZE_REGISTRY_MIRROR:-}
       # Pass through optional secrets from host .env
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - AGENT_HUB_API_KEY=${AGENT_HUB_API_KEY:-}

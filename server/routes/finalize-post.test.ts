@@ -28,6 +28,7 @@ const execFileAsyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
+  exec: vi.fn(),
 }));
 
 vi.mock('util', async () => {
@@ -60,6 +61,13 @@ vi.mock('../db.js', () => ({
   getDb: () => ({
     prepare: () => ({ get: dbGetSession }),
   }),
+  // Downstream modules now reachable in this test's import graph (e.g.
+  // heartbeat.ts via workflow-runner.ts) read the `db`/`stmts` singletons
+  // at module load; provide inert stand-ins so the module graph resolves.
+  db: {},
+  stmts: {},
+  getStmts: () => ({}),
+  initDb: () => {},
 }));
 
 // Import after all mocks so the route file binds to them.
@@ -262,7 +270,12 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .post('/api/projects/proj-1/cards/card-1/finalize')
       .send({})
       .expect(200);
-    expect(res.body).toEqual({ run_id: 'run-old', status: 'pushed', reused: true });
+    expect(res.body).toEqual({
+      run_id: 'run-old',
+      status: 'pushed',
+      reused: true,
+      card_id: 'card-1',
+    });
   });
 
   it('200 with run_id when runFinalize fires and the row becomes visible during the poll', async () => {
@@ -295,7 +308,12 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .post('/api/projects/proj-1/cards/card-1/finalize')
       .send({})
       .expect(200);
-    expect(res.body).toEqual({ run_id: 'run-new', status: 'queued', reused: false });
+    expect(res.body).toEqual({
+      run_id: 'run-new',
+      status: 'queued',
+      reused: false,
+      card_id: 'card-1',
+    });
     expect(runFinalize).toHaveBeenCalledOnce();
   });
 });

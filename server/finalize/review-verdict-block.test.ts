@@ -264,6 +264,44 @@ describe('sanitiseThreadInputs — defensive coercion', () => {
   });
 });
 
+describe('detectReviewVerdictBlock — bare tail fallback (no agenthub tags)', () => {
+  it('parses trailing fenced JSON when the reviewer omits the action block', () => {
+    const text = `This is a code review task with a specific JSON output contract.
+
+\`\`\`json
+{
+  "verdict": "approved",
+  "threads": [
+    {
+      "file_path": "backend/api/views.py",
+      "line_start": 94,
+      "line_end": 98,
+      "body": "**[3/10]** The host gate is bypassable."
+    }
+  ]
+}
+\`\`\``;
+    const result = detectReviewVerdictBlock(text);
+    expect(result.present).toBe(true);
+    expect(result.task?.verdict).toBe('approved');
+    expect(result.task?.threads).toHaveLength(1);
+    expect(result.task?.threads[0]?.file_path).toBe('backend/api/views.py');
+  });
+
+  it('parses raw trailing JSON object without fences', () => {
+    const text = `Review complete.
+
+{"verdict":"approved","threads":[]}`;
+    const result = detectReviewVerdictBlock(text);
+    expect(result.task).toEqual({ verdict: 'approved', threads: [] });
+  });
+
+  it('does not treat mid-message JSON as a verdict tail', () => {
+    const text = `Earlier we saw {"verdict":"approved"} in the docs. Still working.`;
+    expect(detectReviewVerdictBlock(text).present).toBe(false);
+  });
+});
+
 describe('stripReviewVerdictBlock', () => {
   it('removes a trailing block + surrounding whitespace', () => {
     const text = `Looks good to me.
@@ -277,6 +315,15 @@ describe('stripReviewVerdictBlock', () => {
   it('idempotent for messages with no block', () => {
     const text = 'No block here.';
     expect(stripReviewVerdictBlock(text)).toBe(text);
+  });
+
+  it('strips a trailing fenced JSON verdict when tags are absent', () => {
+    const text = `Review prose.
+
+\`\`\`json
+{"verdict":"approved","threads":[]}
+\`\`\``;
+    expect(stripReviewVerdictBlock(text)).toBe('Review prose.');
   });
 
   it('leaves a non-trailing block in place (treats it as part of prose)', () => {

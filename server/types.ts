@@ -65,6 +65,11 @@ export interface SessionRow {
    * clicking Create ticket & PR (board assign + autonomous dispatch).
    */
   auto_ship_on_complete?: number;
+  /**
+   * Per-session Finalize automation: `manual` | `review` | `push` | `merge`.
+   * Assigned/autonomous sessions default to `merge`.
+   */
+  finalize_automation?: string | null;
 }
 
 export interface MessageRow {
@@ -786,6 +791,14 @@ export interface FinalizeRunRow {
   started_at: number;
   ended_at: number | null;
   pr_url: string | null;
+  /**
+   * Worktree HEAD that passed review + CI when the run reached `ready_to_push`.
+   * Differs from {@link head_sha} when fix dispatches landed commits during the
+   * run — push gate compares against this, not the trigger-time idempotency sha.
+   */
+  validated_head_sha: string | null;
+  /** 1-indexed fix-loop iteration; incremented at each rebase pass. */
+  loop_round: number;
 }
 
 /** Lifecycle status codes — see {@link FinalizeRunRow}. */
@@ -796,6 +809,7 @@ export type FinalizeRunStatus =
   | 'running'
   | 'dispatching'
   | 'pushing'
+  | 'ready_to_push'
   | 'pushed'
   | 'failed'
   | 'timed_out'
@@ -820,6 +834,34 @@ export type FinalizeRunStatus =
 
 /** Phase codes — UI surfaces these; some collapse onto the same status. */
 export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';
+
+/** Per-step CI task state persisted for the checks panel. */
+export type FinalizeRunStepState = 'queued' | 'running' | 'passed' | 'failed' | 'skipped';
+
+export interface FinalizeRunStepRow {
+  run_id: string;
+  step_index: number;
+  name: string;
+  state: FinalizeRunStepState;
+  exit_code: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+  job_id: string | null;
+  matrix_key: string | null;
+}
+
+/** v2 job/matrix shard state for parallel container jobs. */
+export type FinalizeRunJobState = 'queued' | 'running' | 'passed' | 'failed' | 'skipped';
+
+export interface FinalizeRunJobRow {
+  run_id: string;
+  job_id: string;
+  matrix_key: string;
+  state: FinalizeRunJobState;
+  exit_code: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
 
 /**
  * Reviewer-thread row. One row per diff-anchored finding produced by the
@@ -911,6 +953,7 @@ export interface Stmts {
   updateSessionEngineSessionId: Stmt;
   updateSessionPendingSkillContext: Stmt;
   updateSessionAutoShipOnComplete: Stmt;
+  updateSessionFinalizeAutomation: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
@@ -1379,6 +1422,7 @@ export interface Stmts {
    * the PR URL has been written via {@link updateFinalizeRunPrUrl}.
    */
   markFinalizeRunPushed: Stmt;
+  markFinalizeRunReadyToPush: Stmt;
   /**
    * Update the `session_id` on a finalize run. The orchestrator calls
    * this when it resolves or spawns a session for a card that didn't
@@ -1391,6 +1435,7 @@ export interface Stmts {
    * spawned session.
    */
   updateFinalizeRunWorktreePath: Stmt;
+  updateFinalizeRunLoopRound: Stmt;
   /**
    * Most-recent `finalize_runs` row for a session (ordered by
    * `started_at DESC`). Returns `undefined` when the session has never
@@ -1440,6 +1485,10 @@ export interface Stmts {
    * See `server/finalize/provenance.ts` (design §11).
    */
   getFinalizeRunByPrUrl: Stmt;
+  upsertFinalizeRunStep: Stmt;
+  listFinalizeRunStepsForRun: Stmt;
+  upsertFinalizeRunJob: Stmt;
+  listFinalizeRunJobsForRun: Stmt;
 
   // reviewer_threads — diff-anchored notes from the reviewer agent.
   // See wiki: finalize-code-changes-architecture-v0 (§8).

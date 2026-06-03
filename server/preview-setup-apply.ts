@@ -11,6 +11,9 @@ export interface PreviewSetupApplySecrets {
   defaultKind?: 'plain' | 'secret';
 }
 
+export type { WizardApplySecrets } from './wizard-secrets-apply.js';
+export { applyWizardSecrets } from './wizard-secrets-apply.js';
+
 export interface PreviewSetupApplyBody {
   enabled?: boolean;
   preview?: Record<string, unknown>;

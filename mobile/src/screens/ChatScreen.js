@@ -139,16 +139,15 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    // Finalize Code Changes — only shown for card-linked sessions.
-    // Replaces the legacy "Create ticket & PR" affordance (card 2bce78c2).
-    ...(activeSessionId && activeSession?.card_id && activeProject?.id
+    // Finalize Code Changes — shown for any session on a project.
+    ...(activeSessionId && activeProject?.id
       ? [
           {
             type: 'finalize-button',
             key: 'finalize-button',
             data: {
               projectId: activeProject.id,
-              cardId: activeSession.card_id,
+              cardId: activeSession?.card_id ?? null,
               branch: activeSession?.worktree_branch || '',
             },
           },
@@ -257,6 +256,7 @@ export default function ChatScreen() {
             cardId={item.data.cardId}
             sessionId={activeSessionId}
             branchLabel={item.data.branch || ''}
+            pendingChanges={pendingChanges}
           />
         );
       default:

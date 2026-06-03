@@ -116,6 +116,8 @@ import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createFinalizeRoutes from './routes/finalize.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
+import createRunnerRoutes from './finalize/runner-routes.js';
+import { startFleetScaler } from './finalize/runner-fleet-scaler.js';
 import createInstanceBackupRoutes from './routes/instance-backup.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
@@ -155,7 +157,16 @@ import {
   resolveSlashSkill,
   setTriggerAutoSessionShip,
 } from './auto-git.js';
-import { triggerSessionShip, type TriggerSessionShipArgs } from './session-ship.js';
+import {
+  triggerSessionShip,
+  type TriggerSessionShipArgs,
+  markSessionFinalizeAutomation,
+} from './session-ship.js';
+import { setReadyToPushAutomationHook } from './finalize/orchestrator.js';
+import {
+  maybeAutoPushReadyFinalizeRun,
+  setFinalizeAutomationRouteDeps,
+} from './finalize/automation-runner.js';
 
 import createChatHandler, {
   buildEnrichedPrompt,
@@ -169,6 +180,7 @@ import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
+import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
 import cron from 'node-cron';
 
 import {
@@ -623,6 +635,15 @@ app.use((req, _res, next) => {
   return next();
 });
 
+// Remote runner-fleet control plane (pull-based agents). Mounted BEFORE
+// authMiddleware: fleet agents have no Hub session — these routes self-auth via
+// the fleet token (/register) and HMAC agent tokens (all others). Inert until a
+// fleet token is configured (FINALIZE_RUNNER_FLEET_TOKEN); /register 404s otherwise.
+app.use(createRunnerRoutes());
+// Queue-depth autoscaler: scales the agent ECS service to run jobs concurrently
+// (and back to zero when idle). No-op unless FINALIZE_FLEET_ECS_* are configured.
+startFleetScaler();
+
 app.use(authMiddleware);
 
 // Releases page powers the in-app "What's new" view, only reachable from
@@ -799,6 +820,31 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       });
     },
     { name: 'preview-reaper' },
+  );
+
+  // Finalize DinD runner reaper — sweep orphaned runner containers + graph
+  // volumes left behind when a run is hard-killed (OOM / ENOSPC / Hub crash)
+  // before its per-job teardown could run. Active runs (ended_at IS NULL) are
+  // never touched. See server/finalize/finalize-reaper.ts.
+  cron.schedule(
+    FINALIZE_REAPER_CRON,
+    () => {
+      void runFinalizeReaper({
+        activeRunIds: () =>
+          new Set(
+            (
+              getDb()
+                .prepare('SELECT id FROM finalize_runs WHERE ended_at IS NULL')
+                .all() as Array<{
+                id: string;
+              }>
+            ).map((r) => r.id),
+          ),
+      }).catch((err) => {
+        console.warn('[finalize-reaper] tick failed:', (err as Error).message);
+      });
+    },
+    { name: 'finalize-reaper' },
   );
 }
 
@@ -1057,6 +1103,11 @@ setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
   });
   if (result.ok) return { ok: true as const };
   return { ok: false as const, code: result.code, error: result.error };
+});
+
+setFinalizeAutomationRouteDeps(routeDeps);
+setReadyToPushAutomationHook((sessionId, runId) => {
+  void maybeAutoPushReadyFinalizeRun({ sessionId, runId });
 });
 
 function handleCancel(sessionId: string): void {

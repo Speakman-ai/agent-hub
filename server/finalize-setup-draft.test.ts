@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { collectFinalizeSetupDraft, serializeProposedCiYaml } from './finalize-setup-draft.js';
-import { parseCiConfig } from './finalize/ci-config.js';
+import { parseCiConfig, FINALIZE_TIMEOUT_DEFAULT_MINUTES } from './finalize/ci-config.js';
 
 function tmp(): string {
   return mkdtempSync(path.join(tmpdir(), 'ah-finalize-draft-'));
@@ -198,6 +198,88 @@ describe('collectFinalizeSetupDraft', () => {
     const parsed = parseCiConfig(draft.proposedCiYaml);
     expect(parsed.ok).toBe(true);
   });
+
+  it('mirrors CI gate GitHub workflows using root gate scripts (CI replacement)', () => {
+    const dir = tmp();
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'app', private: true }));
+    mkdirSync(path.join(dir, '.github', 'workflows'), { recursive: true });
+    mkdirSync(path.join(dir, 'frontend'), { recursive: true });
+    writeFileSync(path.join(dir, 'frontend', 'package.json'), JSON.stringify({ name: 'fe' }));
+
+    for (const wf of [
+      'lint.yml',
+      'backend.ci.yml',
+      'frontend.ci.yml',
+      'permissions-sync-check.yml',
+      'e2e.yml',
+      'deploy.prod.yml',
+    ]) {
+      writeFileSync(path.join(dir, '.github', 'workflows', wf), `name: ${wf}\n`);
+    }
+    for (const script of ['lint', 'run_api_tests', 'run_e2e_tests', 'verifypermissionsync']) {
+      writeFileSync(path.join(dir, script), '#!/bin/sh\necho ok\n');
+    }
+
+    const draft = collectFinalizeSetupDraft(dir);
+    expect(draft.proposedCiYaml).toMatch(/name: lint/);
+    expect(draft.proposedCiYaml).toMatch(/run: \.\/lint/);
+    expect(draft.proposedCiYaml).toMatch(/name: backend-tests/);
+    expect(draft.proposedCiYaml).toMatch(/run: \.\/run_api_tests/);
+    expect(draft.proposedCiYaml).toMatch(/name: frontend-build/);
+    expect(draft.proposedCiYaml).toMatch(/name: frontend-component-tests/);
+    expect(draft.proposedCiYaml).toMatch(/name: permissions-sync-check/);
+    expect(draft.proposedCiYaml).toMatch(/run: \.\/verifypermissionsync/);
+    expect(draft.proposedCiYaml).toMatch(/name: e2e/);
+    expect(draft.proposedCiYaml).toMatch(/run: \.\/run_e2e_tests/);
+    expect(draft.proposedCiYaml).not.toMatch(/deploy/);
+
+    const parsed = parseCiConfig(draft.proposedCiYaml);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.config.version).toBe(1);
+      if (parsed.config.version === 1) {
+        expect(parsed.config.steps.length).toBeGreaterThanOrEqual(5);
+      }
+      // The draft omits an explicit `timeout_minutes`, so the config
+      // inherits the parser default (raised from 60m to 240m / 4h).
+      expect(parsed.config.timeoutMinutes).toBe(FINALIZE_TIMEOUT_DEFAULT_MINUTES);
+    }
+  });
+
+  it('proposes v2 jobs yaml when e2e workflow declares matrix.include', () => {
+    const dir = tmp();
+    mkdirSync(path.join(dir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(path.join(dir, 'lint'), '#!/bin/sh\necho ok\n');
+    writeFileSync(
+      path.join(dir, '.github', 'workflows', 'lint.yml'),
+      'name: lint\non: push\njobs:\n  lint:\n    steps:\n      - run: ./lint\n',
+    );
+    writeFileSync(
+      path.join(dir, '.github', 'workflows', 'e2e.yml'),
+      `name: E2E
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - group: Profiles
+            specs: a.cy.ts
+          - group: Core
+            specs: b.cy.ts
+    steps:
+      - run: ./run_e2e_tests
+`,
+    );
+
+    const draft = collectFinalizeSetupDraft(dir);
+    expect(draft.proposedCiYaml).toMatch(/version: 2/);
+    expect(draft.proposedCiYaml).toMatch(/matrix:/);
+    expect(draft.proposedCiYaml).toMatch(/Profiles/);
+    const parsed = parseCiConfig(draft.proposedCiYaml);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.config.version).toBe(2);
+  });
 });
 
 describe('serializeProposedCiYaml', () => {
@@ -211,7 +293,7 @@ describe('serializeProposedCiYaml', () => {
     );
     const parsed = parseCiConfig(yaml);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) {
+    if (parsed.ok && parsed.config.version === 1) {
       expect(parsed.config.steps.map((s) => s.name)).toEqual(['install', 'test']);
       expect(parsed.config.timeoutMinutes).toBe(30);
     }
@@ -224,7 +306,7 @@ describe('serializeProposedCiYaml', () => {
     );
     const parsed = parseCiConfig(yaml);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) {
+    if (parsed.ok && parsed.config.version === 1) {
       expect(parsed.config.steps[0].name).toBe('lint: strict');
       expect(parsed.config.steps[0].run).toBe('echo "hi" && exit 0');
     }

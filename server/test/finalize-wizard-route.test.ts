@@ -251,12 +251,12 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     expect(res.body.error).toMatch(/non-empty/i);
   });
 
-  it('400 with ci_config_invalid envelope when YAML fails v1 validation', async () => {
+  it('400 with ci_config_invalid envelope when the version is unsupported', async () => {
     const projectId = await makeProject();
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
-      .send({ ci_yaml_content: 'version: 2\non:\n  - manual\nsteps:\n  - run: x\n' })
+      .send({ ci_yaml_content: 'version: 99\non:\n  - manual\nsteps:\n  - run: x\n' })
       .expect(400);
     expect(res.body.error).toBe('ci_config_invalid');
     expect(res.body.code).toBe('invalid_version');
@@ -273,6 +273,56 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
       .send({ ci_yaml_content: yaml })
       .expect(400);
     expect(res.body.error).toBe('no_worktree');
+  });
+
+  it('binds primary checkout when session_id has no worktree_path yet', async () => {
+    const repoDir = mkdtempSync(path.join(tmpdir(), 'ah-finalize-primary-'));
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: repoDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: repoDir });
+    writeFileSync(path.join(repoDir, 'README.md'), 'seed\n');
+    execFileSync('git', ['add', '.'], { cwd: repoDir });
+    execFileSync('git', ['commit', '-m', 'seed'], { cwd: repoDir });
+    const branch = 'chore/agent-hub-ci-config';
+    execFileSync('git', ['checkout', '-b', branch], { cwd: repoDir });
+
+    const projectId = await makeProject(repoDir);
+    const agentId = await makeAgent(projectId);
+    const sessionId = uid('sess-primary');
+    getDb()
+      .prepare(
+        'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, worktree_path, worktree_branch, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sessionId,
+        agentId,
+        'Card session',
+        'claude-code',
+        'claude-sonnet-4-5',
+        1,
+        0,
+        null,
+        null,
+        1,
+      );
+
+    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const res = await request
+      .post(`/api/projects/${projectId}/finalize/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ ci_yaml_content: yaml, session_id: sessionId })
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(res.body.branch).toBe(branch);
+    expect(res.body.session_id).toBe(sessionId);
+    expect(readFileSync(path.join(repoDir, '.agent-hub', 'ci.yaml'), 'utf8')).toBe(yaml);
+
+    const row = getDb()
+      .prepare('SELECT worktree_path, worktree_branch FROM sessions WHERE id = ?')
+      .get(sessionId) as { worktree_path: string; worktree_branch: string };
+    expect(row.worktree_path).toBe(repoDir);
+    expect(row.worktree_branch).toBe(branch);
   });
 
   it('happy path: writes the file and commits it on the session branch', async () => {

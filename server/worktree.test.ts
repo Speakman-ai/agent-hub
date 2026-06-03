@@ -1273,7 +1273,19 @@ describe('dependency install command helpers', () => {
     detectInstallCommand,
     resolveSessionInstallCommand,
     sessionWorkspaceDependencyInstallOpts,
+    normalizeInstallCommandForHost,
   } = __test;
+
+  it('normalizeInstallCommandForHost rewrites bare pip install to python3 -m pip install', () => {
+    expect(
+      normalizeInstallCommandForHost(
+        'pip install -r backend/requirements-local.txt && npm --prefix frontend install',
+      ),
+    ).toBe(
+      'python3 -m pip install -r backend/requirements-local.txt && npm --prefix frontend install',
+    );
+    expect(normalizeInstallCommandForHost('npm ci --include=dev')).toBe('npm ci --include=dev');
+  });
 
   it('detectInstallCommand uses npm ci --include=dev when package-lock.json exists', () => {
     const tmp = path.join(os.tmpdir(), `wt-cmd-${Date.now()}`);

@@ -52,12 +52,18 @@ import { promisify } from 'util';
 import type {
   BroadcastFn,
   FinalizeRunPhase,
+  FinalizeRunRow,
   FinalizeRunStatus,
   KanbanCardRow,
   Project,
   ReviewerThreadRow,
   Stmts,
 } from '../types.js';
+import {
+  readFinalizeLoopRound,
+  writeFinalizeReviewRoundTimeline,
+  type TimelineMessageDeps,
+} from './timeline-message.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -179,12 +185,16 @@ export type RunReviewerOnLocalDiff = (args: {
 export interface ReviewerDispatchDeps {
   stmts: Pick<
     Stmts,
+    | 'getFinalizeRun'
     | 'updateFinalizeRunPhase'
     | 'updateFinalizeRunActiveSeconds'
     | 'updateFinalizeRunReviewerVerdict'
     | 'insertReviewerThread'
     | 'deleteReviewerThreadsForRun'
     | 'failFinalizeRun'
+    | 'addMessage'
+    | 'touchSession'
+    | 'getMessageById'
   >;
   broadcast: BroadcastFn;
   /** The reviewer driver. See {@link RunReviewerOnLocalDiff}. */
@@ -410,6 +420,21 @@ export async function runReviewerDispatch(
     });
   }
 
+  const runRow = stmts.getFinalizeRun.get(opts.runId) as FinalizeRunRow | undefined;
+  writeFinalizeReviewRoundTimeline(reviewerTimelineDeps(deps), {
+    sessionId: opts.sessionId,
+    runId: opts.runId,
+    round: readFinalizeLoopRound(runRow),
+    verdict: result.verdict,
+    threads: insertedRows.map((row) => ({
+      id: row.id,
+      file_path: row.file_path,
+      line_start: row.line_start,
+      line_end: row.line_end,
+      body: row.body,
+    })),
+  });
+
   return {
     kind: 'success',
     verdict: result.verdict,
@@ -419,6 +444,10 @@ export async function runReviewerDispatch(
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
+
+function reviewerTimelineDeps(deps: ReviewerDispatchDeps): TimelineMessageDeps {
+  return { stmts: deps.stmts, broadcast: deps.broadcast };
+}
 
 function setPhase(
   stmts: ReviewerDispatchDeps['stmts'],
