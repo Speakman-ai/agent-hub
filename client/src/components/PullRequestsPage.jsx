@@ -12,7 +12,6 @@ import {
   Loader2,
   MessageSquare,
   Wrench,
-  BellRing,
   Eye,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
@@ -30,7 +29,6 @@ import {
   mergePipelineListBadge,
   checkRowStyle,
   reviewStateColor,
-  prListRowResolveDisabledHeuristic,
   mergeButtonState,
   buildPrActivityTimeline,
 } from '../utils/prFormatting.js';
@@ -67,12 +65,9 @@ function PrListItem({
   pr,
   onOpen,
   onResolveRow,
-  onNudgeReviewerRow,
   onMergeRow,
   resolveAgentId,
-  reviewerAgentId,
   resolvingThisRow,
-  nudgingThisRow,
   mergingThisRow,
   bulkResolving,
   spawnedSessionId,
@@ -85,11 +80,8 @@ function PrListItem({
   const reviewB = reviewDecisionListBadge(pr.review_decision);
   const mBadge = mergeableBadge(pr.mergeable);
   const pipeB = mergePipelineListBadge(pr);
-  const heuristicOff = prListRowResolveDisabledHeuristic(pr);
   const resolveBusy = bulkResolving || resolvingThisRow;
-  const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
-  const nudgeBusy = bulkResolving || nudgingThisRow;
-  const nudgeDisabled = !reviewerAgentId || nudgeBusy;
+  const resolveDisabled = !resolveAgentId || resolveBusy;
   const mergeState = mergeButtonState(pr);
   const mergeBusy = bulkResolving || mergingThisRow;
   const mergeDisabled = !mergeState.enabled || mergeBusy;
@@ -98,22 +90,13 @@ function PrListItem({
     : !pr.html_url
       ? 'No GitHub URL on this PR'
       : mergeState.reason;
-  const nudgeTitle = !reviewerAgentId
-    ? 'No reviewer agent on this project'
-    : bulkResolving
-      ? 'Bulk resolve in progress…'
-      : nudgingThisRow
-        ? 'Requesting review…'
-        : 'Request a formal PR review from the reviewer agent';
   const resolveTitle = !resolveAgentId
     ? 'No agents configured'
     : bulkResolving
       ? 'Resolve all in progress…'
       : resolvingThisRow
         ? 'Resolving…'
-        : heuristicOff
-          ? 'Nothing to resolve from list metadata (open PR for full detail if needed)'
-          : 'Resolve conflicts, CI failures, or review feedback for this PR';
+        : 'Bring this PR into a session — resolve conflicts, tests, and review feedback, then auto-push';
 
   return (
     <div className="flex gap-2 w-full bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors items-stretch">
@@ -182,25 +165,6 @@ function PrListItem({
             <GitMerge size={16} className="text-emerald-300" />
           )}
           <span>Merge</span>
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onNudgeReviewerRow(pr.number);
-          }}
-          disabled={nudgeDisabled}
-          title={nudgeTitle}
-          aria-label={`Nudge reviewer for PR #${pr.number}`}
-          className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-violet-800/80 bg-violet-950/40 text-xs font-medium text-violet-200 hover:bg-violet-950/70 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
-        >
-          {nudgingThisRow ? (
-            <Loader2 size={16} className="animate-spin text-violet-300" />
-          ) : (
-            <BellRing size={16} className="text-violet-300" />
-          )}
-          <span>Nudge</span>
         </button>
         {spawnedSessionId ? (
           <div
@@ -449,12 +413,9 @@ function PrDetail({
   refreshing,
   onResolve,
   resolving,
-  onNudgeReviewer,
-  nudgingReviewer,
   onMerge,
   merging,
   agentId,
-  reviewerAgentId,
   spawnedSessionId,
   onOpenSession,
 }) {
@@ -473,14 +434,7 @@ function PrDetail({
     ? 'No agents configured'
     : resolving
       ? 'Resolving…'
-      : 'Spawn an agent session to resolve conflicts, CI failures, or review feedback on this PR';
-
-  const nudgeDisabled = nudgingReviewer || !reviewerAgentId;
-  const nudgeTitle = !reviewerAgentId
-    ? 'No reviewer agent on this project'
-    : nudgingReviewer
-      ? 'Requesting review…'
-      : 'Request a formal PR review from the reviewer agent';
+      : 'Bring this PR into a session — resolve conflicts, tests, and review feedback, then auto-push';
 
   const mergeState = mergeButtonState(pr);
   const mergeDisabled = merging || !mergeState.enabled || !pr.html_url;
@@ -529,20 +483,6 @@ function PrDetail({
               Resolve PR
             </button>
           )}
-          <button
-            type="button"
-            onClick={onNudgeReviewer}
-            disabled={nudgeDisabled}
-            title={nudgeTitle}
-            className="flex items-center gap-1.5 text-sm text-violet-300 hover:text-violet-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {nudgingReviewer ? (
-              <Loader2 size={14} className="animate-spin text-violet-300" />
-            ) : (
-              <BellRing size={14} className="text-violet-300" />
-            )}
-            Nudge reviewer
-          </button>
           <button
             type="button"
             onClick={onMerge}
@@ -674,8 +614,6 @@ export default function PullRequestsPage({
   const [detailError, setDetailError] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolvingFromList, setResolvingFromList] = useState(null);
-  const [nudgingFromList, setNudgingFromList] = useState(null);
-  const [nudgingDetail, setNudgingDetail] = useState(false);
   const [mergingDetail, setMergingDetail] = useState(false);
   const [mergingFromList, setMergingFromList] = useState(null);
   const [bulkResolving, setBulkResolving] = useState(false);
@@ -850,57 +788,6 @@ export default function PullRequestsPage({
       setResolving(false);
     }
   }, [projectId, selectedNumber, resolveAgentId, resolving, applyResolveOutcome, onToast]);
-
-  const handleNudgeReviewer = useCallback(async () => {
-    if (!projectId || !selectedNumber || !reviewerAgentId || nudgingDetail) return;
-    setNudgingDetail(true);
-    try {
-      await api.nudgePrReviewer(projectId, selectedNumber);
-      if (typeof onToast === 'function') {
-        onToast(
-          'Formal review queued — the reviewer session will appear in the sidebar shortly.',
-          'success',
-          6000,
-        );
-      }
-    } catch (err) {
-      const raw = err?.message || 'Failed to nudge reviewer';
-      if (typeof onToast === 'function') {
-        onToast(raw.replace(/^(\d{3}):\s*/, ''), 'error', 7000);
-      } else {
-        console.warn('Nudge reviewer failed:', raw);
-      }
-    } finally {
-      setNudgingDetail(false);
-    }
-  }, [projectId, selectedNumber, reviewerAgentId, nudgingDetail, onToast]);
-
-  const handleNudgeFromList = useCallback(
-    async (prNumber) => {
-      if (!projectId || !reviewerAgentId || bulkResolving || nudgingFromList != null) return;
-      setNudgingFromList(prNumber);
-      try {
-        await api.nudgePrReviewer(projectId, prNumber);
-        if (typeof onToast === 'function') {
-          onToast(
-            `PR #${prNumber}: formal review queued — check the reviewer agent shortly.`,
-            'success',
-            6000,
-          );
-        }
-      } catch (err) {
-        const raw = err?.message || 'Failed to nudge reviewer';
-        if (typeof onToast === 'function') {
-          onToast(`PR #${prNumber}: ${raw.replace(/^(\d{3}):\s*/, '')}`, 'error', 7000);
-        } else {
-          console.warn('Nudge reviewer failed:', raw);
-        }
-      } finally {
-        setNudgingFromList(null);
-      }
-    },
-    [projectId, reviewerAgentId, bulkResolving, nudgingFromList, onToast],
-  );
 
   const handleMerge = useCallback(async () => {
     if (!projectId || !selectedNumber || mergingDetail) return;
@@ -1099,12 +986,9 @@ export default function PullRequestsPage({
           refreshing={refreshing || detailLoading}
           onResolve={handleResolve}
           resolving={resolving}
-          onNudgeReviewer={handleNudgeReviewer}
-          nudgingReviewer={nudgingDetail}
           onMerge={handleMerge}
           merging={mergingDetail}
           agentId={resolveAgentId}
-          reviewerAgentId={reviewerAgentId}
           spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
           onOpenSession={onOpenSession}
         />
@@ -1232,12 +1116,9 @@ export default function PullRequestsPage({
                 pr={pr}
                 onOpen={() => handleSelect(pr)}
                 onResolveRow={handleResolveFromList}
-                onNudgeReviewerRow={handleNudgeFromList}
                 onMergeRow={handleMergeFromList}
                 resolveAgentId={resolveAgentId}
-                reviewerAgentId={reviewerAgentId}
                 resolvingThisRow={resolvingFromList === pr.number}
-                nudgingThisRow={nudgingFromList === pr.number}
                 mergingThisRow={mergingFromList === pr.number}
                 bulkResolving={bulkResolving}
                 spawnedSessionId={sessionSpawnedByPr[pr.number] || null}

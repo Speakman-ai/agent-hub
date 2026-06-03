@@ -6,11 +6,13 @@ import { api } from '../utils/api.js';
 /**
  * Component test for the Resolve PR button in <PullRequestsPage />.
  *
- * Covers the three response branches from `POST /api/projects/:projectId/pulls/:number/resolve`:
+ * Covers the response branches from `POST /api/projects/:projectId/pulls/:number/resolve`:
  *   - 201 with `sessionId` → success toast + inline "Session started" (does not auto-navigate;
  *     optional "Open chat" calls `onOpenSession` when clicked)
- *   - 200 with `sessionId: null, triggered: []` → info toast "Nothing to resolve — PR looks clean."
  *   - rejected promise → error toast with the message
+ *
+ * The button always brings the PR into a session (no "nothing to resolve" gate),
+ * so it stays enabled regardless of the PR's clean/dirty state.
  *
  * Also verifies: button disabled + spinner while in flight (prevents double-submit),
  * and the no-agent edge case (button disabled with tooltip when project.agents is empty).
@@ -21,7 +23,6 @@ vi.mock('../utils/api.js', () => ({
     getProjectPulls: vi.fn(),
     getProjectPullDetail: vi.fn(),
     resolvePR: vi.fn(),
-    nudgePrReviewer: vi.fn(),
   },
 }));
 
@@ -77,7 +78,6 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     api.getProjectPulls.mockReset();
     api.getProjectPullDetail.mockReset();
     api.resolvePR.mockReset();
-    api.nudgePrReviewer.mockReset();
   });
 
   afterEach(() => {
@@ -217,78 +217,11 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
   });
 });
 
-describe('<PullRequestsPage /> — Nudge reviewer', () => {
-  beforeEach(() => {
-    api.getProjectPulls.mockReset();
-    api.getProjectPullDetail.mockReset();
-    api.resolvePR.mockReset();
-    api.nudgePrReviewer.mockReset();
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('list row Nudge calls nudgePrReviewer and shows success toast', async () => {
-    api.nudgePrReviewer.mockResolvedValue({ ok: true, scheduled: true });
-    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
-    const onToast = vi.fn();
-
-    render(<PullRequestsPage projectId="proj-1" project={project} onToast={onToast} />);
-
-    const nudge = await screen.findByRole('button', { name: /nudge reviewer for pr #123/i });
-    fireEvent.click(nudge);
-
-    await waitFor(() => expect(api.nudgePrReviewer).toHaveBeenCalledWith('proj-1', 123));
-    await waitFor(() =>
-      expect(onToast).toHaveBeenCalledWith(
-        expect.stringMatching(/formal review queued/i),
-        'success',
-        expect.any(Number),
-      ),
-    );
-  });
-
-  it('shows error toast when nudge returns 409 conflict', async () => {
-    api.nudgePrReviewer.mockRejectedValue(
-      new Error('409: A reviewer session is still running for this PR.'),
-    );
-    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
-    const onToast = vi.fn();
-
-    render(<PullRequestsPage projectId="proj-1" project={project} onToast={onToast} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /nudge reviewer for pr #123/i }));
-
-    await waitFor(() =>
-      expect(onToast).toHaveBeenCalledWith(
-        expect.stringMatching(/still running/i),
-        'error',
-        expect.any(Number),
-      ),
-    );
-  });
-
-  it('disables Nudge when project has no reviewer agent', async () => {
-    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
-    const noRev = {
-      ...project,
-      agents: [{ id: 'agent-alpha', name: 'Alpha', role: 'lead', active: true }],
-    };
-
-    render(<PullRequestsPage projectId="proj-1" project={noRev} />);
-
-    const nudge = await screen.findByRole('button', { name: /nudge reviewer for pr #123/i });
-    expect(nudge).toBeDisabled();
-  });
-});
-
 describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
   beforeEach(() => {
     api.getProjectPulls.mockReset();
     api.getProjectPullDetail.mockReset();
     api.resolvePR.mockReset();
-    api.nudgePrReviewer.mockReset();
   });
 
   afterEach(() => {
@@ -333,7 +266,9 @@ describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
     expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-list');
   });
 
-  it('disables list-row Resolve when list metadata looks clean', async () => {
+  it('keeps list-row Resolve enabled even when list metadata looks clean', async () => {
+    // The button always brings the PR into a session — it is no longer gated on
+    // the snapshot showing failing signal, so a "clean" PR can still be resolved.
     const cleanPr = {
       ...prSummary,
       mergeable: true,
@@ -345,7 +280,7 @@ describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
     render(<PullRequestsPage projectId="proj-1" project={project} />);
 
     const rowResolve = await screen.findByRole('button', { name: /resolve pr #123/i });
-    expect(rowResolve).toBeDisabled();
+    expect(rowResolve).not.toBeDisabled();
   });
 
   it('Resolve all runs resolve once per listed PR', async () => {
@@ -388,7 +323,7 @@ describe('<PullRequestsPage /> — PR list row button layout', () => {
 
     await screen.findByText('Fix the flaky test');
 
-    // The Merge, Nudge, and Resolve buttons share a container div.
+    // The Merge and Resolve buttons share a container div.
     // It must use flex-row so buttons sit side-by-side (not stacked vertically).
     const mergeBtn = screen.getByRole('button', { name: /merge pr #123/i });
     const container = mergeBtn.parentElement;

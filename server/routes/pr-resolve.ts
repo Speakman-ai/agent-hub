@@ -3,18 +3,23 @@
  *
  * POST /api/projects/:projectId/pulls/:number/resolve  body: { agentId }
  *
- * Inspects the PR's current state (via the shared `fetchPrDetail` helper) and,
- * if any of {conflict, ci, review} autofix kinds apply, spawns a background
- * agent session with a prompt that combines the relevant autofix templates.
+ * Brings the PR's full context (via the shared `fetchPrDetail` helper) into a
+ * fresh background agent session and ALWAYS spawns — the button's whole job is
+ * to hand the agent the PR. The agent resolves whatever it finds (merge
+ * conflicts, failing tests/CI, review and comment feedback); the session-end
+ * pipeline then runs the review/test phase and auto-pushes to the PR branch.
+ *
+ * `triggered` reports which autofix kinds were detected from the snapshot
+ * ({conflict, ci, review}); when none are detected the prompt still includes
+ * the full set of autofix guardrails so the agent has guidance for whatever it
+ * discovers locally.
  *
  * Complements the event-driven `autoKeepPrGreen` path: the webhook flow reacts
  * to GitHub events as they arrive, this endpoint lets a user click a button
- * and say "go check this PR now" — e.g. if an event was missed, or the PR is
- * stale, or they just want to prod an idle PR.
+ * and say "go work this PR now".
  *
  * Returns:
- *   200 { sessionId, triggered: AutofixKind[] }      — session spawned
- *   200 { sessionId: null, triggered: [], reason: 'no-action-needed' } — clean PR
+ *   201 { sessionId, triggered: AutofixKind[], session } — session spawned
  *   400 if agentId is missing
  *   404 if the project / PR cannot be found
  *   502 if the GitHub fetch fails
@@ -131,10 +136,18 @@ export function buildPrContextHeader(
     lines.push(`## Setup — required first step`);
     lines.push('');
     lines.push(
-      `Run \`gh pr checkout ${prNumber}\` in this worktree before making any code changes.`,
+      'This session runs in a **shallow** clone (`--depth 1`). A shallow clone is what makes `gh pr checkout` flaky — the PR head and the base branch share no history locally, so the checkout, tracking setup, and any rebase against the base fail or behave erratically. Deepen history first, then check out the PR branch:',
     );
+    lines.push('');
+    lines.push('```bash');
+    lines.push('# 1. Unshallow so the PR head and base branch share history.');
+    lines.push('git fetch --unshallow origin 2>/dev/null || git fetch --depth=1000 origin');
+    lines.push('# 2. Check out the PR head branch (retry once after the fetch if it fails).');
+    lines.push(`gh pr checkout ${prNumber} --force`);
+    lines.push('```');
+    lines.push('');
     lines.push(
-      "This positions your local checkout on the PR's head branch so commits append to the existing PR. Without this step, your commits land on a fresh session branch and will not be pushed to the PR when the session ends.",
+      "This positions your local checkout on the PR's head branch with enough history that commits append to the existing PR and conflict resolution / rebase against the base branch succeeds. Without this step, your commits land on a fresh session branch and will not be pushed to the PR when the session ends.",
     );
   }
 
@@ -241,18 +254,21 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       }
 
       const { pr, reviews, checks, comments } = detail;
-      const kinds = detectKinds(pr, reviews, checks);
+      const detected = detectKinds(pr, reviews, checks);
 
-      if (kinds.length === 0) {
-        return res.json({
-          sessionId: null,
-          triggered: [],
-          reason: 'no-action-needed',
-        });
-      }
+      // The Resolve PR button always brings the PR's full context into a fresh
+      // session — it never bails out as "nothing to do". The agent reads the
+      // context, resolves whatever it finds (merge conflicts, failing
+      // tests/CI, and any review or comment feedback), then the session-end
+      // pipeline runs the review/test phase and auto-pushes to the PR branch.
+      //
+      // When the snapshot shows no specific failing signal we still spawn, but
+      // include the full set of autofix guardrails so the agent has guidance
+      // for whatever it discovers locally.
+      const promptKinds = detected.length > 0 ? detected : [...AUTOFIX_KINDS];
 
       const repoFullName = `${repo.owner}/${repo.repo}`;
-      const prompt = buildResolvePrompt(pr, reviews, checks, comments, repoFullName, kinds);
+      const prompt = buildResolvePrompt(pr, reviews, checks, comments, repoFullName, promptKinds);
 
       const taskId = uuidv4();
       const sessionId = uuidv4();
@@ -269,6 +285,12 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
+      // Resolve PR sessions exist to drive a PR to merge-ready: the agent fixes
+      // conflicts/CI/review, then the work should run through review + tests and
+      // be pushed back to the PR automatically. Start at the "Build and Push"
+      // finalize level so the session-end pipeline reviews, tests, and pushes
+      // without a human re-toggling it each time.
+      stmts.updateSessionFinalizeAutomation.run('push', sessionId);
       stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
       handleChat(null, {
@@ -279,7 +301,7 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
-      return res.status(201).json({ sessionId, triggered: kinds, session });
+      return res.status(201).json({ sessionId, triggered: detected, session });
     },
   );
 

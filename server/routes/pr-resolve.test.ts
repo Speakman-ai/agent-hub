@@ -205,6 +205,7 @@ function buildDeps(overrides: Partial<RouteDeps> = {}): RouteDeps {
     stmts: {
       createSession: { run: vi.fn() },
       insertBackgroundTask: { run: vi.fn() },
+      updateSessionFinalizeAutomation: { run: vi.fn() },
       getSession: { get: vi.fn().mockReturnValue({ id: 'fake-session' }) },
     },
     broadcast: vi.fn() as unknown,
@@ -289,11 +290,21 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(res.body.error).toMatch(/Unknown agent/);
   });
 
-  it('returns no-action-needed for a clean PR without spawning a session', async () => {
+  it('still spawns a session for a clean PR (always brings PR context)', async () => {
+    // The Resolve PR button no longer bails out on a clean snapshot — its whole
+    // job is to bring the PR context into a session. With no specific failing
+    // signal, `triggered` is empty but the prompt still includes the full set
+    // of autofix guardrails so the agent has guidance for whatever it finds.
     const { fetchPrDetail } = await import('../pr-detail-fetch.js');
     (fetchPrDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
       source: 'github-app',
-      pr: { number: 1, title: 't', mergeable: true, mergeable_state: 'clean' },
+      pr: {
+        number: 1,
+        title: 't',
+        mergeable: true,
+        mergeable_state: 'clean',
+        html_url: 'https://github.com/o/r/pull/1',
+      },
       reviews: [{ user: 'bob', state: 'APPROVED', submitted_at: 't' }],
       checks: [{ name: 'ci', conclusion: 'success' }],
       comments: [],
@@ -311,6 +322,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
       stmts: {
         createSession: { run: createSessionRun },
         insertBackgroundTask: { run: vi.fn() },
+        updateSessionFinalizeAutomation: { run: vi.fn() },
         getSession: { get: vi.fn().mockReturnValue({ id: 'x' }) },
       } as unknown as RouteDeps['stmts'],
     });
@@ -318,14 +330,18 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     const app = await mount(deps);
     const res = await request(app).post('/api/projects/p/pulls/1/resolve').send({ agentId: 'a1' });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      sessionId: null,
-      triggered: [],
-      reason: 'no-action-needed',
-    });
-    expect(handleChat).not.toHaveBeenCalled();
-    expect(createSessionRun).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(res.body.sessionId).toBeTruthy();
+    // No failing signal detected → triggered stays empty…
+    expect(res.body.triggered).toEqual([]);
+    expect(createSessionRun).toHaveBeenCalledTimes(1);
+    // …but the prompt still ships with the full guardrail set + PR context.
+    expect(handleChat).toHaveBeenCalledTimes(1);
+    const chatArgs = handleChat.mock.calls[0][1];
+    expect(chatArgs.content).toContain('## PR Context');
+    expect(chatArgs.content).toContain('TEMPLATE[review]');
+    expect(chatArgs.content).toContain('TEMPLATE[ci]');
+    expect(chatArgs.content).toContain('TEMPLATE[conflict]');
   });
 
   it('spawns a session with the right template kinds when the PR has failures', async () => {
@@ -349,6 +365,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     const handleChat = vi.fn();
     const createSessionRun = vi.fn();
     const insertBackgroundTaskRun = vi.fn();
+    const updateFinalizeRun = vi.fn();
     const deps = buildDeps({
       findProject: vi.fn().mockReturnValue({ id: 'p', githubRepo: 'o/r' }),
       findAgent: vi.fn().mockReturnValue({
@@ -359,6 +376,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
       stmts: {
         createSession: { run: createSessionRun },
         insertBackgroundTask: { run: insertBackgroundTaskRun },
+        updateSessionFinalizeAutomation: { run: updateFinalizeRun },
         getSession: {
           get: vi
             .fn()
@@ -377,6 +395,11 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(createSessionRun).toHaveBeenCalledTimes(1);
     const sessionArgs = createSessionRun.mock.calls[0];
     expect(sessionArgs[2]).toMatch(/^\[Resolve PR #42\]/);
+
+    // Resolve PR sessions start at the "Build and Push" finalize level so the
+    // session-end pipeline reviews, tests, and pushes back to the PR.
+    expect(updateFinalizeRun).toHaveBeenCalledTimes(1);
+    expect(updateFinalizeRun.mock.calls[0][0]).toBe('push');
 
     expect(handleChat).toHaveBeenCalledTimes(1);
     const chatArgs = handleChat.mock.calls[0][1];
