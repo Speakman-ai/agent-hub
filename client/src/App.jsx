@@ -9,6 +9,7 @@ import AgentSwitcher from './components/AgentSwitcher.jsx';
 import ForwardSessionModal, { filterForwardTargets } from './components/ForwardSessionModal.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
+import ReviewerPage from './components/ReviewerPage.jsx';
 import SessionAgentsPanel from './components/SessionAgentsPanel.jsx';
 import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
@@ -276,6 +277,8 @@ export default function App() {
   // Notes state
   const [notesProjectId, setNotesProjectId] = useState(null);
   // Previews state
+  // Reviewer state — which project's reviewer markdown files are being viewed
+  const [reviewerProjectId, setReviewerProjectId] = useState(null);
   // Pull Requests state
   const [pullsProjectId, setPullsProjectId] = useState(null);
   /** Deep-link into Pull Requests detail (e.g. session summary linked PR). Cleared when leaving pulls view. */
@@ -2929,7 +2932,11 @@ export default function App() {
   // Stable refresh used by the per-project Runners/Preview views so the
   // child sections don't re-subscribe their effects on every App render.
   const refreshProjects = useCallback(
-    () => api.getProjects().then((data) => setProjects(data)).catch(() => undefined),
+    () =>
+      api
+        .getProjects()
+        .then((data) => setProjects(data))
+        .catch(() => undefined),
     [],
   );
 
@@ -3721,6 +3728,7 @@ export default function App() {
               setCurrentView(view);
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
+              if (view === 'reviewer' && extra) setReviewerProjectId(extra);
               if (view === 'pulls' && extra) setPullsProjectId(extra);
               if (view === 'design' && extra) setActiveDesignId(extra);
               if (view === 'designs') {
@@ -3755,6 +3763,7 @@ export default function App() {
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
+            reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
@@ -3918,6 +3927,8 @@ export default function App() {
                 <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
               ) : currentView === 'notes' && notesProjectId ? (
                 <NotesEditor projectId={notesProjectId} />
+              ) : currentView === 'reviewer' && reviewerProjectId ? (
+                <ReviewerPage projectId={reviewerProjectId} projects={projects} />
               ) : currentView === 'threads' && threadsProjectId ? (
                 activeThreadId ? (
                   <ThreadView

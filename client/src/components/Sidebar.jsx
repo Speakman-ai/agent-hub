@@ -25,6 +25,7 @@ import {
   GripVertical,
   MessageCircleQuestion,
   CheckCircle2,
+  ScanEye,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -78,6 +79,7 @@ export default function Sidebar({
   cronSessions = [],
   wikiProjectId,
   notesProjectId,
+  reviewerProjectId,
   threadsProjectId,
   pullsProjectId,
   workflowBadgeByProject = {},
@@ -493,8 +495,10 @@ export default function Sidebar({
                 {(!isCollapsed || activeAgents.length === 1) && (
                   <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
                     {(() => {
-                      // Separate top-level agents from sub-agents
-                      const topLevel = activeAgents.filter((a) => !a.parentAgentId);
+                      // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
+                      const topLevel = activeAgents.filter(
+                        (a) => !a.parentAgentId && a.role !== 'reviewer',
+                      );
                       const subAgentMap = {};
                       activeAgents.forEach((a) => {
                         if (a.parentAgentId) {
@@ -783,19 +787,12 @@ export default function Sidebar({
                                     {!agentCollapsed && (
                                       <>
                                         <div className="flex items-center gap-1 mt-1">
-                                          {/* Reviewer agents are spawned exclusively by the
-                                              GitHub PR webhook. The server rejects manual
-                                              POST /api/agents/:id/sessions with role=reviewer,
-                                              so we hide the affordance instead of letting it
-                                              error out. */}
-                                          {agent.role !== 'reviewer' && (
-                                            <button
-                                              onClick={onNewSession}
-                                              className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                                            >
-                                              + New Session
-                                            </button>
-                                          )}
+                                          <button
+                                            onClick={onNewSession}
+                                            className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                          >
+                                            + New Session
+                                          </button>
                                           {sessions.length > 0 && (
                                             <div className="ml-auto flex items-center gap-0.5 pr-1">
                                               <button
@@ -967,6 +964,21 @@ export default function Sidebar({
                       <FileText size={14} className="flex-shrink-0" />
                       <span className="truncate">Wiki</span>
                     </button>
+
+                    {/* Reviewer page — only when the project has a reviewer agent. */}
+                    {project.agents?.some((a) => a.role === 'reviewer') && (
+                      <button
+                        onClick={() => onNavigate('reviewer', project.id)}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                          currentView === 'reviewer' && reviewerProjectId === project.id
+                            ? 'bg-gray-800 text-white'
+                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                        }`}
+                      >
+                        <ScanEye size={14} className="flex-shrink-0" />
+                        <span className="truncate">Reviewer</span>
+                      </button>
+                    )}
 
                     {/* Workflows — temporarily hidden from the sidebar.
                     <button
