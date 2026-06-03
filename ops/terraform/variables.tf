@@ -185,9 +185,15 @@ variable "ecr_public_registry_alias" {
 # --- GitHub Actions OIDC (CI image push) -------------------------------------
 
 variable "manage_github_oidc_role" {
-  description = "If true, create the IAM role assumed by GitHub Actions to push images to ECR Public. The OIDC provider itself is assumed to exist (AWS dev account has one already). Set false if you manage the role in another module."
+  description = "If true, create the IAM role assumed by GitHub Actions to push images to ECR Public. The OIDC provider itself is assumed to exist (AWS dev account has one already) unless create_github_oidc_provider is set. Set false if you manage the role in another module."
   type        = bool
   default     = true
+}
+
+variable "create_github_oidc_provider" {
+  description = "If true, CREATE the GitHub Actions OIDC provider in this account instead of referencing a pre-existing one. Set true in a fresh account that has no provider yet (e.g. agenthub prod); leave false where one already exists (dev). Only takes effect with manage_github_oidc_role=true."
+  type        = bool
+  default     = false
 }
 
 variable "github_oidc_role_name" {

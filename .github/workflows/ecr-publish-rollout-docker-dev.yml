@@ -218,9 +218,19 @@ jobs:
       id-token: write
       contents: read
     env:
-      AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
-      AWS_DEPLOY_REGION: us-east-2
-      DEV_SANDBOX_INSTANCE_ID: i-066e44ff85ec24d8e
+      # Docker rollout target. Defaults to the dev sandbox (acct 120569607241,
+      # i-066e44ff85ec24d8e) so existing behavior is unchanged until the repo
+      # Variables below are set. Point releases at another account's box —
+      # e.g. agenthub prod (acct 350025135582, i-0415277dd6022627a) — by setting
+      # repo Variables DOCKER_DEPLOY_ROLE_ARN / DOCKER_DEPLOY_INSTANCE_ID /
+      # DOCKER_DEPLOY_REGION. The image PUSH (above) still goes to the dev-account
+      # public ECR (h9t4v7h0); only this deploy step assumes the target-account
+      # role and SSMs that instance. The target box must run the agenthub-server
+      # systemd unit and pull public.ecr.aws/h9t4v7h0/agent-hub:main (cross-account
+      # pull is fine — the repo is public), so the digest assertion still holds.
+      AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || 'arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push' }}
+      AWS_DEPLOY_REGION: ${{ vars.DOCKER_DEPLOY_REGION || 'us-east-2' }}
+      DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-066e44ff85ec24d8e' }}
       EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
 
     steps:
@@ -337,7 +347,7 @@ jobs:
           echo "ssm-comment=$COMMENT"
           CMD_ID="$(aws ssm send-command \
             --region "$AWS_DEPLOY_REGION" \
-            --instance-ids "$DEV_SANDBOX_INSTANCE_ID" \
+            --instance-ids "$DEPLOY_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "$COMMENT" \
             --parameters "$PARAMS_JSON" \
@@ -348,7 +358,7 @@ jobs:
             STATUS="$(aws ssm get-command-invocation \
               --region "$AWS_DEPLOY_REGION" \
               --command-id "$CMD_ID" \
-              --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+              --instance-id "$DEPLOY_INSTANCE_ID" \
               --query Status \
               --output text || true)"
             echo "poll $i status=$STATUS"
@@ -356,7 +366,7 @@ jobs:
               aws ssm get-command-invocation \
                 --region "$AWS_DEPLOY_REGION" \
                 --command-id "$CMD_ID" \
-                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --instance-id "$DEPLOY_INSTANCE_ID" \
                 --query StandardOutputContent \
                 --output text
               exit 0
@@ -365,7 +375,7 @@ jobs:
               aws ssm get-command-invocation \
                 --region "$AWS_DEPLOY_REGION" \
                 --command-id "$CMD_ID" \
-                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --instance-id "$DEPLOY_INSTANCE_ID" \
                 --output json
               exit 1
             fi
@@ -383,8 +393,8 @@ jobs:
             echo ""
             BOOL_RESET="${RESET_INSTANCE,,}"
             if [[ "$BOOL_RESET" == "true" ]]; then
-              echo "**Reset mode** on instance \`$DEV_SANDBOX_INSTANCE_ID\`."
+              echo "**Reset mode** on instance \`$DEPLOY_INSTANCE_ID\`."
             else
-              echo "Restarted \`agenthub-server\` on \`$DEV_SANDBOX_INSTANCE_ID\` (pull picks up \`:main\`)."
+              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:main\`)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

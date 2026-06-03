@@ -7,10 +7,32 @@
 # To import an existing role from a prior bootstrap:
 #   terraform import aws_iam_role.gha_ecr_push agent-hub-ci-ecr-push
 
+# New accounts (e.g. agenthub prod) have no GitHub OIDC provider yet — create it.
+# Existing accounts (dev) reference the pre-existing provider via the data source.
+# Set create_github_oidc_provider=true in exactly the workspace that should own it.
+resource "aws_iam_openid_connect_provider" "github" {
+  count = var.manage_github_oidc_role && var.create_github_oidc_provider ? 1 : 0
+
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  # GitHub Actions OIDC CA thumbprint. AWS validates the live TLS chain and
+  # effectively ignores this value, but the resource still requires one.
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+  tags            = { Project = var.project_name }
+}
+
 data "aws_iam_openid_connect_provider" "github" {
-  count = var.manage_github_oidc_role ? 1 : 0
+  count = var.manage_github_oidc_role && !var.create_github_oidc_provider ? 1 : 0
 
   url = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  github_oidc_provider_arn = var.manage_github_oidc_role ? (
+    var.create_github_oidc_provider
+    ? aws_iam_openid_connect_provider.github[0].arn
+    : data.aws_iam_openid_connect_provider.github[0].arn
+  ) : null
 }
 
 resource "aws_iam_role" "gha_ecr_push" {
@@ -26,7 +48,7 @@ resource "aws_iam_role" "gha_ecr_push" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github[0].arn
+          Federated = local.github_oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {

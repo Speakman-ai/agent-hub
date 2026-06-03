@@ -16,10 +16,16 @@ const pushImageWorkflowPath = path.join(repoRoot, '.github', 'workflows', 'push-
  * workflow; the thin `push-image.yml` entrypoint stays manual-only.
  */
 describe('ECR publish + push-image deploy contract', () => {
+  // The deploy target is parameterized via repo Variables with a fallback
+  // default — e.g. `DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-...' }}`.
+  // Parse the fallback default (the instance used when the repo vars are unset),
+  // which must stay in sync with ryan.tfvars (the dev-sandbox SSM deploy target).
   function parseSandboxInstanceFromEcrWorkflow(workflowYaml: string): string {
-    const m = workflowYaml.match(/^\s*DEV_SANDBOX_INSTANCE_ID:\s*(i-[a-f0-9]+)\s*$/m);
-    expect(m?.[1], 'DEV_SANDBOX_INSTANCE_ID in ecr-publish-rollout-docker-dev.yml').toBeTruthy();
-    return m![1];
+    const line = workflowYaml.match(/^\s*DEPLOY_INSTANCE_ID:.*$/m);
+    expect(line?.[0], 'DEPLOY_INSTANCE_ID in ecr-publish-rollout-docker-dev.yml').toBeTruthy();
+    const id = line![0].match(/i-[a-f0-9]+/);
+    expect(id?.[0], 'fallback instance id on the DEPLOY_INSTANCE_ID line').toBeTruthy();
+    return id![0];
   }
 
   function parseTfvarsSandboxInstance(tfvarsBody: string): string {
@@ -28,11 +34,11 @@ describe('ECR publish + push-image deploy contract', () => {
     return m![1];
   }
 
-  it('defines deploy-dev-sandbox with SSM restart and a DEV_SANDBOX_INSTANCE_ID target', () => {
+  it('defines deploy-dev-sandbox with SSM restart and a DEPLOY_INSTANCE_ID target', () => {
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
     expect(yml).toContain('deploy-dev-sandbox:');
     expect(yml).toContain('systemctl restart agenthub-server');
-    expect(yml).toContain('DEV_SANDBOX_INSTANCE_ID');
+    expect(yml).toContain('DEPLOY_INSTANCE_ID');
     const id = parseSandboxInstanceFromEcrWorkflow(yml);
     expect(id).toMatch(/^i-[a-f0-9]{8,}$/);
   });

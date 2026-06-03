@@ -37,10 +37,14 @@ ssh_cidr_blocks     = []
 bootstrap_agent_hub = true
 agent_hub_image_uri = "public.ecr.aws/h9t4v7h0/agent-hub:main"
 
-# Independent account — don't manage the shared GitHub OIDC role or CI auto-deploy
-# (those target the dev sandbox). This box pulls :main on its own restart.
-manage_github_oidc_role             = false
-enable_ci_ssm_deploy_after_ecr_push = false
+# CI release deploy → THIS box. The release workflow (ecr-publish-rollout-docker-dev.yml)
+# pushes :main to the dev-account public ECR (h9t4v7h0), then assumes the role below
+# in THIS account to `systemctl restart agenthub-server` over SSM. We create the
+# GitHub OIDC provider here (new account, none exists yet) and the assumed role.
+manage_github_oidc_role             = true
+create_github_oidc_provider         = true
+enable_ci_ssm_deploy_after_ecr_push = true
+ci_ssm_deploy_instance_id           = "i-0415277dd6022627a" # agenthub prod Hub
 
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
@@ -50,14 +54,14 @@ instance_type    = "m7i-flex.xlarge" # 4 vCPU / 16 GB — app + registry mirror 
 root_volume_size = 150
 
 # ── Finalize remote-runner fleet (full production config) ────────────────────
-enable_finalize_runners       = true
-manage_shared_finalize_infra  = true # this account owns its buckets/ECR
-finalize_runner_instance_type = "r7i.xlarge"
-finalize_runner_min_size      = 0 # scale-to-zero when idle
-finalize_runner_max_size      = 8 # up to 8 shards concurrently
-finalize_agent_desired_count  = 0 # scaler owns it at runtime
-finalize_cache_bucket_name    = "agent-hub-finalize-cache-350025135582"
-finalize_worktree_bucket_name = "agent-hub-finalize-worktree-350025135582"
+enable_finalize_runners         = true
+manage_shared_finalize_infra    = true # this account owns its buckets/ECR
+finalize_runner_instance_type   = "r7i.xlarge"
+finalize_runner_min_size        = 0 # scale-to-zero when idle
+finalize_runner_max_size        = 8 # up to 8 shards concurrently
+finalize_agent_desired_count    = 0 # scaler owns it at runtime
+finalize_cache_bucket_name      = "agent-hub-finalize-cache-350025135582"
+finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-350025135582"
 finalize_fleet_token_secret_arn = "" # empty → TF generates the token + creates the secret
 finalize_max_parallel_jobs      = 12
 
