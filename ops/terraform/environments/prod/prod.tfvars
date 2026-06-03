@@ -63,7 +63,6 @@ finalize_agent_desired_count    = 0 # scaler owns it at runtime
 finalize_cache_bucket_name      = "agent-hub-finalize-cache-350025135582"
 finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-350025135582"
 finalize_fleet_token_secret_arn = "" # empty → TF generates the token + creates the secret
-finalize_max_parallel_jobs      = 12
 
 # Shared base-image pull-through cache on the Hub (registry:2). Set
 # finalize_dockerhub_secret_arn to a {username,accessToken} secret in THIS account

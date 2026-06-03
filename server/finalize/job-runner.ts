@@ -57,12 +57,26 @@ interface JobInstanceOutcome {
   result: StepRunResult;
 }
 
+function isRemoteBackend(): boolean {
+  return (process.env.FINALIZE_RUNNER_BACKEND ?? 'local').toLowerCase() === 'remote';
+}
+
+/**
+ * Resolve the Hub-side concurrency cap (re-exported at the bottom for tests): an
+ * explicit FINALIZE_MAX_PARALLEL_JOBS always wins. Otherwise the remote backend
+ * is uncapped — every instance is enqueued at once and the fleet autoscaler +
+ * queue manage real concurrency (each job runs on its own ECS task, bounded only
+ * by FINALIZE_FLEET_MAX_AGENTS). The local backend keeps the conservative
+ * default because its containers all share one host and would thrash it.
+ */
 function readMaxParallelJobs(): number {
   const raw = process.env.FINALIZE_MAX_PARALLEL_JOBS?.trim();
-  if (!raw) return DEFAULT_MAX_PARALLEL_JOBS;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_PARALLEL_JOBS;
-  return n;
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) return n;
+  }
+  if (isRemoteBackend()) return Number.POSITIVE_INFINITY;
+  return DEFAULT_MAX_PARALLEL_JOBS;
 }
 
 /**

@@ -17,6 +17,7 @@
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, reapExpiredRunnerLeases } from './runner-queue.js';
+import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
   cluster: string;
@@ -38,8 +39,8 @@ function readConfig(): FleetScalerConfig | null {
   return {
     cluster,
     service,
-    min: intEnv('FINALIZE_FLEET_MIN_AGENTS', 0),
-    max: intEnv('FINALIZE_FLEET_MAX_AGENTS', 8),
+    min: intEnv('FINALIZE_FLEET_MIN_AGENTS', DEFAULT_FLEET_MIN_AGENTS),
+    max: intEnv('FINALIZE_FLEET_MAX_AGENTS', DEFAULT_FLEET_MAX_AGENTS),
     region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
   };
 }

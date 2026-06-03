@@ -384,7 +384,7 @@ variable "finalize_runner_instance_type" {
 variable "finalize_runner_min_size" {
   type        = number
   default     = 0
-  description = "ASG min (0 = scale-to-zero; set 1 for a warm pool / Phase-2a)."
+  description = "ASG min (FINALIZE_FLEET_MIN_AGENTS). 0 = scale fully to zero when idle; set >0 only if you want a warm-pool floor of idle agents."
 }
 
 variable "finalize_runner_max_size" {
@@ -414,16 +414,10 @@ variable "finalize_fleet_token_secret_arn" {
   description = "Secrets Manager ARN of an EXISTING shared fleet token. Leave empty to have Terraform generate the token + create the secret (the dedicated-account / prod model)."
 }
 
-variable "finalize_max_parallel_jobs" {
-  type        = number
-  default     = 12
-  description = "Hub's FINALIZE_MAX_PARALLEL_JOBS — how many job instances the orchestrator dispatches concurrently (the fleet agent count is the real limiter; keep >= max_size)."
-}
-
 variable "enable_finalize_registry_mirror" {
   type        = bool
-  default     = false
-  description = "Run a registry:2 pull-through cache on the Hub (port 5000) for base images, shared fleet-wide; sets FINALIZE_REGISTRY_MIRROR in the job env. Inner dockerds mirror docker.io through it."
+  default     = true
+  description = "Run a registry:2 pull-through cache on the Hub (port 5000) for base images, shared fleet-wide; sets FINALIZE_REGISTRY_MIRROR in the job env. Inner dockerds mirror docker.io through it. On by default: cuts runner cold start (base images served from the in-VPC cache) and avoids Docker Hub anonymous 429s across shards. Set false to pull straight from Docker Hub."
 }
 
 variable "finalize_dockerhub_secret_arn" {

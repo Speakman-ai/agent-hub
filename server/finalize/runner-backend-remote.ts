@@ -22,7 +22,18 @@ import {
   type WorktreeRef,
 } from './worktree-bundle.js';
 
-const DEFAULT_ACQUIRE_TIMEOUT_MS = 10 * 60_000;
+// How long a dispatched job waits for an agent to claim it before it's marked
+// lost. With uncapped Hub dispatch (the remote default) every shard is enqueued
+// at once, so a job can legitimately sit behind a busy fleet for a while — this
+// is generous (1h) so a job that's just waiting its turn isn't failed; it only
+// trips when the fleet is genuinely dead/unscalable. Override with
+// FINALIZE_RUNNER_ACQUIRE_TIMEOUT_MS.
+const DEFAULT_ACQUIRE_TIMEOUT_MS = 60 * 60_000;
+
+function envAcquireTimeoutMs(): number | undefined {
+  const n = Number.parseInt(process.env.FINALIZE_RUNNER_ACQUIRE_TIMEOUT_MS?.trim() ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
 
 /** The job description delivered to the agent (no functions; no Hub-local paths). */
 export interface RunnerJobWireSpec {
@@ -50,7 +61,7 @@ export function createRemoteRunnerBackend(opts?: {
   now?: () => number;
 }): RunnerBackend {
   const now = opts?.now ?? Date.now;
-  const acquireTimeoutMs = opts?.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
+  const acquireTimeoutMs = opts?.acquireTimeoutMs ?? envAcquireTimeoutMs() ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
   const store = opts?.store ?? null;
   // One worktree bundle per run, shared by all its matrix shards.
   const bundleByRun = new Map<string, Promise<WorktreeRef>>();
@@ -101,8 +112,9 @@ export function createRemoteRunnerBackend(opts?: {
       void reconcileFleetCapacity();
       const channel = createJobChannel(queueJobId);
 
-      // Wait for an agent to claim + make its first poll (attach). With a warm
-      // fleet this is sub-second; the timeout guards against an empty fleet.
+      // Wait for an agent to claim + make its first poll (attach). Once the
+      // fleet has scaled up this is quick; the (generous) timeout only guards
+      // against a fleet that never comes up, not one that's merely busy.
       const attached = await Promise.race([
         channel.ready.then(() => true),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), acquireTimeoutMs)),

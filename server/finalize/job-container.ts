@@ -38,7 +38,10 @@ export type { JobContainerOptions, ExecJobStepOptions } from './runner-exec-args
 
 const execFileAsync = promisify(execFile);
 const DOCKERD_READY_TIMEOUT_MS = 120_000;
-const DOCKERD_POLL_MS = 1_000;
+// Poll sub-second: a healthy inner dockerd is usually ready in a few seconds, so
+// a 1s gap (plus waiting a full interval before the first check) wasted ~1s of
+// dead time on every runner cold start. Each probe is a cheap `docker info`.
+const DOCKERD_POLL_MS = 400;
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,11 +67,15 @@ export async function startJobContainer(opts: JobContainerOptions): Promise<void
   }
 
   const deadline = Date.now() + DOCKERD_READY_TIMEOUT_MS;
+  // Check once up front to short-circuit the common case, then poll every interval.
+  if (await isInnerDockerReady(opts.containerName)) {
+    return;
+  }
   while (Date.now() < deadline) {
+    await sleep(DOCKERD_POLL_MS);
     if (await isInnerDockerReady(opts.containerName)) {
       return;
     }
-    await sleep(DOCKERD_POLL_MS);
   }
   throw new Error(
     `job container ${opts.containerName}: inner dockerd not ready within ${DOCKERD_READY_TIMEOUT_MS / 1000}s`,

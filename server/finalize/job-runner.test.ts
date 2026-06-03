@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseCiConfig } from './ci-config.js';
 import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-v2.js';
-import { runJobPhase, sanitizeComposeProjectName } from './job-runner.js';
+import {
+  runJobPhase,
+  sanitizeComposeProjectName,
+  readMaxParallelJobs,
+  DEFAULT_MAX_PARALLEL_JOBS,
+} from './job-runner.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
 
 vi.mock('./job-container.js', async (importOriginal) => {
@@ -48,6 +53,43 @@ function makeFakeSpawnStep(onRun?: (run: string) => void): SpawnStepFn {
     return child;
   };
 }
+
+describe('readMaxParallelJobs', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('honors an explicit FINALIZE_MAX_PARALLEL_JOBS regardless of backend', () => {
+    vi.stubEnv('FINALIZE_MAX_PARALLEL_JOBS', '6');
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'remote');
+    expect(readMaxParallelJobs()).toBe(6);
+
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'local');
+    expect(readMaxParallelJobs()).toBe(6);
+  });
+
+  it('is uncapped on the remote backend (queue + fleet manage concurrency)', () => {
+    vi.stubEnv('FINALIZE_MAX_PARALLEL_JOBS', '');
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'remote');
+    expect(readMaxParallelJobs()).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('uses the conservative host default on the local backend (unset/local)', () => {
+    vi.stubEnv('FINALIZE_MAX_PARALLEL_JOBS', '');
+
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', '');
+    expect(readMaxParallelJobs()).toBe(DEFAULT_MAX_PARALLEL_JOBS);
+
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'local');
+    expect(readMaxParallelJobs()).toBe(DEFAULT_MAX_PARALLEL_JOBS);
+  });
+
+  it('ignores an invalid FINALIZE_MAX_PARALLEL_JOBS and uses the backend default', () => {
+    vi.stubEnv('FINALIZE_MAX_PARALLEL_JOBS', '0');
+    vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'local');
+    expect(readMaxParallelJobs()).toBe(DEFAULT_MAX_PARALLEL_JOBS);
+  });
+});
 
 describe('job-runner', () => {
   it('sanitizeComposeProjectName produces lowercase unique shard prefixes', () => {

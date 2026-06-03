@@ -41,6 +41,21 @@ start_dockerd_with_driver() {
   sudo sh -c "dockerd --storage-driver=${driver} >> ${DOCKERD_LOG} 2>&1 &"
 }
 
+# Poll `docker info` up to (attempts * 0.5s), echoing readiness for $driver.
+# Returns 0 as soon as the daemon answers, 1 on timeout.
+wait_for_dockerd() {
+  local driver="$1" attempts="$2" attempt=0
+  while [ "$attempt" -lt "$attempts" ]; do
+    if docker info >/dev/null 2>&1; then
+      echo "[finalize-runner] dockerd ready (${driver})"
+      return 0
+    fi
+    sleep 0.5
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 start_dockerd() {
   if docker info >/dev/null 2>&1; then
     return 0
@@ -48,32 +63,21 @@ start_dockerd() {
 
   : > "${DOCKERD_LOG}" 2>/dev/null || sudo sh -c ": > ${DOCKERD_LOG}"
 
+  # A healthy overlay2 daemon is ready in a few seconds; cap the wait at ~30s so
+  # a genuinely broken overlay2 falls through to vfs fast instead of burning 60s.
   start_dockerd_with_driver overlay2
-
-  local attempt=0
-  while [ "$attempt" -lt 60 ]; do
-    if docker info >/dev/null 2>&1; then
-      echo "[finalize-runner] dockerd ready (overlay2)"
-      return 0
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-  done
+  if wait_for_dockerd overlay2 60; then
+    return 0
+  fi
 
   echo "[finalize-runner] overlay2 failed; retrying with vfs..." >&2
   sudo pkill dockerd 2>/dev/null || true
-  sleep 2
+  sleep 1
   start_dockerd_with_driver vfs
 
-  attempt=0
-  while [ "$attempt" -lt 60 ]; do
-    if docker info >/dev/null 2>&1; then
-      echo "[finalize-runner] dockerd ready (vfs)"
-      return 0
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-  done
+  if wait_for_dockerd vfs 120; then
+    return 0
+  fi
 
   echo "[finalize-runner] dockerd failed to start — see ${DOCKERD_LOG}" >&2
   tail -50 "${DOCKERD_LOG}" >&2 || true

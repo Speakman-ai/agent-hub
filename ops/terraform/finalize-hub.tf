@@ -49,7 +49,6 @@ locals {
       "FINALIZE_WORKTREE_BUCKET=${var.finalize_worktree_bucket_name}",
       "FINALIZE_WORKTREE_BUCKET_REGION=${var.aws_region}",
       "AWS_REGION=${var.aws_region}",
-      "FINALIZE_MAX_PARALLEL_JOBS=${tostring(var.finalize_max_parallel_jobs)}",
       "FINALIZE_FLEET_ECS_CLUSTER=${var.project_name}-finalize-runner",
       "FINALIZE_FLEET_ECS_SERVICE=${var.project_name}-finalize-runner-agent",
       "FINALIZE_FLEET_MIN_AGENTS=${tostring(var.finalize_runner_min_size)}",
