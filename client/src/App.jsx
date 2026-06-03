@@ -3954,6 +3954,7 @@ export default function App() {
               ) : currentView === 'dashboard' ? (
                 <DashboardView
                   orgId={getActiveOrgApiId()}
+                  onNavigate={setCurrentView}
                   onNewProject={openAdaptiveProjectWizard}
                   onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
                   onOpenKanban={(projectId) => {

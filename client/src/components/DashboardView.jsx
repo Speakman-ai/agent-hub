@@ -12,8 +12,10 @@ import {
   Pencil,
   Sparkles,
   RefreshCw,
+  UserCircle,
 } from 'lucide-react';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
+import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
 
 /**
@@ -26,6 +28,7 @@ import { relativeTime } from '../utils/time.js';
  * Refetches when `orgId` changes (so the OrgSwitcher just works).
  */
 /**
+ * @param {(view: string) => void} [onNavigate] — navigate to a top-level view (e.g. 'settings:account')
  * @param {(agentId: string, sessionId: string) => void} [onOpenSession] — switch agent + open chat session
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
@@ -34,12 +37,14 @@ import { relativeTime } from '../utils/time.js';
  */
 export default function DashboardView({
   orgId,
+  onNavigate,
   onOpenSession,
   onOpenKanban,
   onOpenPulls,
   onOpenExternalUrl,
   onNewProject,
 }) {
+  const accountName = getAuthRecord()?.user?.username || 'Account';
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -91,6 +96,17 @@ export default function DashboardView({
   return (
     <div className="flex-1 overflow-y-auto bg-gray-950">
       <div className="max-w-6xl mx-auto p-4 md:p-8">
+        <div className="flex justify-end mb-4">
+          <button
+            type="button"
+            onClick={() => onNavigate?.('settings:account')}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-gray-800/70 transition-colors"
+            title="Account settings"
+          >
+            <UserCircle size={20} className="text-gray-400" />
+            <span className="font-medium truncate max-w-[12rem]">{accountName}</span>
+          </button>
+        </div>
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <BarChart3 size={28} className="text-blue-400" />

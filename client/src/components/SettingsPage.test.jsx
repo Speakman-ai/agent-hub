@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
 import SettingsPage, {
-  GeneralSection,
   GitHubSection,
   OrganizationsSection,
   ProjectsSection,
@@ -189,7 +188,7 @@ describe('SettingsPage — tab labels', () => {
     const { queryByRole, findByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
-    await findByRole('button', { name: /^General$/ });
+    await findByRole('button', { name: /^Account$/ });
     expect(queryByRole('button', { name: /^Integrations$/ })).toBeNull();
   });
 
@@ -217,7 +216,7 @@ describe('SettingsPage — tab labels', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
     // Wait for the settings nav to render before asserting absence.
-    expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
+    expect(await findByRole('button', { name: /^Account$/ })).toBeTruthy();
     expect(queryByRole('button', { name: /^Preview$/ })).toBeNull();
     expect(queryByRole('button', { name: /^Finalize$/ })).toBeNull();
   });
@@ -300,9 +299,9 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    // Wait for the page to settle — `General` is in both the desktop
+    // Wait for the page to settle — `Account` is in both the desktop
     // sidebar and the mobile drawer, so we wait for the multi-match form.
-    await findAllByText('General');
+    await findAllByText('Account');
 
     expect(queryByText('Global AI Authentication')).toBeNull();
     // And the old name doesn't sneak back either.
@@ -339,9 +338,9 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="claude-auth" />,
     );
 
-    // Wait for first render to flush — `General` is in both the desktop
+    // Wait for first render to flush — `Account` is in both the desktop
     // sidebar and the mobile drawer.
-    await findAllByText('General');
+    await findAllByText('Account');
     // The combined-host-auth panel is wrapped in `space-y-10` with the
     // ClaudeAuth/Gemini/Cursor/Codex sections. The Cursor section's
     // distinctive heading is a reliable signal that the panel rendered.
@@ -362,80 +361,6 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
     );
 
     expect(await findByText('Global AI Authentication')).toBeTruthy();
-  });
-});
-
-describe('GeneralSection — CLI binary paths', () => {
-  beforeEach(() => {
-    api.getConfig.mockResolvedValue({
-      claudeBin: '/usr/bin/claude',
-      cursorBin: '/home/agenthub/.local/bin/agent',
-      geminiBin: '/usr/local/bin/gemini',
-      codexBin: '/usr/local/bin/codex',
-      port: 3051,
-      defaultCwd: '/tmp',
-      publicUrl: '',
-      githubApp: null,
-      _file: {},
-    });
-    api.updateConfig.mockResolvedValue({ ok: true });
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-    delete window.electronAPI;
-  });
-
-  it('shows desktop PATH hint when running inside Electron', async () => {
-    window.electronAPI = { isElectron: true };
-    const { getByText } = render(<GeneralSection />);
-    await waitFor(() => {
-      expect(getByText(/Desktop app:/)).toBeTruthy();
-    });
-  });
-
-  it('renders a cursorBin input pre-populated from config', async () => {
-    const { findByDisplayValue, getByText } = render(<GeneralSection />);
-    // Section label visible alongside the claude/gemini ones
-    await waitFor(() => expect(getByText('Cursor Agent CLI')).toBeTruthy());
-    // Input is wired to the loaded config value
-    expect(await findByDisplayValue('/home/agenthub/.local/bin/agent')).toBeTruthy();
-  });
-
-  it('sends cursorBin in the updateConfig payload when saved', async () => {
-    const { findByDisplayValue, getByText } = render(<GeneralSection />);
-
-    const cursorInput = await findByDisplayValue('/home/agenthub/.local/bin/agent');
-    fireEvent.change(cursorInput, { target: { value: '/usr/local/bin/agent' } });
-
-    fireEvent.click(getByText('Save'));
-
-    await waitFor(() => {
-      expect(api.updateConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ cursorBin: '/usr/local/bin/agent' }),
-      );
-    });
-  });
-
-  it('renders a codexBin input pre-populated from config', async () => {
-    const { findByDisplayValue, getByText } = render(<GeneralSection />);
-    await waitFor(() => expect(getByText('Codex CLI')).toBeTruthy());
-    expect(await findByDisplayValue('/usr/local/bin/codex')).toBeTruthy();
-  });
-
-  it('sends codexBin in the updateConfig payload when saved', async () => {
-    const { findByDisplayValue, getByText } = render(<GeneralSection />);
-
-    const codexInput = await findByDisplayValue('/usr/local/bin/codex');
-    fireEvent.change(codexInput, { target: { value: '/opt/codex/bin/codex' } });
-
-    fireEvent.click(getByText('Save'));
-
-    await waitFor(() => {
-      expect(api.updateConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ codexBin: '/opt/codex/bin/codex' }),
-      );
-    });
   });
 });
 
@@ -488,7 +413,7 @@ describe('SettingsPage — sidebar navigation', () => {
 
   it('switches the active section when a sidebar item is clicked', async () => {
     const { getAllByText, queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
-    // "Account" is the second sidebar entry. Click it and the Account section heading should appear.
+    // "Account" is the first sidebar entry. Click it and the Account section heading should appear.
     const accountButtons = getAllByText('Account');
     fireEvent.click(accountButtons[0]);
     // The AccountSection renders its own UI; we don't need to assert its internals,

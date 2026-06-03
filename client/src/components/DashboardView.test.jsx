@@ -336,3 +336,52 @@ describe('DashboardView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Org not active.');
   });
 });
+
+/**
+ * The dashboard account chip is the only entry point to Account settings
+ * from the dashboard. It reads the username from the cached JWT record
+ * (`agent-hub-jwt` in localStorage) and routes to `settings:account`, which
+ * App.jsx parses into `initialTab`. A regression on either side would
+ * silently send the user to the wrong tab, so guard the contract here.
+ */
+describe('DashboardView — account profile chip', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) }),
+      ),
+    );
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const setUser = (username) =>
+    localStorage.setItem('agent-hub-jwt', JSON.stringify({ token: 't', user: { username } }));
+
+  it('renders the username from the cached auth record', () => {
+    setUser('alice');
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+    expect(screen.getByTitle('Account settings')).toHaveTextContent('alice');
+  });
+
+  it("falls back to 'Account' when the auth record is missing", () => {
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+    expect(screen.getByTitle('Account settings')).toHaveTextContent('Account');
+  });
+
+  it("navigates to 'settings:account' when the chip is clicked", () => {
+    setUser('alice');
+    const onNavigate = vi.fn();
+    render(<DashboardView orgId="org-1" onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByTitle('Account settings'));
+    expect(onNavigate).toHaveBeenCalledWith('settings:account');
+  });
+});

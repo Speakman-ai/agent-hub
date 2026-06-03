@@ -1654,179 +1654,6 @@ function CodexAuthSection() {
   );
 }
 
-export function GeneralSection() {
-  const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [edits, setEdits] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null);
-
-  useEffect(() => {
-    api
-      .getConfig()
-      .then((data) => {
-        setConfig(data);
-        setEdits({
-          claudeBin: data.claudeBin,
-          cursorBin: data.cursorBin,
-          geminiBin: data.geminiBin,
-          codexBin: data.codexBin,
-        });
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  const isDirty =
-    config &&
-    (edits.claudeBin !== config.claudeBin ||
-      (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
-      (edits.geminiBin ?? '') !== (config.geminiBin ?? '') ||
-      (edits.codexBin ?? '') !== (config.codexBin ?? ''));
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const payload = {
-        claudeBin: edits.claudeBin,
-        cursorBin: edits.cursorBin,
-        geminiBin: edits.geminiBin,
-        codexBin: edits.codexBin,
-      };
-      await api.updateConfig(payload);
-      setConfig((prev) => ({ ...prev, ...payload }));
-      setSaveStatus('saved');
-      setTimeout(() => setSaveStatus(null), 2000);
-    } catch {
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus(null), 3000);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const inputClass =
-    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-  const labelClass = 'block text-xs text-gray-400 mb-1';
-
-  if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
-  if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-4">General Settings</h3>
-        <p className="text-xs text-gray-500 mb-4">
-          CLI binary paths are saved to <code className="text-gray-400">server/config.json</code>.
-          Changes take effect for new agent spawns immediately (no restart needed).
-        </p>
-        {typeof window !== 'undefined' && window.electronAPI?.isElectron && (
-          <div className="flex gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90 mb-4">
-            <Info className="shrink-0 mt-0.5" size={16} aria-hidden />
-            <p>
-              <span className="font-medium text-amber-50">Desktop app:</span> the embedded server
-              prepends common install locations for Git and GitHub CLI to <code>PATH</code> (and
-              uses the correct separator on Windows). If Codex or PR features still cannot find{' '}
-              <code>git</code>/<code>gh</code>, install them from git-scm.com or cli.github.com,
-              then fully quit and reopen Agent Hub. Read-only checkouts or offline networks can
-              still block git and API access.
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">CLI Binary Paths</h4>
-
-        <div>
-          <label className={labelClass}>Claude Code CLI</label>
-          <input
-            value={edits.claudeBin || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, claudeBin: e.target.value }))}
-            className={inputClass}
-            placeholder="/usr/local/bin/claude"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            Path to the <code>claude</code> binary. Used for all claude-code engine sessions.
-          </p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Cursor Agent CLI</label>
-          <input
-            value={edits.cursorBin || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, cursorBin: e.target.value }))}
-            className={inputClass}
-            placeholder="/usr/local/bin/agent"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            Path to the <code>cursor-agent</code> binary (or its <code>agent</code> symlink, install
-            via <code>curl -fsSL https://cursor.com/install | bash</code>). Used for all
-            cursor-agent engine sessions.
-          </p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Gemini CLI</label>
-          <input
-            value={edits.geminiBin || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, geminiBin: e.target.value }))}
-            className={inputClass}
-            placeholder="/usr/local/bin/gemini"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            Path to the <code>gemini</code> binary (install via{' '}
-            <code>npm install -g @google/gemini-cli</code>). Used for all gemini-cli engine
-            sessions.
-          </p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Codex CLI</label>
-          <input
-            value={edits.codexBin || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, codexBin: e.target.value }))}
-            className={inputClass}
-            placeholder="/usr/local/bin/codex"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            Path to the <code>codex</code> binary (install via{' '}
-            <code>npm install -g @openai/codex</code>). Used for all codex-cli engine sessions.
-          </p>
-        </div>
-
-        <div className="flex items-center justify-between pt-2">
-          <div className="flex items-center gap-2">
-            {saveStatus === 'saved' && <span className="text-xs text-emerald-400">✓ Saved</span>}
-            {saveStatus === 'error' && (
-              <span className="text-xs text-red-400">✕ Failed to save</span>
-            )}
-          </div>
-          <button
-            onClick={handleSave}
-            disabled={!isDirty || saving}
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors"
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-2">
-        <h4 className="text-sm font-medium text-gray-300">Current Config</h4>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <span className="text-gray-500">Port</span>
-          <span className="text-gray-300 font-mono">{config.port}</span>
-          <span className="text-gray-500">Default CWD</span>
-          <span className="text-gray-300 font-mono truncate">{config.defaultCwd}</span>
-          <span className="text-gray-500">Default Model</span>
-          <span className="text-gray-300 font-mono">{config.defaultModel}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function GitHubSection({ onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -8178,7 +8005,7 @@ export function ToolErrorsSection({ projects }) {
  * Settings tabs grouped into logical sections for the left sidebar.
  *
  * Grouping mirrors mental model rather than alphabetical order:
- *   - Workspace: org/account/general level config the user touches first
+ *   - Workspace: org/account level config the user touches first
  *   - Agents & Auth: per-agent and per-engine credential surfaces
  *   - Automation: heartbeats, crons, Slack
  *   - Operations: observability & infra-adjacent panels
@@ -8188,7 +8015,6 @@ const SETTINGS_GROUPS = [
     id: 'workspace',
     label: 'Workspace',
     tabs: [
-      { id: 'general', iconName: 'Settings', text: 'General' },
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
@@ -8280,7 +8106,7 @@ export default function SettingsPage({
   wsRef,
 }) {
   const [tab, setTab] = useState(
-    initialTab === 'integrations' ? 'general' : initialTab || 'general',
+    initialTab === 'integrations' ? 'account' : initialTab || 'account',
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -8300,7 +8126,7 @@ export default function SettingsPage({
   // longer render the tab there. Redirect to the first visible tab so
   // the user doesn't land on a blank settings pane.
   useEffect(() => {
-    if (tab === 'orgs' && !isElectron()) setTab('general');
+    if (tab === 'orgs' && !isElectron()) setTab('account');
   }, [tab]);
 
   // The "Organizations" tab manages remote Hub-server bookmarks and the
@@ -8343,10 +8169,10 @@ export default function SettingsPage({
 
   // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
   // Old `settings:preview` / `settings:finalize` deep links would otherwise
-  // resolve to a tab that no longer renders anything, so fall back to General.
+  // resolve to a tab that no longer renders anything, so fall back to Account.
   useEffect(() => {
     if (tab === 'preview' || tab === 'finalize') {
-      setTab('general');
+      setTab('account');
     }
   }, [tab]);
 
@@ -8449,7 +8275,6 @@ export default function SettingsPage({
             <AuthUpgradeBanner />
 
             <SettingsErrorBoundary key={tab}>
-              {tab === 'general' && <GeneralSection />}
               {tab === 'account' && <AccountSection />}
               {tab === 'claude-auth' && isAdminPlus && (
                 <div className="space-y-10">
