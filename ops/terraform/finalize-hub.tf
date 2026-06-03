@@ -60,16 +60,10 @@ locals {
   ) : []
 }
 
-# Fleet instances → this Hub's registry:2 base-image mirror (port 5000), in-VPC.
-resource "aws_vpc_security_group_ingress_rule" "hub_registry_mirror" {
-  count             = var.enable_finalize_runners && var.enable_finalize_registry_mirror ? 1 : 0
-  security_group_id = aws_security_group.instance.id
-  from_port         = 5000
-  to_port           = 5000
-  ip_protocol       = "tcp"
-  cidr_ipv4         = aws_vpc.main.cidr_block
-  description       = "Finalize fleet to Hub registry:2 base-image mirror"
-}
+# The fleet -> Hub registry:2 mirror ingress (port 5000) is an INLINE ingress
+# block on aws_security_group.instance (see main.tf). It must NOT be a standalone
+# aws_vpc_security_group_ingress_rule: inline ingress on that SG is authoritative
+# and revokes standalone rules on every apply (which silently broke this mirror).
 
 # Let the Hub (at boot, in user-data) read the Docker Hub cred for the mirror's
 # authenticated upstream. Only when a secret ARN is configured.

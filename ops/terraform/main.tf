@@ -221,6 +221,21 @@ resource "aws_security_group" "instance" {
     }
   }
 
+  # Finalize fleet -> this Hub's registry:2 base-image mirror (port 5000), in-VPC.
+  # Inline (not a standalone aws_vpc_security_group_ingress_rule) for the same
+  # authoritative-revocation reason as the ALB rule above — a standalone rule on
+  # this SG gets stripped on every apply.
+  dynamic "ingress" {
+    for_each = var.enable_finalize_runners && var.enable_finalize_registry_mirror ? [1] : []
+    content {
+      description = "Finalize fleet to Hub registry:2 base-image mirror"
+      from_port   = 5000
+      to_port     = 5000
+      protocol    = "tcp"
+      cidr_blocks = [aws_vpc.main.cidr_block]
+    }
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
