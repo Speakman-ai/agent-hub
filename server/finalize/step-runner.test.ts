@@ -817,6 +817,128 @@ describe('BoundedLineTail', () => {
   });
 });
 
+describe('FAILURE_SIGNAL_RE', () => {
+  const re = () => new RegExp(__test.FAILURE_SIGNAL_RE.source);
+
+  it('matches common test/build failure markers', () => {
+    for (const line of [
+      '  1 failing',
+      '  1) mlsWorkflow',
+      'FAIL server/foo.test.ts',
+      '1) should complete the mls workflow:',
+      'CypressError: Timed out retrying after 10050ms',
+      'is not visible because its parent',
+      'AssertionError: expected true to be false',
+      'error TS2304: Cannot find name foo',
+      'db-1  | 2026-06-04 16:41:59.469 UTC [941] FATAL:  database "testing123" does not exist',
+      'npm ERR! code ELIFECYCLE',
+    ]) {
+      expect(re().test(line), line).toBe(true);
+    }
+  });
+
+  it('does not match benign sidecar / info chatter', () => {
+    for (const line of [
+      'db-1  | 2026-06-04 16:33:34.824 UTC [53] LOG:  database system was shut down',
+      'db-1  | 2026-06-04 16:38:27.272 UTC [67] LOG:  checkpoint complete: wrote 44 buffers',
+      'db-1  | server started',
+      'db-1  | CREATE DATABASE',
+      'db-1  | PostgreSQL init process complete; ready for start up.',
+      'Container survey-tracker-api-1 Started',
+      '0 passing (4m)',
+    ]) {
+      expect(re().test(line), line).toBe(false);
+    }
+  });
+});
+
+describe('FailureExcerptCollector', () => {
+  it('returns empty when no failure signal was seen', () => {
+    const c = new __test.FailureExcerptCollector(2, 2, 50);
+    c.push('all good');
+    c.push('still fine');
+    expect(c.snapshot()).toEqual([]);
+  });
+
+  it('captures leading context, the signal line, and trailing context', () => {
+    const c = new __test.FailureExcerptCollector(2, 2, 50);
+    c.push('ctx -2');
+    c.push('ctx -1');
+    c.push('1 failing here');
+    c.push('after 1');
+    c.push('after 2');
+    expect(c.snapshot()).toEqual(['ctx -2', 'ctx -1', '1 failing here', 'after 1', 'after 2']);
+  });
+
+  it('keeps the real failure even when a chatty sidecar floods the tail afterward', () => {
+    const before = 8;
+    const after = 30;
+    const c = new __test.FailureExcerptCollector(before, after, 160);
+
+    // The actual Cypress failure...
+    const cypress = [
+      '1) should complete the mls workflow',
+      '0 passing (4m)',
+      '1 failing',
+      'CypressError: Timed out retrying after 10050ms: `cy.click()` failed because this element is not visible',
+      'Fix this problem, or use `{force: true}` to disable error checking.',
+    ];
+    for (const l of cypress) c.push(l);
+
+    // ...then a Postgres sidecar dumps 200 lines of benign checkpoint noise.
+    for (let i = 0; i < 200; i += 1) {
+      c.push(`db-1  | 2026-06-04 16:4${i % 9}:00 UTC [67] LOG:  checkpoint complete: wrote 3 buffers`);
+    }
+
+    const excerpt = c.snapshot().join('\n');
+    // A fixed trailing tail would be 100% checkpoint noise here; the excerpt
+    // still surfaces the Cypress failure.
+    expect(excerpt).toContain('1 failing');
+    expect(excerpt).toContain('CypressError');
+    expect(excerpt).toContain('this element is not visible');
+  });
+
+  it('bounds the excerpt to maxLines, dropping oldest (biases to most recent failure)', () => {
+    const c = new __test.FailureExcerptCollector(0, 0, 3);
+    c.push('Error: one');
+    c.push('Error: two');
+    c.push('Error: three');
+    c.push('Error: four');
+    expect(c.snapshot()).toEqual(['Error: two', 'Error: three', 'Error: four']);
+  });
+
+  it('does not duplicate context when a second failure region is contiguous', () => {
+    const c = new __test.FailureExcerptCollector(2, 1, 50);
+    c.push('a'); // leading context for region 1
+    c.push('1 failing'); // region 1 signal
+    c.push('b'); // region 1 trailing context (after=1)
+    c.push('2 failing'); // region 2 signal, immediately after region 1
+    const snap = c.snapshot();
+    // 'a' and 'b' were already captured by region 1 — they must not reappear
+    // as leading context for region 2, and no gap separator is warranted.
+    expect(snap).toEqual(['a', '1 failing', 'b', '2 failing']);
+    expect(new Set(snap).size).toBe(snap.length);
+  });
+
+  it('marks a gap with a separator and seeds the intervening context', () => {
+    const c = new __test.FailureExcerptCollector(2, 1, 50);
+    c.push('1 failing'); // region 1 (no leading context available)
+    c.push('trailing-1'); // region 1 trailing context (after=1)
+    c.push('noise-1'); // uncaptured gap lines...
+    c.push('noise-2');
+    c.push('noise-3');
+    c.push('2 failing'); // region 2 — preceded by separator + last `before` noise lines
+    expect(c.snapshot()).toEqual([
+      '1 failing',
+      'trailing-1',
+      '   …',
+      'noise-2',
+      'noise-3',
+      '2 failing',
+    ]);
+  });
+});
+
 describe('stripCarriageReturn', () => {
   it('strips a single trailing CR only', () => {
     expect(__test.stripCarriageReturn('hello\r')).toBe('hello');

@@ -1908,6 +1908,9 @@ function buildFixTrigger(
       name: stepOutcome.failedStep.name,
       exitCode: stepOutcome.failedStep.exitCode,
       outputTail: stepOutcome.failedStep.outputTail,
+      ...(stepOutcome.failedStep.failureExcerpt?.length
+        ? { failureExcerpt: stepOutcome.failedStep.failureExcerpt }
+        : {}),
     };
   }
   if (phases.reviewRequired && reviewerOutcome?.kind === 'success') {

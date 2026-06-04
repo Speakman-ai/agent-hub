@@ -102,6 +102,41 @@ describe('composeDispatchBody', () => {
     expect(lines.slice(-trailerLines.length)).toEqual(trailerLines);
   });
 
+  it('leads with the failure excerpt, above the raw trailing tail', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'E2E',
+        exitCode: 1,
+        failureExcerpt: ['1 failing', 'CypressError: this element is not visible'],
+        outputTail: [
+          'db-1  | LOG:  checkpoint complete: wrote 3 buffers',
+          'db-1  | LOG:  checkpoint complete: wrote 4 buffers',
+        ],
+      },
+    });
+    expect(body).toContain('Likely failure (excerpt):');
+    expect(body).toContain('CypressError: this element is not visible');
+    expect(body).toContain('Last output (40 lines):');
+    // Excerpt section appears before the raw tail section.
+    expect(body.indexOf('Likely failure (excerpt):')).toBeLessThan(
+      body.indexOf('Last output (40 lines):'),
+    );
+  });
+
+  it('omits the excerpt section when no failure marker was detected', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'E2E',
+        exitCode: 1,
+        outputTail: ['some output'],
+      },
+    });
+    expect(body).not.toContain('Likely failure (excerpt):');
+    expect(body).toContain('Last output (40 lines):');
+  });
+
   it('handles an empty output tail', () => {
     const body = composeDispatchBody({
       failedStep: {

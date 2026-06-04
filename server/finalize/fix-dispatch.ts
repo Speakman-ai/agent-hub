@@ -97,6 +97,14 @@ export interface FailedStepContext {
   exitCode: number;
   /** Trailing-N-line snapshot from the step's mixed stdout+stderr stream. */
   outputTail: string[];
+  /**
+   * Signal-aware excerpt: the lines that matched a failure marker plus
+   * surrounding context (see the step runner's `FailureExcerptCollector`).
+   * The dispatch body leads with this so the agent sees the real failure
+   * even when a chatty sidecar has flooded the trailing {@link outputTail}.
+   * Empty / absent when no failure marker was detected.
+   */
+  failureExcerpt?: string[];
 }
 
 /**
@@ -536,6 +544,17 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
   }
 
   if (hasFailedStep) {
+    // Lead with the signal-aware excerpt when we have one — it points at the
+    // actual failure (test summary, stack trace) rather than whatever
+    // happened to be last in the raw stream. The trailing tail still follows
+    // as a fallback / for the surrounding raw context.
+    const failureExcerpt = trigger.failedStep!.failureExcerpt ?? [];
+    if (failureExcerpt.length > 0) {
+      lines.push('');
+      lines.push('Likely failure (excerpt):');
+      for (const t of failureExcerpt) lines.push(t);
+    }
+
     const tail = trigger.failedStep!.outputTail ?? [];
     lines.push('');
     lines.push('Last output (40 lines):');

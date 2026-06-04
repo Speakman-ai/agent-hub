@@ -126,6 +126,52 @@ export const STEP_SPAWN_HARD_TIMEOUT_MS = 60 * 60 * 1_000;
 export const STEP_OUTPUT_TAIL_LINES = 40;
 
 /**
+ * Failure-excerpt sizing. The plain tail above is a fixed trailing window,
+ * which a chatty background service can fill with noise (e.g. a Postgres
+ * sidecar emitting `checkpoint complete` lines every minute long after the
+ * test runner has already printed its failure and exited). The excerpt
+ * collector instead anchors on lines that *look like* a failure and keeps a
+ * little context on each side, biased to the most recent failure region.
+ *
+ * `BEFORE` / `AFTER` are the context lines kept around each signal line;
+ * `MAX_LINES` caps the whole excerpt (oldest dropped first) so a noisy run
+ * with many matches still hands back a bounded, recent-failure-weighted slice.
+ */
+export const STEP_FAILURE_EXCERPT_CONTEXT_BEFORE = 8;
+export const STEP_FAILURE_EXCERPT_CONTEXT_AFTER = 30;
+export const STEP_FAILURE_EXCERPT_MAX_LINES = 160;
+
+/**
+ * Lines that mark a real test/build failure. Deliberately case-sensitive on
+ * the capitalised forms (`Error`, `FAIL`, `FATAL`, `ERROR`) so a benign
+ * lower-case "error" inside chatty info logs does not trip it, while still
+ * catching the common framework markers:
+ *   - mocha/cypress summary  → `1 failing`, `  1) test name`
+ *   - jest/vitest/CI         → `FAIL`, `FAILED`
+ *   - thrown errors          → `CypressError`, `TypeError`, `…Exception`
+ *   - tsc                    → `error TS2304`
+ *   - cypress actionability  → `not visible`, `cannot be interacted`, `Timed out`
+ *   - postgres / generic     → `FATAL`, `ERROR`, `npm ERR!`, `✗ ✘ ✖ ✕`
+ */
+export const FAILURE_SIGNAL_RE = new RegExp(
+  [
+    '\\b\\d+ failing\\b',
+    '\\bFAIL(?:ED)?\\b',
+    '\\b\\w*(?:Error|Exception)\\b',
+    '\\bTraceback\\b',
+    'error TS\\d',
+    '\\bERROR\\b',
+    '\\bFATAL\\b',
+    'Timed out',
+    'not visible',
+    'cannot be interacted',
+    'npm ERR!',
+    '[\\u2717\\u2718\\u2716\\u2715]',
+    '^\\s*\\d+\\) ',
+  ].join('|'),
+);
+
+/**
  * Maximum number of bytes we keep in the trailing-line buffer for a
  * single step. Guards against a step that emits gigabytes of output
  * without a newline — at some point we flush the partial buffer rather
@@ -178,6 +224,15 @@ export interface StepRunResult {
     run: string;
     exitCode: number;
     outputTail: string[];
+    /**
+     * Signal-aware excerpt of the failing step's output — the lines that
+     * matched a test/build failure marker ({@link FAILURE_SIGNAL_RE}) plus
+     * surrounding context, biased to the most recent failure. Empty when no
+     * marker was seen. This is what the §7 dispatch body leads with so a
+     * chatty sidecar (e.g. a Postgres container's checkpoint logs) can't
+     * bury the real failure under the plain trailing tail.
+     */
+    failureExcerpt?: string[];
     jobId?: string;
     matrixKey?: string;
   };
@@ -474,6 +529,7 @@ export async function runStepsSequence(
       run: step.run,
       exitCode: runOutcome.result.exitCode,
       outputTail: runOutcome.outputTail,
+      ...(runOutcome.failureExcerpt.length ? { failureExcerpt: runOutcome.failureExcerpt } : {}),
       ...(persistMeta?.jobId ? { jobId: persistMeta.jobId } : {}),
       ...(persistMeta?.matrixKey ? { matrixKey: persistMeta.matrixKey } : {}),
     };
@@ -594,10 +650,16 @@ function finishStepPhase(
 }
 
 type SingleStepOutcome =
-  | { kind: 'success'; result: StepResult; outputTail: string[] }
-  | { kind: 'non-zero-exit'; result: StepResult; outputTail: string[] }
-  | { kind: 'timeout'; result: StepResult; outputTail: string[] }
-  | { kind: 'spawn-error'; result: StepResult; outputTail: string[]; detail: string };
+  | { kind: 'success'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
+  | { kind: 'non-zero-exit'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
+  | { kind: 'timeout'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
+  | {
+      kind: 'spawn-error';
+      result: StepResult;
+      outputTail: string[];
+      failureExcerpt: string[];
+      detail: string;
+    };
 
 interface RunSingleStepArgs {
   step: CiStep;
@@ -623,6 +685,18 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
   return new Promise<SingleStepOutcome>((resolve) => {
     const startedAt = now();
     const tail = new BoundedLineTail(STEP_OUTPUT_TAIL_LINES);
+    const excerpt = new FailureExcerptCollector(
+      STEP_FAILURE_EXCERPT_CONTEXT_BEFORE,
+      STEP_FAILURE_EXCERPT_CONTEXT_AFTER,
+      STEP_FAILURE_EXCERPT_MAX_LINES,
+    );
+    // Every line that lands in the trailing tail also feeds the excerpt
+    // collector. Keeping the two in lock-step via one helper means a future
+    // emit site can't accidentally update one and forget the other.
+    const record = (line: string): void => {
+      tail.push(line);
+      excerpt.push(line);
+    };
     let stdoutLines = 0;
     let stderrLines = 0;
     let stdoutBuffer = '';
@@ -641,7 +715,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const line = `[spawn-error] ${detail}`;
-      tail.push(line);
+      record(line);
       announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
       resolve({
         kind: 'spawn-error',
@@ -656,6 +730,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
           stderrLines: stderrLines + 1,
         },
         outputTail: tail.snapshot(),
+        failureExcerpt: excerpt.snapshot(),
       });
       return;
     }
@@ -694,7 +769,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       const trailing = lines.pop() ?? '';
       for (const raw of lines) {
         const line = stripCarriageReturn(raw);
-        tail.push(line);
+        record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
         announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
@@ -703,7 +778,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       // against a step that streams forever without a newline.
       if (trailing.length >= STEP_PARTIAL_LINE_FLUSH_BYTES) {
         const line = stripCarriageReturn(trailing);
-        tail.push(line);
+        record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
         announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
@@ -722,14 +797,14 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     const flushTrailingFragments = (): void => {
       if (stdoutBuffer.length > 0) {
         const line = stripCarriageReturn(stdoutBuffer);
-        tail.push(line);
+        record(line);
         stdoutLines += 1;
         announceLine(deps, sessionId, runId, stepIndex, step, 'stdout', line);
         stdoutBuffer = '';
       }
       if (stderrBuffer.length > 0) {
         const line = stripCarriageReturn(stderrBuffer);
-        tail.push(line);
+        record(line);
         stderrLines += 1;
         announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
         stderrBuffer = '';
@@ -742,7 +817,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       clearTimeout(timer);
       const detail = err.message || String(err);
       const line = `[spawn-error] ${detail}`;
-      tail.push(line);
+      record(line);
       stderrLines += 1;
       announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
       flushTrailingFragments();
@@ -759,6 +834,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
           stderrLines,
         },
         outputTail: tail.snapshot(),
+        failureExcerpt: excerpt.snapshot(),
       });
     });
 
@@ -779,14 +855,29 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         stderrLines,
       };
       if (timedOut) {
-        resolve({ kind: 'timeout', result, outputTail: tail.snapshot() });
+        resolve({
+          kind: 'timeout',
+          result,
+          outputTail: tail.snapshot(),
+          failureExcerpt: excerpt.snapshot(),
+        });
         return;
       }
       if (exitCode === 0) {
-        resolve({ kind: 'success', result, outputTail: tail.snapshot() });
+        resolve({
+          kind: 'success',
+          result,
+          outputTail: tail.snapshot(),
+          failureExcerpt: excerpt.snapshot(),
+        });
         return;
       }
-      resolve({ kind: 'non-zero-exit', result, outputTail: tail.snapshot() });
+      resolve({
+        kind: 'non-zero-exit',
+        result,
+        outputTail: tail.snapshot(),
+        failureExcerpt: excerpt.snapshot(),
+      });
     });
   });
 }
@@ -1100,8 +1191,76 @@ class BoundedLineTail {
   }
 }
 
+/**
+ * Streaming collector that extracts a "what actually failed" excerpt from an
+ * arbitrarily long, possibly noisy output stream — without buffering the
+ * whole stream. It keeps a small rolling window of the most recent lines so
+ * that, when a {@link FAILURE_SIGNAL_RE} line arrives, it can emit a few
+ * lines of leading context, the signal line, and a bounded run of trailing
+ * lines. Memory is O(before + maxLines) regardless of total output length,
+ * so a sidecar that prints megabytes after the failure can never evict the
+ * real signal the way a fixed trailing tail does.
+ *
+ * Multiple failure regions accumulate into one excerpt; once it would exceed
+ * {@link maxLines} the oldest lines are dropped, biasing the result toward
+ * the most recent failure (typically the final summary + stack trace).
+ */
+class FailureExcerptCollector {
+  private readonly recent: string[] = [];
+  private readonly excerpt: string[] = [];
+  private afterRemaining = 0;
+  private active = false;
+  private matched = false;
+
+  constructor(
+    private readonly before: number,
+    private readonly after: number,
+    private readonly maxLines: number,
+  ) {}
+
+  push(line: string): void {
+    if (FAILURE_SIGNAL_RE.test(line)) {
+      if (!this.active) {
+        // Entering a failure region. `recent` only ever holds lines that were
+        // NOT already captured into `excerpt` (see the else branch), so seeding
+        // it as leading context can never duplicate lines from a prior region.
+        // A non-empty `recent` here means uncaptured lines accumulated since
+        // the last region — a genuine gap — so mark it with a separator first.
+        if (this.recent.length > 0 && this.excerpt.length > 0) {
+          this.excerpt.push('   …');
+        }
+        for (const r of this.recent) this.excerpt.push(r);
+        this.recent.length = 0;
+        this.active = true;
+      }
+      this.matched = true;
+      this.excerpt.push(line);
+      this.afterRemaining = this.after;
+    } else if (this.active) {
+      // Trailing context for the active region — captured, so it is NOT added
+      // to `recent` (that would re-seed it as leading context on re-entry).
+      this.excerpt.push(line);
+      this.afterRemaining -= 1;
+      if (this.afterRemaining <= 0) this.active = false;
+    } else {
+      // Outside any failure region: keep a rolling window of the most recent
+      // uncaptured lines so the next region can show what led up to it.
+      this.recent.push(line);
+      while (this.recent.length > this.before) this.recent.shift();
+    }
+
+    while (this.excerpt.length > this.maxLines) this.excerpt.shift();
+  }
+
+  snapshot(): string[] {
+    return this.matched ? [...this.excerpt] : [];
+  }
+}
+
 export const __test = {
   BoundedLineTail,
+  FailureExcerptCollector,
+  FAILURE_SIGNAL_RE,
   stripCarriageReturn,
   STEP_ACTIVE_SECONDS_PER_STEP,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
