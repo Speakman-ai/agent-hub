@@ -1395,6 +1395,8 @@ export interface Stmts {
   resetWorkflowStepRunForRetry: Stmt;
   failStuckRunningWorkflowRuns: Stmt;
   failStuckRunningWorkflowStepRuns: Stmt;
+  failStuckActiveFinalizeRunsOnBoot: Stmt;
+  failStuckActiveFinalizeRunStepsOnBoot: Stmt;
   getWorkflowStepRun: Stmt;
   getWorkflowRunScoped: Stmt;
   cancelWorkflowRunIfPending: Stmt;

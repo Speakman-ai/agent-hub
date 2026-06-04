@@ -3138,6 +3138,26 @@ function initDb(dataDir: string): void {
            completed_at = datetime('now')
        WHERE status = 'running'`,
     ),
+    // A Finalize run's orchestrator + remote-fleet streaming live in the Hub
+    // process; a restart/crash leaves the run row non-terminal with no live
+    // handle, so it hangs forever showing "running". On boot, mark every
+    // in-flight run as infra_error so it surfaces a clean failure + retrigger
+    // instead. Mirrors failStuckRunningWorkflowRuns. Terminal set kept in sync
+    // with FINALIZE_TERMINAL_STATUSES (server/finalize/budget.ts).
+    failStuckActiveFinalizeRunsOnBoot: db.prepare(
+      `UPDATE finalize_runs
+       SET status = 'infra_error',
+           failure_reason = 'Finalize run interrupted (server restart or crash)',
+           phase = NULL,
+           ended_at = COALESCE(ended_at, unixepoch() * 1000)
+       WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','ready_to_push')`,
+    ),
+    failStuckActiveFinalizeRunStepsOnBoot: db.prepare(
+      `UPDATE finalize_run_steps
+       SET state = 'skipped',
+           ended_at = COALESCE(ended_at, unixepoch() * 1000)
+       WHERE state IN ('queued','running')`,
+    ),
     getWorkflowStepRun: db.prepare('SELECT * FROM workflow_step_runs WHERE id = ?'),
     getWorkflowRunScoped: db.prepare(
       `SELECT r.* FROM workflow_runs r

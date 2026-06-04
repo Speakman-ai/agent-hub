@@ -111,6 +111,7 @@ import createPerUserEngineAuthRoutes from './routes/per-user-engine-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
 import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
+import { failStuckFinalizeRunsOnBoot } from './finalize/boot-recovery.js';
 import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './workflow-triggers.js';
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
@@ -1417,6 +1418,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       failStuckWorkflowRunsOnBoot(stmts!);
     } catch (e) {
       console.error('[workflow] failStuckWorkflowRunsOnBoot', (e as Error).message);
+    }
+
+    try {
+      failStuckFinalizeRunsOnBoot(stmts!);
+    } catch (e) {
+      console.error('[finalize] failStuckFinalizeRunsOnBoot', (e as Error).message);
     }
 
     try {
