@@ -62,6 +62,37 @@ function isRemoteBackend(): boolean {
 }
 
 /**
+ * Cap on per-instance attempts. An `infra_error` (agent loss — a Spot reclaim
+ * drops the runner mid-job, its lease expires, or no agent claimed in time) is
+ * transient, so the instance is re-run on a FRESH agent. Capped so a
+ * persistently broken instance can't loop.
+ */
+export const MAX_INSTANCE_INFRA_ATTEMPTS = 3;
+
+/**
+ * Re-run a job instance only on `infra_error`. Each attempt re-acquires a new
+ * lease (new agent, fresh DinD) and re-runs all the instance's steps from the
+ * start — CI steps aren't resume-able mid-job. A real test `failure` or a
+ * genuine `timeout` is NEVER retried; re-running those would just loop.
+ */
+export async function runInstanceWithInfraRetry(
+  runOnce: () => Promise<JobInstanceOutcome>,
+  maxAttempts: number = MAX_INSTANCE_INFRA_ATTEMPTS,
+  onRetry?: (attempt: number, detail: string | undefined) => void,
+): Promise<JobInstanceOutcome> {
+  let outcome!: JobInstanceOutcome;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    outcome = await runOnce();
+    if (outcome.result.status === 'infra_error' && attempt < maxAttempts) {
+      onRetry?.(attempt, outcome.result.infraErrorDetail);
+      continue;
+    }
+    break;
+  }
+  return outcome;
+}
+
+/**
  * Resolve the Hub-side concurrency cap (re-exported at the bottom for tests): an
  * explicit FINALIZE_MAX_PARALLEL_JOBS always wins. Otherwise the remote backend
  * is uncapped — every instance is enqueued at once and the fleet autoscaler +
@@ -565,14 +596,14 @@ export async function runJobPhase(
       return markSkipped(instance);
     }
 
-    const outcome = await runJobInstance(
-      deps,
-      opts,
-      instance,
-      planned,
-      budgetStartedAt,
-      budgetMs,
-      now,
+    const outcome = await runInstanceWithInfraRetry(
+      () => runJobInstance(deps, opts, instance, planned, budgetStartedAt, budgetMs, now),
+      MAX_INSTANCE_INFRA_ATTEMPTS,
+      (attempt, detail) =>
+        console.warn(
+          `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error on attempt ` +
+            `${attempt}/${MAX_INSTANCE_INFRA_ATTEMPTS} (${detail ?? 'runner lost'}) — retrying on a fresh agent`,
+        ),
     );
 
     if (outcome.result.status !== 'success' && instance.failFast) {

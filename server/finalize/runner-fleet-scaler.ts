@@ -17,6 +17,7 @@
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, reapExpiredRunnerLeases } from './runner-queue.js';
+import { getJobChannel } from './runner-job-channel.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
@@ -85,7 +86,18 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
     // `lost` (terminal). Live jobs heartbeat on every poll, so they're untouched.
     // Without this, a stranded job would pin the fleet above zero forever.
     const reaped = reapExpiredRunnerLeases(now);
-    if (reaped.length) console.log(`[fleet-scaler] reaped ${reaped.length} expired lease(s)`);
+    if (reaped.length) {
+      console.log(`[fleet-scaler] reaped ${reaped.length} expired lease(s)`);
+      // Reaping marks the queue row `lost`, but the orchestrator is still awaiting
+      // the in-process channel's in-flight step (the dead agent will never report
+      // it). Fail those channels so the step surfaces as infra_error and the
+      // job-runner can retry the instance on a fresh agent instead of hanging.
+      for (const jobId of reaped) {
+        getJobChannel(jobId)?.fail(
+          new Error('runner agent lost — lease expired (likely a Spot reclaim)'),
+        );
+      }
+    }
     const depth = runnerQueueDepth(); // queued + claimed + running, across all orgs
     const target = desiredAgents(depth, cfg.min, cfg.max);
     const current = await currentDesired(cfg);
