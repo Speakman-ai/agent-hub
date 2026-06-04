@@ -251,6 +251,41 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
   });
 });
 
+describe('config.ts — codex-cli model defaults', () => {
+  // No config.json is written, so config.ts falls back to its built-in
+  // DEFAULT_ENGINE_VALID_MODELS / DEFAULT_ENGINE_DEFAULT_MODELS.
+  async function importDefaults() {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = path.join(
+      os.tmpdir(),
+      `agent-hub-codex-defaults-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    return (await import('./config.js')).default;
+  }
+
+  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.5', async () => {
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['codex-cli']).toEqual([
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.2',
+    ]);
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
+  });
+
+  it('does NOT offer gpt-5.3-codex — deprecated, rejected under ChatGPT OAuth', async () => {
+    // Regression: gpt-5.3-codex was the prior default but the ChatGPT backend
+    // now rejects it (HTTP 400), so it must not be selectable or the default.
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.3-codex');
+    expect(cfg.engineDefaultModels['codex-cli']).not.toBe('gpt-5.3-codex');
+    // The default must always be a member of the valid list.
+    expect(cfg.engineValidModels['codex-cli']).toContain(cfg.engineDefaultModels['codex-cli']);
+  });
+});
+
 describe('config.ts — CLI binary auto-detection (pickBin)', () => {
   // Use an isolated tmp data dir so a developer's local
   // ~/.agent-hub/data/config.json overrides cannot influence these tests.

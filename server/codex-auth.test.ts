@@ -89,13 +89,16 @@ describe('shouldPassModelFlag', () => {
     for (const m of CODEX_CHATGPT_ALLOWED_MODELS) {
       expect(shouldPassModelFlag('chatgpt', m)).toBe(true);
     }
-    // Empirical rejects as of codex-cli 0.122 under auth_mode=chatgpt:
+    // Empirical rejects under auth_mode=chatgpt. gpt-5.3-codex joined this set
+    // as of June 2026 — no longer accepted under ChatGPT OAuth, so it must be
+    // dropped from --model just like the older API-only IDs.
     for (const bad of [
       'gpt-5',
       'gpt-5-mini',
       'gpt-5-codex',
       'gpt-5.2-codex',
       'gpt-5.1-codex-max',
+      'gpt-5.3-codex',
       'gpt-5.3-codex-spark',
     ]) {
       expect(shouldPassModelFlag('chatgpt', bad)).toBe(false);
@@ -104,6 +107,9 @@ describe('shouldPassModelFlag', () => {
 
   it('allowlist includes the current default so fresh sessions never get dropped', () => {
     // Keep in sync with server/config.ts → engineDefaultModels['codex-cli'].
-    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.3-codex');
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.5');
+    // Regression: the deprecated gpt-5.3-codex must NOT be forwarded under
+    // ChatGPT OAuth — it is rejected by the backend and would spin forever.
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).not.toContain('gpt-5.3-codex');
   });
 });

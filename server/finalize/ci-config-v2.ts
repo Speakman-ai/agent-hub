@@ -71,15 +71,7 @@ export interface JobInstance {
 }
 
 const V2_TOP_KEYS = new Set(['version', 'on', 'timeout_minutes', 'env', 'jobs']);
-const V2_JOB_KEYS = new Set([
-  'runs-on',
-  'fail-fast',
-  'warmup',
-  'needs',
-  'matrix',
-  'env',
-  'steps',
-]);
+const V2_JOB_KEYS = new Set(['runs-on', 'fail-fast', 'warmup', 'needs', 'matrix', 'env', 'steps']);
 const V2_STEP_KEYS = new Set(['name', 'run', 'env']);
 
 export type CiConfigV2ErrorCode =

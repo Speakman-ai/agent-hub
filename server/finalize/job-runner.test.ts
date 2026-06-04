@@ -7,6 +7,7 @@ import {
   readMaxParallelJobs,
   DEFAULT_MAX_PARALLEL_JOBS,
 } from './job-runner.js';
+import { createLocalRunnerBackend } from './runner-backend-local.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
 
 vi.mock('./job-container.js', async (importOriginal) => {
@@ -539,6 +540,15 @@ jobs:
         listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
       } as unknown as StepRunnerDeps['stmts'],
       broadcast: vi.fn(),
+      // Inject the local (DinD job-container) backend explicitly so the test is
+      // hermetic. Without this, runJobPhase falls back to resolveRunnerBackend(),
+      // which returns the REMOTE backend whenever FINALIZE_RUNNER_BACKEND=remote
+      // is set in the environment (as it is inside the Finalize CI runner). The
+      // remote backend `git bundle`s the worktree, so the fake '/tmp/wt' path
+      // below would fail with infra_error. The local backend uses the mocked
+      // startJobContainer/createJobScopedSpawnStep/stopJobContainer this test
+      // already asserts against.
+      runnerBackend: createLocalRunnerBackend(),
     };
 
     const result = await runJobPhase(deps, {

@@ -163,15 +163,18 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // codex backend rejects older/API-only IDs with:
   //   "The '<model>' model is not supported when using Codex with a
   //   ChatGPT account." (HTTP 400, surfaced as a `turn.failed` JSONL event).
-  // Empirically (CLI 0.122, April 2026) the following fail under ChatGPT:
+  // Empirically the following fail under ChatGPT:
   //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
-  //   gpt-5.3-codex-spark.
+  //   gpt-5.3-codex-spark (Pro-only research preview), and — as of June 2026 —
+  //   gpt-5.3-codex itself (no longer accepted under ChatGPT OAuth; removed
+  //   from the selectable list, though its display label is retained for
+  //   historical sessions in TopBar.jsx / systemBannerModel.js).
   // These currently succeed under ChatGPT OAuth and are the only IDs we
   // allow the UI to select. Keep in sync with client/src/components/TopBar.jsx
   // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
   // drop --model when an unsupported/stale ID is still persisted on a
   // session (so resumes from old DBs don't spin forever).
-  'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+  'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
 };
 
 const mergedEngineValidModelsRaw =
@@ -182,12 +185,14 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
-  // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
-  // accepted under BOTH auth modes (ChatGPT OAuth and API-key). Older IDs
+  // Codex: default is gpt-5.5, OpenAI's recommended frontier model and the
+  // strongest general coding model, accepted under BOTH auth modes (ChatGPT
+  // OAuth and API-key). The prior default gpt-5.3-codex is no longer accepted
+  // under ChatGPT OAuth and was removed from the selectable list. Older IDs
   // like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max get rejected with
   // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
   // "Codex not working (round 2)".
-  'codex-cli': 'gpt-5.3-codex',
+  'codex-cli': 'gpt-5.5',
 };
 
 const mergedEngineDefaultModelsRaw =

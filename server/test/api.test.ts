@@ -836,7 +836,7 @@ describe('Agents', () => {
         .expect(200);
 
       expect(res.body.engine).toBe('codex-cli');
-      expect(res.body.model).toBe('gpt-5.3-codex');
+      expect(res.body.model).toBe('gpt-5.5');
     });
 
     it('returns 400 for an unknown engine', async () => {

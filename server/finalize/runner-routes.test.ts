@@ -55,9 +55,9 @@ describe('runner-routes (HTTP control plane)', () => {
   };
 
   it('rejects register with a bad fleet token and claim without an agent token', async () => {
-    expect((await request(app).post('/api/runners/register').send({ fleetToken: 'nope' })).status).toBe(
-      401,
-    );
+    expect(
+      (await request(app).post('/api/runners/register').send({ fleetToken: 'nope' })).status,
+    ).toBe(401);
     expect((await request(app).post('/api/runners/claim').send({})).status).toBe(401);
   });
 
@@ -80,7 +80,10 @@ describe('runner-routes (HTTP control plane)', () => {
     // unblocks acquire); Promise.all fires it concurrently with acquire+spawn.
     let step!: ReturnType<RunnerLease['spawnStep']>;
     const [poll] = await Promise.all([
-      request(app).post(`/api/runners/jobs/${jobId}/poll`).set('Authorization', `Bearer ${token}`).send(),
+      request(app)
+        .post(`/api/runners/jobs/${jobId}/poll`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(),
       (async () => {
         await acquireP;
         step = lease.spawnStep({
@@ -91,7 +94,12 @@ describe('runner-routes (HTTP control plane)', () => {
         });
       })(),
     ]);
-    expect(poll.body).toEqual({ type: 'run_step', stepIndex: 0, run: 'echo hi', env: { FOO: 'bar' } });
+    expect(poll.body).toEqual({
+      type: 'run_step',
+      stepIndex: 0,
+      run: 'echo hi',
+      env: { FOO: 'bar' },
+    });
 
     let out = '';
     step.stdout!.on('data', (d) => (out += d.toString()));
@@ -135,7 +143,10 @@ describe('runner-routes (HTTP control plane)', () => {
 
     // Fire agent A's poll (attaches → unblocks acquire) concurrently.
     const [, forbidden] = await Promise.all([
-      request(app).post(`/api/runners/jobs/${jobId}/poll`).set('Authorization', `Bearer ${tokenA}`).send(),
+      request(app)
+        .post(`/api/runners/jobs/${jobId}/poll`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send(),
       (async () => {
         await acquireP;
         // Agent B never claimed this job → forbidden.

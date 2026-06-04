@@ -177,15 +177,15 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
 
     const res = await request
       .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
-      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.3-codex' })
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.4' })
       .expect(200);
 
     const cardOut = res.body.card as { assign_model: string | null; assign_engine: string | null };
     expect(cardOut.assign_engine).toBe('codex-cli');
-    expect(cardOut.assign_model).toBe('gpt-5.3-codex');
+    expect(cardOut.assign_model).toBe('gpt-5.4');
     const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
     expect(sessionRes.body.engine).toBe('codex-cli');
-    expect(sessionRes.body.model).toBe('gpt-5.3-codex');
+    expect(sessionRes.body.model).toBe('gpt-5.4');
   });
 
   it('returns 400 for an unknown engine override', async () => {

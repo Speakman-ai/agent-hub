@@ -3010,7 +3010,7 @@ export default function App() {
       const fromConfig = modelConfig?.engineDefaultModels?.[engine];
       if (fromConfig) return fromConfig;
       if (engine === 'cursor-agent') return 'composer-2.5';
-      if (engine === 'codex-cli') return 'gpt-5.3-codex';
+      if (engine === 'codex-cli') return 'gpt-5.5';
       return 'claude-opus-4-8';
     },
     [modelConfig],

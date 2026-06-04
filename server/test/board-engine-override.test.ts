@@ -46,12 +46,12 @@ describe('PUT board card — assign_engine + assign_model override', () => {
 
     const res = await request
       .put(`/api/projects/${projectId}/board/cards/${card.id}`)
-      .send({ assign_engine: 'codex-cli', assign_model: 'gpt-5.3-codex' })
+      .send({ assign_engine: 'codex-cli', assign_model: 'gpt-5.4' })
       .expect(200);
 
     const out = res.body as { assign_engine: string | null; assign_model: string | null };
     expect(out.assign_engine).toBe('codex-cli');
-    expect(out.assign_model).toBe('gpt-5.3-codex');
+    expect(out.assign_model).toBe('gpt-5.4');
   });
 
   it('rejects an unknown engine id with 400 and does not mutate the row', async () => {
@@ -121,15 +121,15 @@ describe('PUT board card — assign_engine + assign_model override', () => {
     const card = await createCard(projectId, { title: 'Clear engine override' });
     await request
       .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
-      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.3-codex' })
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.4' })
       .expect(200);
 
     // Posting both fields together: clear the engine but try to keep a
-    // codex model. Must 400 because gpt-5.3-codex is not valid for
+    // codex model. Must 400 because gpt-5.4 is not valid for
     // claude-code.
     const res = await request
       .put(`/api/projects/${projectId}/board/cards/${card.id}`)
-      .send({ assign_engine: null, assign_model: 'gpt-5.3-codex' })
+      .send({ assign_engine: null, assign_model: 'gpt-5.4' })
       .expect(400);
     expect((res.body as { error?: string }).error).toContain('not valid for engine');
   });
@@ -144,7 +144,7 @@ describe('POST /unassign clears assign_engine alongside assign_model', () => {
 
     const assignRes = await request
       .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
-      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.3-codex' })
+      .send({ agentId: agent.id, engine: 'codex-cli', model: 'gpt-5.4' })
       .expect(200);
     expect((assignRes.body.card as { assign_engine: string | null }).assign_engine).toBe(
       'codex-cli',

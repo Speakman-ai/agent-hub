@@ -26,7 +26,6 @@ export const ENGINE_MODELS = {
   // and client/src/components/TopBar.jsx.
   'codex-cli': [
     { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
-    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', short: '5.3 Codex' },
     { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
     { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
@@ -36,7 +35,7 @@ export const ENGINE_MODELS = {
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
-  'codex-cli': 'gpt-5.3-codex',
+  'codex-cli': 'gpt-5.5',
 };
 
 export function modelDisplay(id) {
