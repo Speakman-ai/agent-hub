@@ -54,11 +54,16 @@ instance_type    = "m7i-flex.xlarge" # 4 vCPU / 16 GB — app + registry mirror 
 root_volume_size = 150
 
 # ── Finalize remote-runner fleet (full production config) ────────────────────
-enable_finalize_runners         = true
-manage_shared_finalize_infra    = true # this account owns its buckets/ECR
-finalize_runner_instance_type   = "r7i.xlarge"
-finalize_runner_min_size        = 0 # scale-to-zero when idle
-finalize_runner_max_size        = 8 # up to 8 shards concurrently
+enable_finalize_runners       = true
+manage_shared_finalize_infra  = true # this account owns its buckets/ECR
+finalize_runner_instance_type = "r7i.xlarge"
+# On-demand: us-east-2 Spot for r/m-family 32GB types went region-wide
+# UnfulfillableCapacity (all 3 AZs), stranding runs. On-demand always has capacity.
+# Flip back to true once Spot recovers if the ~3x fleet cost matters (lost jobs
+# already retry on a fresh agent, so Spot is safe to re-enable).
+finalize_runner_use_spot = false
+finalize_runner_min_size = 0 # scale-to-zero when idle
+finalize_runner_max_size = 8 # up to 8 shards concurrently
 # Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
 # instances skip the multi-GB boot `docker pull` and provision much faster.
 # Re-bake (ops/scripts or the runbook) when the base AMI / runner image change;

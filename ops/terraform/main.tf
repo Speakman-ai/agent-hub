@@ -166,6 +166,30 @@ resource "aws_route_table_association" "public_b" {
   route_table_id = aws_route_table.public.id
 }
 
+# Third public subnet (us-east-2c), fleet-only. A 3rd AZ widens the Spot pool:
+# observed r/m-family Spot fluctuating short across 2a+2b (UnfulfillableCapacity)
+# while 2c had capacity, so the fleet couldn't launch. Created only when the
+# Finalize fleet is enabled; the ALB still uses just public + public_b.
+resource "aws_subnet" "public_c" {
+  count = var.enable_finalize_runners ? 1 : 0
+
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.third_public_subnet_cidr_block
+  availability_zone       = "${var.aws_region}${var.finalize_runner_third_az_suffix}"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-public-c"
+  }
+}
+
+resource "aws_route_table_association" "public_c" {
+  count = var.enable_finalize_runners ? 1 : 0
+
+  subnet_id      = aws_subnet.public_c[0].id
+  route_table_id = aws_route_table.public.id
+}
+
 # --- Security Group ---
 
 resource "aws_security_group" "instance" {

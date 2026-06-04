@@ -41,11 +41,17 @@ variable "spot" {
 
 variable "instance_types" {
   type = list(string)
-  # All 4 vCPU / 32 GB, so each fits exactly one ~28 GB job. Diversifying across
-  # families/generations widens the Spot pool → far fewer interruptions / launch
-  # failures than a single type.
-  default     = ["r7i.xlarge", "r6i.xlarge", "r5.xlarge", "r6a.xlarge"]
-  description = "Instance types for the mixed-instances Spot pool."
+  # Each is 32 GB, so it fits exactly one ~28 GB job (r-family xlarge = 4 vCPU,
+  # m-family 2xlarge = 8 vCPU — the extra vCPU is harmless; capacity-optimized
+  # just needs more pools). Diversify across BOTH families AND generations: a
+  # single-family Spot crunch (observed: r-family UnfulfillableCapacity /
+  # InsufficientInstanceCapacity in an AZ) then no longer blocks every launch,
+  # since m-family pools are independent. ~10 types x 2 AZs = 20 Spot pools.
+  default = [
+    "r7i.xlarge", "r6i.xlarge", "r6a.xlarge", "r7a.xlarge", "r5.xlarge",
+    "m7i.2xlarge", "m6i.2xlarge", "m6a.2xlarge", "m7a.2xlarge", "m5.2xlarge",
+  ]
+  description = "Instance types for the mixed-instances Spot pool (all 32 GB; diversified across r/m families + generations to keep Spot fulfillable)."
 }
 
 variable "min_size" {

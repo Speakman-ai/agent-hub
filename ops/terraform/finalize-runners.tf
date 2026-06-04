@@ -12,7 +12,7 @@ module "finalize_runners" {
   # Reuse the root VPC / subnets. AMI: a fleet-specific baked AMI (runner image
   # pre-pulled, for fast provisioning) when set, else the stock SSM-resolved AMI.
   vpc_id     = aws_vpc.main.id
-  subnet_ids = concat([aws_subnet.public.id], aws_subnet.public_b[*].id)
+  subnet_ids = concat([aws_subnet.public.id], aws_subnet.public_b[*].id, aws_subnet.public_c[*].id)
   ami_id = (
     trimspace(var.finalize_runner_ami_id) != ""
     ? var.finalize_runner_ami_id
@@ -24,6 +24,7 @@ module "finalize_runners" {
   max_size            = var.finalize_runner_max_size
   root_volume_size    = var.finalize_runner_root_volume_size
   agent_desired_count = var.finalize_agent_desired_count
+  spot                = var.finalize_runner_use_spot
 
   agent_image_uri = (
     trimspace(var.finalize_agent_image_uri) != ""

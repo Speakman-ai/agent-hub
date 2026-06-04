@@ -325,6 +325,18 @@ variable "alb_availability_zone_suffix_b" {
   default     = "b"
 }
 
+variable "third_public_subnet_cidr_block" {
+  description = "CIDR for the third public subnet (fleet-only, a 3rd AZ to widen the Spot pool). Created only when enable_finalize_runners = true. Must be within vpc_cidr_block and not overlap the other subnets."
+  type        = string
+  default     = "10.0.152.0/24"
+}
+
+variable "finalize_runner_third_az_suffix" {
+  description = "AZ letter for the fleet's third subnet (e.g. \"c\" for us-east-2c) — must differ from the first two. Adds a 3rd Spot capacity pool for the runner ASG."
+  type        = string
+  default     = "c"
+}
+
 variable "alb_ingress_cidr_blocks" {
   description = "CIDRs allowed to reach the ALB on 80/443. Use a narrow CIDR to restrict the management UI (e.g. your IP/32) or 0.0.0.0/0 for public access."
   type        = list(string)
@@ -379,6 +391,12 @@ variable "manage_shared_finalize_infra" {
 variable "finalize_runner_instance_type" {
   type    = string
   default = "r7i.xlarge"
+}
+
+variable "finalize_runner_use_spot" {
+  type        = bool
+  default     = true
+  description = "Run the Finalize fleet on Spot (interruptible, ~2/3 cheaper; lost jobs retry on a fresh agent). Set false for on-demand — guaranteed launch, no UnfulfillableCapacity during a region-wide Spot crunch, ~3x the fleet compute cost. Flip back to true once Spot capacity recovers if cost matters."
 }
 
 variable "finalize_runner_ami_id" {
