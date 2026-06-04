@@ -59,6 +59,11 @@ manage_shared_finalize_infra    = true # this account owns its buckets/ECR
 finalize_runner_instance_type   = "r7i.xlarge"
 finalize_runner_min_size        = 0 # scale-to-zero when idle
 finalize_runner_max_size        = 8 # up to 8 shards concurrently
+# Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
+# instances skip the multi-GB boot `docker pull` and provision much faster.
+# Re-bake (ops/scripts or the runbook) when the base AMI / runner image change;
+# the launch-template boot pull stays as a fast delta-pull + fallback.
+finalize_runner_ami_id          = "ami-067a1878748cbbf2f"
 finalize_agent_desired_count    = 0 # scaler owns it at runtime
 finalize_cache_bucket_name      = "agent-hub-finalize-cache-350025135582"
 finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-350025135582"

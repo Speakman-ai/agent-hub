@@ -381,6 +381,12 @@ variable "finalize_runner_instance_type" {
   default = "r7i.xlarge"
 }
 
+variable "finalize_runner_ami_id" {
+  type        = string
+  default     = ""
+  description = "Custom AMI for the Finalize runner fleet — bake the runner image into the AL2023 ECS-optimized AMI so instances skip the multi-GB boot-time `docker pull` and provision much faster. Empty = use the SSM-resolved stock AMI (same as the Hub). Fleet-only; does not affect the Hub instance. Re-bake periodically to track the base AMI + the latest runner image (the launch-template boot pull stays as a fast delta-pull / fallback)."
+}
+
 variable "finalize_runner_min_size" {
   type        = number
   default     = 0

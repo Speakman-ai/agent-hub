@@ -9,10 +9,15 @@ module "finalize_runners" {
   project_name = var.project_name
   aws_region   = var.aws_region
 
-  # Reuse the root VPC / subnets / AMI.
+  # Reuse the root VPC / subnets. AMI: a fleet-specific baked AMI (runner image
+  # pre-pulled, for fast provisioning) when set, else the stock SSM-resolved AMI.
   vpc_id     = aws_vpc.main.id
   subnet_ids = concat([aws_subnet.public.id], aws_subnet.public_b[*].id)
-  ami_id     = local.effective_ami_id
+  ami_id = (
+    trimspace(var.finalize_runner_ami_id) != ""
+    ? var.finalize_runner_ami_id
+    : local.effective_ami_id
+  )
 
   instance_type       = var.finalize_runner_instance_type
   min_size            = var.finalize_runner_min_size
