@@ -93,6 +93,10 @@ describe('readMaxParallelJobs', () => {
 });
 
 describe('job-runner', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('sanitizeComposeProjectName produces lowercase unique shard prefixes', () => {
     expect(sanitizeComposeProjectName('run-1', 'e2e', 'Profiles & Tasks')).toMatch(
       /^finalize-run-1-e2e-profiles-tasks$/,
@@ -525,7 +529,18 @@ jobs:
     expect(parsed.ok).toBe(true);
     if (!parsed.ok || parsed.config.version !== 2) return;
 
+    // Hermetic backend selection. `runJobInstance` picks the backend via
+    // `deps.runnerBackend ?? resolveRunnerBackend()`, and resolveRunnerBackend
+    // reads (and caches) FINALIZE_RUNNER_BACKEND from the ambient env. On the
+    // Finalize fleet the job container inherits FINALIZE_RUNNER_BACKEND=remote
+    // from the Hub, so without this injection the test would pick the REMOTE
+    // backend, whose acquire() tries to reach the control plane and throws →
+    // `infra_error` instead of `success`. Inject the local backend (which still
+    // routes through the mocked job-container.js) and pin dind mode so the test
+    // is independent of the environment it runs in.
+    vi.stubEnv('FINALIZE_RUNNER_DOCKER_MODE', 'dind');
     const deps: StepRunnerDeps = {
+      runnerBackend: createLocalRunnerBackend(),
       stmts: {
         getFinalizeRun: { get: vi.fn() },
         updateFinalizeRunPhase: { run: vi.fn() },

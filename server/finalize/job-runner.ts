@@ -341,6 +341,10 @@ async function runJobInstance(
   if (isContainerRunsOn(instance.runsOn)) {
     if (!image) {
       const endedAt = now();
+      const detail = `unsupported runs-on: ${instance.runsOn}`;
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error: ${detail}`,
+      );
       persistJobState(
         deps,
         runId,
@@ -357,7 +361,7 @@ async function runJobInstance(
           status: 'infra_error',
           stepResults: [],
           activeSecondsBilled: 0,
-          infraErrorDetail: `unsupported runs-on: ${instance.runsOn}`,
+          infraErrorDetail: detail,
         },
       };
     }
@@ -380,6 +384,13 @@ async function runJobInstance(
       } catch (err) {
         const endedAt = now();
         const msg = err instanceof Error ? err.message : String(err);
+        // Log at the source. The retry wrapper only logs between attempts
+        // (attempt < maxAttempts), so the FINAL attempt's reason would
+        // otherwise be dropped — leaving an `infra_error` with no visible
+        // cause in the step logs. Always surface why the runner acquire failed.
+        console.warn(
+          `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} runner acquire failed: ${msg}`,
+        );
         persistJobState(
           deps,
           runId,
