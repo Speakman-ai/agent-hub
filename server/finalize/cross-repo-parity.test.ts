@@ -1,6 +1,7 @@
 /**
- * Cross-repo parity: the v1 ci.yaml parser produces the same structural
- * shape for the agent-hub config and the survey-tracker reference.
+ * Cross-repo parity: the ci.yaml parser produces an orchestrator-usable
+ * config for both the agent-hub repo and the survey-tracker reference,
+ * even when they target different schema versions.
  *
  * Card 5df552ec — "Roll out Finalize Code Changes to survey-tracker repo
  * (second dogfood)" — has as its last acceptance criterion:
@@ -11,52 +12,54 @@
  * The fix-dispatch module (`fix-dispatch.ts`) is repo-agnostic by design
  * — a `grep -n 'repo\|github\|metric'` against the file produces zero
  * hits. The behavioural property we want to pin is the layer ONE level
- * above: that the parser hands the orchestrator a structurally
- * identical `CiConfig` object regardless of which repo's file it
- * loaded.
+ * above: that the parser hands the orchestrator a usable config
+ * regardless of which repo's file it loaded.
  *
- * Concretely, this test parses both files (the real, committed
- * `<repo>/.agent-hub/ci.yaml` and the survey-tracker reference fixture)
- * and asserts:
+ * Originally both files were v1; the v2-per-job-parity rollout migrated
+ * agent-hub's own ci.yaml to `version: 2` (concurrent fan-out onto the
+ * DinD fleet) while survey-tracker's reference fixture stays at v1
+ * (single-runner pipeline). The orchestrator already branches on
+ * version, so the parity we still care about is what survives the
+ * version skew:
  *
  *   1. Both parse with `ok: true`. If either fails, the failure mode
  *      surfaces here rather than at first finalize-click against the
  *      other repo.
  *
- *   2. The set of top-level CiConfig keys is identical. This is the
- *      "shape" half of cross-repo parity — the orchestrator only ever
- *      reads `version`, `on`, `timeoutMinutes`, `steps`, so the same
- *      keys must be present and the same keys must be absent.
+ *   2. Both declare the `finalize` trigger. The trigger set is the
+ *      orchestrator's entry-point contract and is version-agnostic.
  *
- *   3. The `version` ratchet is locked at 1 on both files. If either
- *      drifts (e.g. a v2 migration that only updates one repo), the
- *      parity is broken and the orchestrator would have to branch on
- *      version per repo — exactly the failure mode this test catches.
+ *   3. Both have `timeoutMinutes` inside the parser-enforced ceiling
+ *      [1, 240]. The ceiling is the same field at v1 and v2 — a config
+ *      may lower the active-time cap but never raise it.
  *
- *   4. Both files declare the `finalize` trigger and both fit inside
- *      the v1 timeout ceiling (1..60). Anything else fails the
- *      orchestrator's own contract before we ever get to fix-dispatch.
+ *   4. Every executable step on every repo has a non-empty `name` and
+ *      `run`. At v1 the steps live at `cfg.steps`; at v2 they live
+ *      inside `cfg.jobs[id].steps` and we walk every job's step list.
  *
  * What this test deliberately does NOT assert:
+ *
+ *   - That both files use the same schema version. The PR that landed
+ *     v2 on agent-hub but left survey-tracker at v1 makes version skew
+ *     an expected, not pathological, state. If either file regresses
+ *     (e.g. agent-hub falls back to v1 unintentionally), the companion
+ *     per-repo tests catch that.
  *
  *   - That the step sets are identical. They MUST differ (different
  *     stack: npm/tsc/vitest on agent-hub, venv/Angular/Cypress on
  *     survey-tracker). The card's parity AC is about the orchestrator's
  *     output shape on failure, not about the input commands.
  *
- *   - That the number of steps matches. agent-hub has 6, survey-tracker
- *     has 5 (backend pytest deferred — see the survey-tracker fixture
- *     header and the wiki appendix).
- *
  * The companion per-repo tests (`repo-ci-yaml.test.ts` for agent-hub
  * and `repo-ci-yaml-example-surveytracker.test.ts` for survey-tracker)
- * pin the per-repo step contracts; this test pins what's COMMON.
+ * pin the per-repo step/job contracts; this test pins what's COMMON
+ * across schema versions.
  */
 
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
-import { loadCiConfigFromFile, type CiConfig } from './ci-config.js';
+import { loadCiConfigFromFile, type AnyCiConfig, type CiStep } from './ci-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -77,7 +80,10 @@ const SURVEYTRACKER_CI_YAML = path.join(
 
 // Helper: load + assert ok, returning the CiConfig (or throwing with a
 // clear test-failure message that pinpoints which file is broken).
-async function loadOk(label: string, file: string): Promise<CiConfig> {
+// Version-agnostic — the orchestrator branches on version downstream;
+// what this helper guarantees is "parsed successfully into something
+// the orchestrator can read."
+async function loadOk(label: string, file: string): Promise<AnyCiConfig> {
   const result = await loadCiConfigFromFile(file);
   if (!result.ok) {
     throw new Error(
@@ -85,33 +91,27 @@ async function loadOk(label: string, file: string): Promise<CiConfig> {
         `path=${result.error.path ?? '(root)'} message=${result.error.message}`,
     );
   }
-  if (result.config.version !== 1) {
-    throw new Error(`${label} ci.yaml is not v1 (got version ${result.config.version})`);
-  }
   return result.config;
 }
 
-describe('cross-repo parity: agent-hub vs survey-tracker ci.yaml', () => {
-  it('both files parse cleanly against the v1 schema', async () => {
-    const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
-    const surveyTracker = await loadOk('survey-tracker', SURVEYTRACKER_CI_YAML);
-    expect(agentHub.version).toBe(1);
-    expect(surveyTracker.version).toBe(1);
-  });
+// Helper: flatten every executable step from a parsed config. At v1 the
+// steps sit at `cfg.steps`; at v2 they sit inside `cfg.jobs[id].steps`
+// for every job. Returning a flat list keeps the per-step invariants
+// readable without leaking the version branch into each assertion.
+function allSteps(cfg: AnyCiConfig): CiStep[] {
+  if (cfg.version === 1) return cfg.steps;
+  return Object.values(cfg.jobs).flatMap((job) => job.steps);
+}
 
-  it('produces the same set of top-level CiConfig keys for both repos', async () => {
+describe('cross-repo parity: agent-hub vs survey-tracker ci.yaml', () => {
+  it('both files parse cleanly into a usable orchestrator config', async () => {
     const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
     const surveyTracker = await loadOk('survey-tracker', SURVEYTRACKER_CI_YAML);
-    // Sort so the comparison is order-independent. The exact key set
-    // is locked at v1: `version`, `on`, `timeoutMinutes`, `steps`.
-    // Anything else means one of the configs picked up a key the
-    // parser doesn't honour (which would be a parser bug) OR the
-    // configs diverged at the type layer (which is the parity break
-    // this test exists to catch).
-    const agentHubKeys = Object.keys(agentHub).sort();
-    const surveyTrackerKeys = Object.keys(surveyTracker).sort();
-    expect(agentHubKeys).toEqual(surveyTrackerKeys);
-    expect(agentHubKeys).toEqual(['on', 'steps', 'timeoutMinutes', 'version']);
+    // The orchestrator only branches on `version`; what we pin here is
+    // that both files yielded a parsed config with one of the supported
+    // versions. Version skew (one v1, one v2) is allowed by design.
+    expect([1, 2]).toContain(agentHub.version);
+    expect([1, 2]).toContain(surveyTracker.version);
   });
 
   it('both files declare the finalize trigger (orchestrator needs it)', async () => {
@@ -121,7 +121,7 @@ describe('cross-repo parity: agent-hub vs survey-tracker ci.yaml', () => {
     expect(surveyTracker.on).toContain('finalize');
   });
 
-  it('both files have timeouts within the v1 ceiling [1, 240]', async () => {
+  it('both files have timeouts within the parser ceiling [1, 240]', async () => {
     const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
     const surveyTracker = await loadOk('survey-tracker', SURVEYTRACKER_CI_YAML);
     for (const cfg of [agentHub, surveyTracker]) {
@@ -130,15 +130,18 @@ describe('cross-repo parity: agent-hub vs survey-tracker ci.yaml', () => {
     }
   });
 
-  it('every step on every repo has a non-empty name and run', async () => {
+  it('every executable step on every repo has a non-empty name and run', async () => {
     // Both per-step invariants are also asserted by the parser, but
     // pinning them here makes the parity property obvious from this
-    // test alone (no need to read ci-config.ts to trust the claim).
+    // test alone (no need to read ci-config.ts to trust the claim). At
+    // v2 the steps come from every job, so this also guarantees the
+    // fan-out matrix can't ship an empty step set.
     const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
     const surveyTracker = await loadOk('survey-tracker', SURVEYTRACKER_CI_YAML);
     for (const cfg of [agentHub, surveyTracker]) {
-      expect(cfg.steps.length).toBeGreaterThan(0);
-      for (const step of cfg.steps) {
+      const steps = allSteps(cfg);
+      expect(steps.length).toBeGreaterThan(0);
+      for (const step of steps) {
         expect(step.name).toBeTruthy();
         expect(step.run.trim().length).toBeGreaterThan(0);
       }

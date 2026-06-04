@@ -2,34 +2,40 @@
  * Tests for THIS repository's own committed `.agent-hub/ci.yaml`.
  *
  * Card 5d68e03e — "Roll out Finalize Code Changes to agent-hub repo
- * (first dogfood)" — added the file at the repo root and locked the
- * step set ("install, typecheck, lint, test, openapi checks, build")
- * via the v1 schema parser in `ci-config.ts`.
+ * (first dogfood)" — added the file at the repo root and originally
+ * locked a v1 sequential step set ("install, typecheck, lint, test,
+ * openapi checks, build"). The follow-up "v2 per-job GHA parity" rollout
+ * migrated the file to v2 so every GitHub Actions job runs as its own
+ * concurrent runner on the Finalize DinD fleet (build, test matrix,
+ * lint, openapi). These tests now lock the v2 contract.
  *
- * These tests are the live, evergreen check that the committed file:
+ * Live, evergreen check that the committed file:
  *
  *   1. Exists at the repo root (`<repo>/.agent-hub/ci.yaml`). If
  *      someone moves or deletes it during a refactor, this test fails
  *      loudly rather than the orchestrator silently classifying every
  *      `finalize` run as `ci_config_invalid` at the first invocation.
  *
- *   2. Parses cleanly against the v1 schema in `parseCiConfig`. The
- *      parser is the single source of truth — if it tightens (e.g. v2
+ *   2. Parses cleanly against the v2 schema in `parseCiConfig`. The
+ *      parser is the single source of truth — if it tightens (e.g. v3
  *      adds a stricter constraint), this test surfaces the regression
  *      on the file as part of the normal test run, not on a runtime
  *      finalize click.
  *
- *   3. Matches the contract listed on card 5d68e03e: the six steps
- *      "install, typecheck, lint, test, openapi, build" in that order.
- *      The check is intentionally loose on exact step names (we accept
- *      case differences and small wording drift) but strict on the
- *      ordering and on the `run` script keywords so a future
- *      reordering or accidental deletion can't slip through unnoticed.
+ *   3. Declares the four GHA-parity jobs (build, test, lint, openapi)
+ *      with a 4-way test matrix (server 1/3, 2/3, 3/3, client) — the
+ *      whole point of v2 is concurrent per-job fan-out, so the test
+ *      pins the job set and the matrix shape so an accidental
+ *      grouping / serialization can't slip in.
+ *
+ *   4. Sets an explicit fast-fail `timeout_minutes` (the dogfood cap is
+ *      45 minutes). v2's reason for an explicit cap: a single broken
+ *      step shouldn't burn the 4-hour system default on the fleet.
  *
  * Why a runtime test instead of a snapshot or schema diff: the schema
  * diff already exists (the parser itself). What we want to guarantee
  * here is that the *real file on disk*, as committed to main, satisfies
- * both the schema AND the per-repo step contract. That can only be
+ * both the schema AND the per-repo job contract. That can only be
  * verified by reading the file the orchestrator would read.
  */
 
@@ -37,6 +43,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
 import { loadCiConfigFromFile } from './ci-config.js';
+import { expandJobInstances } from './ci-config-v2.js';
 
 // Resolve the repo root from this file's location. The test file lives
 // at `<repo>/server/finalize/repo-ci-yaml.test.ts`; the ci.yaml lives
@@ -49,7 +56,7 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..');
 const CI_YAML_PATH = path.join(REPO_ROOT, '.agent-hub', 'ci.yaml');
 
 describe('agent-hub repo: .agent-hub/ci.yaml', () => {
-  it('parses cleanly against the v1 schema', async () => {
+  it('parses cleanly against the v2 schema', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     if (!result.ok) {
       // Surface the parser's structured error if the file is invalid —
@@ -59,7 +66,10 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
         `ci.yaml failed to parse: code=${result.error.code} path=${result.error.path ?? '(root)'} message=${result.error.message}`,
       );
     }
-    expect(result.config.version).toBe(1);
+    // v2 routes the run to the DinD fleet (one privileged container per
+    // job instance). v1 would run sequentially on the Hub box and lose
+    // GHA parity — pin v2 so an accidental downgrade fails loudly.
+    expect(result.config.version).toBe(2);
   });
 
   it('declares both finalize + manual triggers (dogfood needs ad-hoc invocation too)', async () => {
@@ -74,49 +84,57 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(result.config.on).toContain('manual');
   });
 
-  it('runs the six contracted steps in the card-5d68e03e ordering', async () => {
+  it('fans onto the GHA-parity jobs (build, test, lint, openapi) with a 4-way test matrix', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.config.version !== 1) return;
+    if (!result.ok || result.config.version !== 2) return;
 
-    // The contract from the card description (verbatim, lowercased):
-    //   "install, typecheck, lint, test, openapi checks, build"
-    //
-    // We assert (a) there are exactly six steps and (b) each step's
-    // `run` script invokes the npm script we expect, in order. We do
-    // NOT lock the human-readable `name` — that's editorial and may
-    // change without affecting the contract.
-    expect(result.config.steps).toHaveLength(6);
-    const runs = result.config.steps.map((s) => s.run);
+    // The v2 contract from the rollout PR: every GitHub Actions job
+    // becomes its own concurrent fleet runner. Lock the job id set so
+    // an accidental grouping (e.g. merging lint into build to "save" a
+    // runner) fails the test rather than silently undoing the parity.
+    const jobIds = Object.keys(result.config.jobs).sort();
+    expect(jobIds).toEqual(['build', 'lint', 'openapi', 'test']);
 
-    // 1. Install — `install:all` covers root + server + client + mobile
-    //    with devDependencies. Plain `npm ci` is insufficient because
-    //    the repo is not a real workspaces monorepo (CLAUDE.md notes).
-    expect(runs[0]).toMatch(/install/);
-    expect(runs[0]).toMatch(/install:all|--include=dev/);
+    // Every job runs on `ubuntu-24.04` — same image GitHub Actions uses
+    // for the canonical workflows. Drift here means the runner image
+    // pin diverged from GHA and parity claims become unreliable.
+    for (const jobId of jobIds) {
+      expect(result.config.jobs[jobId].runsOn).toBe('ubuntu-24.04');
+    }
 
-    // 2. Typecheck — `tsc --noEmit` on `server/`.
-    expect(runs[1]).toMatch(/typecheck/);
+    // The `test` matrix expands to 4 concurrent instances: server 1/3,
+    // 2/3, 3/3, and client. Asserting the shape here (rather than
+    // counting instances later) keeps the failure message tied to the
+    // ci.yaml authoring mistake, not to a downstream expansion bug.
+    const testJob = result.config.jobs.test;
+    expect(testJob.matrixInclude).toHaveLength(4);
+    const suites = testJob.matrixInclude.map((row) => row.suite).sort();
+    expect(suites).toEqual(['client', 'server', 'server', 'server']);
+    const serverShards = testJob.matrixInclude
+      .filter((row) => row.suite === 'server')
+      .map((row) => row.shard)
+      .sort();
+    expect(serverShards).toEqual(['1', '2', '3']);
 
-    // 3. Lint — `scripts/run-eslint.mjs .`.
-    expect(runs[2]).toMatch(/\blint\b/);
-
-    // 4. Test — server + client + electron + mobile vitest suites.
-    expect(runs[3]).toMatch(/\btest\b/);
-
-    // 5. OpenAPI — coverage ratchet + freshness gate.
-    expect(runs[4]).toMatch(/check:openapi/);
-
-    // 6. Build — Vite production build of the React client.
-    expect(runs[5]).toMatch(/\bbuild\b/);
+    // The full expansion is what the orchestrator actually fans out. 4
+    // single-instance jobs (build, lint, openapi, plus an unmatrixed
+    // path) + 4 test shards = 7 concurrent runners — the number quoted
+    // in the rollout PR. Pin it so a future "single global runner"
+    // refactor surfaces here.
+    const instances = expandJobInstances(result.config, {});
+    expect(instances).toHaveLength(7);
   });
 
-  it('uses the system default timeout when ci.yaml omits timeout_minutes', async () => {
+  it('sets an explicit fast-fail timeout (dogfood cap is 45 minutes)', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The system default is 240 minutes (4 hours); per-repo ci.yaml may
-    // lower but never raise. agent-hub's dogfood config omits the field.
-    expect(result.config.timeoutMinutes).toBe(240);
+    // The dogfood ci.yaml lowers the runtime cap to 45 minutes so a
+    // broken step fails fast on the fleet instead of burning the
+    // 4-hour system default. The parser allows lowering but never
+    // raising — if this number is bumped above 240, the parser would
+    // refuse before this test ran.
+    expect(result.config.timeoutMinutes).toBe(45);
   });
 });

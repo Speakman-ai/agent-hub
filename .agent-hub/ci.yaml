@@ -1,68 +1,93 @@
 # Finalize Code Changes — pipeline config for the agent-hub repo itself.
 #
-# This is the FIRST repo to dogfood `.agent-hub/ci.yaml` (card 5d68e03e).
-# The schema is locked at v1 by `server/finalize/ci-config.ts`; the wiki
-# page `finalize-code-changes-architecture-v0` §5 is the design contract.
+# v2 (GHA-parity). Every job below maps 1-1 to a job that runs in GitHub
+# Actions (`.github/workflows/ci.yml` + the lint/openapi gates from
+# `main-checks.yml`), and every job runs as its OWN concurrent runner on
+# the Finalize DinD fleet — exactly the way GitHub fans a workflow out.
+# Nothing is grouped or serialized to "save" runners: the whole point is
+# parity, so install/typecheck/build, each test shard, lint, and the
+# OpenAPI gate all light up at once on separate `ubuntu-24.04` runners.
 #
-# Every step runs under `bash -euo pipefail -c <run>` from the orchestrator
-# (no `shell:` override is permitted at v1). The active-time cap is the
-# system default of 4 hours — we deliberately do not lower it so the
-# first-time install (~3 min) plus the full client+server+mobile+electron
-# test sweep (~8 min cold) plus the OpenAPI freshness regenerate
-# (~10 sec) plus the Vite build (~30 sec) all fit comfortably.
+# Why v2 and not v1: a v1 `steps:` pipeline runs sequentially on the Hub
+# box itself (see server/finalize/orchestrator.ts — only `version === 2`
+# routes to the runner fleet via the job-runner). v2 `jobs:` with
+# `runs-on:` are what the orchestrator hands to the remote fleet, one
+# privileged DinD container per job instance, concurrently.
 #
-# Step ordering matches the card description verbatim:
-#   install → typecheck → lint → test → openapi checks → build
-# so reviewers can grep "install, typecheck, lint, test, openapi, build"
-# against the card 5d68e03e and see the contract holds. We intentionally
-# run test BEFORE the openapi gates so a broken test surfaces first; the
-# openapi freshness gate edits no source files and the build step has no
-# runtime side-effects, so their position at the tail is safe.
+# Install note: each job runs on its own runner with a fresh worktree and
+# there is NO node_modules sharing between jobs — so every job installs
+# its own deps (same trade-off GitHub Actions has without a cache action).
+# We mirror each GHA job's install SCOPE (root + only the package it
+# needs) rather than `install:all`, so jobs stay fast and faithful to
+# their GHA counterpart — this is parity, not scaling down.
 
-version: 1
+version: 2
 on:
   - finalize
   - manual
+timeout_minutes: 45
 
-steps:
-  - name: Install
-    # `npm run install:all` installs root + server + client + mobile with
-    # devDependencies (vitest, tsx, @vitejs/plugin-react, …). Plain
-    # `npm ci` at the root is NOT enough because the workspaces are not
-    # declared in `package.json`'s `workspaces:` field — each is its own
-    # npm install. See CLAUDE.md → Testing → Vitest missing.
-    run: npm run install:all
+jobs:
+  # ── GHA `build` job: "Build & typecheck" ────────────────────────────
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts --include=dev
+      - name: Install client dependencies
+        run: cd client && npm ci --include=dev
+      - name: Install server dependencies
+        run: cd server && npm ci --include=dev
+      - name: Build client
+        run: npm run build
+      - name: Server typecheck (tsc --noEmit)
+        run: cd server && npx tsc --noEmit
 
-  - name: Typecheck
-    # Runs `tsc --noEmit` on `server/` (strict mode). The client + mobile
-    # are not TypeScript at the repo level so this is server-only.
-    run: npm run typecheck
+  # ── GHA `test` job (matrix): server 1/3, 2/3, 3/3, client ───────────
+  # GHA expands this matrix into four independent job instances; v2
+  # `matrix.include` does the same — four concurrent runners. v2 steps
+  # have no `if:`, so the per-suite branch lives in the run script,
+  # keyed off the injected FINALIZE_MATRIX_* env vars.
+  test:
+    runs-on: ubuntu-24.04
+    fail-fast: false
+    matrix:
+      include:
+        - { suite: server, shard: "1", shards: "3", label: "server 1/3" }
+        - { suite: server, shard: "2", shards: "3", label: "server 2/3" }
+        - { suite: server, shard: "3", shards: "3", label: "server 3/3" }
+        - { suite: client, label: "client" }
+    steps:
+      - name: Tests (${FINALIZE_MATRIX_LABEL})
+        run: |
+          npm ci --ignore-scripts --include=dev
+          if [ "$FINALIZE_MATRIX_SUITE" = "server" ]; then
+            npm rebuild better-sqlite3
+            (cd server && npm ci --include=dev)
+            (cd server && npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS")
+          else
+            (cd client && npm ci --include=dev)
+            (cd client && npm test)
+          fi
 
-  - name: Lint
-    # `scripts/run-eslint.mjs .` walks the whole repo with the flat config
-    # at `eslint.config.js`. Style is enforced by Prettier separately at
-    # the pre-commit hook; we deliberately do NOT add `format:check` to
-    # this pipeline because the hook already gates every commit.
-    run: npm run lint
+  # ── GHA `lint` gate (main-checks.yml) ───────────────────────────────
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts --include=dev
+      - name: Lint
+        run: npm run lint
 
-  - name: Test
-    # Runs client + server + electron + mobile vitest suites.
-    # `server/test/setup.ts` patches child_process so the suite cannot
-    # accidentally spawn real Claude / Cursor / Gemini / Codex CLIs
-    # (CLAUDE.md → Tests MUST NOT spawn the real CLI binaries).
-    run: npm test
-
-  - name: OpenAPI checks
-    # Coverage ratchet (`scripts/check-openapi-coverage.ts`) plus the
-    # freshness diff (`scripts/check-openapi-freshness.ts`). New routes
-    # without a Zod `registry.registerPath(...)` fail the coverage
-    # ratchet; a stale `docs/api/openapi.yaml` fails freshness. Run
-    # `npm run generate:openapi` locally if freshness fails.
-    run: npm run check:openapi
-
-  - name: Build
-    # Vite production build of the React client into `client/dist/`. The
-    # server itself has no build step (TypeScript runs through `tsx`),
-    # and this build is required for Electron packaging — keeping it in
-    # the pipeline catches any client compile regressions early.
-    run: npm run build
+  # ── GHA OpenAPI freshness/coverage gate (main-checks.yml) ───────────
+  # check:openapi imports the server route modules, so this job needs
+  # server deps in addition to root.
+  openapi:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts --include=dev
+      - name: Install server dependencies
+        run: cd server && npm ci --include=dev
+      - name: OpenAPI coverage + freshness
+        run: npm run check:openapi

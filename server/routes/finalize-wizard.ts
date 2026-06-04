@@ -12,8 +12,9 @@
  *     `{ sessionId, agentId, draft, session }`.
  *
  *   POST /api/projects/:projectId/finalize/setup-apply
- *     Admin+. Validates the proposed `ci_yaml_content` against the v1
- *     schema (server/finalize/ci-config.ts), writes it to
+ *     Admin+. Validates the proposed `ci_yaml_content` against the
+ *     schema (server/finalize/ci-config.ts auto-selects v1 or v2 from
+ *     the `version:` field), writes it to
  *     `<worktree>/.agent-hub/ci.yaml`, and commits it to the worktree's
  *     branch. Returns `{ ok, file, commit_sha, branch }`.
  *
@@ -134,7 +135,11 @@ export function buildKickoffPrompt(
     '1. **Summarise the repo** — read `README.md` if useful, then state primary stack + package manager + what CI already runs (from `draft.githubWorkflows`).',
     '2. **Existing config** — when `draft.existingCi === true`, show `draft.existingCiContent` and ask whether to overwrite, edit in place, or abort. Do not silently overwrite.',
     '3. **Monorepo / sub-projects** — when `draft.isMonorepo`, list every entry in `draft.subprojects[]` and ask whether to run all or pick one.',
-    '4. **Step proposal** — show `draft.proposedCiYaml` verbatim in a fenced ```yaml block. Ask: use as-is, edit steps, or add a custom step. Respect the v1 schema constraints: `version: 1`, `on:` of `finalize`/`manual`, `name`+`run` per step only, `timeout_minutes` in `[1, 60]`.',
+    '4. **Pipeline proposal** — first pick the schema version, then show the YAML verbatim in a fenced ```yaml block and ask: use as-is, edit, or add a custom job/step.',
+    '   - **Prefer v2 (`version: 2`, concurrent `jobs:`) whenever the repo already runs more than one CI lane** — i.e. `draft.githubWorkflows` defines multiple jobs or a `matrix`, or the user asks for "GHA parity", "concurrency", or "run everything at once". v2 jobs run as **independent concurrent runners on the DinD fleet** (`runs-on: ubuntu-24.04`), exactly like GitHub fans a workflow out. Map **one v2 `job` per GitHub job**, and mirror a GitHub `matrix` with `matrix.include` (each row becomes its own concurrent instance). **Do NOT group, serialize, or drop jobs to "save" runners — full fan-out is the goal.** Use `needs:` only to reproduce a real GitHub `needs:` edge; otherwise leave jobs independent so they all start at once.',
+    '   - **v1 (`version: 1`, sequential `steps:`)** is the simple fallback — use it only for a trivial single-lane repo or when the user explicitly wants the simplest thing. v1 runs sequentially **on the Hub box**, not the fleet.',
+    "   - v2 reminders: each job runs on its own runner with a fresh worktree and **no `node_modules` sharing between jobs**, so every job installs its own deps (mirror each GitHub job's install scope). v2 steps have **no `if:`** — branch inside the `run` script off the injected `FINALIZE_MATRIX_*` env vars (a `matrix.include` key `foo` becomes `$FINALIZE_MATRIX_FOO`). Reference project secrets via `${VAR}` in a job/step `env:` block.",
+    '   - Shared constraints: `on:` must be `finalize`/`manual`; `timeout_minutes` in `[1, 240]`. Full schema for both versions: `references/ci-yaml-schema.md`.',
     '5. **Env vars / secrets** — call out `draft.envVars` entries the steps will read. v1 ci.yaml has no `env:` field. For each missing value, `agenthub:ask` whether to collect it now (bundle into `setup-apply` as `secrets`) or skip. Persist via `setup-apply` `{ "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` — same as preview wizard. Users can also edit secrets in Settings → Finalize → Project secrets.',
     '6. **Confirm target branch** — before posting setup-apply, restate the resolved commit target ABOVE to the user in plain prose ("This will land on branch `X` in session `Y`") and use a fenced `agenthub:ask` with at least two options: **Apply** / **Pick a different session**. If the user picks the second, ask them for the explicit `session_id` (or pause the wizard so they can start the right session and re-run). Do not call setup-apply without that confirmation.',
     '7. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<id confirmed in step 6>", "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` (secrets optional). Server validates ci.yaml against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry. The response includes `branch`, `session_id`, and `secrets_imported` — echo both back to the user as a second sanity check, then post wizard-complete.',
@@ -142,7 +147,7 @@ export function buildKickoffPrompt(
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type`.',
     '',
-    '**Never** propose `shell:`, `env:`, `uses:`, `with:`, or `matrix:` on a step — the v1 parser rejects them.',
+    '**Never** propose `shell:`, `uses:`, or `with:` at any version — the parser rejects them. At **v1**, `env:` and `matrix:` are also rejected (sequential steps only). At **v2** they are first-class: `env:` (top/job/step) and `matrix.include` (job-level) are how you get GHA-parity concurrency.',
     '',
     '## CI replacement mode (user scope wins)',
     '',

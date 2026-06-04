@@ -5,9 +5,11 @@ description: >-
   setup. Triggered by Settings → Finalize or POST .../finalize/setup-wizard.
   Reads README + package manifests (package.json, pyproject.toml,
   Cargo.toml, go.mod), detects existing CI signal (GitHub workflows,
-  Makefile, npm scripts), proposes a v1 ci.yaml that mirrors what the repo
-  already runs, collects env vars, persists via setup-apply (commits the
-  file to the worktree).
+  Makefile, npm scripts), proposes a ci.yaml that mirrors what the repo
+  already runs — a v2 concurrent-jobs pipeline (GHA parity, one job per
+  GitHub job on the DinD fleet) when the repo has more than one CI lane,
+  or a simple v1 sequential pipeline otherwise — collects env vars,
+  persists via setup-apply (commits the file to the worktree).
 version: 1.0.0
 keep-coding-instructions: true
 ---
@@ -49,7 +51,7 @@ Kickoff includes full `draft` JSON. Fields:
 | `npmScripts` | Top-level `package.json` scripts that look like test / lint / typecheck / build |
 | `makefileTargets` | Make targets that look like test / lint / typecheck / build |
 | `readme` | `setupExcerpt`, `readmePath` |
-| `proposedCiYaml` | Server-pre-built v1 ci.yaml — show verbatim; mirrors CI gate workflows when present |
+| `proposedCiYaml` | Server-pre-built ci.yaml (may be v1) — a starting point; mirrors CI gate workflows. Transform to v2 fan-out when the repo has >1 CI lane (Step 4). |
 | `envVars` | Keys + `sources` + `required` (scanned the same way preview-setup does) |
 
 **Do not** re-scan the repo unless the user changed files mid-session.
@@ -107,10 +109,70 @@ to stop resisting complex steps:
    subset, or push the user toward "just lint" unless they explicitly
    ask for a lighter pipeline. Their explicit scope wins.
 
-## Step 4 — Step proposal
+## Step 4 — Pipeline proposal (pick the version first)
 
-The server pre-builds `draft.proposedCiYaml` from CI gate workflows and
-repo signals. Typical shape when mirroring GitHub CI:
+There are two schema versions. **Choose before you propose:**
+
+| | **v2 — concurrent jobs (prefer this)** | **v1 — sequential steps** |
+|---|---|---|
+| Shape | `jobs:` map, each `runs-on: ubuntu-24.04` | flat `steps:` list |
+| Runs on | the **DinD runner fleet**, one privileged container per job instance, **concurrently** | the **Hub box**, one step at a time |
+| Use when | the repo already runs >1 CI lane (multiple GitHub jobs / a `matrix`), or the user asks for "GHA parity", concurrency, or "run everything at once" | a trivial single-lane repo, or the user explicitly wants the simplest thing |
+
+**Default to v2 whenever `draft.githubWorkflows` shows more than one job
+or a matrix.** The whole point is parity: map **one v2 `job` per GitHub
+job**, mirror a GitHub `matrix` with `matrix.include` (each row becomes
+its own concurrent runner), and **do NOT group, serialize, or drop jobs
+to "save" runners** — full fan-out is the goal. Use `needs:` only to
+reproduce a real GitHub `needs:` edge; otherwise leave jobs independent
+so they all start at once.
+
+### v2 skeleton (GHA fan-out)
+
+```yaml
+version: 2
+on:
+  - finalize
+  - manual
+timeout_minutes: 45
+
+jobs:
+  build:                          # one job per GitHub job
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install
+        run: npm ci --include=dev
+      - name: Build + typecheck
+        run: npm run build && cd server && npx tsc --noEmit
+
+  test:                           # GitHub matrix → matrix.include
+    runs-on: ubuntu-24.04
+    fail-fast: false              # let every shard finish (GHA fail-fast: false)
+    matrix:
+      include:                    # each row = its own concurrent runner
+        - { shard: "1", shards: "3" }
+        - { shard: "2", shards: "3" }
+        - { shard: "3", shards: "3" }
+    steps:
+      # v2 steps have NO `if:` — branch in the script off FINALIZE_MATRIX_*.
+      # A matrix key `shard` is injected as $FINALIZE_MATRIX_SHARD.
+      - name: Tests (shard ${FINALIZE_MATRIX_SHARD})
+        run: |
+          npm ci --include=dev
+          npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS"
+
+  lint:                           # independent → starts at the same time
+    runs-on: ubuntu-24.04
+    env:
+      SOME_TOKEN: ${SOME_TOKEN}   # project secret, substituted at run time
+    steps:
+      - name: Install
+        run: npm ci --include=dev
+      - name: Lint
+        run: npm run lint
+```
+
+### v1 skeleton (sequential fallback)
 
 ```yaml
 version: 1
@@ -119,39 +181,35 @@ on:
   - manual
 timeout_minutes: 60
 steps:
+  - name: install
+    run: npm ci --include=dev
   - name: lint
-    run: ./lint
-  - name: backend-tests
-    run: ./run_api_tests
-  - name: frontend-build
-    run: cd frontend && npm ci && npm run build:production
-  - name: frontend-component-tests
-    run: cd frontend && npx cypress run --component
-  - name: permissions-sync-check
-    run: ./verifypermissionsync
-  - name: e2e
-    run: ./run_e2e_tests
+    run: npm run lint
+  - name: test
+    run: npm test
 ```
+
+The server pre-builds `draft.proposedCiYaml` from CI gate workflows. It
+may arrive as v1; when the repo warrants v2 (per the table above),
+**transform it into the v2 fan-out yourself** using `draft.githubWorkflows`
++ `draft.npmScripts` — one job per GitHub job.
 
 Show the proposed YAML verbatim in a fenced ```yaml block. Then
 `agenthub:ask`:
 
 - **Use as-is** — proceed to apply
-- **Edit steps** — open a multi-question picker for which steps to
-  include / drop (install, typecheck, lint, test, build, custom)
-- **Add a custom step** — collect `name` + `run` in plain prose
+- **Edit** — multi-question picker for which jobs/steps to include / drop
+- **Add a custom job/step** — collect name + `run` (+ `runs-on` for v2) in prose
 
-Hard constraints from the v1 schema you MUST respect:
+Constraints both versions share:
 
-- `version: 1` (no other value works)
-- `on:` must be a non-empty list of `finalize` / `manual` (no
-  `pull_request` at v1)
-- Each step needs `name` + `run` only — **no** `shell:`, `uses:`,
-  `with:`, `env:`, `matrix:` (parser rejects unknown keys)
-- `timeout_minutes` between 1 and 60 (config may lower, never raise)
-- No `autofix:` field — fixes flow back into the originating session
+- `on:` is a non-empty list of `finalize` / `manual` (no `pull_request`)
+- `timeout_minutes` between 1 and 240 (config may lower, never raise)
+- **No** `shell:`, `uses:`, `with:`, or `autofix:` at any version
+- v2 jobs need `runs-on: ubuntu-24.04` (or `ubuntu-latest`); matrix values
+  must be **quoted strings** (`shard: "1"`, not `1`)
 
-The full cheat sheet is at
+The full cheat sheet (both versions) is at
 [references/ci-yaml-schema.md](references/ci-yaml-schema.md). Stack
 recipes (npm/pnpm/yarn/pip/poetry/cargo/go) are at
 [references/stack-recipes.md](references/stack-recipes.md).
@@ -168,8 +226,13 @@ For each entry in `draft.envVars` that CI steps will read:
    - **Skip for now** — user will add them in Settings → Finalize.
    - **Import .env blob** — collect a paste and bundle as `secrets.env`.
 
-v1 ci.yaml has **no** `env:` field. Secrets are stored per-project and
-merged into the shell env when Finalize steps run.
+Secrets are stored per-project and merged into the shell env when
+Finalize steps run, regardless of version. **v1** has no `env:` field —
+steps read the merged env directly. **v2** can additionally reference a
+project secret explicitly with `${VAR}` in a top-level / job / step
+`env:` block (e.g. `AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}`); an
+unresolved `${VAR}` is left out of the step environment rather than
+passed through literally.
 
 Persist secrets in the same `setup-apply` call as the ci.yaml commit:
 
@@ -233,8 +296,9 @@ Response shape:
 
 Server rejects with **400** + `{ "error": "ci_config_invalid", "code":
 "<CiConfigErrorCode>", "message": "...", "path": "..." }` if the YAML
-fails v1 validation. Fix the issue and re-submit — do not work around
-the validation.
+fails validation (the parser auto-selects the v1 or v2 schema from the
+`version:` field). Fix the issue and re-submit — do not work around the
+validation.
 
 ## Step 8 — Close the session
 
@@ -260,8 +324,14 @@ response so the user can spot any drift, then summarise:
   render as raw code in chat).
 - Multiple ask rounds are fine — monorepos need extra picks; custom
   steps need free-text rounds.
-- **Never** propose a step that requires a non-spec field (`shell:`,
-  `env:`, etc.). The parser rejects it and the wizard ends in failure.
+- **Never** propose `shell:`, `uses:`, `with:`, or `autofix:` at any
+  version — the parser rejects them and the wizard ends in failure. At
+  **v1** `env:` and `matrix:` are also rejected (sequential steps only);
+  at **v2** they are first-class (`env:` blocks + job-level
+  `matrix.include` are how you get GHA-parity concurrency).
+- **Do not down-scope for concurrency's sake.** When a repo has multiple
+  GitHub jobs, fan them out 1-1 into v2 jobs — never collapse them into
+  fewer jobs to reduce runner count. The fleet scales to the work.
 - Prefer pointing users to **Settings → Finalize** for re-running the
   wizard; the apply endpoint overwrites the existing file in a single
   commit.

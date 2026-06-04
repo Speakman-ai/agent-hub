@@ -1,8 +1,18 @@
-# `.agent-hub/ci.yaml` v1 — Schema Cheat Sheet
+# `.agent-hub/ci.yaml` — Schema Cheat Sheet (v1 + v2)
 
-The executable parser is `server/finalize/ci-config.ts`. This page is
-the human-readable form of the same contract; if the two disagree, the
-parser wins.
+The executable parser is `server/finalize/ci-config.ts` (which dispatches
+to `ci-config-v2.ts` when `version: 2`). This page is the human-readable
+form of the same contract; if the two disagree, the parser wins.
+
+**Which version?** `version: 1` is a flat `steps:` list that runs
+**sequentially on the Hub box**. `version: 2` is a `jobs:` map where each
+job runs as its **own concurrent runner on the DinD fleet** — this is the
+GitHub-Actions-parity mode. Prefer v2 whenever the repo runs more than
+one CI lane; see the [v2 section](#v2--concurrent-jobs-gha-parity) below.
+
+---
+
+## v1 — sequential steps
 
 ## Skeleton
 
@@ -122,4 +132,148 @@ steps:
     run: npm run lint
   - name: test
     run: npm test
+```
+
+---
+
+## v2 — concurrent jobs (GHA parity)
+
+The executable parser is `server/finalize/ci-config-v2.ts`. v2 adds a
+`jobs:` map; every job runs as an **independent concurrent runner** on
+the DinD fleet (`runs-on: ubuntu-24.04`), one privileged container per
+job instance — the same way GitHub fans a workflow out. Map **one v2 job
+per GitHub job**; mirror a GitHub `matrix` with `matrix.include`. Only
+`version === 2` reaches the runner fleet — a v1 pipeline runs
+sequentially on the Hub box.
+
+### Skeleton
+
+```yaml
+version: 2                 # required, must be the literal 2
+on:                        # same as v1: finalize / manual
+  - finalize
+  - manual
+timeout_minutes: 45        # optional; range [1, 240]
+env:                       # optional top-level env (lowest precedence)
+  GIT_BRANCH: ${FINALIZE_BRANCH}
+jobs:                      # required, non-empty MAP keyed by job id
+  build:
+    runs-on: ubuntu-24.04  # required
+    steps:                 # required, non-empty
+      - name: install
+        run: npm ci --include=dev
+      - name: build
+        run: npm run build
+  test:
+    runs-on: ubuntu-24.04
+    fail-fast: false       # optional, default true
+    needs: []              # optional — job ids this job waits on (DAG)
+    env:                   # optional job-level env (overrides top-level)
+      AWS_REGION: ${AWS_REGION}
+    matrix:                # optional — GHA-style fan-out
+      include:             # each row → one concurrent instance
+        - { shard: "1", shards: "3" }
+        - { shard: "2", shards: "3" }
+        - { shard: "3", shards: "3" }
+    steps:
+      - name: test (shard ${FINALIZE_MATRIX_SHARD})
+        env:               # optional step-level env (highest precedence)
+          NODE_ENV: test
+        run: npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS"
+```
+
+### Top-level keys (allowlist)
+
+| Key | Required | Notes |
+|---|---|---|
+| `version` | Yes | Literal integer `2`. |
+| `on` | Yes | List of `finalize` / `manual`. |
+| `timeout_minutes` | No | Integer in `[1, 240]`. |
+| `env` | No | Map of string→string. Lowest-precedence env layer. |
+| `jobs` | Yes | Non-empty **map** keyed by job id (not a list). |
+
+### Job keys (allowlist)
+
+| Key | Required | Notes |
+|---|---|---|
+| `runs-on` | Yes | `ubuntu-24.04` or `ubuntu-latest` (→ the fleet image), `host` (Hub box, legacy), or a fully-qualified image ref. |
+| `steps` | Yes | Non-empty list; same `name` + `run` + optional `env` shape as v1. |
+| `fail-fast` | No | Default `true`. `false` = let sibling matrix instances finish if one fails. |
+| `needs` | No | String or list of job ids this job depends on. Cycles are rejected. A failed/skipped dependency skips the dependent. |
+| `warmup` | No | `true` makes the job an implicit prerequisite of every non-warmup job (e.g. seed a shared image cache once). |
+| `matrix` | No | `{ include: [ {k: "v"}, ... ] }`. Each row spawns a concurrent instance; **all values must be quoted strings**. |
+| `env` | No | Map of string→string, overrides top-level. |
+
+### Step keys (allowlist)
+
+Same as v1 (`run` required, `name` optional) **plus** `env` (map of
+string→string, highest-precedence layer). No `shell:` / `uses:` /
+`with:` / `if:` — branch inside `run` instead.
+
+### Env & `${VAR}` substitution
+
+`${VAR}` / `$VAR` in `run`, `name`, and `env` values resolve against, in
+increasing precedence: builtins (`FINALIZE_BRANCH`, `FINALIZE_HEAD_SHA`,
+`GIT_BRANCH`, `GIT_COMMIT_SHA`) → top-level `env` → job `env` → matrix
+builtins → step `env`. Each `matrix.include` key `foo` is injected as
+`FINALIZE_MATRIX_FOO` (uppercased; non-alphanumerics → `_`), plus
+`FINALIZE_MATRIX_KEY` with the row label. An unresolved `${VAR}` is left
+out of the process environment, not passed through literally.
+
+### Execution semantics
+
+- Independent jobs (no `needs`) start **concurrently** — no per-level
+  barrier. A dependent job launches the moment all its `needs` finish
+  **successfully**.
+- The remote fleet sizes itself to the live job count (the Hub drives
+  ECS desired-count); there is no fixed runner cap to design around.
+- **No `node_modules` / artifact sharing between jobs** — each job runs
+  on its own runner with a fresh worktree, so every job installs its own
+  deps. (A `/finalize-cache` Docker volume exists for `docker save/load`
+  image reuse via a `warmup` job — not for npm.)
+
+### v2-specific error codes
+
+In addition to the shared codes above, the v2 parser emits:
+`missing_jobs`, `invalid_jobs_shape`, `empty_jobs`, `invalid_job_shape`,
+`unknown_job_key`, `missing_runs_on`, `invalid_runs_on`,
+`invalid_matrix_shape`, `empty_matrix`, `invalid_matrix_entry`,
+`invalid_env_shape`, `invalid_env_entry`, `invalid_fail_fast`,
+`invalid_warmup`, `invalid_needs`, `unknown_needs_job`, `cyclic_needs`,
+`unknown_top_level_key_v2`, and the `*_v2` step variants
+(`missing_steps_v2`, `empty_steps_v2`, `invalid_step_shape_v2`,
+`unknown_step_key_v2`, `missing_step_run_v2`, `invalid_step_run_v2`).
+
+### Concrete fan-out fixture
+
+```yaml
+version: 2
+on:
+  - finalize
+  - manual
+timeout_minutes: 45
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build + typecheck
+        run: npm ci --include=dev && npm run build && cd server && npx tsc --noEmit
+  test:
+    runs-on: ubuntu-24.04
+    fail-fast: false
+    matrix:
+      include:
+        - { shard: "1", shards: "3" }
+        - { shard: "2", shards: "3" }
+        - { shard: "3", shards: "3" }
+    steps:
+      - name: Tests (shard ${FINALIZE_MATRIX_SHARD})
+        run: |
+          npm ci --include=dev
+          npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS"
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Lint
+        run: npm ci --include=dev && npm run lint
 ```

@@ -128,7 +128,7 @@ describe('finalize-wizard kickoff prompt', () => {
     expect(promptWithTarget).toMatch(/1\. \*\*Summarise the repo\*\*/);
     expect(promptWithTarget).toMatch(/2\. \*\*Existing config\*\*/);
     expect(promptWithTarget).toMatch(/3\. \*\*Monorepo \/ sub-projects\*\*/);
-    expect(promptWithTarget).toMatch(/4\. \*\*Step proposal\*\*/);
+    expect(promptWithTarget).toMatch(/4\. \*\*Pipeline proposal\*\*/);
     expect(promptWithTarget).toMatch(/5\. \*\*Env vars \/ secrets\*\*/);
     // Round-1 fix: confirm-before-apply guard.
     expect(promptWithTarget).toMatch(/6\. \*\*Confirm target branch\*\*/);
@@ -136,15 +136,26 @@ describe('finalize-wizard kickoff prompt', () => {
     expect(promptWithTarget).toMatch(/8\. \*\*`POST .*wizard-complete`\*\*/);
   });
 
-  it('hard-codes the v1 schema constraints into the proposal step', () => {
-    // The reviewer's round-2 worry was that the wizard might propose
-    // schema-invalid YAML. The prompt itself enumerates the v1
-    // constraints so the agent can't quietly emit a banned field.
-    expect(promptWithTarget).toMatch(/`version: 1`/);
-    expect(promptWithTarget).toMatch(/`on:` of `finalize`\/`manual`/);
-    expect(promptWithTarget).toMatch(/`name`\+`run` per step only/);
-    expect(promptWithTarget).toMatch(/`timeout_minutes` in `\[1, 60\]`/);
-    expect(promptWithTarget).toMatch(/Never.*propose.*shell:.*env:.*uses:.*with:.*matrix:/);
+  it('teaches v2 per-job fan-out as the GHA-parity default in the proposal step', () => {
+    // The wizard must prefer v2 concurrent jobs (one per GitHub job on
+    // the DinD fleet) whenever the repo runs more than one CI lane, and
+    // must never group/serialize/drop jobs to save runners.
+    expect(promptWithTarget).toMatch(/Prefer v2/i);
+    expect(promptWithTarget).toMatch(/concurrent `jobs:`/);
+    expect(promptWithTarget).toMatch(/one v2 `job` per GitHub job/i);
+    expect(promptWithTarget).toMatch(/matrix\.include/);
+    expect(promptWithTarget).toMatch(/Do NOT group, serialize, or drop jobs/i);
+    expect(promptWithTarget).toMatch(/FINALIZE_MATRIX_/);
+  });
+
+  it('keeps schema guardrails (shared constraints + banned fields) in the proposal step', () => {
+    // The agent still can't emit a banned field; the prompt enumerates
+    // the shared constraints and the per-version env/matrix rules.
+    expect(promptWithTarget).toMatch(/`on:` must be `finalize`\/`manual`/);
+    expect(promptWithTarget).toMatch(/`timeout_minutes` in `\[1, 240\]`/);
+    // shell/uses/with banned at every version; env/matrix are v2-only.
+    expect(promptWithTarget).toMatch(/Never\*\* propose `shell:`, `uses:`, or `with:`/);
+    expect(promptWithTarget).toMatch(/At \*\*v1\*\*, `env:` and `matrix:` are also rejected/);
   });
 
   it('documents CI replacement mode so the wizard does not refuse complex steps', () => {
