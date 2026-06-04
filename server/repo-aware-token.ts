@@ -7,8 +7,9 @@
  * System-spawned sessions (PR reviewer, autonomous probe, webhook fan-out,
  * cron, heartbeat) intentionally leave `sessions.owner_user_id` NULL so
  * the row is visible across the org. Token resolution for those flows
- * has historically fallen back to `getOrgOwnerUserId()` —
- * `listUsers()[0]`, the user with the earliest `created_at`.
+ * historically fell back to a "first user wins" org-owner shortcut —
+ * `listUsers()[0]`, the user with the earliest `created_at` (since
+ * removed).
  *
  * That "first user wins" shortcut produces the WRONG token whenever the
  * first user's GitHub OAuth/PAT was issued with a narrower scope (or
@@ -27,10 +28,9 @@
  * existing OAuth/PAT chain, and probe
  * `GET https://api.github.com/repos/<owner>/<repo>`. The first user
  * whose probe returns 2xx is returned. If no Owner can see the repo,
- * we fall back to `getOrgOwnerUserId()` so behavior is preserved on
- * installs where the probe machinery can't apply (e.g. tests that
- * never seed memberships) and so a downstream "Authentication failed"
- * still surfaces with the legacy attribution.
+ * this returns `null` — there is **no org-owner fallback**. The caller
+ * must hard-fail / surface the missing-token error rather than borrow an
+ * arbitrary user's GitHub identity.
  *
  * Probes are cached per-repo for 5 minutes to avoid hammering the
  * GitHub REST API. The cache stores `null` (no Owner with access)
@@ -43,7 +43,6 @@ import { getActiveOrgId } from './orgs.js';
 import { listMembersForOrg } from './memberships-store.js';
 import { resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
-import { getOrgOwnerUserId } from './session-ownership.js';
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const PROBE_TIMEOUT_MS = 5000;
@@ -69,11 +68,9 @@ export interface ResolveOpts {
 
 /**
  * Return the user id of an Owner-role user whose stored GitHub token
- * can read `<owner>/<repo>`. Falls back to `getOrgOwnerUserId()` if
- * no Owner probes 2xx (preserves legacy behavior).
- *
- * Returns `null` only when both the probe loop and the legacy fallback
- * yield nothing — i.e. there are no users in the install yet.
+ * can read `<owner>/<repo>`. Returns `null` when no Owner probes 2xx —
+ * there is no org-owner fallback; the caller must hard-fail / surface
+ * the missing-token error.
  *
  * Per-repo result is cached for {@link CACHE_TTL_MS}. Callers that
  * mutate Owner GitHub connections (Settings → reconnect) should call
@@ -89,21 +86,16 @@ export async function resolveOwnerWithRepoAccess(
   // cache) on garbage input — a stray scheme prefix or empty string
   // would otherwise dump a permanent miss into the cache.
   if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
-    return getOrgOwnerUserId();
+    return null;
   }
 
   const now = (opts.now ?? Date.now)();
   if (!opts.skipCache) {
     const hit = cache.get(repo);
     if (hit && hit.expiresAt > now) {
-      // On a positive hit (some Owner probed 200), return the cached userId.
-      // On a cached "no Owner has access" miss, re-resolve the legacy org-owner
-      // fallback on every call — `getOrgOwnerUserId()` is cheap (in-memory
-      // cache lookup after first call) and re-resolving means a fresh
-      // `/api/auth/setup` or user-delete that changes the org owner is seen
-      // immediately without waiting for the 5-minute probe TTL to expire.
-      if (hit.userId) return hit.userId;
-      return getOrgOwnerUserId();
+      // Positive hit → the Owner who probed 200. Cached miss → null
+      // (no org-owner fallback).
+      return hit.userId;
     }
   }
 
@@ -111,7 +103,7 @@ export async function resolveOwnerWithRepoAccess(
   try {
     orgId = opts.orgId ?? getActiveOrgId();
   } catch {
-    return getOrgOwnerUserId();
+    return null;
   }
 
   let owners: Array<{ userId: string }> = [];
@@ -120,11 +112,11 @@ export async function resolveOwnerWithRepoAccess(
       .filter((m) => m.role === 'Owner')
       .map((m) => ({ userId: m.userId }));
   } catch {
-    return getOrgOwnerUserId();
+    return null;
   }
 
   if (owners.length === 0) {
-    return getOrgOwnerUserId();
+    return null;
   }
 
   const oauthCreds = resolveOAuthAppCredentials(config);
@@ -155,13 +147,11 @@ export async function resolveOwnerWithRepoAccess(
   }
 
   // Cache the result (positive or null) so we don't re-probe every dispatch.
-  // The legacy fallback is computed separately so the cache key reflects the
-  // probe outcome — not the fallback — and a future Settings → reconnect that
-  // calls `resetRepoAccessCache()` immediately re-probes from scratch.
+  // A future Settings → reconnect that calls `resetRepoAccessCache()`
+  // immediately re-probes from scratch.
   cache.set(repo, { userId: resolvedUserId, expiresAt: now + CACHE_TTL_MS });
 
-  if (resolvedUserId) return resolvedUserId;
-  return getOrgOwnerUserId();
+  return resolvedUserId;
 }
 
 async function probeRepoAccess(

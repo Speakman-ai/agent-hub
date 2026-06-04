@@ -1,14 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  rmSync,
-  readdirSync,
-  statSync,
-} from 'fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, statSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
@@ -82,58 +73,10 @@ describe('host-cli-home', () => {
     }
   });
 
-  it('migrates operator ~/.cursor into host HOME when destination is empty', () => {
-    const operatorCursor = path.join(operatorHome, '.cursor');
-    mkdirSync(operatorCursor, { recursive: true });
-    writeFileSync(path.join(operatorCursor, 'token.json'), '{"migrated":true}');
-
-    const hostHome = ensureHostCliHome(dataDir);
-    const migrated = path.join(hostHome, '.cursor');
-    expect(existsSync(migrated)).toBe(true);
-    expect(readdirSync(migrated)).toContain('token.json');
-  });
-
-  it('migrates operator ~/.codex into host HOME when destination is empty', () => {
-    const operatorCodex = path.join(operatorHome, '.codex');
-    mkdirSync(operatorCodex, { recursive: true });
-    writeFileSync(path.join(operatorCodex, 'auth.json'), '{"tokens":{}}');
-
-    const hostHome = ensureHostCliHome(dataDir);
-    const migrated = hostCodexHomePath(dataDir);
-    expect(migrated).toBe(path.join(hostHome, '.codex'));
-    expect(existsSync(migrated)).toBe(true);
-    expect(readdirSync(migrated)).toContain('auth.json');
-  });
-
-  it('migrates operator ~/.claude into host HOME when destination is empty', () => {
-    // Native `claude auth login` writes OAuth credentials to
-    // `~/.claude/.credentials.json`. With HOME pinned to the data volume an
-    // upgrade would silently lose that cache — migration keeps native Claude
-    // OAuth working until the operator opts into per-user creds.
-    const operatorClaude = path.join(operatorHome, '.claude');
-    mkdirSync(operatorClaude, { recursive: true });
-    writeFileSync(path.join(operatorClaude, '.credentials.json'), '{"oauth":{}}');
-
-    const hostHome = ensureHostCliHome(dataDir);
-    const migrated = path.join(hostHome, '.claude');
-    expect(existsSync(migrated)).toBe(true);
-    expect(readdirSync(migrated)).toContain('.credentials.json');
-  });
-
-  it('does not overwrite an existing ~/.claude under host HOME', () => {
-    const operatorClaude = path.join(operatorHome, '.claude');
-    mkdirSync(operatorClaude, { recursive: true });
-    writeFileSync(path.join(operatorClaude, '.credentials.json'), '{"oauth":"operator"}');
-
-    const dest = path.join(hostCliHomePath(dataDir), '.claude');
-    mkdirSync(dest, { recursive: true });
-    writeFileSync(path.join(dest, '.credentials.json'), '{"oauth":"persistent"}');
-
-    ensureHostCliHome(dataDir);
-
-    const body = readFileSync(path.join(dest, '.credentials.json'), 'utf8');
-    expect(body).toBe('{"oauth":"persistent"}');
-  });
+  // AI CLI cache migration (operator ~/.claude / ~/.codex / ~/.cursor →
+  // host HOME) has been removed: Claude/Cursor/Codex auth is strictly
+  // per-account now, so `ensureHostCliHome` only provisions the directory
+  // and no longer copies operator credential caches into it.
 });
 
 describe('resolveCodexHomeForProbe', () => {

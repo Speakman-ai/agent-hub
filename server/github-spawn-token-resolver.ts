@@ -1,237 +1,23 @@
 /**
- * github-spawn-token-resolver.ts — org-aware GitHub credential chain
- * for spawned agent processes.
+ * github-spawn-token-resolver.ts — GitHub credential resolution for
+ * spawned agent processes.
  *
- * Closes the two failure modes documented in the recurring
- * "Write access to repository not granted" incidents:
+ * The reviewer GitHub App (and its org-aware installation-token chain) has
+ * been removed. Credential resolution is now strictly per-user:
  *
- *   1. Non-reviewer sessions cloning an org-owned repo were spawned
- *      with the session-owner user's personal `gho_…` OAuth token.
- *      Whenever that user's grant on the org was revoked / they left
- *      the org / the OAuth App was de-approved org-wide, every webhook
- *      clone for the org's repos failed with 403 even though the same
- *      Agent Hub install had a perfectly good GitHub App installation
- *      on the org.
+ *   - **Reviewer / autonomous-dispatch spawns**: no token. Reviewer sessions
+ *     are isolated from GitHub by design (`applyReviewerSpawnIsolation`), and
+ *     autonomous git operations push via the org-owner token resolved in
+ *     `auto-git.ts`, not via the spawn env.
+ *   - **Non-reviewer interactive spawns**: the acting user's own OAuth/PAT
+ *     (from Settings → GitHub), validated against the target repo before it
+ *     is injected so a stale/revoked token fails fast instead of eating a
+ *     worker slot on a 15-minute `git clone` timeout.
  *
- *   2. There was no fallback chain — the previous synchronous policy
- *      function (since removed) made a one-shot choice and any 401/403
- *      from `git clone` ate a worker slot for 15 minutes (the wall
- *      timeout).
- *
- * This module wraps the existing `resolveInstallationId` /
- * `getInstallationToken` helpers from `github-app.ts` and the
- * historical role-aware policy from `spawn-github-credentials.ts`
- * (`selectGithubSpawnToken`, removed in the PR #1069 autofix) into a
- * single async resolver that:
- *
- *   - Prefers a GitHub-App installation token (`ghs_…`) scoped to the
- *     repo's org when the App is installed there.
- *   - Validates that token with a cheap `GET /repos/:owner/:repo` ping
- *     before injecting it, so a stale installation falls through to
- *     the next candidate instead of poisoning the spawn.
- *   - Falls back to the existing per-user OAuth / reviewer-bot policy
- *     unchanged for personal repos and security-sensitive
- *     autonomous-dispatch paths.
- *   - Emits TOOL_ERROR-formatted log lines on every credential failure
- *     so the recurring auth-revoked pattern is observable from
- *     `server logs` and minable by the future Session Health surface.
+ * Errors are logged as TOOL_ERROR v2 lines tagged `github-auth`; they never
+ * throw.
  */
-import { getAppInstallations, getInstallationToken, resolveInstallationId } from './github-app.js';
-import type { AppConfig, GitHubAppConfig } from './types.js';
-
-interface GithubInstallationApiRow {
-  id?: number;
-  account?: { login?: string; type?: string };
-}
-
-interface InstallationLookupCacheEntry {
-  installationId: string | number | null;
-  expiry: number;
-}
-
-const INSTALLATION_LOOKUP_TTL_MS = 5 * 60 * 1000;
-const installationLookupCache = new Map<string, InstallationLookupCacheEntry>();
-
-/**
- * Resolve the installation id for a given org/user login. Reads from
- * `config.githubApp.installations[]` first (populated by the existing
- * `/api/github-app/refresh-installation` and `/api/github-app/setup-complete`
- * routes); cached for 5 minutes so a repeat lookup in the same spawn
- * burst doesn't churn.
- *
- * Returns `null` when no App is configured, no installation matches,
- * or `owner` is empty.
- */
-export function lookupInstallationIdForOwner(
-  app: GitHubAppConfig | null,
-  owner: string | null | undefined,
-): string | number | null {
-  if (!app || !owner) return null;
-  const key = `${app.appId || 'noapp'}::${owner.toLowerCase()}`;
-  const now = Date.now();
-  const cached = installationLookupCache.get(key);
-  if (cached && cached.expiry > now) {
-    return cached.installationId;
-  }
-  const id = resolveInstallationId(app, owner);
-  // Don't fall back to `app.installationId` when an explicit owner was
-  // supplied but no per-org match exists — using a different org's
-  // installation token to clone this one's repo is exactly the bug
-  // this module exists to close.
-  const matchedExplicitly =
-    Array.isArray(app.installations) &&
-    app.installations.some((inst) => inst.account?.toLowerCase() === owner.toLowerCase());
-  const installationId = matchedExplicitly ? id : null;
-  installationLookupCache.set(key, { installationId, expiry: now + INSTALLATION_LOOKUP_TTL_MS });
-  return installationId;
-}
-
-interface InstallationListRefreshEntry {
-  expiry: number;
-}
-
-const INSTALLATION_LIST_REFRESH_TTL_MS = 5 * 60 * 1000;
-/**
- * Failure back-off — much shorter than the success TTL so a transient
- * outage (network blip, 5xx, GitHub rate-limit response) doesn't
- * silently starve an org for the full 5-minute success window. 30s +
- * up to 30s jitter keeps a webhook burst from synchronising retries
- * against the same upstream.
- */
-const INSTALLATION_LIST_REFRESH_FAILURE_TTL_MS = 30 * 1000;
-const INSTALLATION_LIST_REFRESH_FAILURE_JITTER_MS = 30 * 1000;
-const installationListRefreshCache = new Map<string, InstallationListRefreshEntry>();
-
-/**
- * Lazy self-healing for `config.githubApp.installations[]`. When the
- * resolver hits a cache miss for an org we've never seen — because the
- * user installed the App after the last `/api/github-app/setup-complete`
- * call, or because the App was uninstalled and reinstalled — we make a
- * single live `GET /app/installations` call to refresh the list. This
- * removes the operational burden of remembering to click "Refresh
- * installation" in Settings every time the App is re-installed and is
- * what makes the org-aware credential chain truly self-healing.
- *
- * Rate-limited per (appId, owner) to one live refresh every 5 minutes
- * so a hot loop of webhooks for an org that genuinely has no
- * installation can't hammer GitHub's app-level rate limit.
- *
- * Mutates `app.installations` in place when a refresh succeeds so
- * subsequent calls (and the rest of the server) see the updated list.
- * Config-file persistence stays the responsibility of the explicit
- * setup-complete / refresh-installation routes — this in-memory update
- * is purely so spawns in the same process recover without an operator
- * action.
- */
-async function refreshInstallationsForOwner(
-  app: GitHubAppConfig,
-  owner: string,
-  installationLister: (
-    appId: string | number,
-    privateKey: string,
-  ) => Promise<Array<Record<string, unknown>>> = getAppInstallations,
-): Promise<void> {
-  if (!app.appId || !app.privateKey) return;
-  const key = `${app.appId}::${owner.toLowerCase()}`;
-  const now = Date.now();
-  const lastRefresh = installationListRefreshCache.get(key);
-  if (lastRefresh && lastRefresh.expiry > now) return;
-
-  try {
-    const installations = (await installationLister(
-      app.appId,
-      app.privateKey,
-    )) as unknown as GithubInstallationApiRow[];
-    // Only prime the success TTL after the call actually succeeds.
-    // Priming pre-call meant a transient failure starved the owner for
-    // the full 5-minute success window even though no refresh happened.
-    installationListRefreshCache.set(key, {
-      expiry: Date.now() + INSTALLATION_LIST_REFRESH_TTL_MS,
-    });
-    if (!Array.isArray(installations)) return;
-    app.installations = installations
-      .filter(
-        (inst): inst is GithubInstallationApiRow & { id: number } => typeof inst.id === 'number',
-      )
-      .map((inst) => ({
-        id: inst.id,
-        account: inst.account?.login ?? '',
-        accountType: inst.account?.type ?? '',
-      }));
-    // Invalidate ONLY the lookup-cache entries scoped to this App so a
-    // refresh for org A doesn't force every other org on the same App
-    // to re-run `resolveInstallationId`. Walk the keys (small map, one
-    // entry per (appId, owner) seen this process) and drop the
-    // matching prefix.
-    const prefix = `${app.appId}::`;
-    for (const cachedKey of installationLookupCache.keys()) {
-      if (cachedKey.startsWith(prefix)) installationLookupCache.delete(cachedKey);
-    }
-  } catch (err) {
-    // Failure back-off: short TTL + jitter so we retry quickly when
-    // the upstream recovers, but a hot loop of webhooks for the same
-    // org still can't hammer GitHub's rate limit.
-    const jitter = Math.floor(Math.random() * INSTALLATION_LIST_REFRESH_FAILURE_JITTER_MS);
-    installationListRefreshCache.set(key, {
-      expiry: Date.now() + INSTALLATION_LIST_REFRESH_FAILURE_TTL_MS + jitter,
-    });
-    emitTokenError({
-      summary: (err as Error).message || 'installation list refresh failed',
-      owner,
-      tag: 'app-installation-token',
-    });
-  }
-}
-
-/**
- * Mint a fresh installation token for the given repo owner, or return
- * `null` if the App isn't configured, isn't installed on that org, or
- * the token mint call fails.
- *
- * When the initial cache lookup misses, we trigger a lazy refresh of
- * `config.githubApp.installations[]` via `getAppInstallations()` so a
- * freshly-installed App is picked up without an operator round-trip
- * through Settings.
- *
- * `tokenMinter` and `installationLister` are injectable for tests.
- * Production callers pass nothing and get the real helpers from
- * `github-app.ts` (which themselves cache with a 5-minute window).
- */
-export async function mintInstallationTokenForOwner(
-  config: Pick<AppConfig, 'githubApp'>,
-  owner: string | null | undefined,
-  tokenMinter: (
-    appId: string | number,
-    privateKey: string,
-    installationId: string | number,
-  ) => Promise<string> = getInstallationToken,
-  installationLister: (
-    appId: string | number,
-    privateKey: string,
-  ) => Promise<Array<Record<string, unknown>>> = getAppInstallations,
-): Promise<string | null> {
-  const app = config.githubApp;
-  if (!app?.appId || !app?.privateKey) return null;
-  if (!owner) return null;
-
-  let installationId = lookupInstallationIdForOwner(app, owner);
-  if (installationId == null) {
-    await refreshInstallationsForOwner(app, owner, installationLister);
-    installationId = lookupInstallationIdForOwner(app, owner);
-  }
-  if (installationId == null) return null;
-
-  try {
-    return await tokenMinter(app.appId, app.privateKey, installationId);
-  } catch (err) {
-    emitTokenError({
-      summary: (err as Error).message || 'installation token mint failed',
-      owner,
-      tag: 'app-installation-token',
-    });
-    return null;
-  }
-}
+import type { AppConfig } from './types.js';
 
 /**
  * Cheap auth check: `GET /repos/:owner/:repo` with the supplied token.
@@ -271,7 +57,8 @@ export async function validateTokenForRepo(
 
 export interface ResolveGithubSpawnTokenOpts {
   role: string | undefined;
-  config: Pick<AppConfig, 'githubApp'>;
+  /** Retained for call-site compatibility; no longer consulted. */
+  config?: Pick<AppConfig, 'personalOAuth'> | unknown;
   userGhToken: string | null | undefined;
   /** Webhook payload's `repository.full_name` owner, or `git remote`-derived owner. */
   repoOwner?: string | null;
@@ -279,16 +66,7 @@ export interface ResolveGithubSpawnTokenOpts {
   repoName?: string | null;
   /** Forwarded from `ChatMessage._fromAutonomousDispatch`. */
   autonomousOrigin?: boolean;
-  /** Test hooks. */
-  tokenMinter?: (
-    appId: string | number,
-    privateKey: string,
-    installationId: string | number,
-  ) => Promise<string>;
-  installationLister?: (
-    appId: string | number,
-    privateKey: string,
-  ) => Promise<Array<Record<string, unknown>>>;
+  /** Test hook. */
   validateFetcher?: (
     url: string,
     init?: { method?: string; headers?: Record<string, string> },
@@ -302,88 +80,25 @@ export interface ResolveGithubSpawnTokenOpts {
  *
  * Role-keyed chain:
  *
- *   **Reviewer**: App installation token → null (no botGithubToken).
+ *   **Reviewer**: null — reviewer sessions are isolated from GitHub.
  *
- *   **Autonomous-dispatch (non-reviewer)**: App installation token → null.
+ *   **Autonomous-dispatch (non-reviewer)**: null — autonomous git auth is
+ *     handled by the org-owner token in `auto-git.ts`, not the spawn env.
  *
- *   **Non-reviewer interactive**: per-user OAuth/PAT only → null.
- *     No App fallback — connect Settings → GitHub or the spawn runs
- *     without GitHub credentials.
- *
- * History: prior to PR-against-this-comment the chain preferred the App
- * installation token for EVERY role, which made step (3) dead code on
- * any org with the App installed. That broke per-user attribution for
- * every interactive non-reviewer session — confirmed in the wild by
- * `agent-hub PR #1039` landing as the App's bot identity instead of
- * the human at the keyboard. The intent was always per-user OAuth for
- * humans + App for bots/system; this rewrite restores that.
- *
- * Errors at any step are logged as TOOL_ERROR v2 lines tagged
- * `github-auth` so the recurring "lost org access" pattern stays
- * observable. They never throw.
+ *   **Non-reviewer interactive**: the acting user's own OAuth/PAT, validated
+ *     against the repo. Missing/invalid → null (connect Settings → GitHub).
  */
 export async function resolveGithubSpawnToken(
   opts: ResolveGithubSpawnTokenOpts,
 ): Promise<string | null> {
-  const {
-    role,
-    config,
-    userGhToken,
-    repoOwner,
-    repoName,
-    autonomousOrigin,
-    tokenMinter,
-    installationLister,
-    validateFetcher,
-  } = opts;
+  const { role, userGhToken, repoOwner, repoName, autonomousOrigin, validateFetcher } = opts;
 
-  // Helper: mint the App installation token for the repo's org and
-  // pre-validate it against the repo (when both owner+repo are known).
-  // Returns the token on success, null on missing/failed-validation.
-  // Centralised so each policy branch reuses the same pattern without
-  // re-deriving the success / TOOL_ERROR shape.
-  const tryAppInstallationToken = async (): Promise<string | null> => {
-    const appToken = await mintInstallationTokenForOwner(
-      config,
-      repoOwner,
-      tokenMinter,
-      installationLister,
-    );
-    if (!appToken) return null;
-    if (!repoOwner || !repoName) {
-      // No repo name to validate against; trust the freshly-minted
-      // installation token. This matches the pre-existing behaviour and
-      // keeps spawn paths that don't know the repo (legacy webhook
-      // payloads) working.
-      return appToken;
-    }
-    const ok = await validateTokenForRepo(appToken, repoOwner, repoName, validateFetcher);
-    if (ok) return appToken;
-    emitTokenError({
-      summary: `App installation token failed pre-validation for ${repoOwner}/${repoName}`,
-      owner: repoOwner,
-      repo: repoName,
-      tag: 'app-installation-token',
-    });
+  // Reviewer + autonomous-dispatch spawns get no spawn-env token.
+  if (role === 'reviewer' || autonomousOrigin === true) {
     return null;
-  };
-
-  // === Reviewer role ============================================
-  if (role === 'reviewer') {
-    return await tryAppInstallationToken();
   }
 
-  // === Autonomous-dispatch (non-reviewer) ========================
-  // No per-user OAuth fallback — see security rationale above.
-  if (autonomousOrigin === true) {
-    return await tryAppInstallationToken();
-  }
-
-  // === Non-reviewer interactive ==================================
-  // Per-user OAuth first; App installation token fallback only when the
-  // user OAuth is missing or fails validation. This is the human-identity
-  // path — spawn acts AS the human at the keyboard for `git push`,
-  // `gh pr create`, `gh api`, etc.
+  // Non-reviewer interactive: per-user OAuth/PAT only.
   if (!userGhToken) return null;
   if (!repoOwner || !repoName) {
     return userGhToken;
@@ -403,7 +118,7 @@ interface TokenErrorPayload {
   summary: string;
   owner?: string;
   repo?: string;
-  tag: 'app-installation-token' | 'user-oauth-token';
+  tag: 'user-oauth-token';
 }
 
 /**
@@ -429,9 +144,6 @@ function emitTokenError(payload: TokenErrorPayload): void {
     };
     if (payload.owner) meta.owner = payload.owner;
     if (payload.repo) meta.repo = payload.repo;
-    // sev:"soft" with resolution:"recovered" is by definition a warning,
-    // not an error. Routing through console.warn keeps PM2 / dashboards
-    // from flagging the recurring auth-revoked flap as an error spike.
     console.warn(
       `TOOL_ERROR | ${new Date().toISOString()} | github-auth | ${payload.tag} | warn | ${summary} | ${JSON.stringify(meta)}`,
     );
@@ -440,8 +152,7 @@ function emitTokenError(payload: TokenErrorPayload): void {
   }
 }
 
-/** Test hook: clear the per-owner installation lookup cache. */
+/** Test hook retained for back-compat; no installation cache remains. */
 export function clearInstallationLookupCache(): void {
-  installationLookupCache.clear();
-  installationListRefreshCache.clear();
+  /* no-op — installation-token caching removed with the GitHub App */
 }

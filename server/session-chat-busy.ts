@@ -57,8 +57,8 @@ export interface DrainIdleQueuedSessionsArgs {
 
 /**
  * For every session with rows in `message_queue`, call `drainQueue` when the
- * session is not actually busy. Safe to run on boot and from the review poll
- * fallback (every 3 minutes).
+ * session is not actually busy. Safe to run on boot and from any periodic
+ * sweep.
  */
 export function drainIdleQueuedSessions(args: DrainIdleQueuedSessionsArgs): number {
   let attempts = 0;

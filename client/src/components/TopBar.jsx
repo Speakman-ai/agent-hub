@@ -636,9 +636,9 @@ export default function TopBar({
             </svg>
           </button>
         )}
-        {/* Reviewer agents are webhook-spawned only — hide the "+ New"
-            affordance so users don't try to start a thread the server
-            will refuse to create. */}
+        {/* Reviewer agents are spawned only by the Finalize review phase —
+            hide the "+ New" affordance so users don't try to start a thread
+            the server will refuse to create. */}
         {agent?.role !== 'reviewer' && (
           <button
             onClick={onNewSession}

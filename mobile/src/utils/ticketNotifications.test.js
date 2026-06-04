@@ -88,7 +88,7 @@ describe('mapBroadcastToNotification', () => {
     expect(r.body).toContain('All done.');
   });
 
-  it('maps changes_ready, card_moved, webhook_pr_merged', () => {
+  it('maps changes_ready and card_moved', () => {
     expect(
       mapBroadcastToNotification({ type: 'changes_ready', agentName: 'H', branch: 'f/x' }).event,
     ).toBe('changes_ready');
@@ -109,9 +109,6 @@ describe('mapBroadcastToNotification', () => {
     expect(
       mapBroadcastToNotification({ type: 'card_moved', columnName: 'Done', cardTitle: 'T' }),
     ).toBeNull();
-    expect(
-      mapBroadcastToNotification({ type: 'webhook_pr_merged', prNumber: 4, cardTitle: 'X' }).event,
-    ).toBe('pr_merged');
   });
 
   it('maps thread events and flags ERROR entries', () => {

@@ -61,7 +61,8 @@ export function createRemoteRunnerBackend(opts?: {
   now?: () => number;
 }): RunnerBackend {
   const now = opts?.now ?? Date.now;
-  const acquireTimeoutMs = opts?.acquireTimeoutMs ?? envAcquireTimeoutMs() ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
+  const acquireTimeoutMs =
+    opts?.acquireTimeoutMs ?? envAcquireTimeoutMs() ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
   const store = opts?.store ?? null;
   // One worktree bundle per run, shared by all its matrix shards.
   const bundleByRun = new Map<string, Promise<WorktreeRef>>();

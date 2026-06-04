@@ -25,6 +25,14 @@ import { EventEmitter } from 'events';
 import type { Readable } from 'stream';
 import type { ChildProcess } from 'child_process';
 
+// The reviewer spawn builds its env via `resolveSessionCliSpawnEnv`, which
+// hard-fails when the reviewer session's owner has no per-account creds.
+// These tests drive a fake spawn and assert prompt/verdict behaviour, not
+// auth — stub the env builder to a bare object so it never hard-fails.
+vi.mock('../per-user-cli-spawn.js', () => ({
+  resolveSessionCliSpawnEnv: vi.fn(() => ({})),
+}));
+
 import {
   runReviewerTurn,
   pickReviewerAgentId,

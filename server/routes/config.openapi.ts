@@ -1,18 +1,14 @@
 /**
- * Zod schemas + OpenAPI registrations for the config / GitHub-App / GitHub-CLI /
+ * Zod schemas + OpenAPI registrations for the config / GitHub-CLI /
  * project-import / config-import route group.
  *
  * Notes:
  *
  * - **Response shapes are mostly `passthrough`.** The legacy handlers return
  *   ad-hoc envelopes that mix runtime + persisted state (e.g. masked secrets
- *   like `'••••••••'`, `_file` metadata, optional installation arrays). Rather
- *   than chase every key here we document the well-known core and let the
- *   spec stay forgiving — clients should treat unknown fields as benign.
- *
- * - **GitHub App OAuth callback / register endpoints return HTML or
- *   redirects**, not JSON. They're documented as `text/html` / `302`
- *   responses so the spec doesn't lie about the content type.
+ *   like `'••••••••'`, `_file` metadata). Rather than chase every key here we
+ *   document the well-known core and let the spec stay forgiving — clients
+ *   should treat unknown fields as benign.
  *
  * - **Project-import + config-import payloads are open passthrough objects.**
  *   The validation surface is huge (versioned export envelopes carrying
@@ -56,20 +52,6 @@ export const AppConfigComponent = registerComponent(
       publicUrl: z.string(),
       apiKey: z.string(),
       authRequired: z.boolean(),
-      githubApp: z
-        .object({
-          appId: z.string(),
-          appSlug: z.string().nullable(),
-          hasInstallation: z.boolean(),
-          installations: z.array(
-            z.object({
-              id: z.number().int(),
-              account: z.string(),
-              accountType: z.string(),
-            }),
-          ),
-        })
-        .nullable(),
       personalOAuth: z.object({
         configured: z.boolean(),
         clientId: z.string().nullable(),
@@ -85,8 +67,7 @@ export const AppConfigComponent = registerComponent(
           'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
       }),
       lanMode: z.boolean().optional().openapi({
-        description:
-          'When true, Agent Hub skips webhook auto-registration (suitable for LAN / air-gapped installs that cannot receive inbound webhooks) and relies on the polling fallback for PR state and reviewer dispatch.',
+        description: 'Vestigial flag retained for client compatibility.',
       }),
       _file: z.object({
         claudeBin: z.string().nullable(),
@@ -137,87 +118,7 @@ export const PersonalOAuthStatusComponent = registerComponent(
     })
     .openapi({
       description:
-        'Personal GitHub OAuth App status (the OAuth client used for human-identity actions, distinct from the reviewer GitHub App).',
-    }),
-);
-
-export const GithubAppManifestComponent = registerComponent(
-  'GithubAppManifest',
-  z
-    .object({
-      manifest: z.object({}).passthrough(),
-      githubUrl: z.string(),
-      redirectUrl: z.string(),
-    })
-    .openapi({
-      description:
-        'GitHub App manifest payload — POST to `githubUrl` with the manifest in a hidden form to register.',
-    }),
-);
-
-export const GithubAppInstallUrlComponent = registerComponent(
-  'GithubAppInstallUrl',
-  z
-    .object({ installUrl: z.string() })
-    .openapi({ description: 'Install-this-app URL for the configured GitHub App.' }),
-);
-
-export const GithubAppInstallationListComponent = registerComponent(
-  'GithubAppInstallationList',
-  z
-    .object({
-      installed: z.boolean(),
-      installationId: z.union([z.number().int(), z.string()]).optional(),
-      installations: z
-        .array(
-          z.object({
-            id: z.number().int(),
-            account: z.string(),
-            accountType: z.string(),
-          }),
-        )
-        .optional(),
-      message: z.string().optional(),
-    })
-    .openapi({ description: 'Result of refreshing GitHub App installations.' }),
-);
-
-export const GithubAppStatusComponent = registerComponent(
-  'GithubAppStatus',
-  z
-    .object({
-      configured: z.boolean(),
-      appId: z.string().optional(),
-      appSlug: z.string().nullable().optional(),
-      hasInstallation: z.boolean().optional(),
-      installationId: z.union([z.number().int(), z.string()]).nullable().optional(),
-      installations: z
-        .array(
-          z.object({
-            id: z.number().int(),
-            account: z.string(),
-            accountType: z.string(),
-          }),
-        )
-        .optional(),
-      appName: z.string().nullable().optional(),
-      valid: z.boolean().optional(),
-    })
-    .passthrough()
-    .openapi({ description: 'Live GitHub App status (cached up to 5 min).' }),
-);
-
-export const GithubAppConnectResponseComponent = registerComponent(
-  'GithubAppConnectResponse',
-  z
-    .object({
-      ok: z.boolean(),
-      appId: z.string(),
-      appSlug: z.string(),
-      installationId: z.union([z.number().int(), z.string()]),
-    })
-    .openapi({
-      description: 'Echoed identity of the freshly-connected GitHub App.',
+        'Personal GitHub OAuth App status (the OAuth client used for human-identity actions).',
     }),
 );
 
@@ -228,26 +129,10 @@ export const GithubStatusComponent = registerComponent(
       authenticated: z.boolean(),
       user: z.string().optional(),
       scopes: z.array(z.string()).optional(),
-      githubApp: z
-        .object({
-          appId: z.string(),
-          appSlug: z.string().nullable(),
-          hasInstallation: z.boolean(),
-          installations: z.array(
-            z.object({
-              id: z.number().int(),
-              account: z.string(),
-              accountType: z.string(),
-            }),
-          ),
-        })
-        .nullable()
-        .optional(),
-      botUser: z.string().nullable().optional(),
       error: z.string().optional(),
     })
     .openapi({
-      description: '`gh` CLI auth status plus the configured GitHub App / bot identity, if any.',
+      description: '`gh` CLI auth status.',
     }),
 );
 
@@ -373,16 +258,6 @@ export const PutPersonalOAuthRequestSchema = z
   })
   .openapi({
     description: 'GitHub OAuth App client credentials. Both fields are required.',
-  });
-
-export const ConnectGithubAppRequestSchema = z
-  .object({
-    appId: z.string().min(1, 'appId is required'),
-    privateKey: z.string().min(1, 'privateKey is required'),
-    installationId: z.string().min(1, 'installationId is required'),
-  })
-  .openapi({
-    description: 'Connect an existing GitHub App by appId + private key + installation id.',
   });
 
 export const DetectRepoRequestSchema = z
@@ -533,202 +408,13 @@ registerPath({
   },
 });
 
-// ─── GitHub App ──────────────────────────────────────────────────
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/manifest',
-  tags: ['GitHub App'],
-  summary: 'Build the GitHub App manifest for the manifest-flow registration',
-  responses: {
-    200: { description: 'Manifest payload.', content: jsonContent(GithubAppManifestComponent) },
-    400: errorResponse('Public URL is not configured.'),
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/register',
-  tags: ['GitHub App'],
-  summary: 'Render an HTML form that auto-POSTs the manifest to GitHub',
-  responses: {
-    200: {
-      description: 'HTML form (auto-submits).',
-      content: { 'text/html': { schema: z.string() } },
-    },
-    400: {
-      description: 'Public URL is not configured.',
-      content: { 'text/plain': { schema: z.string() } },
-    },
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/callback',
-  tags: ['GitHub App'],
-  summary: 'GitHub manifest-flow callback — exchanges code for app credentials and redirects',
-  request: {
-    query: z.object({
-      code: z.string().openapi({ description: 'Manifest exchange code returned by GitHub.' }),
-    }),
-  },
-  responses: {
-    302: { description: 'Redirect to install URL or the settings page.' },
-    400: {
-      description: 'Missing `code` query param.',
-      content: { 'text/plain': { schema: z.string() } },
-    },
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/install-url',
-  tags: ['GitHub App'],
-  summary: 'Build the install-this-app URL for the configured GitHub App',
-  responses: {
-    200: { description: 'Install URL.', content: jsonContent(GithubAppInstallUrlComponent) },
-    400: errorResponse('No GitHub App configured.'),
-  },
-});
-
-registerPath({
-  method: 'post',
-  path: '/api/github-app/refresh-installation',
-  tags: ['GitHub App'],
-  summary: 'Re-fetch GitHub App installations and update the config',
-  responses: {
-    200: {
-      description: 'Installations.',
-      content: jsonContent(GithubAppInstallationListComponent),
-    },
-    400: errorResponse('No GitHub App configured.'),
-    500: errorResponse('GitHub API call failed.'),
-  },
-});
-
-const GithubAppSyncWebhookSecretResponse = registerComponent(
-  'GithubAppSyncWebhookSecretResponse',
-  z
-    .object({
-      ok: z.literal(true),
-      generated: z
-        .boolean()
-        .openapi({ description: 'True if a fresh secret was generated rather than re-using.' }),
-      secretLength: z.number().int(),
-      secretPrefix: z
-        .string()
-        .openapi({ description: 'First 4 chars of the secret for diagnostic display only.' }),
-    })
-    .openapi({
-      description:
-        'Result of pushing the GitHub App webhook secret to GitHub. Never returns the full secret.',
-    }),
-);
-
-registerPath({
-  method: 'post',
-  path: '/api/github-app/sync-webhook-secret',
-  tags: ['GitHub App'],
-  summary: "Push the App's webhook secret to GitHub (drift recovery)",
-  description:
-    'Calls `PATCH /app/hook/config` on GitHub with our locally-stored ' +
-    "`config.githubApp.webhookSecret`. If we don't have a local secret, " +
-    'a fresh 32-byte hex secret is generated, pushed, and persisted. ' +
-    'Pass `{ rotate: true }` to force generation of a new secret even ' +
-    'when a local one exists. GitHub returns its current secret as ' +
-    '`********` on read, so this push-sync is the only way to put both ' +
-    'sides back in lockstep after drift.',
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({
-            rotate: z.boolean().optional().openapi({
-              description:
-                'Generate and push a brand-new secret even if one already exists locally.',
-            }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Secret pushed to GitHub and persisted locally.',
-      content: jsonContent(GithubAppSyncWebhookSecretResponse),
-    },
-    400: errorResponse('No GitHub App configured.'),
-    500: {
-      description:
-        'GitHub accepted the PATCH but persisting locally failed; in-memory has been rolled back.',
-      content: jsonContent(
-        z.object({
-          error: z.string(),
-          githubMutated: z.literal(true).openapi({
-            description:
-              'Always true when this 500 shape is returned. Signals the operator that GitHub already holds the new secret and a re-run with rotate:true is the recovery path.',
-          }),
-          cause: z.string().optional().openapi({
-            description: 'Underlying filesystem error message (e.g. ENOENT, EACCES).',
-          }),
-        }),
-      ),
-    },
-    502: errorResponse('GitHub rejected the PATCH call.'),
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/setup-complete',
-  tags: ['GitHub App'],
-  summary: 'GitHub install-callback landing page (auto-detects installation, redirects)',
-  responses: {
-    302: { description: 'Redirect to settings (`?githubApp=ready` / `?githubApp=no-install`).' },
-  },
-});
-
-registerPath({
-  method: 'get',
-  path: '/api/github-app/status',
-  tags: ['GitHub App'],
-  summary: 'Read live GitHub App status (cached up to 5 min)',
-  responses: {
-    200: { description: 'GitHub App status.', content: jsonContent(GithubAppStatusComponent) },
-  },
-});
-
-registerPath({
-  method: 'delete',
-  path: '/api/github-app',
-  tags: ['GitHub App'],
-  summary: 'Disconnect the configured GitHub App',
-  responses: {
-    200: { description: 'Removed.', content: jsonContent(z.object({ ok: z.boolean() })) },
-  },
-});
-
-registerPath({
-  method: 'post',
-  path: '/api/github-app/connect',
-  tags: ['GitHub App'],
-  summary: 'Connect an existing GitHub App by appId + private key + installation id',
-  request: { body: { content: jsonContent(ConnectGithubAppRequestSchema) } },
-  responses: {
-    200: { description: 'Connected.', content: jsonContent(GithubAppConnectResponseComponent) },
-    400: errorResponse('Missing fields or invalid GitHub App credentials.'),
-  },
-});
-
 // ─── GitHub CLI ──────────────────────────────────────────────────
 
 registerPath({
   method: 'get',
   path: '/api/github/status',
   tags: ['GitHub'],
-  summary: 'Read `gh` CLI auth status + configured app / bot identity',
+  summary: 'Read `gh` CLI auth status',
   responses: {
     200: { description: 'GitHub status.', content: jsonContent(GithubStatusComponent) },
   },

@@ -102,45 +102,6 @@ describe('migrateWebhookRepoToProject', () => {
     expect(updated!.githubRepo).toBe('existing/repo');
   });
 
-  it('auto-created webhook config uses object format for events', async () => {
-    const request = await getRequest();
-
-    const projId = `auto-webhook-${Date.now()}`;
-    await (
-      request as {
-        post(url: string): {
-          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
-        };
-      }
-    )
-      .post('/api/projects')
-      .send({ id: projId, name: 'Auto Webhook Test', cwd: '/tmp', color: '#333' })
-      .expect(201);
-
-    await (
-      request as { patch(url: string): { send(body: Record<string, unknown>): Promise<unknown> } }
-    )
-      .patch(`/api/projects/${projId}`)
-      .send({ githubRepo: 'test-org/auto-repo' });
-
-    const wh = (stmts as Stmts).getWebhookConfigByProjectAndRepo.get(
-      projId,
-      'https://github.com/test-org/auto-repo',
-    ) as { events: string } | undefined;
-    expect(wh).toBeTruthy();
-
-    const events = JSON.parse(wh!.events) as Record<string, { enabled: boolean }>;
-    expect(events).toBeTypeOf('object');
-    expect(Array.isArray(events)).toBe(false);
-    // Each entry is an object (not a bare boolean) so the UI can attach a
-    // prompt override per event without reshaping the record.
-    expect(events['pull_request.opened']).toEqual({ enabled: true });
-    // Post scale-back (2026-04-16 webhook storm fix): three events ship
-    // seeded but disabled — operator opts them on per-repo in the UI.
-    // See server/routes/projects.ts for the rationale.
-    expect(events['pull_request_review.submitted']).toEqual({ enabled: false });
-  });
-
   it('only captures owner/repo, ignoring trailing path segments', async () => {
     const request = await getRequest();
 
@@ -268,15 +229,15 @@ describe('ensureReviewerAgents', () => {
     expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
 
-  it('seeds a reviewer whose system prompt has a balanced decision tree (no APPROVE- or COMMENT-bias)', async () => {
-    // Regression guard: the seeded system prompt has now swung through two
-    // biases. V1 hardcoded `"event":"APPROVE"` + "skip nits unless egregious",
-    // producing rubber-stamped reviews. V2 (PR #291) over-corrected and told
-    // the reviewer COMMENT was the default for any non-nit feedback, producing
-    // reviews that never reach APPROVE. V3 (this test) pins a decision-tree
-    // contract: walk in order, REQUEST_CHANGES → APPROVE → COMMENT, where
-    // non-blocking feedback lives under APPROVE and COMMENT is reserved for
-    // genuinely undecided reviews.
+  it('seeds a reviewer whose system prompt has a balanced decision tree (no approve-bias) and an in-session verdict contract', async () => {
+    // Regression guard: the seeded system prompt has swung through several
+    // biases. V1 hardcoded approval + "skip nits unless egregious". Later
+    // revisions used a `POST /api/pr/review` event contract. The reviewer is
+    // now an in-session advisor: it emits a structured `<agenthub:review-verdict>`
+    // tail block (approved / changes_requested), never posting to GitHub.
+    // This test pins the decision-tree contract: severity-driven, no
+    // rubber-stamp, and the in-session verdict mechanism (no curl / no
+    // /api/pr/review).
     const projId = `reviewer-nobias-${Date.now()}`;
     const project = await createProjectWithAgent(projId, 'No Bias Reviewer', '#888');
     project.githubRepo = 'owner/nobias-repo';
@@ -289,35 +250,28 @@ describe('ensureReviewerAgents', () => {
     expect(reviewer).toBeTruthy();
     const sp = reviewer!.systemPrompt || '';
 
-    // No hardcoded APPROVE in the curl example — the example must use a
-    // placeholder so the model doesn't anchor on any one event as the default.
-    expect(sp).not.toContain('"event":"APPROVE"');
-    expect(sp).toContain('"event":"<EVENT>"');
-
-    // Only two events are allowed at POST /api/pr/review (COMMENT is rejected).
-    expect(sp).toContain('APPROVE');
-    expect(sp).toContain('REQUEST_CHANGES');
-    expect(sp).toMatch(/rejects.*COMMENT|Never send.*COMMENT/i);
-    expect(sp).not.toMatch(/→ `COMMENT`/);
+    // The verdict is emitted in-session via the structured tail block — there
+    // is no GitHub posting path anymore.
+    expect(sp).toContain('<agenthub:review-verdict>');
+    expect(sp).toContain('"verdict"');
+    expect(sp).toContain('approved');
+    expect(sp).toContain('changes_requested');
+    expect(sp).not.toContain('/api/pr/review');
 
     // The prompt must present a decision TREE (walk in order) rather than a
     // flat rubric — the flat rubric is what caused the reviewer to pick
-    // whichever event felt least committal (COMMENT).
+    // whichever verdict felt least committal.
     expect(sp).toMatch(/decision tree/i);
 
     // Blocking vs. non-blocking classification is the hinge of the tree.
     expect(sp).toMatch(/blocking/i);
     expect(sp).toMatch(/non-blocking/i);
 
-    // APPROVE must be scoped to "mergeable as-is", explicitly compatible
-    // with non-blocking feedback — the wording that was missing during the
-    // COMMENT-bias regression.
+    // "approved" must be scoped to "mergeable as-is", explicitly compatible
+    // with non-blocking feedback.
     expect(sp).toMatch(/mergeable as-is/i);
 
     expect(sp).toMatch(/don't rubber-stamp/i);
-
-    // COMMENT must not appear as a third decision-tree branch (API rejects it).
-    expect(sp).not.toMatch(/3\.\s+\*\*Only if you genuinely cannot decide\*\*/);
 
     // The old "skip nits unless egregious" line was a subtle approval nudge
     // that should stay gone.
@@ -353,9 +307,9 @@ describe('ensureReviewerAgents', () => {
     expect(sp).toMatch(/\b8\s*[–-]\s*9\b/);
     expect(sp).toMatch(/\b10\b/);
 
-    // Hard threshold: >3 forces REQUEST_CHANGES.
+    // Hard threshold: >3 forces a changes_requested verdict.
     expect(sp).toMatch(/>\s*3/);
-    expect(sp).toMatch(/REQUEST_CHANGES/);
+    expect(sp).toMatch(/changes_requested/);
 
     // Tie-break rule prevents under-scoring as an escape hatch.
     expect(sp).toMatch(/round up/i);
@@ -364,12 +318,10 @@ describe('ensureReviewerAgents', () => {
     expect(sp).toMatch(/score\b[^.]*\b(greater than|>)\s*3/i);
   });
 
-  // Regression guard for the bug: "GitHub App not creating PR button or
-  // sidebar agent". The function must report whether it changed anything so
+  // Regression guard: the function must report whether it changed anything so
   // route handlers can decide whether to broadcast `projects_updated` to
   // WebSocket clients. If this returns void again, the broadcast wiring
-  // in server/routes/config.ts and server/routes/webhooks.ts silently
-  // no-ops and the sidebar never refreshes.
+  // in server/routes/config.ts silently no-ops and the sidebar never refreshes.
   it('returns true when a reviewer is seeded', async () => {
     const projId = `reviewer-ret-true-${Date.now()}`;
     const project = await createProjectWithAgent(projId, 'Return True Reviewer', '#111');
@@ -396,7 +348,7 @@ describe('ensureReviewerAgents', () => {
   it('returns false when project has no GitHub integration', async () => {
     const projId = `reviewer-ret-nogh-${Date.now()}`;
     await createProjectWithAgent(projId, 'No GitHub Reviewer', '#333');
-    // No githubRepo, no webhook → nothing to seed.
+    // No githubRepo → nothing to seed.
     expect(ensureReviewerAgents()).toBe(false);
   });
 });

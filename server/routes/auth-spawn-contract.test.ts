@@ -16,24 +16,9 @@ function readRoute(name: string): string {
 }
 
 describe('auth CLI spawn — process-group timeout', () => {
-  it('claude-auth uses killProcessGroup timer, not spawn timeout', () => {
-    const src = readRoute('claude-auth.ts');
-    expect(src).toMatch(/setTimeout\(\(\)\s*=>\s*killProcessGroup\(proc,\s*'SIGTERM'\)/);
-    expect(src).not.toMatch(/spawn\([\s\S]*?timeout:\s*opts\.timeout/s);
-  });
-
-  it('codex-auth uses killProcessGroup timer, not spawn timeout', () => {
-    const src = readRoute('codex-auth.ts');
-    expect(src).toMatch(/setTimeout\(\(\)\s*=>\s*killProcessGroup\(proc,\s*'SIGTERM'\)/);
-    expect(src).not.toMatch(/spawn\([\s\S]*?timeout:\s*opts\.timeout/s);
-  });
-
-  it('cursor-auth uses killProcessGroup timer, not spawn timeout', () => {
-    const src = readRoute('cursor-auth.ts');
-    expect(src).toMatch(/setTimeout\(\(\)\s*=>\s*killProcessGroup\(proc,\s*'SIGTERM'\)/);
-    expect(src).not.toMatch(/spawn\([\s\S]*?timeout:\s*opts\.timeout/s);
-  });
-
+  // claude-auth / codex-auth / cursor-auth global routes were removed —
+  // those engines authenticate strictly per-account now. Gemini remains the
+  // one host-configured CLI auth route.
   it('gemini-auth uses killProcessGroup timer, not spawn timeout', () => {
     const src = readRoute('gemini-auth.ts');
     expect(src).toMatch(/setTimeout\(\(\)\s*=>\s*killProcessGroup\(proc,\s*'SIGTERM'\)/);

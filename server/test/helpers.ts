@@ -3,27 +3,13 @@ import type supertest from 'supertest';
 
 let _request: supertest.Agent | null = null;
 let _app: Express | null = null;
-let _workerInitialized = false;
 
 export async function getRequest(): Promise<supertest.Agent> {
   if (!_request) {
     const st = (await import('supertest')).default;
-    const { app, webhookHandlerDeps } = await import('../index.js');
+    const { app } = await import('../index.js');
     _app = app;
     _request = st(app);
-
-    // Initialize the webhook worker in test mode. AGENT_HUB_TEST_MODE=1 is
-    // set in setup.ts, which causes initWebhookWorker to run stale-claim
-    // recovery but skip the polling interval. Tests drive processing
-    // explicitly via drainWebhookQueue().
-    if (!_workerInitialized) {
-      const { initWebhookWorker } = await import('../webhook-worker.js');
-      initWebhookWorker({
-        stmts: webhookHandlerDeps.stmts,
-        routeDeps: webhookHandlerDeps,
-      });
-      _workerInitialized = true;
-    }
   }
   return _request;
 }
@@ -31,36 +17,6 @@ export async function getRequest(): Promise<supertest.Agent> {
 export async function getApp(): Promise<Express> {
   if (!_app) await getRequest();
   return _app!;
-}
-
-/**
- * Drain all pending + in-flight webhook events. Returns the number of rows
- * processed. Used by tests that depend on webhook side-effects (kanban
- * linking, Claude runs). Bounded by `maxIterations` to prevent runaway loops.
- *
- * P1 (card 2c4a0d06): synchronize / check_run.rerequested rows are now
- * inserted with a `deferred_until` window so the production worker can
- * coalesce sibling deliveries. Tests don't want to sleep through that
- * window, so we shift any pending row's deferred_until into the past
- * before each tick. This preserves the production semantics (the worker
- * still consults the column) while making tests deterministic.
- */
-export async function drainWebhookQueue(maxIterations = 100): Promise<number> {
-  const { processOnce } = await import('../webhook-worker.js');
-  const { getDb } = await import('../db.js');
-  const clearDefer = getDb().prepare(
-    "UPDATE webhook_events SET deferred_until = datetime('now', '-1 second') " +
-      "WHERE status = 'pending' AND deferred_until IS NOT NULL " +
-      "AND deferred_until > datetime('now')",
-  );
-  let processed = 0;
-  for (let i = 0; i < maxIterations; i++) {
-    clearDefer.run();
-    const didWork = await processOnce();
-    if (!didWork) break;
-    processed++;
-  }
-  return processed;
 }
 
 // ─── Fixture factories ──────────────────────────────────────────

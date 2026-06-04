@@ -41,10 +41,9 @@ describe('buildSpawnEnv — PATH propagation', () => {
     expect(segs.length).toBe(unique.size);
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN when config includes setup-token value', () => {
-    const env = buildSpawnEnv({
-      ...config,
-      claudeCodeOAuthToken: 'sk-ant-oat01-test-token',
+  it('sets CLAUDE_CODE_OAUTH_TOKEN from a per-user override setup-token value', () => {
+    const env = buildSpawnEnv(config, {
+      userOverride: { claudeCodeOAuthToken: 'sk-ant-oat01-test-token' },
     });
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-test-token');
   });
@@ -52,21 +51,17 @@ describe('buildSpawnEnv — PATH propagation', () => {
   it('collapses interior whitespace/newlines in setup-token (wrapped terminal paste)', () => {
     const raw = 'sk-ant-oat01-partOne\npartTwo';
     expect(normalizeClaudeSetupToken(raw)).toBe('sk-ant-oat01-partOnepartTwo');
-    const env = buildSpawnEnv({
-      ...config,
-      claudeCodeOAuthToken: raw,
+    const env = buildSpawnEnv(config, {
+      userOverride: { claudeCodeOAuthToken: raw },
     });
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-partOnepartTwo');
   });
 
-  it('does not pass ANTHROPIC_API_KEY when Hub config has no API key (avoids stale process.env)', () => {
+  it('does not pass ANTHROPIC_API_KEY when there is no per-user override (avoids stale process.env)', () => {
     const prev = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-should-not-leak';
     try {
-      const env = buildSpawnEnv({
-        ...config,
-        anthropicApiKey: null,
-      });
+      const env = buildSpawnEnv(config);
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -75,86 +70,63 @@ describe('buildSpawnEnv — PATH propagation', () => {
   });
 });
 
-describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
-  it('user override wins over host config for ANTHROPIC_API_KEY', () => {
-    const env = buildSpawnEnv(
-      { ...config, anthropicApiKey: 'sk-ant-api03-host', claudeCodeOAuthToken: null },
-      { userOverride: { anthropicApiKey: 'sk-ant-api03-user', claudeCodeOAuthToken: null } },
-    );
+describe('buildSpawnEnv — per-user Claude credentials (per-account only, no host fallback)', () => {
+  it('per-user override sets ANTHROPIC_API_KEY', () => {
+    const env = buildSpawnEnv(config, {
+      userOverride: { anthropicApiKey: 'sk-ant-api03-user', claudeCodeOAuthToken: null },
+    });
     expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-user');
   });
 
-  it('user override wins over host config for CLAUDE_CODE_OAUTH_TOKEN', () => {
-    const env = buildSpawnEnv(
-      { ...config, anthropicApiKey: null, claudeCodeOAuthToken: 'sk-ant-oat01-host' },
-      { userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: 'sk-ant-oat01-user' } },
-    );
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user');
-  });
-
-  it('falls back to host config when only one user field is set (independent fields)', () => {
-    // User has an OAuth token but no API key — host's API key should still
-    // be ignored only for the field the user supplied. The other field
-    // falls back to the host. With no host API key + user OAuth-only, the
-    // host's OAuth must NOT leak past the user's empty API key choice.
-    const env = buildSpawnEnv(
-      {
-        ...config,
-        anthropicApiKey: 'sk-ant-api03-host',
-        claudeCodeOAuthToken: 'sk-ant-oat01-host',
-      },
-      { userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: 'sk-ant-oat01-user' } },
-    );
-    // User did not override the API key → host wins for that field.
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-host');
-    // User overrode the OAuth token → user wins.
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user');
-  });
-
-  it('whitespace-only override is treated as not provided (falls back to host)', () => {
-    const env = buildSpawnEnv(
-      { ...config, anthropicApiKey: 'sk-ant-api03-host', claudeCodeOAuthToken: null },
-      { userOverride: { anthropicApiKey: '   ', claudeCodeOAuthToken: null } },
-    );
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-host');
-  });
-
-  it('omitted userOverride preserves legacy behavior', () => {
-    const env = buildSpawnEnv({
-      ...config,
-      anthropicApiKey: 'sk-ant-api03-host',
-      claudeCodeOAuthToken: 'sk-ant-oat01-host',
+  it('per-user override sets CLAUDE_CODE_OAUTH_TOKEN', () => {
+    const env = buildSpawnEnv(config, {
+      userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: 'sk-ant-oat01-user' },
     });
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-host');
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-host');
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user');
   });
 
-  it('null userOverride is equivalent to omitted', () => {
-    const env = buildSpawnEnv(
-      { ...config, anthropicApiKey: 'sk-ant-api03-host', claudeCodeOAuthToken: null },
-      { userOverride: null },
-    );
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-host');
+  it('the two Claude fields are independent', () => {
+    const env = buildSpawnEnv(config, {
+      userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: 'sk-ant-oat01-user' },
+    });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user');
+  });
+
+  it('whitespace-only override is treated as not provided (no key set)', () => {
+    const env = buildSpawnEnv(config, {
+      userOverride: { anthropicApiKey: '   ', claudeCodeOAuthToken: null },
+    });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('omitted userOverride sets neither Claude var (no host fallback)', () => {
+    const env = buildSpawnEnv(config);
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('null userOverride sets neither Claude var', () => {
+    const env = buildSpawnEnv(config, { userOverride: null });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it('normalizes wrapped user OAuth tokens (interior whitespace collapsed)', () => {
-    const env = buildSpawnEnv(
-      { ...config, claudeCodeOAuthToken: null },
-      { userOverride: { claudeCodeOAuthToken: 'sk-ant-oat01-userPart\n1userPart2' } },
-    );
+    const env = buildSpawnEnv(config, {
+      userOverride: { claudeCodeOAuthToken: 'sk-ant-oat01-userPart\n1userPart2' },
+    });
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-userPart1userPart2');
   });
 
-  it('with no host config and no user override, both vars are unset', () => {
+  it('with no per-user override, Claude vars are unset even when process.env carries them', () => {
     const prevApi = process.env.ANTHROPIC_API_KEY;
     const prevOAuth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-leaked';
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-leaked';
     try {
-      const env = buildSpawnEnv(
-        { ...config, anthropicApiKey: null, claudeCodeOAuthToken: null },
-        { userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: null } },
-      );
+      const env = buildSpawnEnv(config, {
+        userOverride: { anthropicApiKey: null, claudeCodeOAuthToken: null },
+      });
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     } finally {
@@ -166,22 +138,19 @@ describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
   });
 });
 
-describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
+describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemini', () => {
   let tmpDataDir: string;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-spawn-keys-'));
   });
 
-  it('user CURSOR_API_KEY wins over host config', () => {
-    const env = buildSpawnEnv(
-      { ...config, cursorApiKey: 'curs-host' },
-      { userOverride: { cursorApiKey: 'curs-user' } },
-    );
+  it('per-user override sets CURSOR_API_KEY', () => {
+    const env = buildSpawnEnv(config, { userOverride: { cursorApiKey: 'curs-user' } });
     expect(env.CURSOR_API_KEY).toBe('curs-user');
   });
 
-  it('user GEMINI_API_KEY wins over host config', () => {
+  it('user GEMINI_API_KEY wins over host config (Gemini stays global)', () => {
     const env = buildSpawnEnv(
       { ...config, geminiApiKey: 'gem-host' },
       { userOverride: { geminiApiKey: 'gem-user' } },
@@ -189,42 +158,40 @@ describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
     expect(env.GEMINI_API_KEY).toBe('gem-user');
   });
 
+  it('host GEMINI_API_KEY flows through when no override (Gemini is the one global engine)', () => {
+    const env = buildSpawnEnv({ ...config, geminiApiKey: 'gem-host-only' });
+    expect(env.GEMINI_API_KEY).toBe('gem-host-only');
+  });
+
   it('user CODEX_API_KEY fans out to OPENAI_API_KEY + CODEX_API_KEY', () => {
-    const env = buildSpawnEnv(
-      { ...config, codexApiKey: 'sk-codex-host' },
-      { userOverride: { codexApiKey: 'sk-codex-user' } },
-    );
+    const env = buildSpawnEnv(config, { userOverride: { codexApiKey: 'sk-codex-user' } });
     expect(env.CODEX_API_KEY).toBe('sk-codex-user');
     expect(env.OPENAI_API_KEY).toBe('sk-codex-user');
   });
 
   it('per-engine fields are independent — Cursor override does not affect Gemini/Codex', () => {
     const env = buildSpawnEnv(
-      {
-        ...config,
-        cursorApiKey: 'curs-host',
-        geminiApiKey: 'gem-host',
-        codexApiKey: 'sk-codex-host',
-      },
+      { ...config, geminiApiKey: 'gem-host' },
       { userOverride: { cursorApiKey: 'curs-user' } },
     );
     expect(env.CURSOR_API_KEY).toBe('curs-user');
     expect(env.GEMINI_API_KEY).toBe('gem-host');
-    expect(env.CODEX_API_KEY).toBe('sk-codex-host');
-    expect(env.OPENAI_API_KEY).toBe('sk-codex-host');
+    expect(env.CODEX_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 
   it('whitespace-only override is treated as not provided per engine', () => {
     const env = buildSpawnEnv(
-      { ...config, cursorApiKey: 'curs-host', geminiApiKey: 'gem-host', codexApiKey: 'codex-host' },
+      { ...config, geminiApiKey: 'gem-host' },
       { userOverride: { cursorApiKey: '  ', geminiApiKey: '\t', codexApiKey: '' } },
     );
-    expect(env.CURSOR_API_KEY).toBe('curs-host');
+    expect(env.CURSOR_API_KEY).toBeUndefined();
+    // Gemini override is whitespace → falls back to the host (global) value.
     expect(env.GEMINI_API_KEY).toBe('gem-host');
-    expect(env.CODEX_API_KEY).toBe('codex-host');
+    expect(env.CODEX_API_KEY).toBeUndefined();
   });
 
-  it('with no host config and no user override, all three engine vars are unset', () => {
+  it('with no host Gemini and no user override, all engine vars are unset', () => {
     const prevCursor = process.env.CURSOR_API_KEY;
     const prevGemini = process.env.GEMINI_API_KEY;
     const prevCodex = process.env.CODEX_API_KEY;
@@ -235,7 +202,7 @@ describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
     process.env.OPENAI_API_KEY = 'leaked-openai';
     try {
       const env = buildSpawnEnv(
-        { ...config, cursorApiKey: null, geminiApiKey: null, codexApiKey: null },
+        { ...config, geminiApiKey: null },
         { userOverride: { cursorApiKey: null, geminiApiKey: null, codexApiKey: null } },
       );
       expect(env.CURSOR_API_KEY).toBeUndefined();
@@ -254,34 +221,20 @@ describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
     }
   });
 
-  it('host config flows through when no override is set', () => {
-    const env = buildSpawnEnv({
-      ...config,
-      cursorApiKey: 'curs-host-only',
-      geminiApiKey: 'gem-host-only',
-      codexApiKey: 'codex-host-only',
-    });
-    expect(env.CURSOR_API_KEY).toBe('curs-host-only');
-    expect(env.GEMINI_API_KEY).toBe('gem-host-only');
-    expect(env.CODEX_API_KEY).toBe('codex-host-only');
-    expect(env.OPENAI_API_KEY).toBe('codex-host-only');
-  });
-
-  it('with userId set, host Cursor/Gemini/Codex keys are not injected', () => {
+  it('with userId set, Cursor/Codex are never host-injected; Gemini stays global', () => {
     const env = buildSpawnEnv(
       {
         ...config,
         dataDir: tmpDataDir,
-        cursorApiKey: 'curs-host',
         geminiApiKey: 'gem-host',
-        codexApiKey: 'sk-codex-host',
       },
       { userId: 'spawn-user-no-keys' },
     );
     expect(env.CURSOR_API_KEY).toBeUndefined();
-    expect(env.GEMINI_API_KEY).toBeUndefined();
     expect(env.CODEX_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    // Gemini is the one global engine — it still flows for any spawn.
+    expect(env.GEMINI_API_KEY).toBe('gem-host');
   });
 
   it('with userId set, per-user override still wins for Cursor/Codex', () => {
@@ -289,8 +242,6 @@ describe('buildSpawnEnv — per-user Cursor / Gemini / Codex override', () => {
       {
         ...config,
         dataDir: tmpDataDir,
-        cursorApiKey: 'curs-host',
-        codexApiKey: 'sk-codex-host',
       },
       {
         userId: 'spawn-user-with-keys',

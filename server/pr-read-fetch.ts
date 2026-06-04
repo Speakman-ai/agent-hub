@@ -1,16 +1,11 @@
 /**
- * pr-read-fetch.ts — Server-side PR diff / changed-files for reviewer read proxies.
+ * pr-read-fetch.ts — Server-side PR diff / changed-files for the PR read proxy.
  *
- * Auth policy mirrors pr-detail-fetch.ts (user-only vs reviewer App-only).
+ * Strictly per-user: reads use the acting user's own OAuth/PAT.
  */
 
-import type { AppConfig, GitHubAppConfig } from './types.js';
-import { getInstallationToken, resolveInstallationId } from './github-app.js';
-import {
-  CONNECT_GITHUB_HINT,
-  REVIEWER_APP_HINT,
-  hasReviewerGitHubApp,
-} from './github-auth-policy.js';
+import type { AppConfig } from './types.js';
+import { CONNECT_GITHUB_HINT } from './github-auth-policy.js';
 
 const GH_API_BASE = 'https://api.github.com';
 const USER_AGENT = 'agent-hub';
@@ -18,11 +13,10 @@ const API_VERSION = '2022-11-28';
 
 export interface PrReadFetchOptions {
   userAccessToken?: string | null;
-  reviewerAppRead?: boolean;
   fetchImpl?: typeof fetch;
 }
 
-export type PrReadSource = 'user-oauth' | 'github-app';
+export type PrReadSource = 'user-oauth';
 
 export interface PrDiffResult {
   source: PrReadSource;
@@ -86,20 +80,6 @@ async function fetchJson<T = unknown>(
   return (await res.json()) as T;
 }
 
-async function fetchWithAppToken(
-  config: AppConfig,
-  owner: string,
-  fetchImpl: typeof fetch,
-): Promise<{ token: string; source: PrReadSource }> {
-  const app = config.githubApp as GitHubAppConfig;
-  const instId = resolveInstallationId(app, owner);
-  if (!instId) {
-    throw new PrReadFetchError(`No GitHub App installation for "${owner}". ${REVIEWER_APP_HINT}`);
-  }
-  const token = await getInstallationToken(app.appId, app.privateKey, instId);
-  return { token, source: 'github-app' };
-}
-
 export async function fetchPrDiff(
   config: AppConfig,
   repo: { owner: string; repo: string },
@@ -125,26 +105,6 @@ export async function fetchPrDiff(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new PrReadFetchError(msg.split('\n')[0]);
-    }
-  }
-
-  if (opts?.reviewerAppRead && hasReviewerGitHubApp(config)) {
-    try {
-      const { token } = await fetchWithAppToken(config, repo.owner, f);
-      const diff = await fetchText(
-        `${GH_API_BASE}${path}`,
-        {
-          Authorization: `token ${token}`,
-          Accept: 'application/vnd.github.v3.diff',
-          'X-GitHub-Api-Version': API_VERSION,
-          'User-Agent': USER_AGENT,
-        },
-        f,
-      );
-      return { source: 'github-app', diff };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new PrReadFetchError(msg.split('\n')[0], { appTierError: msg.split('\n')[0] });
     }
   }
 
@@ -190,24 +150,6 @@ export async function fetchPrFiles(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new PrReadFetchError(msg.split('\n')[0]);
-    }
-  }
-
-  if (opts?.reviewerAppRead && hasReviewerGitHubApp(config)) {
-    try {
-      const { token } = await fetchWithAppToken(config, repo.owner, f);
-      return await paginate(
-        {
-          Authorization: `token ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': API_VERSION,
-          'User-Agent': USER_AGENT,
-        },
-        'github-app',
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new PrReadFetchError(msg.split('\n')[0], { appTierError: msg.split('\n')[0] });
     }
   }
 

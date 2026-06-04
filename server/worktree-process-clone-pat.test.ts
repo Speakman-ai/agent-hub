@@ -15,11 +15,6 @@ vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp', githubApp: null },
 }));
 
-vi.mock('./github-app.js', () => ({
-  getInstallationToken: vi.fn(async () => null),
-  resolveInstallationId: vi.fn(async () => null),
-}));
-
 const mockResolveOwnerWithRepoAccess = vi.fn(async (_repo: string) => 'repo-owner-1');
 vi.mock('./repo-aware-token.js', () => ({
   resolveOwnerWithRepoAccess: (repo: string) => mockResolveOwnerWithRepoAccess(repo),

@@ -34,15 +34,6 @@ vi.mock('./github-connections-store.js', () => ({
   getActiveAccessToken: (userId: string) => mockOauthImpl(userId),
 }));
 
-// Bypass the legacy org-owner cache; tests seed memberships fresh per case.
-vi.mock('./session-ownership.js', async () => {
-  const actual =
-    await vi.importActual<typeof import('./session-ownership.js')>('./session-ownership.js');
-  return { ...actual, getOrgOwnerUserId: () => mockOrgOwnerId };
-});
-
-let mockOrgOwnerId: string | null = null;
-
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { createUser } = await import('./users-store.js');
 const { createMembership } = await import('./memberships-store.js');
@@ -70,13 +61,12 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
     freshDb();
     resetRepoAccessCache();
     mockOauthImpl = async () => null;
-    mockOrgOwnerId = null;
   });
 
   it('skips Owners whose token returns 404 on the repo and picks the one that returns 200', async () => {
     const [first, second] = seedOwners(2);
     mockOauthImpl = async (uid) => `tok-${uid}`;
-    mockOrgOwnerId = first.id; // legacy fallback (the broken behaviour)
+    void first;
 
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
@@ -93,10 +83,9 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
     expect(token).toBe(`tok-${second.id}`);
   });
 
-  it('falls back to the legacy org-owner token when no Owner probes 2xx', async () => {
-    const [first] = seedOwners(2);
+  it('returns null when no Owner probes 2xx (no org-owner fallback)', async () => {
+    seedOwners(2);
     mockOauthImpl = async (uid) => `tok-${uid}`;
-    mockOrgOwnerId = first.id;
 
     globalThis.fetch = vi.fn(
       async () => new Response('', { status: 404 }),
@@ -106,13 +95,12 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
       { personalOAuth: null, githubApp: null },
       'foo/bar',
     );
-    expect(token).toBe(`tok-${first.id}`);
+    expect(token).toBeNull();
   });
 
-  it('falls back to the legacy resolver when no `githubRepo` is provided', async () => {
-    const owners = seedOwners(2);
+  it('returns null when no `githubRepo` is provided (no org-owner fallback)', async () => {
+    seedOwners(2);
     mockOauthImpl = async (uid) => `tok-${uid}`;
-    mockOrgOwnerId = owners[0].id;
 
     let probes = 0;
     globalThis.fetch = vi.fn(async () => {
@@ -121,7 +109,7 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
     }) as unknown as typeof fetch;
 
     const token = await resolveOrgOwnerGithubToken({ personalOAuth: null, githubApp: null });
-    expect(token).toBe(`tok-${owners[0].id}`);
+    expect(token).toBeNull();
     // No probe happens — the repo-aware path is skipped entirely.
     expect(probes).toBe(0);
   });

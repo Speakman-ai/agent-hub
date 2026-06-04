@@ -163,10 +163,6 @@ export function mapBroadcastToNotification(data) {
       }
       return null;
     }
-    case 'webhook_pr_merged': {
-      const { title, body } = prMergedNotification(data);
-      return { event: 'pr_merged', title, body };
-    }
     case 'thread_created': {
       if (!data.thread) return null;
       const { title, body } = threadCreatedNotification({

@@ -19,11 +19,6 @@ import express from 'express';
 import request from 'supertest';
 import type { RouteDeps } from '../types.js';
 
-vi.mock('../github-app.js', () => ({
-  githubApiRequest: vi.fn(),
-  resolveInstallationId: vi.fn(),
-}));
-
 vi.mock('../pr-detail-fetch.js', () => ({
   fetchPrDetail: vi.fn(),
 }));

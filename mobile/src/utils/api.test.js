@@ -43,84 +43,6 @@ function lastCall() {
   return mockFetch.mock.calls[0];
 }
 
-describe('api webhook helpers — URL + method + body parity with web client', () => {
-  it('getWebhooks → GET /webhooks', async () => {
-    await api.getWebhooks();
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks');
-    expect(init?.method).toBeUndefined(); // default GET
-  });
-
-  it('getProjectWebhooks(projectId) → GET /webhooks/project/:projectId', async () => {
-    await api.getProjectWebhooks('agent-hub');
-    const [url] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/project/agent-hub');
-  });
-
-  it('createWebhook(data) → POST /webhooks with JSON body', async () => {
-    const data = {
-      projectId: 'agent-hub',
-      repoUrl: 'https://github.com/acme/repo',
-      events: { pull_request: true },
-      enabled: true,
-    };
-    await api.createWebhook(data);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual(data);
-  });
-
-  it('updateWebhook(id, data) → PUT /webhooks/:id with JSON body', async () => {
-    const data = { enabled: false, authorAllowlist: ['mcsteen'] };
-    await api.updateWebhook(42, data);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual(data);
-  });
-
-  it('deleteWebhook(id) → DELETE /webhooks/:id', async () => {
-    await api.deleteWebhook(42);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42');
-    expect(init.method).toBe('DELETE');
-  });
-
-  it('getWebhookLogs(id) defaults limit=20', async () => {
-    await api.getWebhookLogs(42);
-    const [url] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42/logs?limit=20');
-  });
-
-  it('getWebhookLogs(id, 5) passes an explicit limit', async () => {
-    await api.getWebhookLogs(42, 5);
-    const [url] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42/logs?limit=5');
-  });
-
-  it('registerWebhook(id) → POST /webhooks/:id/register', async () => {
-    await api.registerWebhook(42);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42/register');
-    expect(init.method).toBe('POST');
-  });
-
-  it('unregisterWebhook(id) → DELETE /webhooks/:id/register', async () => {
-    await api.unregisterWebhook(42);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42/register');
-    expect(init.method).toBe('DELETE');
-  });
-
-  it('getWebhookRegistration(id) → GET /webhooks/:id/register', async () => {
-    await api.getWebhookRegistration(42);
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/webhooks/42/register');
-    expect(init?.method).toBeUndefined();
-  });
-});
-
 describe('api threads helpers — URL + method parity with web client', () => {
   it('getThreads(projectId) without filter → GET /projects/:id/threads', async () => {
     await api.getThreads('agent-hub');
@@ -255,9 +177,9 @@ describe('api updateProject — PATCH parity with web client', () => {
   });
 });
 
-describe('api webhook helpers — request headers + error handling', () => {
+describe('api fetchJSON — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
-    await api.getWebhooks();
+    await api.getThreads('agent-hub');
     const [, init] = lastCall();
     expect(init.headers).toMatchObject({
       'Content-Type': 'application/json',
@@ -271,7 +193,7 @@ describe('api webhook helpers — request headers + error handling', () => {
       status: 500,
       json: async () => ({ error: 'boom' }),
     });
-    await expect(api.getWebhooks()).rejects.toThrow(/500: boom/);
+    await expect(api.getThreads('agent-hub')).rejects.toThrow(/500: boom/);
   });
 });
 

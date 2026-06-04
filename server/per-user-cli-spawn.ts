@@ -67,39 +67,120 @@ export interface ResolveSessionCliSpawnEnvOpts {
   /**
    * Owning session id. Passed to `buildSpawnEnv` for per-session spawn-creds
    * minting when the deployment has no global `cfg.apiKey`. Also included in
-   * `TOOL_ERROR` metadata when the per-user CLI auth lookup throws so silent
-   * fallbacks to host config remain visible in operator logs.
+   * `TOOL_ERROR` metadata when the per-user CLI auth lookup throws.
    */
   sessionId?: string | null;
   /**
    * Engine about to be spawned (`claude-code`, `cursor-agent`, `codex-cli`,
-   * `gemini-cli`). Used to route HOME selection per-engine — claude-code
-   * spawns where the user has no per-user Claude identity fall back to the
-   * persistent host CLI HOME so the operator's
-   * `<dataDir>/host-creds/home/.claude/.credentials.json` (written by the
-   * browser-flow `POST /api/config/claude-auth/login`) is reachable. Other
-   * engines keep the legacy behavior: any per-user identity pins HOME to
-   * the per-user tree. Omit (undefined) to preserve the legacy
-   * any-identity-wins behavior — used by callers that don't know the
+   * `gemini-cli`). For the per-account engines (claude/cursor/codex) this
+   * gates the hard-fail guard: a spawn with no acting user — or a user
+   * lacking creds for that engine — throws `EngineAuthRequiredError` rather
+   * than running a CLI that would silently 401 or borrow another identity.
+   * Omit (undefined) to skip the guard — used by callers that don't know the
    * engine yet (Cursor session create-chat probe).
    */
   engine?: string | null;
 }
 
+/** Engines whose credentials are strictly per-account (no host fallback). */
+const PER_ACCOUNT_ENGINES = new Set(['claude-code', 'cursor-agent', 'codex-cli']);
+
+/**
+ * Thrown when a per-account engine spawn cannot be attributed to an acting
+ * user with their own credentials. Callers should surface this to the user /
+ * operator (chat error, route 4xx, cron log) instead of spawning blind.
+ */
+export class EngineAuthRequiredError extends Error {
+  readonly engine: string;
+  readonly userId: string | null;
+  constructor(engine: string, userId: string | null) {
+    super(
+      userId
+        ? `No ${engine} credentials for this account. Add your own ${engine} login under Account settings — Agent Hub spawns use your own credentials only, with no host or org-owner fallback.`
+        : `Cannot spawn ${engine}: no acting user. AI credentials are strictly per-account, so this action needs an authenticated owner with their own ${engine} login.`,
+    );
+    this.name = 'EngineAuthRequiredError';
+    this.engine = engine;
+    this.userId = userId;
+  }
+}
+
+/**
+ * True when `userId` has usable credentials for `engine` — a stored key, or a
+ * per-user HOME / device-auth OAuth cache. `gemini-cli` and unknown engines
+ * return true (Gemini is host-configured; unknown engines aren't gated).
+ */
+export function userHasEngineCreds(
+  engine: string | null | undefined,
+  userId: string | null,
+  dataDir: string,
+): boolean {
+  if (!userId?.trim() || !dataDir?.trim()) return false;
+  try {
+    switch (engine) {
+      case 'claude-code': {
+        const claude = getUserClaudeAuth(userId);
+        if (claude && (claude.anthropicApiKey || claude.claudeCodeOAuthToken)) return true;
+        return perUserHomeHasClaudeCache(userId, dataDir);
+      }
+      case 'cursor-agent': {
+        const cursor = getUserCursorAuth(userId);
+        if (cursor?.apiKey) return true;
+        return perUserHomeHasCursorCache(userId, dataDir);
+      }
+      case 'codex-cli': {
+        const codex = getUserCodexAuth(userId);
+        if (codex?.apiKey) return true;
+        if (hasPopulatedCodexDeviceAuth(userId, dataDir)) return true;
+        return perUserHomeHasCodexCache(userId, dataDir);
+      }
+      default:
+        // gemini-cli (host key allowed) + unknown engines are not gated here.
+        return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Hard-fail guard for per-account engine spawns. Throws
+ * `EngineAuthRequiredError` when `engine` is one of claude/cursor/codex and
+ * `userId` is missing or has no creds for that engine. No-op for Gemini /
+ * unknown engines.
+ */
+export function assertEngineCredsOrThrow(
+  engine: string | null | undefined,
+  userId: string | null,
+  dataDir: string,
+): void {
+  if (!engine || !PER_ACCOUNT_ENGINES.has(engine)) return;
+  if (!userId || !userHasEngineCreds(engine, userId, dataDir)) {
+    throw new EngineAuthRequiredError(engine, userId ?? null);
+  }
+}
+
 /**
  * Base CLI spawn env for a chat session (Cursor create-chat, agent spawn, …).
- * Mirrors the userOverride + HOME resolution in `server/chat.ts` so every
- * cursor-agent invocation for the same session shares credentials.
+ * Resolves the acting user's own per-account credentials and pins HOME to
+ * their per-user tree. There is no host or org-owner fallback: a per-account
+ * engine spawn with no creds throws `EngineAuthRequiredError`.
  */
 export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): NodeJS.ProcessEnv {
   const { cfg, ownerId, credsOwnerId, sessionId, engine } = opts;
+  // The acting user — the only identity whose keys may flow into this spawn.
+  const actingUserId = credsOwnerId ?? ownerId;
+
+  // Hard-fail before doing any work: per-account engines must be your own.
+  assertEngineCredsOrThrow(engine, actingUserId, cfg.dataDir);
+
   let userOverride: SpawnEnvOverride | null = null;
   try {
-    if (credsOwnerId) {
-      const userClaude = getUserClaudeAuth(credsOwnerId);
-      const userCursor = getUserCursorAuth(credsOwnerId);
-      const userGemini = getUserGeminiAuth(credsOwnerId);
-      const userCodex = getUserCodexAuth(credsOwnerId);
+    if (actingUserId) {
+      const userClaude = getUserClaudeAuth(actingUserId);
+      const userCursor = getUserCursorAuth(actingUserId);
+      const userGemini = getUserGeminiAuth(actingUserId);
+      const userCodex = getUserCodexAuth(actingUserId);
       const hasAny =
         !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
         !!(userCursor && userCursor.apiKey) ||
@@ -116,9 +197,10 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
       }
     }
   } catch (err) {
-    // Best-effort — host config remains the safety net. Surface the failure
-    // as a structured TOOL_ERROR so operator logs preserve the signal the
-    // equivalent inline block in `chat.ts` used to emit pre-extraction.
+    // Surface the lookup failure as a structured TOOL_ERROR so operator logs
+    // preserve the signal. The spawn still proceeds — but the hard-fail guard
+    // above already rejected per-account engines without creds, so the only
+    // spawns reaching here are Gemini / unknown engines.
     const summary = (err as Error).message
       .replace(/[\r\n|]+/g, ' ')
       .trim()
@@ -134,47 +216,15 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
       `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
     );
   }
-  // HOME pin selection. The default rule is "any per-user identity wins" —
-  // a user that has signed in to one engine per-user gets their per-user
-  // HOME for every spawn so other engines' caches stay isolated under their
-  // subtree. Claude Code is the outlier: its only file-based cache is
-  // `.claude/.credentials.json`, and the operator-side browser login
-  // (`POST /api/config/claude-auth/login`) writes that file to the
-  // persistent host CLI HOME, *not* the per-user HOME. When the engine is
-  // claude-code and the user has no per-user Claude identity (DB column
-  // OR per-user `.credentials.json`), pinning HOME to the per-user tree
-  // shadows the working host login and the spawn fails with
-  // "Not logged in · Please run /login". Routing back to the host HOME in
-  // that case lets the operator browser-login carry the reviewer spawn.
-  // Other engines retain the legacy behavior because they CAN populate the
-  // per-user cache themselves (Codex device-login, Cursor browser-login,
-  // Gemini OAuth) — none of those have an analogous host-only file form.
-  let homeUserId: string | null;
-  if (
-    engine === 'claude-code' &&
-    credsOwnerId &&
-    !userHasPerUserClaudeIdentity(credsOwnerId, cfg.dataDir)
-  ) {
-    // Fall back to host CLI HOME for this Claude spawn. `ownerId` is the
-    // session owner — preserving it would re-pin HOME to per-user via the
-    // first branch of the legacy rule, defeating the fallback. Reviewer
-    // sessions already enter this branch with `ownerId = null`; for a
-    // regular user session whose owner has no per-user Claude, the same
-    // host-HOME fallback is the right answer (the env-token path still
-    // bills to whichever level set CLAUDE_CODE_OAUTH_TOKEN: per-user
-    // override → host config → unset, identical to before).
-    homeUserId = null;
-  } else {
-    homeUserId =
-      ownerId ??
-      (credsOwnerId && userHasPerUserCliIdentity(credsOwnerId, cfg.dataDir) ? credsOwnerId : null);
-  }
-  const spawnCredsUserId = credsOwnerId ?? ownerId;
+  // HOME is pinned to the acting user's per-user tree so every engine's CLI
+  // cache (`.cursor`, `.codex`, `.claude`, Gemini OAuth) stays isolated under
+  // their subtree. No owner → no per-user HOME pin (buildSpawnEnv keeps the
+  // inherited HOME); per-account engines already hard-failed above.
   const buildOpts: BuildSpawnEnvOptions = {
     userOverride,
-    userId: homeUserId,
+    userId: actingUserId,
     sessionId: sessionId ?? null,
-    spawnCredsUserId,
+    spawnCredsUserId: actingUserId,
   };
   return buildSpawnEnv(cfg, buildOpts);
 }
@@ -199,27 +249,6 @@ export function userHasPerUserCliIdentity(userId: string, dataDir: string): bool
     if (perUserHomeHasCodexCache(userId, dataDir)) return true;
     if (perUserHomeHasClaudeCache(userId, dataDir)) return true;
 
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True iff the user has a Claude-specific identity we can attach to a
- * claude-code spawn. This is intentionally narrower than
- * `userHasPerUserCliIdentity`: the engine-aware HOME route in
- * `resolveSessionCliSpawnEnv` falls back to the host CLI HOME for
- * claude-code spawns when this returns false, because the operator
- * browser-flow login writes `.claude/.credentials.json` to the persistent
- * host HOME — not the per-user one — and we'd otherwise shadow it.
- */
-export function userHasPerUserClaudeIdentity(userId: string, dataDir: string): boolean {
-  if (!userId?.trim() || !dataDir?.trim()) return false;
-  try {
-    const claude = getUserClaudeAuth(userId);
-    if (claude && (claude.anthropicApiKey || claude.claudeCodeOAuthToken)) return true;
-    if (perUserHomeHasClaudeCache(userId, dataDir)) return true;
     return false;
   } catch {
     return false;

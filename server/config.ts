@@ -362,16 +362,17 @@ const config: AppConfig = {
 
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
-  anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
-  claudeCodeOAuthToken: resolve('CLAUDE_CODE_OAUTH_TOKEN', 'claudeCodeOAuthToken', null),
+  // AI provider credentials for Claude / Cursor / Codex are strictly
+  // per-account — they live encrypted in `orgs.db` `users` and are managed
+  // via `/api/auth/me/*-auth` (see server/users-store.ts). There is
+  // intentionally NO host-wide key for these engines: every spawn must use
+  // the acting user's own login.
+  //
+  // OpenAI + Gemini stay host-configured: they are not agent-engine spawn
+  // credentials. `openaiApiKey` powers Whisper transcription + LLM session
+  // titles; `geminiApiKey` backs wiki embeddings + the Gemini CLI.
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
-  // Codex CLI reads its API key from either `OPENAI_API_KEY` or `CODEX_API_KEY`
-  // (see https://developers.openai.com/codex/noninteractive). We expose
-  // `codexApiKey` as a dedicated field so the Codex auth panel can toggle it
-  // independently of the existing `openaiApiKey` (which we leave untouched for
-  // forward-compat with any future OpenAI SDK integrations).
-  codexApiKey: resolve('CODEX_API_KEY', 'codexApiKey', null),
   // Optional Codex CLI profile name — when set, every `codex exec` spawn
   // gets `--profile <name>` appended so the CLI loads the matching profile
   // from `~/.codex/config.toml`. Empty / whitespace is treated as unset by
@@ -382,9 +383,6 @@ const config: AppConfig = {
     const trimmed = String(raw).trim();
     return trimmed.length > 0 ? trimmed : null;
   })(),
-  // Cursor Agent CLI reads its API key from CURSOR_API_KEY. The binary is named
-  // `agent` (not `cursor`). See https://docs.cursor.com/en/cli/reference/authentication.
-  cursorApiKey: resolve('CURSOR_API_KEY', 'cursorApiKey', null),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl:
@@ -533,31 +531,26 @@ export function buildSpawnEnv(
   // versa.
   const override = opts.userOverride ?? null;
   const ownerUserId = presentString(opts.userId);
-  const anthropicApiKey =
-    presentString(override?.anthropicApiKey) ?? presentString(cfg.anthropicApiKey);
+  // Claude / Cursor / Codex credentials are strictly per-account: they come
+  // ONLY from the acting user's `userOverride`. There is no host fallback —
+  // a spawn with no per-user key for these engines simply gets none of these
+  // vars set (and the session spawn path hard-fails before reaching here; see
+  // `resolveSessionCliSpawnEnv`). This guarantees it is never ambiguous whose
+  // keys a CLI is using: always the session owner's own login.
+  const anthropicApiKey = presentString(override?.anthropicApiKey);
   if (anthropicApiKey) {
     env.ANTHROPIC_API_KEY = anthropicApiKey;
   } else {
     delete env.ANTHROPIC_API_KEY;
   }
-  const rawOauth =
-    presentString(override?.claudeCodeOAuthToken) ?? presentString(cfg.claudeCodeOAuthToken);
+  const rawOauth = presentString(override?.claudeCodeOAuthToken);
   const oauthToken = rawOauth ? normalizeClaudeSetupToken(rawOauth) : null;
   if (oauthToken) {
     env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   } else {
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
-  // Cursor / Gemini / Codex: per-user override → host config when no
-  // `userId` is set. When `userId` is set, host keys are withheld so the
-  // spawn uses only that user's stored keys or OAuth caches under HOME.
-  // When spawning for a known Hub user, never inject the operator's
-  // Cursor/Gemini/Codex API keys — only that user's stored keys (via
-  // `userOverride`) or their per-user OAuth caches under HOME/CODEX_HOME.
-  const inheritHostEngineKeys = !ownerUserId;
-  const cursorApiKey =
-    presentString(override?.cursorApiKey) ??
-    (inheritHostEngineKeys ? presentString(cfg.cursorApiKey) : null);
+  const cursorApiKey = presentString(override?.cursorApiKey);
   if (cursorApiKey) {
     // Cursor Agent CLI (binary name `agent`) reads CURSOR_API_KEY when no
     // cached OAuth token is present. See
@@ -566,9 +559,8 @@ export function buildSpawnEnv(
   } else {
     delete env.CURSOR_API_KEY;
   }
-  const geminiApiKey =
-    presentString(override?.geminiApiKey) ??
-    (inheritHostEngineKeys ? presentString(cfg.geminiApiKey) : null);
+  // Gemini is the one host-configured engine: per-user override → host config.
+  const geminiApiKey = presentString(override?.geminiApiKey) ?? presentString(cfg.geminiApiKey);
   if (geminiApiKey) {
     // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached
     // OAuth token is present. See https://geminicli.com/docs/cli/cli-reference.
@@ -576,9 +568,7 @@ export function buildSpawnEnv(
   } else {
     delete env.GEMINI_API_KEY;
   }
-  const codexApiKey =
-    presentString(override?.codexApiKey) ??
-    (inheritHostEngineKeys ? presentString(cfg.codexApiKey) : null);
+  const codexApiKey = presentString(override?.codexApiKey);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
     // environment when no ChatGPT OAuth token is cached. See

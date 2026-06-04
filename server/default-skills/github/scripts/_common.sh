@@ -50,15 +50,15 @@ require_gh_token() {
 error: AGENT_HUB_REVIEWER_LOCK=1 and no GitHub token was injected.
 
 This spawn was isolated from host GitHub credentials by Agent Hub. Reviewer
-agents must post formal PR reviews via:
+agents are in-session advisors: emit your APPROVE / REQUEST_CHANGES verdict in
+session output — Agent Hub no longer posts formal reviews to GitHub. PR reads
+are served by the Agent Hub PR proxy (`/api/pr/{data,diff,files}`) without
+handing a token to the spawn.
 
-    POST /api/pr/review
-
-(server-mediated; uses the GitHub App / bot identity). Other write actions
-(`gh pr create`, `gh pr comment`, `git push`) require a per-user OAuth/PAT
-token, which Agent Hub injects automatically when one is configured. If you
-expected a token here, sign in via Settings → GitHub or check the operator's
-`config.json` (`botGithubToken` for reviewer-role agents).
+Other write actions (`gh pr create`, `gh pr comment`, `git push`) require a
+per-user OAuth/PAT token, which Agent Hub injects automatically when one is
+configured. If you expected a token here, sign in via Settings → GitHub or
+check the operator's `config.json` (`botGithubToken` for reviewer-role agents).
 
 This script will not fall back to host `gh auth status` while the lock is set.
 See server/default-skills/github/scripts/_common.sh.
@@ -165,18 +165,17 @@ resolve_repo() {
 # Two distinct env markers govern the github skill's write surface:
 #
 #   AGENT_HUB_REVIEWER_LOCK=1
-#     Universal (set on every spawn by applyReviewerSpawnIsolation). Blocks
-#     ONLY `gh pr review` because that is the sole identity-attribution
-#     surface for formal PR reviews. Read in gh-pr.sh::_reviewer_locked and
-#     in require_gh_token above.
+#     Universal (set on every spawn by applyReviewerSpawnIsolation). Used by
+#     require_gh_token above to hard-fail rather than fall back to host
+#     `gh auth status`. Formal `gh pr review` is disabled outright in
+#     gh-pr.sh::cmd_review regardless of this flag.
 #
 #   AGENT_HUB_REVIEWER_ROLE_LOCK=1
 #     Set ONLY when agent.role === 'reviewer' (applyReviewerRoleLock). The
 #     broader structural backstop: assumes a future change accidentally
 #     leaks a GitHub token into the reviewer spawn env, and makes sure the
 #     spawn still cannot use it to forge commits or open PRs (the failure
-#     mode documented in surveytracker PR #622, where the App's installation
-#     token was held off-box and opened a PR with bot-authored commits).
+#     mode documented in surveytracker PR #622).
 #
 # This file owns the role-lock enforcement helpers; gh-pr.sh calls
 # `_reviewer_role_locked` directly for subcommand-level denials, and
@@ -184,12 +183,12 @@ resolve_repo() {
 #
 # Allowed write surfaces under AGENT_HUB_REVIEWER_ROLE_LOCK=1:
 #
-#   POST /repos/<owner>/<repo>/pulls/<n>/reviews    (formal review submit)
 #   POST /repos/<owner>/<repo>/issues/<n>/comments  (PR/issue conversation)
 #
-# Everything else with a write method (POST/PUT/PATCH/DELETE) is denied.
-# `gh api graphql` is denied wholesale (mutation bodies are free-form and
-# cannot be allowlisted by path).
+# Everything else with a write method (POST/PUT/PATCH/DELETE) is denied —
+# including POST .../pulls/<n>/reviews, since formal reviews are no longer
+# posted to GitHub. `gh api graphql` is denied wholesale (mutation bodies
+# are free-form and cannot be allowlisted by path).
 # ---------------------------------------------------------------------------
 _reviewer_role_locked() {
   local what="${1:-write}"
@@ -198,19 +197,15 @@ _reviewer_role_locked() {
 error: '$what' is forbidden in reviewer-role spawns.
 
 AGENT_HUB_REVIEWER_ROLE_LOCK=1 blocks direct GitHub write operations from
-this spawn as defense-in-depth. Reviewer agents may only post formal
-reviews via the server-mediated endpoint:
+this spawn as defense-in-depth. The reviewer is an in-session advisor:
+emit your APPROVE / REQUEST_CHANGES verdict in session output — Agent Hub
+no longer posts formal reviews to GitHub.
 
-  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
-    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
-    -H "Content-Type: application/json" \\
-    -d '{"prUrl":"<pr url>","event":"APPROVE|REQUEST_CHANGES","body":"<markdown>"}'
-
-That endpoint uses the GitHub App / bot identity. Direct invocations of
-\`gh pr create / merge / close / ready / edit\` and arbitrary write
-\`gh api\` calls are blocked structurally — even if a token is reachable
-in this spawn — to prevent reviewer identity leaks of the kind
-documented in mcsteen/surveytracker PR #622.
+Direct invocations of \`gh pr review / create / merge / close / ready / edit\`
+and arbitrary write \`gh api\` calls are blocked structurally — even if a
+token is reachable in this spawn — to prevent reviewer identity leaks of
+the kind documented in mcsteen/surveytracker PR #622. PR conversation
+comments (POST .../issues/<n>/comments) remain available.
 
 If you legitimately need to create commits or open PRs, your agent must
 not be configured with role=reviewer.
@@ -224,12 +219,12 @@ LOCKED
 # path (first positional). Allowed under the role lock:
 #
 #   GET / HEAD  (any path)         — reads are unconstrained
-#   POST repos/<owner>/<repo>/pulls/<n>/reviews
 #   POST repos/<owner>/<repo>/issues/<n>/comments
 #
-# Everything else exits 2 with a loud message. `graphql` paths exit
-# unconditionally when the method is not GET (graphql writes have
-# free-form bodies and can't be path-allowlisted).
+# Everything else exits 2 with a loud message — including
+# POST .../pulls/<n>/reviews, since formal reviews are no longer posted to
+# GitHub. `graphql` paths exit unconditionally when the method is not GET
+# (graphql writes have free-form bodies and can't be path-allowlisted).
 _check_gh_api_reviewer_role_lock() {
   if [[ "${AGENT_HUB_REVIEWER_ROLE_LOCK:-}" != "1" ]]; then
     return 0
@@ -239,20 +234,21 @@ _check_gh_api_reviewer_role_lock() {
   local path=""
   local expect_method_value=0
   local arg
+  # Uppercase via `tr` rather than bash 4's `${var^^}`: these scripts run
+  # under `#!/usr/bin/env bash`, which is bash 3.2 on stock macOS, where
+  # `${var^^}` raises "bad substitution" and would break this security check.
   for arg in "$@"; do
     if (( expect_method_value == 1 )); then
-      method="${arg^^}"
+      method=$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]')
       expect_method_value=0
       continue
     fi
     case "$arg" in
       --method=*)
-        method="${arg#--method=}"
-        method="${method^^}"
+        method=$(printf '%s' "${arg#--method=}" | tr '[:lower:]' '[:upper:]')
         ;;
       -X=*)
-        method="${arg#-X=}"
-        method="${method^^}"
+        method=$(printf '%s' "${arg#-X=}" | tr '[:lower:]' '[:upper:]')
         ;;
       --method|-X)
         expect_method_value=1
@@ -284,9 +280,6 @@ _check_gh_api_reviewer_role_lock() {
   esac
 
   local norm="${path#/}"
-  if [[ "$norm" =~ ^repos/[^/]+/[^/]+/pulls/[^/]+/reviews/?$ ]]; then
-    return 0
-  fi
   if [[ "$norm" =~ ^repos/[^/]+/[^/]+/issues/[^/]+/comments/?$ ]]; then
     return 0
   fi
@@ -295,15 +288,14 @@ _check_gh_api_reviewer_role_lock() {
 error: write \`gh api $method '$path'\` is forbidden in reviewer-role spawns.
 
 AGENT_HUB_REVIEWER_ROLE_LOCK=1 restricts write methods (POST/PUT/PATCH/DELETE)
-to the formal-review surfaces only:
+to PR/issue conversation only:
 
-  POST /repos/<owner>/<repo>/pulls/<n>/reviews
   POST /repos/<owner>/<repo>/issues/<n>/comments
 
-For other writes (creating commits, opening or editing PRs, mutating labels,
-graphql mutations, etc.) the agent must not be configured with role=reviewer.
-Use a dev/lead/author spawn instead, or post the review via
-\`POST \$AGENT_HUB_URL/api/pr/review\`.
+Formal reviews are not posted to GitHub — the reviewer is an in-session advisor
+and emits its verdict in session output. For other writes (creating commits,
+opening or editing PRs, mutating labels, graphql mutations, etc.) the agent
+must not be configured with role=reviewer; use a dev/lead/author spawn instead.
 
 This guard is structural defense-in-depth: even if a future change leaks a
 GitHub token into the reviewer spawn env, the credential cannot be used to
@@ -370,8 +362,8 @@ _require_arg() {
 # When the spawn is under `AGENT_HUB_REVIEWER_LOCK=1` and has no GitHub
 # token, `gh pr view` / `gh pr diff` cannot authenticate. The server-side
 # `/api/pr/{data,diff,files}` endpoints proxy those reads through the
-# GitHub App's installation token without ever handing a token to the
-# spawn. These helpers route through that proxy.
+# session owner's GitHub OAuth/PAT (resolved server-side) without ever
+# handing a token to the spawn. These helpers route through that proxy.
 #
 # `_hub_pr_proxy_should_use` — true when:
 #   - AGENT_HUB_REVIEWER_LOCK=1 (reviewer spawn)
@@ -476,9 +468,9 @@ Body (first 400 bytes):
 $(head -c 400 "$tmp_body")
 
 The server's response body is above. Common causes:
-  - GitHub App installation not present for repo owner "${HUB_PR_OWNER}"
+  - The session owner's GitHub account lacks access to repo owner "${HUB_PR_OWNER}"
   - PR #${number} does not exist or is in a private repo without coverage
-  - Server-side App credentials misconfigured
+  - The session owner has not connected GitHub in Settings → GitHub
 HELP
   return 1
 }

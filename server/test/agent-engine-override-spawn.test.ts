@@ -30,7 +30,6 @@ import { signJwt } from '../jwt.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
-import { resetOrgOwnerCache } from '../session-ownership.js';
 import config from '../config.js';
 
 interface User {
@@ -121,7 +120,6 @@ beforeAll(async () => {
     passwordHash: 'h',
   });
   createMembership(aRow.id, orgId, 'Admin');
-  resetOrgOwnerCache();
   userA = {
     id: aRow.id,
     username: aRow.username,
@@ -136,7 +134,6 @@ afterAll(() => {
     /* best-effort */
   }
   reloadAuthRecord();
-  resetOrgOwnerCache();
 });
 
 describe('Per-user per-agent engine override — session spawn', () => {

@@ -19,13 +19,11 @@ import { getAuthHeaders, getApiBase } from '../utils/connection.js';
  *   DELETE /api/auth/github               — disconnect
  *
  * Two paths to connect:
- *   1. OAuth (preferred when server has githubApp.clientId/clientSecret)
+ *   1. OAuth (preferred when the server has an OAuth App configured with a
+ *      clientId/clientSecret)
  *   2. Personal Access Token paste (always works — used during setup, in
  *      local-only Electron installs, and any time the server hasn't been
- *      configured with a GitHub App yet).
- *
- * Does NOT interact with the GitHub App install flow — that's a separate
- * per-project concern covered on the project settings page.
+ *      configured with an OAuth App yet).
  */
 export default function GithubConnectionSection({ embedded = false } = {}) {
   const [status, setStatus] = useState(null);

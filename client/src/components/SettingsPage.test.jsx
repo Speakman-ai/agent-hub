@@ -1,25 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
 import SettingsPage, {
-  GitHubSection,
+  GeneralSection,
   OrganizationsSection,
   ProjectsSection,
 } from './SettingsPage.jsx';
 import { api } from '../utils/api.js';
-
-/**
- * Regression guard for the bug: "GitHub App not creating sidebar agent".
- *
- * When the user completes the GitHub App auto-setup flow, the server
- * redirects to `/#/settings?githubApp=ready`. At that moment the server
- * has already run `ensureReviewerAgents()` and (via the fix) broadcast
- * `projects_updated` — but the WebSocket may have been disconnected
- * during the browser redirect and missed the event entirely.
- *
- * The SettingsPage ready-redirect effect must therefore ALSO call
- * `onProjectsChange()` locally so the sidebar picks up the newly seeded
- * Reviewer agent without requiring a full page reload.
- */
 
 vi.mock('../utils/api.js', () => ({
   api: {
@@ -27,7 +13,6 @@ vi.mock('../utils/api.js', () => ({
     updateConfig: vi.fn(),
     get: vi.fn(),
     getModelConfig: vi.fn(),
-    getProjectWebhooks: vi.fn().mockResolvedValue([]),
     updateProject: vi.fn().mockResolvedValue({ ok: true }),
     deleteProject: vi.fn().mockResolvedValue({ ok: true }),
   },
@@ -67,95 +52,6 @@ vi.mock('../utils/orgs.js', async () => {
   };
 });
 
-describe('GitHubSection — return from GitHub App auto-setup', () => {
-  beforeEach(() => {
-    api.getConfig.mockResolvedValue({
-      claudeBin: '/bin/claude',
-      cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-8',
-      defaultCwd: '/tmp',
-      port: 3051,
-      publicUrl: '',
-      githubApp: null,
-      botGithubTokenSet: false,
-      botGithubUser: null,
-      anthropicApiKeySet: false,
-      _file: {},
-    });
-    // `/github-app/status` and other GET calls — resolve to empty objects.
-    api.get.mockResolvedValue({});
-    api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-8',
-      engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
-    });
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-    // Reset the hash so the effect doesn't fire on subsequent tests.
-    window.history.replaceState(null, '', '/');
-  });
-
-  it('calls onProjectsChange when returning with ?githubApp=ready', async () => {
-    window.history.replaceState(null, '', '/#/settings?githubApp=ready');
-    const onProjectsChange = vi.fn();
-
-    render(<GitHubSection projects={[]} onProjectsChange={onProjectsChange} />);
-
-    await waitFor(() => {
-      expect(onProjectsChange).toHaveBeenCalled();
-    });
-  });
-
-  it('calls onProjectsChange when returning with ?githubApp=created', async () => {
-    // `created` is the status used after a brand-new App manifest flow —
-    // the server has just created the App and seeded reviewers in one go,
-    // so the sidebar still needs to refresh.
-    window.history.replaceState(null, '', '/#/settings?githubApp=created');
-    const onProjectsChange = vi.fn();
-
-    render(<GitHubSection projects={[]} onProjectsChange={onProjectsChange} />);
-
-    await waitFor(() => {
-      expect(onProjectsChange).toHaveBeenCalled();
-    });
-  });
-
-  it('does NOT call onProjectsChange when the URL has no githubApp query param', async () => {
-    window.history.replaceState(null, '', '/#/settings');
-    const onProjectsChange = vi.fn();
-
-    render(<GitHubSection projects={[]} onProjectsChange={onProjectsChange} />);
-
-    // Give any pending effects a tick to run.
-    await waitFor(() => {
-      expect(api.getConfig).toHaveBeenCalled();
-    });
-    expect(onProjectsChange).not.toHaveBeenCalled();
-  });
-
-  it('does NOT call onProjectsChange when ?githubApp=error (user saw an alert instead)', async () => {
-    // On error we don't refresh projects — nothing changed server-side.
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    window.history.replaceState(
-      null,
-      '',
-      '/#/settings?githubApp=error&message=' + encodeURIComponent('boom'),
-    );
-    const onProjectsChange = vi.fn();
-
-    render(<GitHubSection projects={[]} onProjectsChange={onProjectsChange} />);
-
-    await waitFor(() => {
-      expect(alertSpy).toHaveBeenCalled();
-    });
-    expect(onProjectsChange).not.toHaveBeenCalled();
-
-    alertSpy.mockRestore();
-  });
-});
-
 describe('SettingsPage — tab labels', () => {
   beforeEach(() => {
     api.getConfig.mockResolvedValue({
@@ -188,7 +84,7 @@ describe('SettingsPage — tab labels', () => {
     const { queryByRole, findByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
-    await findByRole('button', { name: /^Account$/ });
+    await findByRole('button', { name: /^General$/ });
     expect(queryByRole('button', { name: /^Integrations$/ })).toBeNull();
   });
 
@@ -208,30 +104,27 @@ describe('SettingsPage — tab labels', () => {
     });
   });
 
-  it('no longer exposes Preview or Finalize tabs (moved to per-project sidebar)', async () => {
-    // Preview and Finalize configuration moved out of Settings and into the
-    // per-project sidebar as "Preview" and "Runners". Guard against the tabs
-    // accidentally reappearing here.
-    const { findByRole, queryByRole } = render(
+  it('exposes a Preview tab in the Workspace group', async () => {
+    // The Preview settings panel is the only place users can configure
+    // the per-session worktree preview without hand-editing
+    // projects.json. It must appear in the sidebar under Workspace.
+    const { findByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
-    // Wait for the settings nav to render before asserting absence.
-    expect(await findByRole('button', { name: /^Account$/ })).toBeTruthy();
-    expect(queryByRole('button', { name: /^Preview$/ })).toBeNull();
-    expect(queryByRole('button', { name: /^Finalize$/ })).toBeNull();
+    expect(await findByRole('button', { name: /^Preview$/ })).toBeTruthy();
   });
 
-  it('labels the host-wide CLI auth tab "Global AI Authentication"', async () => {
-    // The host-wide tab manages credentials in ~/.agent-hub/data/config.json
-    // and is rendered side-by-side with the per-user Account page. Calling
-    // it "Global AI Authentication" makes its scope obvious so the per-user
-    // vs. host-wide split stops confusing users.
+  it('labels the host-wide Gemini key tab "Global API Keys"', async () => {
+    // Per-account Claude/Cursor/Codex auth now lives on Settings → Account.
+    // The only host-wide AI credential left is the Gemini API key (used for
+    // wiki embeddings / memory RAG), so the tab is labeled "Global API Keys".
     const { findByText, queryByRole, queryByText } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    expect(await findByText('Global AI Authentication')).toBeTruthy();
-    // The old label is gone — guard against accidental regression.
+    expect(await findByText('Global API Keys')).toBeTruthy();
+    // The old combined-auth labels are gone — guard against regression.
+    expect(queryByText('Global AI Authentication')).toBeNull();
     expect(queryByText('AI Authentication')).toBeNull();
     // Regression guard: don't accidentally render a tab labeled just "Auth".
     expect(queryByRole('button', { name: /^Auth$/ })).toBeNull();
@@ -239,7 +132,7 @@ describe('SettingsPage — tab labels', () => {
 });
 
 /**
- * Role-gated visibility of the host-wide "Global AI Authentication" tab.
+ * Role-gated visibility of the host-wide "Gemini API Key" tab.
  *
  * The tab writes to `~/.agent-hub/data/config.json` — a host-wide credential
  * file — so only Admin/Owner users can act on it. Regular users manage their
@@ -249,7 +142,7 @@ describe('SettingsPage — tab labels', () => {
  * Server-side enforcement of the underlying permissions is unchanged; this
  * is purely a UX gate, so we only need to verify the client-side filter.
  */
-describe('SettingsPage — Global AI Authentication tab role gating', () => {
+describe('SettingsPage — Gemini API Key tab role gating', () => {
   beforeEach(async () => {
     api.getConfig.mockResolvedValue({
       claudeBin: '/bin/claude',
@@ -287,7 +180,7 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    expect(await findByText('Global AI Authentication')).toBeTruthy();
+    expect(await findByText('Global API Keys')).toBeTruthy();
   });
 
   it('hides the tab from non-Admin users', async () => {
@@ -299,13 +192,13 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    // Wait for the page to settle — `Account` is in both the desktop
+    // Wait for the page to settle — `General` is in both the desktop
     // sidebar and the mobile drawer, so we wait for the multi-match form.
-    await findAllByText('Account');
+    await findAllByText('General');
 
+    expect(queryByText('Global API Keys')).toBeNull();
+    // And the old combined-auth name doesn't sneak back either.
     expect(queryByText('Global AI Authentication')).toBeNull();
-    // And the old name doesn't sneak back either.
-    expect(queryByText('AI Authentication')).toBeNull();
   });
 
   it('redirects a non-Admin who deep-links to the gated tab back to Account', async () => {
@@ -324,10 +217,10 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       expect(getAllByText('Account').length).toBeGreaterThan(0);
     });
     // The gated panel never rendered.
-    expect(queryByText('Global AI Authentication')).toBeNull();
+    expect(queryByText('Global API Keys')).toBeNull();
   });
 
-  it('does not render the host-wide auth panel for non-Admin even if tab state somehow lands on claude-auth', async () => {
+  it('does not render the host-wide Gemini panel for non-Admin even if tab state somehow lands on claude-auth', async () => {
     // Belt-and-suspenders: the role check on the render switch should
     // also short-circuit, so even a brief tick where `tab === 'claude-auth'`
     // before the redirect effect runs won't expose the host-wide panel.
@@ -338,13 +231,12 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="claude-auth" />,
     );
 
-    // Wait for first render to flush — `Account` is in both the desktop
+    // Wait for first render to flush — `General` is in both the desktop
     // sidebar and the mobile drawer.
-    await findAllByText('Account');
-    // The combined-host-auth panel is wrapped in `space-y-10` with the
-    // ClaudeAuth/Gemini/Cursor/Codex sections. The Cursor section's
-    // distinctive heading is a reliable signal that the panel rendered.
-    expect(queryByText('Cursor Agent Authentication')).toBeNull();
+    await findAllByText('General');
+    // The gated tab renders only <GeminiAuthSection />. Its distinctive
+    // heading is a reliable signal that the panel rendered.
+    expect(queryByText('Gemini CLI Authentication')).toBeNull();
   });
 
   it('shows the tab in local-bundled mode (no JWT / activeOrgIsLocal=true)', async () => {
@@ -360,7 +252,81 @@ describe('SettingsPage — Global AI Authentication tab role gating', () => {
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
 
-    expect(await findByText('Global AI Authentication')).toBeTruthy();
+    expect(await findByText('Global API Keys')).toBeTruthy();
+  });
+});
+
+describe('GeneralSection — CLI binary paths', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/usr/bin/claude',
+      cursorBin: '/home/agenthub/.local/bin/agent',
+      geminiBin: '/usr/local/bin/gemini',
+      codexBin: '/usr/local/bin/codex',
+      port: 3051,
+      defaultCwd: '/tmp',
+      publicUrl: '',
+      githubApp: null,
+      _file: {},
+    });
+    api.updateConfig.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete window.electronAPI;
+  });
+
+  it('shows desktop PATH hint when running inside Electron', async () => {
+    window.electronAPI = { isElectron: true };
+    const { getByText } = render(<GeneralSection />);
+    await waitFor(() => {
+      expect(getByText(/Desktop app:/)).toBeTruthy();
+    });
+  });
+
+  it('renders a cursorBin input pre-populated from config', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+    // Section label visible alongside the claude/gemini ones
+    await waitFor(() => expect(getByText('Cursor Agent CLI')).toBeTruthy());
+    // Input is wired to the loaded config value
+    expect(await findByDisplayValue('/home/agenthub/.local/bin/agent')).toBeTruthy();
+  });
+
+  it('sends cursorBin in the updateConfig payload when saved', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+
+    const cursorInput = await findByDisplayValue('/home/agenthub/.local/bin/agent');
+    fireEvent.change(cursorInput, { target: { value: '/usr/local/bin/agent' } });
+
+    fireEvent.click(getByText('Save'));
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ cursorBin: '/usr/local/bin/agent' }),
+      );
+    });
+  });
+
+  it('renders a codexBin input pre-populated from config', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+    await waitFor(() => expect(getByText('Codex CLI')).toBeTruthy());
+    expect(await findByDisplayValue('/usr/local/bin/codex')).toBeTruthy();
+  });
+
+  it('sends codexBin in the updateConfig payload when saved', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+
+    const codexInput = await findByDisplayValue('/usr/local/bin/codex');
+    fireEvent.change(codexInput, { target: { value: '/opt/codex/bin/codex' } });
+
+    fireEvent.click(getByText('Save'));
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ codexBin: '/opt/codex/bin/codex' }),
+      );
+    });
   });
 });
 
@@ -413,7 +379,7 @@ describe('SettingsPage — sidebar navigation', () => {
 
   it('switches the active section when a sidebar item is clicked', async () => {
     const { getAllByText, queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
-    // "Account" is the first sidebar entry. Click it and the Account section heading should appear.
+    // "Account" is the second sidebar entry. Click it and the Account section heading should appear.
     const accountButtons = getAllByText('Account');
     fireEvent.click(accountButtons[0]);
     // The AccountSection renders its own UI; we don't need to assert its internals,
@@ -470,7 +436,7 @@ describe('SettingsPage — sidebar navigation', () => {
   // Bug "GitHub account on this page; Projects in its own tab" (Electron 1.10.1):
   // Projects must have a dedicated sidebar entry rather than being crammed
   // under the GitHub tab. The GitHub tab now hosts the personal GitHub OAuth
-  // connection + GitHub App config — and nothing per-project.
+  // connection + server OAuth App config — and nothing per-project.
   it('exposes a "Projects" entry in the Workspace group', () => {
     const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
     expect(getAllByText('Projects').length).toBeGreaterThan(0);
@@ -508,7 +474,7 @@ describe('SettingsPage — sidebar navigation', () => {
   it('renders the GitHub Account ("Sign in with GitHub") block on the GitHub tab', async () => {
     const { findByText } = render(<SettingsPage projects={[]} agents={[]} initialTab="github" />);
     // GithubConnectionSection's heading — proves the personal GitHub identity
-    // is now visible on the same page that hosts the GitHub App config.
+    // is now visible on the same page that hosts the server OAuth App config.
     await findByText('GitHub Account');
   });
 });
@@ -649,96 +615,5 @@ describe('ProjectsSection — visibility toggle', () => {
         'error',
       );
     });
-  });
-});
-
-/**
- * LAN mode toggle on the GitHub settings page. The polling / webhook-skip
- * behavior itself is covered server-side; these tests guard the UI wiring:
- *
- *   • Initial state mirrors `data.lanMode` from GET /api/config.
- *   • Toggling fires PATCH /api/config { lanMode } and reflects the new
- *     state in the rendered banner.
- *   • Failure rolls back the optimistic update so the toggle never
- *     claims a state the server didn't accept.
- */
-describe('GitHubSection — LAN mode toggle', () => {
-  beforeEach(() => {
-    api.getConfig.mockResolvedValue({
-      claudeBin: '/bin/claude',
-      cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-8',
-      defaultCwd: '/tmp',
-      port: 3051,
-      publicUrl: '',
-      githubApp: null,
-      botGithubTokenSet: false,
-      botGithubUser: null,
-      anthropicApiKeySet: false,
-      lanMode: false,
-      _file: {},
-    });
-    api.get.mockResolvedValue({});
-    api.updateConfig.mockResolvedValue({ ok: true });
-    api.getModelConfig?.mockResolvedValue?.({
-      defaultModel: 'claude-opus-4-8',
-      engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
-    });
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('renders the toggle reflecting the loaded lanMode value', async () => {
-    api.getConfig.mockResolvedValue({
-      claudeBin: '/bin/claude',
-      cursorBin: '/bin/cursor',
-      defaultModel: 'claude-opus-4-8',
-      defaultCwd: '/tmp',
-      port: 3051,
-      publicUrl: '',
-      githubApp: null,
-      botGithubTokenSet: false,
-      botGithubUser: null,
-      anthropicApiKeySet: false,
-      lanMode: true,
-      _file: {},
-    });
-
-    const { findByTestId, findByText } = render(<GitHubSection projects={[]} />);
-    const toggle = await findByTestId('lan-mode-toggle');
-    expect(toggle.checked).toBe(true);
-    expect(await findByText(/LAN mode is on/i)).toBeInTheDocument();
-  });
-
-  it('PATCHes /api/config { lanMode: true } when toggled on', async () => {
-    const { findByTestId } = render(<GitHubSection projects={[]} />);
-    const toggle = await findByTestId('lan-mode-toggle');
-    expect(toggle.checked).toBe(false);
-
-    fireEvent.click(toggle);
-
-    await waitFor(() => {
-      expect(api.updateConfig).toHaveBeenCalledWith({ lanMode: true });
-    });
-  });
-
-  it('rolls back the toggle when the PATCH fails', async () => {
-    api.updateConfig.mockRejectedValueOnce(new Error('network down'));
-    // Silence the alert() we fire on failure so the test doesn't pop a real dialog.
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-
-    const { findByTestId } = render(<GitHubSection projects={[]} />);
-    const toggle = await findByTestId('lan-mode-toggle');
-    expect(toggle.checked).toBe(false);
-
-    fireEvent.click(toggle);
-
-    await waitFor(() => expect(api.updateConfig).toHaveBeenCalledTimes(1));
-    // After the rollback the toggle should be back to its original state.
-    await waitFor(() => expect(toggle.checked).toBe(false));
-    alertSpy.mockRestore();
   });
 });

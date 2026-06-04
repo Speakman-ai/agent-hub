@@ -50,6 +50,12 @@ export interface ResolveOneShotEngineInput {
    * hitting the filesystem / shelling out.
    */
   availability?: Record<SupportedEngine, EngineAvailability>;
+  /**
+   * Acting user whose per-account credentials decide Claude / Cursor / Codex
+   * availability. There is no host fallback — when absent, only the
+   * host-configured Gemini engine can resolve.
+   */
+  userId?: string | null;
 }
 
 export interface ResolvedOneShotEngine {
@@ -130,7 +136,8 @@ export async function resolveOneShotEngine(
   cfg: AppConfig,
   input: ResolveOneShotEngineInput = {},
 ): Promise<ResolvedOneShotEngine> {
-  const availability = input.availability ?? (await probeAllEngineAvailability(cfg));
+  const availability =
+    input.availability ?? (await probeAllEngineAvailability(cfg, { userId: input.userId ?? null }));
 
   const chain = input.fallbackChain ?? DEFAULT_FALLBACK_CHAIN;
 

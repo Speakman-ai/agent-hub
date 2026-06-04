@@ -29,9 +29,6 @@ import {
  */
 const PUBLIC_PATHS: readonly string[] = [
   '/api/health',
-  '/api/github-app/callback',
-  '/api/github-app/setup-complete',
-  '/api/github-app/register',
   '/api/bug-reports',
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',

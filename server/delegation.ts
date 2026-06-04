@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv } from './config.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
@@ -21,7 +21,7 @@ import {
   clearDelegationUiMeta,
 } from './delegation-state.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
-import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { getSessionOwner } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { applyAssistantTextChunkForDelegationKickoff } from './delegation-kickoff-buffer.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
@@ -581,12 +581,22 @@ export async function handleDelegation(
        */
       const dispatchOnce = (): Promise<string> =>
         new Promise<string>((resolve, reject) => {
-          const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+          // No org-owner fallback — the delegating session's own owner is the
+          // only identity whose creds may flow into the delegate spawn. A
+          // per-account engine with no owner/creds throws
+          // EngineAuthRequiredError, rejecting this dispatch promise.
+          const credOwnerId = getSessionOwner(sessionId);
           const subPrompt = buildEnrichedPrompt(subAgent, undefined, { useWorktree: true });
           const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
 
           const timeout = cfg.conferenceTimeoutMs || 600000;
-          const spawnEnv = buildSpawnEnv(cfg, { userId: credOwnerId });
+          const spawnEnv = resolveSessionCliSpawnEnv({
+            cfg,
+            ownerId: credOwnerId,
+            credsOwnerId: credOwnerId,
+            sessionId,
+            engine: subAgent.engine ?? 'claude-code',
+          });
           mergeSkillCredentialSpawnEnv(spawnEnv, {
             ownerId: credOwnerId,
             agentId: subAgent.id,
@@ -946,7 +956,8 @@ export async function synthesizeResults(
 
   const assistantMsgId = uuidv4();
   const sessRow = stmts.getSession.get(sessionId) as SessionRow | undefined;
-  const synthOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+  // No org-owner fallback — the session's own owner only.
+  const synthOwnerId = getSessionOwner(sessionId);
   const sessionEngine = sessRow?.engine || enrichedAgent.engine || 'claude-code';
   const sessionModel =
     sessRow?.model?.trim() ||
@@ -981,7 +992,13 @@ export async function synthesizeResults(
       let stdout = '';
       let stderr = '';
 
-      const synthEnv = buildSpawnEnv(cfg, { userId: synthOwnerId });
+      const synthEnv = resolveSessionCliSpawnEnv({
+        cfg,
+        ownerId: synthOwnerId,
+        credsOwnerId: synthOwnerId,
+        sessionId,
+        engine: sessionEngine,
+      });
       mergeSkillCredentialSpawnEnv(synthEnv, {
         ownerId: synthOwnerId,
         agentId: enrichedAgent.id,

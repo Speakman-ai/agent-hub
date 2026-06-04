@@ -9,7 +9,7 @@ import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
 import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
-import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
+import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -103,9 +103,7 @@ import { allAgents, findProject } from './project-model.js';
 import {
   setSessionOwner,
   inheritOwnerFromSession,
-  getOrgOwnerUserId,
   getWsAuthUserId,
-  resolveSpawnCredsOwnerUserId,
   type AuthStampedWs,
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
@@ -1525,14 +1523,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
    * Resolve the user id to attribute to a session created on the chat
    * spawn paths (orphan-session auto-create, etc.). The websocket
    * handshake stamps `_authUserId` on the ws object when JWT auth
-   * succeeds; system spawn paths run with `ws === null` and fall back
-   * to the org owner so single-tenant local installs continue to see
-   * everything they create.
+   * succeeds. There is no org-owner fallback: an unauthenticated /
+   * system caller resolves to `null`, and any per-account engine spawn
+   * for a null owner hard-fails downstream (`assertEngineCredsOrThrow`).
    */
   function ownerUserIdForChatSpawn(ws: WebSocketLike | null): string | null {
-    const stamped = getWsAuthUserId(ws as unknown as AuthStampedWs | null);
-    if (stamped) return stamped;
-    return getOrgOwnerUserId();
+    return getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
   }
 
   async function handleChat(ws: WebSocketLike | null, msg: InternalChatMessage): Promise<void> {
@@ -1966,7 +1962,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             heuristicTitle,
             content,
             config: {
-              anthropicApiKey: config.anthropicApiKey ?? null,
+              // No host Anthropic key — Claude auth is per-account. The
+              // LLM title upgrade uses the host OpenAI key when configured.
+              anthropicApiKey: null,
               openaiApiKey: config.openaiApiKey ?? null,
             },
             getSessionName: (id) => {
@@ -2352,14 +2350,33 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
         );
       }
-      const credsOwnerId: string | null = resolveSpawnCredsOwnerUserId(ownerId);
-      const sessionCliEnv = resolveSessionCliSpawnEnv({
-        cfg: config,
-        ownerId,
-        credsOwnerId,
-        sessionId,
-        engine,
-      });
+      // No org-owner fallback: the session's own owner is the only identity
+      // whose credentials may flow into the spawn.
+      const credsOwnerId: string | null = ownerId;
+      let sessionCliEnv: NodeJS.ProcessEnv;
+      try {
+        sessionCliEnv = resolveSessionCliSpawnEnv({
+          cfg: config,
+          ownerId,
+          credsOwnerId,
+          sessionId,
+          engine,
+        });
+      } catch (err) {
+        if (err instanceof EngineAuthRequiredError) {
+          // Strictly account-based auth: refuse to spawn rather than borrow
+          // another identity or run a CLI that would silently 401.
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, err.message);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: err.message,
+          });
+          return;
+        }
+        throw err;
+      }
 
       if (engine === 'cursor-agent' && !engineSessionId) {
         try {
@@ -2836,9 +2853,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const spawnEnv: NodeJS.ProcessEnv = await (async () => {
         // ownerId resolved above. The lookup is reused here for per-user
         // Claude auth (below) and per-user GitHub auth (further down).
-        // `credsOwnerId` mirrors `ownerId` for sessions with a real owner
-        // but falls back to the org owner when the session has none —
-        // see the rationale block above the resolver.
+        // `credsOwnerId` is exactly `ownerId` — there is no org-owner
+        // fallback; per-account engine spawns without an owner already
+        // hard-failed above.
 
         const base = sessionCliEnv;
         // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
@@ -2932,12 +2949,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // 1f9c8215-…). `applyReviewerSpawnIsolation` runs on every spawn
         // regardless of role so:
         //   1. AGENT_HUB_REVIEWER_LOCK=1 is set everywhere. The github
-        //      skill's `gh-pr.sh` write subcommands (most importantly
-        //      `review`) then refuse to invoke `gh` directly and point
-        //      the agent at `POST /api/pr/review` — the only correct
-        //      identity path (App-mediated, server-side bot identity).
-        //      Without this universal lock, dev/author/lead spawns were
-        //      able to post formal PR reviews under the session-owner's
+        //      skill's `gh-pr.sh review` subcommand is disabled outright:
+        //      the reviewer is an in-session advisor that emits its verdict
+        //      in session output, so Agent Hub never posts a formal review
+        //      to GitHub. Without this isolation, dev/author/lead spawns
+        //      were able to post formal PR reviews under the session-owner's
         //      OAuth token, mis-attributing automated reviews to the
         //      human (see surveytracker PR #604 evidence).
         //   2. Inherited GH_TOKEN / GITHUB_TOKEN / GH_ENTERPRISE_TOKEN /

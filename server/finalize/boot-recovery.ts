@@ -30,7 +30,9 @@ export function failStuckFinalizeRunsOnBoot(stmts: Stmts): void {
   try {
     const steps = stmts.failStuckActiveFinalizeRunStepsOnBoot.run() as { changes: number };
     if (steps.changes > 0) {
-      console.warn(`[finalize] Marked ${steps.changes} orphaned finalize step(s) as skipped on boot`);
+      console.warn(
+        `[finalize] Marked ${steps.changes} orphaned finalize step(s) as skipped on boot`,
+      );
     }
   } catch (e) {
     console.error('[finalize] failStuckActiveFinalizeRunStepsOnBoot', (e as Error).message);

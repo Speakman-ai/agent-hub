@@ -1,11 +1,13 @@
 /**
- * Verifies the AGENT_HUB_REVIEWER_LOCK guard in
+ * Verifies the review-disable + create guards in
  * `default-skills/github/scripts/gh-pr.sh`. Agent Hub injects
  * AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just reviewer-role
- * spawns). The guard covers two identity-attribution surfaces:
+ * spawns).
  *
- *   1. `gh pr review`  — formal review attribution. Must route through
- *      `POST /api/pr/review` so the review lands as the GitHub App.
+ *   1. `gh pr review` — formal GitHub reviews are disabled outright. The
+ *      reviewer is an in-session advisor and emits its APPROVE /
+ *      REQUEST_CHANGES verdict in session output, so `cmd_review` always
+ *      hard-errors (exit 2) regardless of the lock state.
  * Interactive non-reviewer spawns use per-user OAuth in `GH_TOKEN`, so
  * `gh pr create` is allowed when the token is `gho_` / `ghp_` (ship skill).
  * App installation tokens (`ghs_`) and non-user tokens remain blocked.
@@ -55,8 +57,8 @@ afterAll(() => {
   if (stubDir && existsSync(stubDir)) rmSync(stubDir, { recursive: true, force: true });
 });
 
-describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
-  it('exits 2 with App-endpoint pointer when AGENT_HUB_REVIEWER_LOCK=1', () => {
+describe('gh-pr.sh review — disabled (in-session advisor)', () => {
+  it('exits 2 with the in-session advisor message when AGENT_HUB_REVIEWER_LOCK=1', () => {
     const result = spawnSync('bash', [SCRIPT, 'review', '123', '--approve'], {
       env: {
         // Minimal env: PATH (gh stub) + the lock sentinel only.
@@ -69,7 +71,9 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(result.status).toBe(2);
     const stderr = result.stderr || '';
     expect(stderr).toContain('gh-pr.sh review is disabled');
-    expect(stderr).toContain('/api/pr/review');
+    expect(stderr).toContain('in-session advisor');
+    // No GitHub posting path is advertised anymore.
+    expect(stderr).not.toContain('/api/pr/review');
     // Reviewer agents must not see a misleading `gh` invocation succeed.
     expect(result.stdout).not.toContain('Approved PR');
   });
@@ -90,6 +94,20 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
       expect(result.status).toBe(2);
       expect(result.stderr || '').toContain('gh-pr.sh review is disabled');
     }
+  });
+
+  it('exits 2 even when the universal lock is unset (review is disabled outright)', () => {
+    const result = spawnSync('bash', [SCRIPT, 'review', '7', '--approve'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('gh-pr.sh review is disabled');
+    expect(result.stdout).not.toContain('Approved PR');
   });
 
   it('does NOT block read-only subcommands (sanity check)', () => {
@@ -128,7 +146,7 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(result.status).toBe(2);
     const stderr = result.stderr || '';
     expect(stderr).toContain('gh-pr.sh review is disabled');
-    expect(stderr).toContain('/api/pr/review');
+    expect(stderr).toContain('in-session advisor');
   });
 
   // Regression: create/comment/merge/close/ready remain available under
@@ -199,10 +217,10 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(result.stderr || '').toContain('gh-pr.sh create is disabled');
   });
 
-  it('exits 2 with usage text when AGENT_HUB_REVIEWER_LOCK is unset and required args are missing', () => {
-    // Establishes the baseline: without the lock the script still
-    // refuses to invoke a malformed review call. This is what shipped
-    // historically and we're not regressing it.
+  it('exits 2 with the advisor message when AGENT_HUB_REVIEWER_LOCK is unset and no args are passed', () => {
+    // Without the lock the review subcommand is still disabled outright —
+    // it no longer reaches arg parsing, so `gh-pr.sh review` with no args
+    // prints the in-session advisor message rather than usage text.
     const result = spawnSync('bash', [SCRIPT, 'review'], {
       env: {
         PATH: stubbedPath,
@@ -210,8 +228,8 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
       },
       encoding: 'utf-8',
     });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr || '').toMatch(/pr review <number>/);
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('gh-pr.sh review is disabled');
   });
 });
 

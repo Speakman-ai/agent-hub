@@ -3182,10 +3182,9 @@ describe.skip('commitPushAndCreatePR — per-user GitHub token injection', () =>
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    const { getSessionOwner, getOrgOwnerUserId } = await import('./session-ownership.js');
+    const { getSessionOwner } = await import('./session-ownership.js');
     const { getActiveAccessToken } = await import('./github-connections-store.js');
     (getSessionOwner as unknown as Mock).mockReturnValue('owner-user-1');
-    (getOrgOwnerUserId as unknown as Mock).mockReturnValue('owner-user-1');
     (getActiveAccessToken as unknown as Mock).mockResolvedValue(FAKE_TOKEN);
   });
 
@@ -3466,9 +3465,8 @@ describe.skip('commitPushAndCreatePR — per-user GitHub token injection', () =>
     // The auto-git identity isolation guarantees env.GH_TOKEN / GITHUB_TOKEN
     // are undefined here so the push fails loudly instead of silently
     // shipping a bot-PR.
-    const { getSessionOwner, getOrgOwnerUserId } = await import('./session-ownership.js');
+    const { getSessionOwner } = await import('./session-ownership.js');
     (getSessionOwner as unknown as Mock).mockReturnValue(null);
-    (getOrgOwnerUserId as unknown as Mock).mockReturnValue(null);
 
     const mockCard = {
       id: 'card-no-token',

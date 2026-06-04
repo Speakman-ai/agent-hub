@@ -261,25 +261,22 @@ operator can clean up any stragglers manually.
 ## Per-user Claude credentials
 
 `GET` / `PUT /api/auth/me/claude-auth` let an authenticated user attach
-their own Anthropic credentials to their user row. When Agent Hub spawns
-a Claude Code session, `buildSpawnEnv` (`server/config.ts`) prefers the
-**session owner's** credentials over the host-wide `config.json`. This
-keeps multi-user installs from coalescing onto a single Anthropic
-identity / rate-limit bucket.
+their own Anthropic credentials to their user row. Claude authentication
+is **strictly per-account**: when Agent Hub spawns a Claude Code session,
+`buildSpawnEnv` (`server/config.ts`) injects **only** the acting user's
+own credentials. There is **no host/global key and no org-owner
+fallback** — the legacy `config.anthropicApiKey` /
+`config.claudeCodeOAuthToken` host fields were removed. A spawn for a
+user with no Claude creds **hard-fails** with `EngineAuthRequiredError`
+rather than borrowing another identity (see
+`assertEngineCredsOrThrow` in `server/per-user-cli-spawn.ts`).
 
-**Precedence is per-field, not per-user.** For each of
-`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`, the resolver picks:
-
-1. **User value** — `users.anthropic_api_key` / `users.claude_code_oauth_token`
-   on the session-owner row, when truthy.
-2. **Host value** — `config.anthropicApiKey` / `config.claudeCodeOAuthToken`
-   from `~/.agent-hub/data/config.json`.
-3. **Unset** — neither layer has a value; the CLI inherits whatever
-   ambient env the operator's shell provides.
-
-A user who only sets `anthropicApiKey` still falls back to the host's
-OAuth token (and vice-versa). Single-tenant deploys that never write
-per-user values are byte-for-bit identical to the pre-Phase-3 behavior.
+**Resolution.** For each of `ANTHROPIC_API_KEY` and
+`CLAUDE_CODE_OAUTH_TOKEN`, the resolver uses the
+`users.anthropic_api_key` / `users.claude_code_oauth_token` value on the
+**acting user's** row, when truthy. If the user has neither a key nor a
+per-user `.claude` OAuth cache, the per-account engine spawn hard-fails.
+There is no ambient-env or host-config inheritance for Claude.
 
 **Endpoint shape.**
 
@@ -290,7 +287,7 @@ per-user values are byte-for-bit identical to the pre-Phase-3 behavior.
 | `claudeCodeOAuthExpiresAt`  | normalised ISO-8601 string or `null`           | accepts ISO-8601 _or_ a numeric string in Unix seconds / epoch ms; server normalises |
 | `claudeCodeOAuthExpired`    | server-computed boolean (`null` when no expiry stored) | not accepted — derived from `claudeCodeOAuthExpiresAt`                       |
 | `updatedAt`                 | last-write timestamp                           | last-write timestamp                                                                 |
-| `hostConfigFallback`        | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — does the host have a fallback? | same shape — clients can re-render the "falling back to host" hint after save        |
+| `hostConfigFallback`        | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — **always `false`**: Claude has no host fallback (kept for response-shape back-compat) | same shape — always `false`          |
 
 Both endpoints route the stored expiry through `parseClaudeOAuthExpiry`
 (`server/oauth-expiry.ts`), which uses the same seconds-vs-ms threshold
@@ -325,27 +322,30 @@ throwing into the spawn path. The OAuth-expiry timestamp and
 ## Per-user engine credentials (Cursor / Gemini / Codex)
 
 The three single-key CLI engines (Cursor Agent, Gemini CLI, Codex CLI)
-each carry exactly one API key. They follow the same per-field, per-user
-override pattern as Claude — `buildSpawnEnv` (`server/config.ts`) picks
-the **session owner's** key over the host-wide `config.json` key, and
-the spawn env injects the right variable for each engine:
+each carry exactly one API key. **Cursor and Codex are strictly
+per-account** (no host fallback, like Claude); **Gemini is the one
+exception** — it retains a host-wide key (used for wiki embeddings) with
+the per-user key taking precedence. `buildSpawnEnv` (`server/config.ts`)
+injects the right variable for each engine:
 
-| Engine | Env var injected into the spawn | Host config field | User column                |
-| ------ | ------------------------------- | ----------------- | -------------------------- |
-| Cursor | `CURSOR_API_KEY`                | `cursorApiKey`    | `users.cursor_api_key`     |
-| Gemini | `GEMINI_API_KEY`                | `geminiApiKey`    | `users.gemini_api_key`     |
-| Codex  | `OPENAI_API_KEY`                | `codexApiKey`     | `users.codex_api_key`      |
+| Engine | Env var injected into the spawn | Host config field   | User column                |
+| ------ | ------------------------------- | ------------------- | -------------------------- |
+| Cursor | `CURSOR_API_KEY`                | — (per-account only) | `users.cursor_api_key`     |
+| Gemini | `GEMINI_API_KEY`                | `geminiApiKey`      | `users.gemini_api_key`     |
+| Codex  | `OPENAI_API_KEY`                | — (per-account only) | `users.codex_api_key`      |
 
-**Precedence is per-field** — for each engine the resolver picks:
+**Cursor / Codex resolution.** The resolver uses **only** the acting
+user's `users.<engine>_api_key` (or their per-user HOME OAuth cache).
+There is no host or org-owner fallback; a spawn for a user with no creds
+for that engine **hard-fails** with `EngineAuthRequiredError`.
 
-1. **User value** — `users.<engine>_api_key` on the session-owner row,
-   when truthy.
-2. **Host value** — the matching `cfg.<engine>ApiKey` from
-   `~/.agent-hub/data/config.json`.
-3. **Unset** — the variable is **deleted** from the spawn env so the
-   CLI does not silently inherit a stale ambient value from the
-   operator's shell. Operators relying on systemd/PM2 env inheritance
-   must populate the host config or per-user value explicitly.
+**Gemini precedence** — per-field:
+
+1. **User value** — `users.gemini_api_key` on the acting-user row, when
+   truthy.
+2. **Host value** — `cfg.geminiApiKey` from
+   `~/.agent-hub/data/config.json` (or `GEMINI_API_KEY` env).
+3. **Unset** — `GEMINI_API_KEY` is deleted from the spawn env.
 
 **REST shape.** Each engine exposes a `GET` / `PUT` pair at
 `/api/auth/me/{engine}-auth`. All three share the same compact shape:
@@ -355,7 +355,7 @@ the spawn env injects the right variable for each engine:
 | `engine`             | `"cursor" \| "gemini" \| "codex"`                           | — (derived from URL)                               |
 | `apiKey`             | masked (e.g. `sk-…abcd`) or `null`                          | accepts string or `null`; empty string clears      |
 | `updatedAt`          | last-write timestamp                                        | last-write timestamp                               |
-| `hostConfigFallback` | `{ apiKey: boolean }` — does the host have a fallback key?  | same shape — UI re-renders "falling back to host"  |
+| `hostConfigFallback` | `{ apiKey: boolean }` — **only Gemini can be `true`**; Cursor / Codex are per-account-only so theirs is always `false` | same shape — UI re-renders "falling back to host" (Gemini only) |
 
 `PUT` whitelists exactly `apiKey` via
 `Object.prototype.hasOwnProperty.call`; stray keys are ignored. Both
@@ -386,13 +386,16 @@ would leak login state between accounts. To prevent that,
 owner is known. The directory is materialized on demand by
 `ensurePerUserHome` (`server/per-user-home.ts`); FS errors fall back to
 the host HOME so a transient failure never blocks a chat. When
-`userId` is unset (legacy global-apiKey path, Admin host-wide flows)
-HOME is left as the operator inherited it.
+`userId` is unset (system spawns with no resolvable human) the
+per-account engine spawn hard-fails instead of falling back.
 
-Every spawn site that previously called `buildSpawnEnv(cfg)` now
-resolves a `credOwnerId` (`getSessionOwner(sessionId) || getOrgOwnerUserId()`)
-and threads it through as `{ userId: credOwnerId }`, so the per-user
-HOME and engine creds reach the right child:
+Every spawn site resolves a `credOwnerId` from the **real acting human**
+(`getSessionOwner(sessionId)`, the authenticated WS/JWT user, the card
+creator, etc.) and threads it through as `{ userId: credOwnerId }`, so
+the per-user HOME and engine creds reach the right child. There is **no
+org-owner fallback**: when no human can be resolved, `credOwnerId` is
+`null` and the per-account spawn hard-fails (`EngineAuthRequiredError`).
+Spawn sites:
 
 - `server/chat.ts` — interactive chat sessions.
 - `server/heartbeat.ts` — scheduled heartbeat runs.
@@ -596,24 +599,28 @@ into the child `env` for every **enabled** skill for that agent (project +
 bundled defaults, honouring per-agent disable overrides). Keys already set in
 the resolved env are **not** overwritten. Call sites:
 
+There is **no org-owner fallback** anywhere below — when no real human can
+be resolved, the principal is `null`, skill creds are merged for nobody,
+and any per-account AI engine spawn hard-fails.
+
 | Surface | Call path | Whose credential rows (`user_id`) |
 | ------- | --------- | ----------------------------------- |
 | Interactive 1:1 chat | `server/chat.ts` | Session owner (`ownerId` from the session row) |
-| Session rewind | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner if known, else org owner (`getSessionOwner` / `getOrgOwnerUserId`) |
-| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript` | Session owner if known, else org owner |
+| Session rewind | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner (`getSessionOwner`); `null` when unknown |
+| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript` | Session owner; `null` when unknown |
 | Chat auto-summarize (long reply) | `server/chat.ts` → `summarizeTranscript` | Interactive session owner (`ownerId` in chat) |
-| Conference room — WebSocket one-shot CLI | `server/room-chat.ts` | Authenticated WebSocket user if present, else org owner (`getWsAuthUserId` \|\| `getOrgOwnerUserId`) |
-| Conference room — REST **summarize** | `server/routes/rooms.ts` → `summarizeTranscript` | **Org owner only** (`getOrgOwnerUserId`) — not the browser user |
-| Design Studio chat | `server/design-chat.ts` | WebSocket user if present, else org owner (`DESIGN_SKILL_PRINCIPAL_AGENT_ID` → `__design_studio__` skill toggles) |
-| Heartbeats | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`) | Org owner |
-| Crons | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | Org owner — agent id from `crons.skill_principal_agent_id`, else `project.cronSkillPrincipalAgentId`, else sole project agent |
-| Workflows | `server/workflow-runner.ts` | Org owner |
-| Slack bot replies | `server/slack.ts` | Org owner |
-| Delegation / synthesis spawns | `server/delegation.ts` | Parent session owner if known, else org owner (`getSessionOwner` \|\| `getOrgOwnerUserId`) |
+| Conference room — WebSocket one-shot CLI | `server/room-chat.ts` | Authenticated WebSocket user (`getWsAuthUserId`); `null` when absent |
+| Conference room — REST **summarize** | `server/routes/rooms.ts` → `summarizeTranscript` | Authenticated caller; `null` when absent |
+| Design Studio chat | `server/design-chat.ts` | WebSocket user (`getWsAuthUserId`); `null` when absent |
+| Heartbeats | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`) | `null` — no human in-context (per-account AI hard-fails; only host Gemini can run) |
+| Crons | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | `null` — no human in-context |
+| Workflows | `server/workflow-runner.ts` | `null` — workflow steps carry no human attribution |
+| Slack bot replies | `server/slack.ts` | `null` — no human in-context |
+| Delegation / synthesis spawns | `server/delegation.ts` | Parent session owner (`getSessionOwner`); `null` when unknown |
 
-On **single-user** installs the org owner and the interactive user are usually
-the same — differences matter in multi-user orgs (saved secrets follow the
-`user_id` column, not the agent).
+Saved secrets follow the `user_id` column, not the agent. System spawns
+with no resolvable human (`null` principal) merge no per-user skill creds
+and cannot run a per-account AI engine.
 
 ## JWT `uid` claim & pre-migration fallback
 

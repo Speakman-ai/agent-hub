@@ -217,8 +217,10 @@ function backfillEncryptedColumn(userId: string, column: string, plaintext: stri
 // ── Per-user Claude credentials ─────────────────────────────────────
 //
 // Each user may attach an Anthropic API key and/or a `claude setup-token`
-// OAuth bearer. `buildSpawnEnv` prefers the session owner's values when
-// present, falling back to the host-wide `config.json`. Storing on the
+// OAuth bearer. `buildSpawnEnv` injects these from the acting user's row
+// only — Claude is strictly per-account with no host or org-owner fallback
+// (a spawn for a user with no Claude creds hard-fails with
+// `EngineAuthRequiredError`). Storing on the
 // users row mirrors the existing GitHub OAuth columns. The two secret
 // columns are encrypted-at-rest via the helpers above; OAuth-expiry and
 // `claude_auth_updated_at` are non-secret metadata and stay plaintext.
@@ -379,10 +381,12 @@ function normalizeStoredCredential(raw: string | null): string | null {
 //
 // Each non-Claude engine carries a single API key column today. The
 // `<engine>_auth_updated_at` audit column lets the UI render "Last
-// updated …" without needing a JOIN to an event log. As with the Claude
-// helpers above, `buildSpawnEnv` prefers these values when spawning a
-// session and falls back to host-wide `config.cursorApiKey` /
-// `config.geminiApiKey` / `config.codexApiKey`.
+// updated …" without needing a JOIN to an event log. `buildSpawnEnv`
+// injects these per-account values when spawning a session. Cursor and
+// Codex are strictly per-account (no host fallback — a spawn with no
+// creds hard-fails with `EngineAuthRequiredError`). Gemini is the one
+// exception: its per-user key takes precedence but falls back to the
+// host-wide `config.geminiApiKey` (used for wiki embeddings / memory RAG).
 
 export interface UserSingleKeyAuth {
   apiKey: string | null;

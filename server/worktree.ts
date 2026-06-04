@@ -24,7 +24,6 @@ import {
   normalizeGitCloneAuthError,
   isGitAuthCloneFailure,
 } from './clone-url-auth.js';
-import { getInstallationToken, resolveInstallationId } from './github-app.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
 
@@ -224,13 +223,12 @@ interface CloneRetryOptions extends RetryOptions {
  *      `resolveOwnerWithRepoAccess` for an Owner whose stored token
  *      actually has access. This is the fix for the "first user wins
  *      even when their OAuth scope can't see the repo" bug that broke
- *      the reviewer pipeline for ~2 days. The helper itself falls back
- *      to `getOrgOwnerUserId()` when no Owner probes 2xx, so the
- *      legacy attribution path stays intact for installs without the
- *      probe machinery available.
- *   3. **Legacy `getOrgOwnerUserId()` fallback** — for callers without
- *      a `githubRepo` (the rare project that does not point at a
- *      GitHub remote, plus tests that don't seed memberships).
+ *      the reviewer pipeline for ~2 days. When no Owner probes 2xx the
+ *      helper returns `null` — there is no org-owner fallback.
+ *   3. **`null`** — no real Owner with repo access could be determined.
+ *      The clone runs without injected creds and surfaces a clear
+ *      "Authentication failed" rather than borrowing an arbitrary
+ *      Owner's GitHub identity.
  */
 /** Shared PAT/OAuth resolution for session and process (heartbeat/cron) clones. */
 async function resolveProcessWorktreeAuth(githubRepo?: string | null): Promise<{
@@ -257,8 +255,8 @@ async function resolveWorktreeTokenOwnerId(
       const userId = await probe.resolveOwnerWithRepoAccess(githubRepo);
       if (userId) return userId;
     }
-    const mod = await import('./session-ownership.js');
-    return mod.getOrgOwnerUserId();
+    // No org-owner fallback — no real Owner with repo access.
+    return null;
   } catch {
     return null;
   }
@@ -841,14 +839,10 @@ function copyFallback(projectCwd: string, destDir: string): string {
  */
 export type InstallationTokenResolver = (repoUrl: string) => Promise<string | null>;
 
-async function defaultResolveInstallationToken(repoUrl: string): Promise<string | null> {
-  const parsed = classifyCloneUrl(repoUrl);
-  if (parsed.kind !== 'github-https' || !parsed.owner) return null;
-  const appCfg = config.githubApp;
-  if (!appCfg || !appCfg.appId || !appCfg.privateKey) return null;
-  const installationId = resolveInstallationId(appCfg, parsed.owner);
-  if (!installationId) return null;
-  return await getInstallationToken(appCfg.appId, appCfg.privateKey, installationId);
+async function defaultResolveInstallationToken(_repoUrl: string): Promise<string | null> {
+  // The reviewer GitHub App was removed; there is no installation token to
+  // mint. Clones fall back to the per-user GitHub credential below.
+  return null;
 }
 
 /**

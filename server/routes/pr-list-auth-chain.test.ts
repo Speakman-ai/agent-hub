@@ -8,7 +8,6 @@
  *   - missing           → 401 CONNECT_GITHUB_HINT
  *
  * These tests mock:
- *   - `../github-app.js` — so the App tier doesn't reach out
  *   - `../github-oauth.js` — so the user tier returns a controlled value
  *   - child_process/util — so the CLI tier is a no-op
  *
@@ -33,13 +32,6 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-const mockGithubApiRequest = vi.fn();
-const mockResolveInstallationId = vi.fn();
-vi.mock('../github-app.js', () => ({
-  githubApiRequest: (...args: unknown[]) => mockGithubApiRequest(...args),
-  resolveInstallationId: (...args: unknown[]) => mockResolveInstallationId(...args),
-}));
-
 const mockGithubUserApiRequest = vi.fn();
 vi.mock('../github-oauth.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -60,7 +52,6 @@ vi.mock('../pr-pull-list-enrichment.js', async (importOriginal) => {
   return {
     ...actual,
     enrichPullListRowsWithGraphql: vi.fn().mockResolvedValue(undefined),
-    enrichPullListRowsWithInstallationGraphql: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -74,23 +65,12 @@ function freshEnv() {
   mkdirSync(TMP_DIR, { recursive: true });
   setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
   initOrgsDb();
-  mockGithubApiRequest.mockReset();
-  mockResolveInstallationId.mockReset();
   mockGithubUserApiRequest.mockReset();
 }
 
 function buildDeps(project: Record<string, unknown>): RouteDeps {
   return {
-    config: {
-      port: 3051,
-      githubApp: {
-        appId: '1',
-        privateKey: 'x',
-        clientId: 'Iv1.abc',
-        clientSecret: 'shh',
-        installationId: 99,
-      },
-    },
+    config: { port: 3051 },
     findProject: vi.fn().mockImplementation((id: string) => (id === project.id ? project : null)),
   } as unknown as RouteDeps;
 }
@@ -128,29 +108,23 @@ describe('pr-list auth contract — user OAuth required (no App fallback)', () =
     expect(res.status).toBe(200);
     expect(res.body.source).toBe('user-oauth');
     expect(mockGithubUserApiRequest).toHaveBeenCalledTimes(1);
-    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
-  it('returns 401 CONNECT_GITHUB_HINT when the caller has no user connection (no App fallback)', async () => {
-    // Pre-rewrite: this fell back to the GitHub App identity. The drop-
-    // App-fallbacks refactor removes that silent identity swap so PR
-    // attribution is always the human at the keyboard. A user without
-    // a stored connection now gets a 401 that the client surfaces as
-    // a "Connect GitHub" CTA.
+  it('returns 401 CONNECT_GITHUB_HINT when the caller has no user connection', async () => {
+    // PR attribution is always the human at the keyboard. A user without
+    // a stored connection gets a 401 that the client surfaces as a
+    // "Connect GitHub" CTA.
     createUser({ username: 'alice', passwordHash: 'x' });
-    mockResolveInstallationId.mockReturnValue(99);
 
     const app = makeApp(buildDeps(project), 'some-user-without-connection');
     const res = await request(app).get('/api/projects/proj-1/pulls');
     expect(res.status).toBe(401);
     expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
-    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
-  it('returns 502 when user OAuth throws at GitHub (no App fallback)', async () => {
-    // Pre-rewrite: a dead user token would fall through to the App tier.
-    // The new contract surfaces the upstream error as a 502 so the user
+  it('returns 502 when user OAuth throws at GitHub', async () => {
+    // A dead user token surfaces the upstream error as a 502 so the user
     // can see it and re-connect their account. No silent identity swap.
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     upsertGithubConnection({
@@ -167,23 +141,16 @@ describe('pr-list auth contract — user OAuth required (no App fallback)', () =
     const res = await request(app).get('/api/projects/proj-1/pulls');
     expect(res.status).toBe(502);
     expect(res.body.error).toMatch(/Failed to list PRs/);
-    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 
   it('returns 401 on apiKey-path requests (no authUserId, no user-token resolution possible)', async () => {
-    mockResolveInstallationId.mockReturnValue(99);
-
     // No authUserId passed — mimics the apiKey path in the real auth
-    // middleware. Pre-rewrite: this short-circuited into the App tier.
-    // After the rewrite: the apiKey path has no per-user identity to
-    // attribute the request to, so /pulls returns 401. Operators who
-    // want to enumerate PRs server-side must use the App-only endpoints
-    // (e.g. /api/pr/data with reviewerAppRead).
+    // middleware. The apiKey path has no per-user identity to attribute
+    // the request to, so /pulls returns 401.
     const app = makeApp(buildDeps(project));
     const res = await request(app).get('/api/projects/proj-1/pulls');
     expect(res.status).toBe(401);
     expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
-    expect(mockGithubApiRequest).not.toHaveBeenCalled();
   });
 });

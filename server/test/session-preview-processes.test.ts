@@ -23,7 +23,6 @@ import { signJwt } from '../jwt.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
-import { resetOrgOwnerCache } from '../session-ownership.js';
 import config from '../config.js';
 
 let request: supertest.Agent;
@@ -143,7 +142,6 @@ describe('GET /api/sessions/:sessionId/preview/processes', () => {
       });
       createMembership(ownerRow.id, orgId, 'Admin');
       createMembership(foreignRow.id, orgId, 'Admin');
-      resetOrgOwnerCache();
 
       ownerToken = signJwt(ownerRow.username, jwtSecret, {
         expiresInSec: 3600,
@@ -184,7 +182,6 @@ describe('GET /api/sessions/:sessionId/preview/processes', () => {
         /* best-effort */
       }
       reloadAuthRecord();
-      resetOrgOwnerCache();
     });
 
     it('non-owner receives 404 with { error: "Session not found" }', async () => {

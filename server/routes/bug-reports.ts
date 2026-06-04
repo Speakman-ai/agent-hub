@@ -4,7 +4,7 @@ import path from 'path';
 import { writeFileSync, mkdirSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import type { RouteDeps, ChatMessage, Agent } from '../types.js';
-import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
+import { setSessionOwner } from '../session-ownership.js';
 
 /**
  * Public, rate-limited bug-report intake endpoint.
@@ -326,8 +326,11 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const sessionName = `[Bug] ${title.substring(0, 80)}`;
 
         stmts.createSession.run(sessionId, INTAKE_AGENT_ID, sessionName, engine, model, 1, 0, 1);
-        // Public bug-report endpoint has no JWT context → org owner.
-        setSessionOwner(sessionId, getOrgOwnerUserId());
+        // Public bug-report endpoint has no JWT context and no real triggering
+        // user. There is no org-owner fallback, so the session stays
+        // NULL-owner; the intake spawn hard-fails unless it resolves to the
+        // host-global Gemini.
+        setSessionOwner(sessionId, null);
 
         const taskId = uuidv4();
         stmts.insertBackgroundTask.run(taskId, sessionId, INTAKE_AGENT_ID, prompt);

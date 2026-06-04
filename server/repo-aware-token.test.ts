@@ -12,9 +12,10 @@
  *     the OAuth refresh path.
  *   - Mock `fetch` to drive probe responses (200 / 404 / network error)
  *     so we can assert on the probe order and the cache.
- *   - Mock `./session-ownership.js#getOrgOwnerUserId` for the
- *     fallback-path assertions so we don't accidentally hit the real
- *     "first user" cache state from other tests.
+ *
+ * There is no org-owner fallback: when no Owner can reach the repo (or the
+ * inputs are garbage / the memberships lookup throws) the helper returns
+ * `null` and the caller must hard-fail rather than borrow an identity.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -37,11 +38,6 @@ vi.mock('./config.js', () => ({
 let mockOauthImpl: (userId: string) => Promise<string | null> = async () => null;
 vi.mock('./github-connections-store.js', () => ({
   getActiveAccessToken: (userId: string) => mockOauthImpl(userId),
-}));
-
-let mockOrgOwnerId: string | null = null;
-vi.mock('./session-ownership.js', () => ({
-  getOrgOwnerUserId: () => mockOrgOwnerId,
 }));
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
@@ -82,7 +78,6 @@ describe('resolveOwnerWithRepoAccess', () => {
     freshDb();
     resetRepoAccessCache();
     mockOauthImpl = async () => null;
-    mockOrgOwnerId = null;
   });
 
   it('returns null when there are no users at all', async () => {
@@ -122,26 +117,24 @@ describe('resolveOwnerWithRepoAccess', () => {
     }
   });
 
-  it('falls back to getOrgOwnerUserId() when no Owner probes 200', async () => {
-    const [a] = seedOwners(2);
+  it('returns null when no Owner probes 200 (no org-owner fallback)', async () => {
+    seedOwners(2);
     mockOauthImpl = async (uid) => `token-${uid}`;
-    mockOrgOwnerId = a.id;
     const result = await resolveOwnerWithRepoAccess('Speakman-ai/agent-hub', {
       fetchImpl: fetchStub(() => new Response('', { status: 404 })) as unknown as typeof fetch,
     });
-    expect(result).toBe(a.id);
+    expect(result).toBeNull();
   });
 
-  it('falls back to getOrgOwnerUserId() when fetch rejects for every Owner', async () => {
-    const [a] = seedOwners(2);
+  it('returns null when fetch rejects for every Owner (no org-owner fallback)', async () => {
+    seedOwners(2);
     mockOauthImpl = async (uid) => `token-${uid}`;
-    mockOrgOwnerId = a.id;
     const result = await resolveOwnerWithRepoAccess('Speakman-ai/agent-hub', {
       fetchImpl: fetchStub(() => {
         throw new Error('econn');
       }) as unknown as typeof fetch,
     });
-    expect(result).toBe(a.id);
+    expect(result).toBeNull();
   });
 
   it('skips Owners with no resolvable token (no OAuth, no PAT)', async () => {
@@ -200,7 +193,6 @@ describe('resolveOwnerWithRepoAccess', () => {
   it('caches "no Owner has access" so misconfigured installs do not hammer GitHub', async () => {
     seedOwners(2);
     mockOauthImpl = async (uid) => `token-${uid}`;
-    mockOrgOwnerId = 'org-owner-fallback';
     let probeCount = 0;
     const fetchImpl = fetchStub(() => {
       probeCount++;
@@ -208,11 +200,11 @@ describe('resolveOwnerWithRepoAccess', () => {
     }) as unknown as typeof fetch;
 
     const first = await resolveOwnerWithRepoAccess('foo/bar', { fetchImpl });
-    expect(first).toBe('org-owner-fallback');
+    expect(first).toBeNull();
     const initialProbes = probeCount;
 
     const second = await resolveOwnerWithRepoAccess('foo/bar', { fetchImpl });
-    expect(second).toBe('org-owner-fallback');
+    expect(second).toBeNull();
     // No re-probe — the null result is also cached.
     expect(probeCount).toBe(initialProbes);
   });
@@ -233,10 +225,9 @@ describe('resolveOwnerWithRepoAccess', () => {
     expect(probeCount).toBeGreaterThan(cached);
   });
 
-  it('rejects garbage repo strings without probing or caching', async () => {
+  it('rejects garbage repo strings without probing or caching (returns null)', async () => {
     seedOwners(1);
     mockOauthImpl = async (uid) => `token-${uid}`;
-    mockOrgOwnerId = 'fallback-uid';
     let probeCount = 0;
     const fetchImpl = fetchStub(() => {
       probeCount++;
@@ -245,7 +236,7 @@ describe('resolveOwnerWithRepoAccess', () => {
 
     for (const bad of ['', '   ', 'no-slash', '/leading', 'trailing/', 'a/b/c', 'a /b']) {
       const r = await resolveOwnerWithRepoAccess(bad, { fetchImpl });
-      expect(r).toBe('fallback-uid');
+      expect(r).toBeNull();
     }
     expect(probeCount).toBe(0);
   });
@@ -271,10 +262,9 @@ describe('resolveOwnerWithRepoAccess', () => {
     expect(r).toBe(b.id);
   });
 
-  it('uses the org owner fallback when memberships lookup throws', async () => {
+  it('returns null when memberships lookup throws (no org-owner fallback)', async () => {
     // No orgs.db init — calling listMembersForOrg throws.
     setOrgsDbPathForTests('/nonexistent/path/orgs.db');
-    mockOrgOwnerId = 'safe-fallback';
     let probeCount = 0;
     const r = await resolveOwnerWithRepoAccess('Speakman-ai/agent-hub', {
       fetchImpl: fetchStub(() => {
@@ -282,7 +272,7 @@ describe('resolveOwnerWithRepoAccess', () => {
         return new Response('', { status: 200 });
       }) as unknown as typeof fetch,
     });
-    expect(r).toBe('safe-fallback');
+    expect(r).toBeNull();
     expect(probeCount).toBe(0);
   });
 });

@@ -41,6 +41,18 @@ vi.mock('child_process', async (importOriginal) => {
   };
 });
 
+// The rewind route builds its env via `resolveSessionCliSpawnEnv`, which
+// hard-fails (EngineAuthRequiredError → 409) when the session owner has no
+// per-account creds. This test's harness session is NULL-owner; we assert
+// the rewind argv, not auth, so stub the env builder to a bare object.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return {
+    ...actual,
+    resolveSessionCliSpawnEnv: vi.fn(() => ({})),
+  };
+});
+
 const spawnSpy = vi.mocked(cp.spawn);
 
 let request: supertest.Agent;

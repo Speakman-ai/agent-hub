@@ -1,35 +1,23 @@
 /**
- * Engine-aware HOME selection in `resolveSessionCliSpawnEnv`.
+ * Per-account auth + per-user HOME selection in `resolveSessionCliSpawnEnv`.
  *
- * Background — the bug this regression-tests guards against:
+ * Auth is strictly per-account: there is no host or org-owner fallback. A
+ * spawn for a per-account engine (claude-code / cursor-agent / codex-cli)
+ * hard-fails with `EngineAuthRequiredError` when the acting user has no
+ * credentials for that specific engine. When the user DOES have creds, HOME
+ * is pinned to their per-user tree so each engine's CLI cache (`.cursor`,
+ * `.codex`, `.claude`, Gemini OAuth) stays isolated under their subtree.
  *
- * Reviewer sessions are persisted with `owner_user_id = NULL` so they're
- * shared/read-only across the org. `chat.ts` runs that NULL through
- * `resolveSpawnCredsOwnerUserId`, which falls back to the org owner. The
- * spawn pipeline then asked `userHasPerUserCliIdentity(orgOwner)` — true
- * for ANY engine — and pinned HOME to `<dataDir>/per-user-creds/<orgOwner>
- * /home`. That HOME tree has no `.claude/.credentials.json` (the operator
- * browser flow `POST /api/config/claude-auth/login` writes to
- * `<dataDir>/host-creds/home/.claude/.credentials.json` instead), so a
- * reviewer Claude spawn whose org owner had only set up Codex device-login
- * never saw the working host login and printed
- * `Not logged in · Please run /login`.
- *
- * The fix is engine-aware: when `engine === 'claude-code'` AND the user
- * has no Claude-specific identity (DB column OR per-user `.credentials.
- * json`), `resolveSessionCliSpawnEnv` drops the per-user HOME pin so the
- * spawn falls back to the persistent host CLI HOME. Other engines retain
- * the legacy any-identity-wins behavior; Cursor / Codex / Gemini have
- * their own per-user file caches that the per-user HOME branch already
- * routes to correctly.
+ * This guards against the prior behavior where a reviewer / NULL-owner spawn
+ * silently borrowed the operator's host CLI HOME (and thus the operator's
+ * Claude/Cursor/Codex login).
  */
 import './test/setup.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
-import { hostCliHomePath } from './host-cli-home.js';
+import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { perUserHomePath } from './per-user-home.js';
 import { perUserCliHomePath } from './per-user-cli-home.js';
 import { initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
@@ -44,15 +32,11 @@ function makeCfg(dataDir: string): AppConfig {
   return {
     dataDir,
     apiKey: '',
-    anthropicApiKey: null,
-    claudeCodeOAuthToken: null,
-    cursorApiKey: null,
     geminiApiKey: null,
-    codexApiKey: null,
   } as unknown as AppConfig;
 }
 
-/** Seed a per-user Codex device-auth so `userHasPerUserCliIdentity` returns true. */
+/** Seed a per-user Codex device-auth so the user has a Codex (only) identity. */
 function seedPerUserCodexDeviceAuth(userId: string, dataDir: string): void {
   const codexHome = perUserCliHomePath('codex', userId, dataDir);
   mkdirSync(codexHome, { recursive: true, mode: 0o700 });
@@ -77,12 +61,21 @@ function seedPerUserClaudeCredentialsFile(userId: string, dataDir: string): void
   );
 }
 
-describe('resolveSessionCliSpawnEnv — engine-aware HOME for claude-code', () => {
+/** Seed a non-empty per-user `.cursor` cache so the Cursor-identity check returns true. */
+function seedPerUserCursorCache(userId: string, dataDir: string): void {
+  const cursorDir = path.join(perUserHomePath(userId, dataDir), '.cursor');
+  mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(cursorDir, 'auth.json'), JSON.stringify({ token: 'fake' }), {
+    mode: 0o600,
+  });
+}
+
+describe('resolveSessionCliSpawnEnv — per-account auth + per-user HOME', () => {
   let tmpDataDir: string;
   let isolatedHostHome: string;
   let prevHome: string | undefined;
   let orgsDbDir: string;
-  let orgOwnerId: string;
+  let ownerId: string;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'claude-home-test-'));
@@ -94,8 +87,8 @@ describe('resolveSessionCliSpawnEnv — engine-aware HOME for claude-code', () =
     orgsDbDir = mkdtempSync(path.join(os.tmpdir(), 'claude-home-test-orgs-'));
     setOrgsDbPathForTests(path.join(orgsDbDir, 'orgs.db'));
     initOrgsDb();
-    orgOwnerId = createUser({
-      username: `claude-home-org-owner-${Date.now()}-${Math.random()}`,
+    ownerId = createUser({
+      username: `claude-home-owner-${Date.now()}-${Math.random()}`,
       passwordHash: 'h',
     }).id;
   });
@@ -105,115 +98,102 @@ describe('resolveSessionCliSpawnEnv — engine-aware HOME for claude-code', () =
     else process.env.HOME = prevHome;
   });
 
-  it('reviewer-style claude-code spawn falls back to host CLI HOME when org owner has only per-user Codex', () => {
-    // The exact production setup that produced "Not logged in" reports:
-    // the org owner completed Codex device login (so any-identity-wins
-    // returned true), but never pasted a per-user Claude token. Today's
-    // operator-side fix is the `POST /api/config/claude-auth/login`
-    // browser flow which writes `.claude/.credentials.json` into the
-    // persistent host CLI HOME — that's the file the reviewer spawn must
-    // see, and the per-user HOME pin used to shadow it.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
+  it('claude-code spawn hard-fails when the acting user has only per-user Codex (no Claude creds)', () => {
+    // The exact production setup that produced "Not logged in" reports — but
+    // there is no host-HOME fallback anymore. The user completed Codex device
+    // login but never set up Claude, so a claude-code spawn must hard-fail
+    // rather than borrow the operator's host login.
+    seedPerUserCodexDeviceAuth(ownerId, tmpDataDir);
+
+    expect(() =>
+      resolveSessionCliSpawnEnv({
+        cfg: makeCfg(tmpDataDir),
+        ownerId: null,
+        credsOwnerId: ownerId,
+        engine: 'claude-code',
+      }),
+    ).toThrow(EngineAuthRequiredError);
+  });
+
+  it('claude-code spawn hard-fails when there is no acting user at all', () => {
+    expect(() =>
+      resolveSessionCliSpawnEnv({
+        cfg: makeCfg(tmpDataDir),
+        ownerId: null,
+        credsOwnerId: null,
+        engine: 'claude-code',
+      }),
+    ).toThrow(EngineAuthRequiredError);
+  });
+
+  it('claude-code spawn pins per-user HOME when the user has a per-user .claude/.credentials.json', () => {
+    seedPerUserClaudeCredentialsFile(ownerId, tmpDataDir);
 
     const env = resolveSessionCliSpawnEnv({
       cfg: makeCfg(tmpDataDir),
       ownerId: null,
-      credsOwnerId: orgOwnerId,
+      credsOwnerId: ownerId,
       engine: 'claude-code',
     });
 
-    expect(env.HOME).toBe(hostCliHomePath(tmpDataDir));
-    expect(env.HOME).not.toBe(perUserHomePath(orgOwnerId, tmpDataDir));
+    expect(env.HOME).toBe(perUserHomePath(ownerId, tmpDataDir));
   });
 
-  it('claude-code spawn keeps per-user HOME when org owner has a per-user .claude/.credentials.json', () => {
-    // File-based per-user Claude auth (e.g. a future per-user
-    // `claude login` flow) — the per-user HOME pin must be preserved so
-    // the spawn reads the user's own credentials.json, not the operator's.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
-    seedPerUserClaudeCredentialsFile(orgOwnerId, tmpDataDir);
-
-    const env = resolveSessionCliSpawnEnv({
-      cfg: makeCfg(tmpDataDir),
-      ownerId: null,
-      credsOwnerId: orgOwnerId,
-      engine: 'claude-code',
-    });
-
-    expect(env.HOME).toBe(perUserHomePath(orgOwnerId, tmpDataDir));
-  });
-
-  it('claude-code spawn keeps per-user HOME when org owner has a per-user Claude DB token', () => {
-    // DB-column-based per-user Claude auth: the env-token path injects
-    // CLAUDE_CODE_OAUTH_TOKEN, but HOME also stays per-user so any
-    // future per-user `.claude/` artifacts (MCP config, settings.json,
-    // history) accumulate in the user's own tree rather than the
-    // operator's.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
-    setUserClaudeAuth(orgOwnerId, {
+  it('claude-code spawn pins per-user HOME + injects token when the user has a Claude DB token', () => {
+    setUserClaudeAuth(ownerId, {
       claudeCodeOAuthToken: 'sk-ant-oat01-user-token',
     });
 
     const env = resolveSessionCliSpawnEnv({
       cfg: makeCfg(tmpDataDir),
       ownerId: null,
-      credsOwnerId: orgOwnerId,
+      credsOwnerId: ownerId,
       engine: 'claude-code',
     });
 
-    expect(env.HOME).toBe(perUserHomePath(orgOwnerId, tmpDataDir));
+    expect(env.HOME).toBe(perUserHomePath(ownerId, tmpDataDir));
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user-token');
   });
 
-  it('cursor-agent spawn is unaffected — per-user HOME wins on any per-user identity (regression guard)', () => {
-    // The fix is intentionally narrow: only claude-code routes around the
-    // per-user HOME pin. Cursor / Codex / Gemini have file caches that
-    // live under the per-user HOME, so the legacy behavior is correct
-    // for them.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
+  it('cursor-agent spawn hard-fails when the user has only Codex (no Cursor creds)', () => {
+    seedPerUserCodexDeviceAuth(ownerId, tmpDataDir);
+
+    expect(() =>
+      resolveSessionCliSpawnEnv({
+        cfg: makeCfg(tmpDataDir),
+        ownerId: null,
+        credsOwnerId: ownerId,
+        engine: 'cursor-agent',
+      }),
+    ).toThrow(EngineAuthRequiredError);
+  });
+
+  it('cursor-agent spawn pins per-user HOME when the user has a per-user Cursor cache', () => {
+    seedPerUserCursorCache(ownerId, tmpDataDir);
 
     const env = resolveSessionCliSpawnEnv({
       cfg: makeCfg(tmpDataDir),
       ownerId: null,
-      credsOwnerId: orgOwnerId,
+      credsOwnerId: ownerId,
       engine: 'cursor-agent',
     });
 
-    expect(env.HOME).toBe(perUserHomePath(orgOwnerId, tmpDataDir));
+    expect(env.HOME).toBe(perUserHomePath(ownerId, tmpDataDir));
   });
 
-  it('claude-code spawn for a regular session owner with no per-user Claude also falls back to host HOME', () => {
-    // Not just reviewers: any session whose creds-owner lacks per-user
-    // Claude benefits from the host-HOME fallback. The env-token chain
-    // (per-user override → host config) still bills the same level it
-    // did before, so this is strictly additive — when both per-user and
-    // host config Claude tokens are unset, the spawn now reads the
-    // host-creds `.credentials.json` instead of hard-failing.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
-
-    const env = resolveSessionCliSpawnEnv({
-      cfg: makeCfg(tmpDataDir),
-      ownerId: orgOwnerId, // real session owner, not a reviewer NULL
-      credsOwnerId: orgOwnerId,
-      engine: 'claude-code',
-    });
-
-    expect(env.HOME).toBe(hostCliHomePath(tmpDataDir));
-  });
-
-  it('omitting engine preserves legacy any-identity-wins behavior for non-Claude callers', () => {
-    // Some callers don't know the engine yet (e.g. Cursor session
-    // create-chat probe). They must continue to get the per-user HOME
-    // pin on any per-user identity so per-engine caches stay isolated.
-    seedPerUserCodexDeviceAuth(orgOwnerId, tmpDataDir);
+  it('omitting engine skips the per-account guard and pins per-user HOME (Cursor create-chat probe)', () => {
+    // Some callers don't know the engine yet (e.g. the Cursor session
+    // create-chat probe). They skip the guard and still get the per-user
+    // HOME pin so per-engine caches stay isolated.
+    seedPerUserCodexDeviceAuth(ownerId, tmpDataDir);
 
     const env = resolveSessionCliSpawnEnv({
       cfg: makeCfg(tmpDataDir),
       ownerId: null,
-      credsOwnerId: orgOwnerId,
+      credsOwnerId: ownerId,
       // engine: undefined
     });
 
-    expect(env.HOME).toBe(perUserHomePath(orgOwnerId, tmpDataDir));
+    expect(env.HOME).toBe(perUserHomePath(ownerId, tmpDataDir));
   });
 });

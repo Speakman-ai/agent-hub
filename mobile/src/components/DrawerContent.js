@@ -190,9 +190,9 @@ export default function DrawerContent({ navigation }) {
               </Text>
             </TouchableOpacity>
           ))}
-          {/* Reviewer agents are GitHub-webhook spawned — hide manual
-              "+ New Session" so the user can't kick a 403 from the
-              POST /api/agents/:id/sessions gate. */}
+          {/* Reviewer agents are spawned only by the Finalize review phase —
+              hide manual "+ New Session" so the user can't kick a 403 from
+              the POST /api/agents/:id/sessions gate. */}
           {agent.role !== 'reviewer' && (
             <TouchableOpacity
               style={styles.newSessionButton}

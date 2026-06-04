@@ -7,10 +7,10 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
-import config, { buildSpawnEnv } from './config.js';
+import config from './config.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
-import { getOrgOwnerUserId } from './session-ownership.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
 import { decryptSecret } from './secret-crypto.js';
@@ -256,8 +256,20 @@ function runAgent(
     let output = '';
     let errorOutput = '';
 
-    const slackOwnerId = getOrgOwnerUserId();
-    const spawnEnv = { ...buildSpawnEnv(config, { userId: slackOwnerId }) };
+    // Slack messages have no mapped Hub user, so there is no acting user and
+    // no org-owner fallback. The per-account engines (Claude/Cursor/Codex)
+    // hard-fail via EngineAuthRequiredError (rejecting this promise); only the
+    // host-global Gemini can run a Slack one-shot.
+    const slackOwnerId: string | null = null;
+    const spawnEnv = {
+      ...resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId: slackOwnerId,
+        credsOwnerId: slackOwnerId,
+        sessionId: null,
+        engine,
+      }),
+    };
     if (slackAgent && slackOwnerId) {
       const proj = getProjects().find((p) => p.id === slackAgent.projectId);
       if (proj) {

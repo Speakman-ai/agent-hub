@@ -1,8 +1,8 @@
 /**
- * Tracks the highest GitHub PR review id we've already dispatched author feedback
- * for, keyed by kanban card id. Shared by `pollForMissedReviews` and the
- * `pull_request_review.submitted` webhook so poll doesn't re-send after a successful
- * webhook (and both paths agree after restart only as far as in-memory state lasts).
+ * Tracks the highest PR review id we've already dispatched author feedback for,
+ * keyed by kanban card id, to avoid re-sending feedback for a review id already
+ * handled. Cleared per-card by the board route when a card leaves review.
+ * In-memory only — survives within a process run, reset on restart.
  */
 const lastDispatchedReviewId = new Map<string, number>();
 

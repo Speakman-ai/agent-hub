@@ -15,7 +15,6 @@ import {
   Eye,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
-import ExternalPrReviewBox from './ExternalPrReviewBox.jsx';
 import {
   relativePrTime,
   diffSummary,
@@ -627,17 +626,6 @@ export default function PullRequestsPage({
         : project.agents[0]?.id
       : null;
 
-  const reviewerAgentId = Array.isArray(project?.agents)
-    ? (() => {
-        for (const a of project.agents) {
-          if (typeof a === 'object' && a?.role === 'reviewer' && typeof a.id === 'string') {
-            return a.id;
-          }
-        }
-        return null;
-      })()
-    : null;
-
   /** Monotonic counter so an older in-flight list fetch cannot clobber newer results (Strict Mode / rapid tab switches). */
   const listFetchGenRef = useRef(0);
   const detailFetchGenRef = useRef(0);
@@ -1045,15 +1033,6 @@ export default function PullRequestsPage({
               Refresh
             </button>
           </div>
-        </div>
-
-        {/* Review external PR — paste a GitHub PR URL to spawn a reviewer-only session. */}
-        <div className="mb-4">
-          <ExternalPrReviewBox
-            projectId={projectId}
-            reviewerAgentId={reviewerAgentId}
-            onToast={onToast}
-          />
         </div>
 
         {/* State tabs */}

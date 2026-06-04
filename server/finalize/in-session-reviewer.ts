@@ -32,12 +32,11 @@ import type { ChildProcess } from 'child_process';
 import { spawn, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { trackChild, killProcessGroup } from '../process-groups.js';
-import { buildSpawnEnv } from '../config.js';
+import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
-import { getOrgOwnerUserId } from '../session-ownership.js';
 import { createStreamParser } from '../stream-parser.js';
 import {
   buildSessionMultiSpawnArgs,
@@ -187,7 +186,8 @@ export async function runReviewerTurn(
   const systemPrompt = composeReviewerSystemPrompt(enrichedSystem, project, card);
 
   const engine = normalizeSessionMultiEngine(reviewer.engine);
-  const roomOwnerId = session.owner_user_id || getOrgOwnerUserId();
+  // No org-owner fallback — only the session's own owner.
+  const roomOwnerId = session.owner_user_id || null;
   const model = resolveEffectiveModel(config, engine, {
     agentModel: reviewer.model as string | undefined,
     ownerUserId: roomOwnerId,
@@ -201,7 +201,15 @@ export async function runReviewerTurn(
   // Spawn env: orchestrator env + agent's project secrets / aws / skill
   // credentials so the reviewer CLI carries through the project's
   // configured auth surface without leaking the executor's identity.
-  const spawnEnv: NodeJS.ProcessEnv = { ...buildSpawnEnv(config, { userId: roomOwnerId }) };
+  const spawnEnv: NodeJS.ProcessEnv = {
+    ...resolveSessionCliSpawnEnv({
+      cfg: config,
+      ownerId: roomOwnerId,
+      credsOwnerId: roomOwnerId,
+      sessionId,
+      engine,
+    }),
+  };
   const reviewerProject = deps.findAgent?.(reviewer.id)?.project ?? project;
   if (reviewerProject && roomOwnerId) {
     mergeSkillCredentialSpawnEnv(spawnEnv, {

@@ -114,6 +114,13 @@ type EngineFixture = {
   /** Reads the stored value from the DB. */
   read: (userId: string) => { apiKey: string | null } | null;
   sampleKey: string;
+  /**
+   * Whether this engine still has a host-config fallback. Only Gemini is
+   * host-configured now; Cursor / Codex are strictly per-account, so their
+   * `hostConfigFallback.apiKey` is always false even when a host env value
+   * is present.
+   */
+  hasHostFallback: boolean;
 };
 
 const engineFixtures: EngineFixture[] = [
@@ -125,6 +132,7 @@ const engineFixtures: EngineFixture[] = [
     },
     read: (userId) => getUserCursorAuth(userId),
     sampleKey: 'curs-AAAA-BBBB',
+    hasHostFallback: false,
   },
   {
     engine: 'gemini',
@@ -134,6 +142,7 @@ const engineFixtures: EngineFixture[] = [
     },
     read: (userId) => getUserGeminiAuth(userId),
     sampleKey: 'gem-XXXX-YYYY',
+    hasHostFallback: true,
   },
   {
     engine: 'codex',
@@ -143,6 +152,7 @@ const engineFixtures: EngineFixture[] = [
     },
     read: (userId) => getUserCodexAuth(userId),
     sampleKey: 'sk-codex-RoundTrip',
+    hasHostFallback: false,
   },
 ];
 
@@ -171,7 +181,7 @@ for (const fx of engineFixtures) {
       expect(res.body.error).toMatch(/not found/i);
     });
 
-    it('returns masked apiKey and hostConfigFallback truthy when host is configured', async () => {
+    it('returns masked apiKey and hostConfigFallback per the engine host-fallback policy', async () => {
       const app = buildGatedApp();
       const ownerToken = await setupOwner(app);
 
@@ -181,7 +191,8 @@ for (const fx of engineFixtures) {
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ apiKey: fx.sampleKey });
 
-      // Now point host config at a fallback value so we can assert the flag.
+      // Point host config at a fallback value. Only Gemini honors it; Cursor
+      // and Codex are per-account-only and must keep the flag false.
       fx.setHost('host-fallback-value');
 
       const res = await supertest(app).get(fx.path).set('Authorization', `Bearer ${ownerToken}`);
@@ -191,7 +202,7 @@ for (const fx of engineFixtures) {
       expect(res.body.apiKey.endsWith('…')).toBe(true);
       // Never echo the raw value.
       expect(res.body.apiKey).not.toBe(fx.sampleKey);
-      expect(res.body.hostConfigFallback).toEqual({ apiKey: true });
+      expect(res.body.hostConfigFallback).toEqual({ apiKey: fx.hasHostFallback });
     });
 
     it('reports hostConfigFallback false when host has no key configured', async () => {

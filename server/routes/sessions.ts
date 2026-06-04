@@ -2,7 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import config, { buildSpawnEnv } from '../config.js';
+import config from '../config.js';
+import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from '../per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from '../effective-model.js';
 import {
   CreateSessionRequestSchema,
@@ -67,7 +68,6 @@ import {
   userOwnsSession,
   userCanReadSession,
   getSessionOwner,
-  getOrgOwnerUserId,
 } from '../session-ownership.js';
 import { requireRole } from '../roles.js';
 import {
@@ -271,7 +271,16 @@ export function summarizeTranscript(
     let errorOutput = '';
     const timeout = config.defaultTimeoutMs;
 
-    const spawnEnv = { ...buildSpawnEnv(config) };
+    const summaryOwnerId = skillCredentialMerge?.ownerId ?? null;
+    const spawnEnv = {
+      ...resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId: summaryOwnerId,
+        credsOwnerId: summaryOwnerId,
+        sessionId: null,
+        engine,
+      }),
+    };
     if (skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(spawnEnv, skillCredentialMerge);
       mergeProjectSecretsSpawnEnv(spawnEnv, {
@@ -1360,7 +1369,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         config,
         project && session.agent_id
           ? {
-              ownerId: getSessionOwner(session.id) || getOrgOwnerUserId(),
+              // No org-owner fallback — the session's own owner only.
+              ownerId: getSessionOwner(session.id),
               agentId: session.agent_id,
               project,
             }
@@ -1451,8 +1461,27 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const REWIND_TIMEOUT_MS = 30_000;
 
-      const rewindEnv = { ...buildSpawnEnv(config) };
-      const rewindOwnerId = getSessionOwner(req.params.sessionId) || getOrgOwnerUserId();
+      // No org-owner fallback — the session's own owner only. The rewind
+      // spawn runs the Claude CLI, so it needs that owner's per-account creds;
+      // EngineAuthRequiredError surfaces as a 409.
+      const rewindOwnerId = getSessionOwner(req.params.sessionId);
+      let rewindEnv: NodeJS.ProcessEnv;
+      try {
+        rewindEnv = {
+          ...resolveSessionCliSpawnEnv({
+            cfg: config,
+            ownerId: rewindOwnerId,
+            credsOwnerId: rewindOwnerId,
+            sessionId: req.params.sessionId,
+            engine: 'claude-code',
+          }),
+        };
+      } catch (err) {
+        if (err instanceof EngineAuthRequiredError) {
+          return res.status(409).json({ error: err.message, code: 'no_account_credentials' });
+        }
+        throw err;
+      }
       const rewindLookup = findAgent(session.agent_id);
       if (rewindLookup?.project && rewindOwnerId) {
         mergeSkillCredentialSpawnEnv(rewindEnv, {

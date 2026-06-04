@@ -11,11 +11,6 @@ import {
   mergeableFromCli,
 } from './pr-list.js';
 
-vi.mock('../github-app.js', () => ({
-  githubApiRequest: vi.fn(),
-  resolveInstallationId: vi.fn(),
-}));
-
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
 }));

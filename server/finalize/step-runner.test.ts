@@ -887,7 +887,9 @@ describe('FailureExcerptCollector', () => {
 
     // ...then a Postgres sidecar dumps 200 lines of benign checkpoint noise.
     for (let i = 0; i < 200; i += 1) {
-      c.push(`db-1  | 2026-06-04 16:4${i % 9}:00 UTC [67] LOG:  checkpoint complete: wrote 3 buffers`);
+      c.push(
+        `db-1  | 2026-06-04 16:4${i % 9}:00 UTC [67] LOG:  checkpoint complete: wrote 3 buffers`,
+      );
     }
 
     const excerpt = c.snapshot().join('\n');

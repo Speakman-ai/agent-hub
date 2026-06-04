@@ -30,12 +30,6 @@ vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp', githubApp: null },
 }));
 
-// ── GitHub App mock (no installation token available in these tests) ─────────
-vi.mock('./github-app.js', () => ({
-  getInstallationToken: vi.fn(async () => null),
-  resolveInstallationId: vi.fn(async () => null),
-}));
-
 // ── skill-credentials-github mock ────────────────────────────────────────────
 // We re-implement `gitAuthArgsForGithubPat` faithfully here so tests don't
 // depend on an import of the real module (which might pull in orgs DB). The
@@ -73,10 +67,13 @@ vi.mock('./spawn-github-credentials.js', () => ({
 }));
 
 // Reviewer/system sessions intentionally persist owner_user_id = NULL.
-// Worktree clone auth should fall back to org owner for token lookup.
-const mockGetOrgOwnerUserId = vi.fn(() => 'org-owner-1');
-vi.mock('./session-ownership.js', () => ({
-  getOrgOwnerUserId: () => mockGetOrgOwnerUserId(),
+// There is no org-owner fallback: clone auth resolves a real Owner whose
+// own GitHub token can reach the repo via `resolveOwnerWithRepoAccess`, or
+// returns null (no token injected). `worktree.ts` dynamically imports this
+// module, so the mock intercepts that import too.
+const mockResolveOwnerWithRepoAccess = vi.fn(async (_repo: string): Promise<string | null> => null);
+vi.mock('./repo-aware-token.js', () => ({
+  resolveOwnerWithRepoAccess: (repo: string) => mockResolveOwnerWithRepoAccess(repo),
 }));
 
 // ── child_process.execFile intercept ─────────────────────────────────────────
@@ -167,6 +164,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     recorded.calls = [];
     cloneFailMessage = null;
     mockGetGithubPatForUser.mockReturnValue(null);
+    mockResolveOwnerWithRepoAccess.mockResolvedValue(null);
     currentRemoteUrl = '';
 
     // Create a minimal source directory so `ensureWorkspaceDir` can derive a
@@ -242,10 +240,13 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     expect(mockGetGithubPatForUser).toHaveBeenCalledWith('user-42');
   });
 
-  it('falls back to org owner token lookup when session owner_user_id is null', async () => {
+  it('resolves a repo-access Owner token when session owner_user_id is null', async () => {
     currentRemoteUrl = 'https://github.com/owner/repo.git';
+    // No org-owner fallback: the token owner is the real Owner whose own
+    // GitHub token can reach the repo, as decided by resolveOwnerWithRepoAccess.
+    mockResolveOwnerWithRepoAccess.mockResolvedValue('repo-access-owner-1');
     mockGetGithubPatForUser.mockImplementation((userId?: string | null) =>
-      userId === 'org-owner-1' ? 'ghp_org_owner_token_123' : null,
+      userId === 'repo-access-owner-1' ? 'ghp_repo_access_token_123' : null,
     );
     const persist = vi.fn();
 
@@ -254,15 +255,47 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
       sourceDir,
       'agent-1',
       persist,
+      undefined, // installCommand
+      undefined, // onFailure
+      undefined, // prBaseBranch
+      undefined, // repoUrl
+      undefined, // projectId
+      undefined, // onBaseBranchAdvanced
+      'owner/repo', // githubRepo — drives repo-aware Owner resolution
     );
     createdWorkspace = ws;
 
-    expect(mockGetOrgOwnerUserId).toHaveBeenCalled();
-    expect(mockGetGithubPatForUser).toHaveBeenCalledWith('org-owner-1');
+    expect(mockResolveOwnerWithRepoAccess).toHaveBeenCalled();
+    expect(mockGetGithubPatForUser).toHaveBeenCalledWith('repo-access-owner-1');
     const cloneCall = recorded.calls.find((c) => c.args.includes('clone'));
     expect(cloneCall, 'expected a git clone call').toBeDefined();
     expect(cloneCall!.args).toContain('-c');
     expect(cloneCall!.args.join(' ')).toContain('extraheader=Authorization: basic');
+  });
+
+  it('injects no token when no Owner can reach the repo (null, no fallback)', async () => {
+    currentRemoteUrl = 'https://github.com/owner/repo.git';
+    mockResolveOwnerWithRepoAccess.mockResolvedValue(null);
+    const persist = vi.fn();
+
+    const ws = await ensureSessionWorkspace(
+      makeSession(uniqueSessionId(), null),
+      sourceDir,
+      'agent-1',
+      persist,
+      undefined, // installCommand
+      undefined, // onFailure
+      undefined, // prBaseBranch
+      undefined, // repoUrl
+      undefined, // projectId
+      undefined, // onBaseBranchAdvanced
+      'owner/repo', // githubRepo
+    );
+    createdWorkspace = ws;
+
+    const cloneCall = recorded.calls.find((c) => c.args.includes('clone'));
+    expect(cloneCall, 'expected a git clone call').toBeDefined();
+    expect(cloneCall!.args).not.toContain('-c');
   });
 
   // ── No PAT passthrough ────────────────────────────────────────────────────

@@ -404,12 +404,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
-  nudgePrReviewer: (projectId, prNumber) =>
-    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/nudge-reviewer`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
-
   // Notes (project-scoped quick-capture)
   getNotes: (projectId, query, limit) => fetchJSON(buildNotesListUrl(projectId, query, limit)),
   getNote: (projectId, noteId) => fetchJSON(buildNoteUrl(projectId, noteId)),
@@ -425,19 +419,6 @@ export const api = {
     }),
   deleteNote: (projectId, noteId) =>
     fetchJSON(buildNoteUrl(projectId, noteId), { method: 'DELETE' }),
-
-  // Webhooks
-  getWebhooks: () => fetchJSON('/webhooks'),
-  getProjectWebhooks: (projectId) => fetchJSON(`/webhooks/project/${projectId}`),
-  createWebhook: (data) =>
-    fetchJSON('/webhooks', { method: 'POST', body: JSON.stringify(data) }),
-  updateWebhook: (id, data) =>
-    fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
-  getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
-  registerWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST' }),
-  unregisterWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'DELETE' }),
-  getWebhookRegistration: (id) => fetchJSON(`/webhooks/${id}/register`),
 
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {

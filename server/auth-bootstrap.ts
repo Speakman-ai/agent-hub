@@ -216,21 +216,6 @@ export async function maybeAutoProvisionOwner(
     );
   }
 
-  // Belt-and-suspenders: drop any cached org-owner lookup so the very
-  // next system spawn sees the user we just created. The cache no
-  // longer memoises `null` (see `session-ownership.ts`), so this is
-  // defence-in-depth against a future regression rather than load-
-  // bearing today. Imported lazily because session-ownership pulls in
-  // the full `db.js` chain, which would force initDb() during this
-  // module's load and break tests that mock config without seeding
-  // `defaultCwd`.
-  try {
-    const { resetOrgOwnerCache } = await import('./session-ownership.js');
-    resetOrgOwnerCache();
-  } catch (err) {
-    console.warn('[auth-bootstrap] failed to reset org owner cache:', err);
-  }
-
   // No org-mode flip needed: auth bypass is now keyed off the
   // `AGENT_HUB_MODE` env var (see `isLocalBundledServer()` in
   // `server/auth.ts`), not the persisted `org.mode` column. A web/cloud

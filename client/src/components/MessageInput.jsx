@@ -830,8 +830,8 @@ export default function MessageInput({
     [addImageFiles],
   );
 
-  // Read-only sessions (currently reviewer threads spawned from GitHub
-  // webhooks) render only a banner — no composer, no send button, no
+  // Read-only sessions (currently reviewer threads spawned by the Finalize
+  // review phase) render only a banner — no composer, no send button, no
   // drag-drop affordance. Reviewer threads are shared with the whole
   // org and server-side writes are gated to the system spawn path; this
   // hides the UX so users don't try to type into a thread they can't

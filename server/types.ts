@@ -412,18 +412,17 @@ export interface KanbanCardRow {
    *  branch no longer exists at PR-open time, the server falls back to the
    *  default and posts an explanatory comment on the card. */
   pr_base_branch?: string | null;
-  /** Persistent dedup key for `pollForMissedReviews`. Stores the highest
-   *  GitHub review id already dispatched to the linked session so the poll
-   *  can restore its dedup state after a server restart without re-sending
-   *  stale "Missed Review Feedback" messages. NULL = never dispatched. */
+  /** Persistent dedup key for review-feedback dispatch. Stores the highest
+   *  GitHub review id already dispatched to the linked session so the
+   *  `pull_request_review.submitted` webhook doesn't re-send stale feedback
+   *  after a server restart. NULL = never dispatched. */
   last_dispatched_review_id?: number | null;
-  /** Persistent dedup key for the poller's CI-failure probe. Highest GitHub
-   *  check_run id already dispatched a "CI fix needed" message for. NULL =
-   *  no failed check has been dispatched yet for this card. */
+  /** Legacy dedup column for the removed review/CI poller's CI-failure probe.
+   *  No longer written (reviews/CI are webhook-only); retained for migration
+   *  stability. */
   last_dispatched_check_run_id?: number | null;
-  /** Persistent dedup key for the poller's inline review-comment probe.
-   *  Highest GitHub pull-request review comment id already dispatched as
-   *  author feedback. NULL = no inline comment has been dispatched yet. */
+  /** Legacy dedup column for the removed review/CI poller's inline review-comment
+   *  probe. No longer written; retained for migration stability. */
   last_dispatched_review_comment_id?: number | null;
   /** Total number of autofix feedback dispatches sent to this card's session
    *  across all kinds (review, ci, inline-comments, conflict). Drives the
@@ -956,13 +955,6 @@ export interface Stmts {
   getArchivedSessionsByAgent: Stmt;
   getExpiredArchivedSessions: Stmt;
   getRecoverableSessionByIdPrefix: Stmt;
-  /**
-   * Newest live (non-archived) reviewer session for a given PR. Bound with
-   * `(reviewer.id, 'Review: PR #<n> %')`; the LIKE pattern is safe because
-   * `<n>` is enforced numeric upstream by `parsePrUrl`. Powers the
-   * cleanup-on-review hook in `server/reviewer-session-cleanup.ts`.
-   */
-  getActiveReviewerSessionForPR: Stmt;
   touchSession: Stmt;
   updateSessionEngine: Stmt;
   updateSessionModel: Stmt;
@@ -2210,12 +2202,20 @@ export interface AppConfig {
    */
   personalOAuth: PersonalOAuthConfig | null;
   apiKey: string | null;
-  anthropicApiKey: string | null;
-  /** From `claude setup-token`; applied as CLAUDE_CODE_OAUTH_TOKEN on spawns. */
-  claudeCodeOAuthToken: string | null;
+  /**
+   * Host-wide OpenAI API key. NOT an agent-engine credential (Codex spawns
+   * use the per-account `codex_api_key`). This powers host utilities that
+   * call OpenAI directly: Whisper transcription (`/api/transcribe`) and the
+   * optional LLM session-title upgrade.
+   */
   openaiApiKey: string | null;
+  /**
+   * Host-wide Gemini API key. Gemini is the only AI *engine* with a host-level
+   * credential — it backs wiki embeddings and the Gemini CLI. Claude / Cursor
+   * / Codex are strictly per-account (encrypted `users` columns + per-user
+   * HOME OAuth caches); there is no host-wide key for those engines.
+   */
   geminiApiKey: string | null;
-  codexApiKey: string | null;
   /**
    * Optional Codex CLI profile name. When set, every `codex exec` spawn
    * (chat, room, design, delegation) gets `--profile <name>` appended so
@@ -2245,21 +2245,17 @@ export interface AppConfig {
    *   • `POST /api/webhooks` with `autoRegister: true` short-circuits with
    *     `{ ok: true, skipped: true, reason: 'lan_mode' }` instead of calling
    *     GitHub's hook-create API — no inbound webhook is provisioned.
-   *   • The reconciliation poller (`server/autonomous.ts`) takes over the
-   *     `pull_request.opened` reviewer-dispatch path that the webhook handler
-   *     normally fires, so freshly-opened PRs still get an automated review.
    *
-   * The rest of the polling story (PR merge → Done, merge-conflict escalation,
-   * missed `changes_requested` reviews, failed CI, inline review comments)
-   * already runs unconditionally via `startReviewPollingFallback`, so LAN mode
-   * is purely "skip webhook setup + close the reviewer-dispatch gap".
+   * NOTE: the GitHub review/CI polling fallback was removed — reviews and CI
+   * are now handled purely by inbound webhooks. A LAN-mode deployment that
+   * GitHub cannot reach therefore no longer gets automated reviewer dispatch,
+   * PR-merge → Done reconciliation, or `changes_requested` follow-ups. Use a
+   * publicly reachable Hub (or a tunnel) if you need autonomous PR handling.
    *
    * Configure via `lanMode` in config.json or `PATCH /api/config`. Defaults to
    * false (webhook-driven behavior unchanged for cloud deployments).
    */
   lanMode: boolean;
-  /** Cursor Agent CLI key, exported as CURSOR_API_KEY on spawns. */
-  cursorApiKey: string | null;
   slackWebhookUrl: string | null;
   /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */
   browserMaxConcurrentContexts: number;
@@ -2590,7 +2586,6 @@ export interface RouteDeps {
   allAgents: () => EnrichedAgent[];
   saveProjects: () => void;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
-  pendingReviewComments: Map<string, unknown>;
   lastDispatchedReviewId: Map<string, number>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;
   autonomousCrons: Map<string, unknown>;
@@ -2598,10 +2593,6 @@ export interface RouteDeps {
   config: AppConfig;
   getProjects: () => Project[];
   setProjects: (p: Project[]) => void;
-  getGhBotUser: () => string | null;
-  setGhBotUser: (v: string | null) => void;
-  getGhAppSlug: () => string | null;
-  setGhAppSlug: (v: string | null) => void;
   serverDir: string;
   buildTranscript: (
     messages: Array<{ role: string; content: string; agent_name?: string | null }>,

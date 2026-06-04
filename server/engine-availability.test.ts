@@ -1,19 +1,29 @@
-// Tests for the per-engine availability probe. We never shell out for
-// real CLIs in tests — the cursor probe is injected, codex auth is read
-// from a tmpdir, and Claude OAuth is read from a tmpdir override.
+// Tests for the per-engine availability probe.
 //
-// What we're guarding against:
-//   - The probe surfacing "available" when no credentials exist.
-//   - Expired Claude OAuth being misclassified as valid.
-//   - A `no-binary` reason on engines whose CLI isn't installed (so the
-//     resolver can render a precise "install X" message).
+// Auth model: strictly per-account. Claude / Cursor / Codex availability
+// delegates to `userHasEngineCreds(engine, userId, dataDir)` — there is no
+// host or env fallback, and no acting user means "no-credentials". Gemini is
+// the one host-configured engine (host key / GEMINI_API_KEY env).
+//
+// We mock `userHasEngineCreds` so the probe's per-account branch is driven
+// deterministically without seeding orgs.db or per-user HOME trees.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { probeEngineAvailability, probeAllEngineAvailability } from './engine-availability.js';
 import type { AppConfig } from './types.js';
+
+const { mockUserHasEngineCreds } = vi.hoisted(() => ({
+  mockUserHasEngineCreds: vi.fn(),
+}));
+
+vi.mock('./per-user-cli-spawn.js', () => ({
+  userHasEngineCreds: mockUserHasEngineCreds,
+}));
+
+const { probeEngineAvailability, probeAllEngineAvailability } =
+  await import('./engine-availability.js');
 
 let tmpDir: string;
 let fakeBin: string;
@@ -31,10 +41,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     cursorBin: fakeBin,
     geminiBin: fakeBin,
     codexBin: fakeBin,
-    anthropicApiKey: null,
-    claudeCodeOAuthToken: null,
     geminiApiKey: null,
-    codexApiKey: null,
     openaiApiKey: null,
     // Other fields aren't read by the probe but the type demands them.
     port: 3051,
@@ -74,6 +81,8 @@ beforeEach(() => {
   );
   mkdirSync(tmpDir, { recursive: true });
   fakeBin = makeFakeBin(path.join(tmpDir, 'fake-cli'));
+  mockUserHasEngineCreds.mockReset();
+  mockUserHasEngineCreds.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -81,127 +90,97 @@ afterEach(() => {
   if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('probeEngineAvailability — claude-code', () => {
-  it('reports available when ANTHROPIC_API_KEY env var is present', async () => {
+describe('probeEngineAvailability — claude-code (per-account)', () => {
+  it('reports no-binary when claudeBin does not exist', async () => {
+    // claude-code has no dedicated binary check in the probe, but with a bin
+    // present and an acting user the result is decided by userHasEngineCreds.
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('claude-code', cfg, {
-      env: { ANTHROPIC_API_KEY: 'sk-ant-test' },
-      claudeHome: tmpDir, // empty, so OAuth file probe also misses
-    });
+    mockUserHasEngineCreds.mockReturnValue(true);
+    const r = await probeEngineAvailability('claude-code', cfg, { userId: 'u1' });
     expect(r.available).toBe(true);
+    expect(mockUserHasEngineCreds).toHaveBeenCalledWith('claude-code', 'u1', cfg.dataDir);
   });
 
-  it('reports available when claudeCodeOAuthToken is configured', async () => {
-    const cfg = makeConfig({ claudeCodeOAuthToken: 'sk-ant-oat-test' });
-    const r = await probeEngineAvailability('claude-code', cfg, {
-      env: {},
-      claudeHome: tmpDir,
-    });
-    expect(r.available).toBe(true);
-  });
-
-  it('reports no-credentials when nothing is configured', async () => {
+  it('reports no-credentials when there is no acting user (no host fallback)', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('claude-code', cfg, {
-      env: {},
-      claudeHome: tmpDir, // isolated empty dir — no real ~/.claude
-    });
+    const r = await probeEngineAvailability('claude-code', cfg, {});
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-credentials');
     expect(r.detail).toMatch(/claude/i);
   });
 
-  it('reports expired when ~/.claude/.credentials.json holds an expired OAuth token', async () => {
-    writeFileSync(
-      path.join(tmpDir, '.credentials.json'),
-      JSON.stringify({
-        // expiresAt in seconds, well in the past
-        claudeAiOauth: { expiresAt: Math.floor(Date.now() / 1000) - 3600 },
-      }),
-      'utf-8',
-    );
+  it('reports no-credentials when the acting user has no Claude creds', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('claude-code', cfg, {
-      env: {},
-      claudeHome: tmpDir,
-    });
+    mockUserHasEngineCreds.mockReturnValue(false);
+    const r = await probeEngineAvailability('claude-code', cfg, { userId: 'u1' });
     expect(r.available).toBe(false);
-    expect(r.reason).toBe('expired');
+    expect(r.reason).toBe('no-credentials');
   });
 });
 
-describe('probeEngineAvailability — cursor-agent', () => {
+describe('probeEngineAvailability — cursor-agent (per-account)', () => {
   it('reports no-binary when cursorBin does not exist', async () => {
     const cfg = makeConfig({ cursorBin: '/no/such/path/cursor-agent' });
-    const r = await probeEngineAvailability('cursor-agent', cfg, {
-      env: {},
-      cursorProbe: async () => true,
-    });
+    const r = await probeEngineAvailability('cursor-agent', cfg, { userId: 'u1' });
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-binary');
   });
 
-  it('reports available when the injected cursor probe says authenticated', async () => {
+  it('reports available when the acting user has Cursor creds', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('cursor-agent', cfg, {
-      env: {},
-      cursorProbe: async () => true,
-    });
+    mockUserHasEngineCreds.mockReturnValue(true);
+    const r = await probeEngineAvailability('cursor-agent', cfg, { userId: 'u1' });
     expect(r.available).toBe(true);
   });
 
-  it('reports no-credentials when the cursor probe says unauthenticated', async () => {
+  it('reports no-credentials when there is no acting user', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('cursor-agent', cfg, {
-      env: {},
-      cursorProbe: async () => false,
-    });
+    const r = await probeEngineAvailability('cursor-agent', cfg, {});
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('no-credentials');
+  });
+
+  it('reports no-credentials when the acting user has no Cursor creds', async () => {
+    const cfg = makeConfig();
+    mockUserHasEngineCreds.mockReturnValue(false);
+    const r = await probeEngineAvailability('cursor-agent', cfg, { userId: 'u1' });
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-credentials');
   });
 });
 
-describe('probeEngineAvailability — codex-cli', () => {
+describe('probeEngineAvailability — codex-cli (per-account)', () => {
   it('reports no-binary when codexBin does not exist', async () => {
     const cfg = makeConfig({ codexBin: '/no/such/path/codex' });
-    const r = await probeEngineAvailability('codex-cli', cfg, { env: {} });
+    const r = await probeEngineAvailability('codex-cli', cfg, { userId: 'u1' });
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-binary');
   });
 
-  it('reports available when CODEX_API_KEY env var is set', async () => {
+  it('reports available when the acting user has Codex creds', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('codex-cli', cfg, {
-      env: { CODEX_API_KEY: 'sk-xxx' },
-    });
+    mockUserHasEngineCreds.mockReturnValue(true);
+    const r = await probeEngineAvailability('codex-cli', cfg, { userId: 'u1' });
     expect(r.available).toBe(true);
   });
 
-  it('reports available when ~/.codex/auth.json declares apikey mode', async () => {
-    const codexHome = path.join(tmpDir, '.codex');
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(
-      path.join(codexHome, 'auth.json'),
-      JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-x' }),
-      'utf-8',
-    );
+  it('reports no-credentials when there is no acting user', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('codex-cli', cfg, { env: { CODEX_HOME: codexHome } });
-    expect(r.available).toBe(true);
+    const r = await probeEngineAvailability('codex-cli', cfg, {});
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('no-credentials');
   });
 
-  it('reports no-credentials when nothing is configured', async () => {
+  it('reports no-credentials when the acting user has no Codex creds', async () => {
     const cfg = makeConfig();
-    const r = await probeEngineAvailability('codex-cli', cfg, {
-      // Point CODEX_HOME at an empty dir so detectCodexAuthMode returns absent
-      env: { CODEX_HOME: tmpDir },
-    });
+    mockUserHasEngineCreds.mockReturnValue(false);
+    const r = await probeEngineAvailability('codex-cli', cfg, { userId: 'u1' });
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-credentials');
   });
 });
 
-describe('probeEngineAvailability — gemini-cli', () => {
+describe('probeEngineAvailability — gemini-cli (host-configured / global)', () => {
   it('reports no-binary when geminiBin does not exist', async () => {
     const cfg = makeConfig({ geminiBin: '/no/such/path/gemini' });
     const r = await probeEngineAvailability('gemini-cli', cfg, { env: {} });
@@ -217,6 +196,12 @@ describe('probeEngineAvailability — gemini-cli', () => {
     expect(r.available).toBe(true);
   });
 
+  it('reports available when the host config carries a Gemini key', async () => {
+    const cfg = makeConfig({ geminiApiKey: 'AIza-host' });
+    const r = await probeEngineAvailability('gemini-cli', cfg, { env: {} });
+    expect(r.available).toBe(true);
+  });
+
   it('reports no-credentials when nothing is configured', async () => {
     const cfg = makeConfig();
     const r = await probeEngineAvailability('gemini-cli', cfg, { env: {} });
@@ -228,15 +213,11 @@ describe('probeEngineAvailability — gemini-cli', () => {
 describe('probeAllEngineAvailability', () => {
   it('returns a record keyed by every supported engine', async () => {
     const cfg = makeConfig();
-    const all = await probeAllEngineAvailability(cfg, {
-      env: { CODEX_HOME: tmpDir },
-      cursorProbe: async () => false,
-      claudeHome: tmpDir,
-    });
+    // No acting user + no Gemini key → nothing is available.
+    const all = await probeAllEngineAvailability(cfg, { env: {} });
     expect(Object.keys(all).sort()).toEqual(
       ['claude-code', 'codex-cli', 'cursor-agent', 'gemini-cli'].sort(),
     );
-    // None configured in this scenario.
     expect(all['claude-code'].available).toBe(false);
     expect(all['cursor-agent'].available).toBe(false);
     expect(all['codex-cli'].available).toBe(false);

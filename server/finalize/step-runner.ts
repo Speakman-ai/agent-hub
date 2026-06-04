@@ -150,7 +150,7 @@ export const STEP_FAILURE_EXCERPT_MAX_LINES = 160;
  *   - jest/vitest/CI         → `FAIL`, `FAILED`
  *   - thrown errors          → `CypressError`, `TypeError`, `…Exception`
  *   - tsc                    → `error TS2304`
- *   - cypress actionability  → `not visible`, `cannot be interacted`, `Timed out`
+ *   - cypress actionability  → `not visible because`, `cannot be interacted`, `Timed out retrying`
  *   - postgres / generic     → `FATAL`, `ERROR`, `npm ERR!`, `✗ ✘ ✖ ✕`
  */
 export const FAILURE_SIGNAL_RE = new RegExp(
@@ -162,8 +162,12 @@ export const FAILURE_SIGNAL_RE = new RegExp(
     'error TS\\d',
     '\\bERROR\\b',
     '\\bFATAL\\b',
-    'Timed out',
-    'not visible',
+    // Cypress-specific phrasing so unrelated lines ("Timed out waiting for
+    // pod restart", "Config option is not visible in older clients") don't
+    // register as failure signals. Cypress always emits "Timed out retrying
+    // …" and "… is not visible because …".
+    'Timed out retrying',
+    'not visible because',
     'cannot be interacted',
     'npm ERR!',
     '[\\u2717\\u2718\\u2716\\u2715]',

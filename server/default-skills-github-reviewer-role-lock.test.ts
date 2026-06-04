@@ -21,7 +21,8 @@
  *   gh api graphql --method POST              → denied
  *   gh api repos/o/r/contents/x --method PUT  → denied
  *   gh api repos/o/r/issues --method POST     → denied
- *   gh api repos/o/r/pulls/N/reviews -X POST  → allowed
+ *   gh api repos/o/r/pulls/N/reviews -X POST  → denied (formal reviews are
+ *                                                       not posted to GitHub)
  *   gh api repos/o/r/issues/N/comments POST   → allowed
  *   gh api repos/o/r/pulls (GET)              → allowed
  *
@@ -151,11 +152,10 @@ describe('gh-pr.sh — AGENT_HUB_REVIEWER_ROLE_LOCK subcommand denylist', () => 
     });
   }
 
-  it('review is still blocked (universal lock fires first; role lock would also fire)', () => {
+  it('review is still blocked (disabled outright in cmd_review)', () => {
     const result = runGhPr(['review', '1', '--approve']);
-    // The universal lock message is what appears here, since cmd_review
-    // calls _reviewer_locked before any role-lock check could reach it.
-    // Either guard exiting 2 is the contract under test.
+    // cmd_review hard-errors regardless of any lock — formal reviews are
+    // not posted to GitHub; the reviewer emits its verdict in-session.
     expect(result.status).toBe(2);
     expect(result.stderr || '').toMatch(
       /gh-pr\.sh review is disabled|forbidden in reviewer-role spawns/,
@@ -171,7 +171,7 @@ describe('gh_api — AGENT_HUB_REVIEWER_ROLE_LOCK write allowlist', () => {
     expect(result.stderr || '').toContain('STUB_GH:');
   });
 
-  it('allows POST /repos/<owner>/<repo>/pulls/<n>/reviews (formal review)', () => {
+  it('denies POST /repos/<owner>/<repo>/pulls/<n>/reviews (formal reviews not posted to GitHub)', () => {
     const result = runGhApi([
       '/repos/owner/repo/pulls/42/reviews',
       '--method',
@@ -179,9 +179,9 @@ describe('gh_api — AGENT_HUB_REVIEWER_ROLE_LOCK write allowlist', () => {
       '-f',
       'event=APPROVE',
     ]);
-    expect(result.status).toBe(0);
-    expect(result.stderr || '').toContain('STUB_GH:');
-    expect(result.stderr || '').not.toContain('forbidden in reviewer-role spawns');
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('forbidden in reviewer-role spawns');
+    expect(result.stderr || '').not.toContain('STUB_GH:');
   });
 
   it('allows POST /repos/<owner>/<repo>/issues/<n>/comments (PR conversation)', () => {

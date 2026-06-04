@@ -37,6 +37,14 @@ vi.mock('./config.js', async (importOriginal) => {
   };
 });
 
+// Delegation now builds its spawn env via `resolveSessionCliSpawnEnv`, which
+// hard-fails (EngineAuthRequiredError) when the acting user has no per-account
+// creds. These tests assert spawn argv / stream shape, not auth, so stub it to
+// a bare env that always "succeeds".
+vi.mock('./per-user-cli-spawn.js', () => ({
+  resolveSessionCliSpawnEnv: vi.fn(() => ({})),
+}));
+
 vi.mock('./codex-auth.js', () => ({
   detectCodexAuthMode: vi.fn(() => ({
     mode: 'apikey' as const,

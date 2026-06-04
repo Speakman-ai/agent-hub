@@ -1699,44 +1699,6 @@ describe('Wiki', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Webhooks
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Webhooks', () => {
-  describe('GET /api/webhooks', () => {
-    it('lists all webhooks', async () => {
-      const res = await request.get('/api/webhooks').expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
-  });
-
-  describe('CRUD lifecycle', () => {
-    it('creates, lists, updates, and deletes a webhook', async () => {
-      const proj = await createProject();
-
-      const createRes = await request
-        .post('/api/webhooks')
-        .send({
-          projectId: proj.id,
-          repoUrl: 'https://github.com/test/repo',
-          events: 'push,pull_request',
-        })
-        .expect(200);
-
-      expect(createRes.body).toHaveProperty('id');
-      const id = createRes.body.id as string;
-
-      const listRes = await request.get(`/api/webhooks/project/${proj.id}`).expect(200);
-      expect(listRes.body.length).toBeGreaterThanOrEqual(1);
-
-      await request.put(`/api/webhooks/${id}`).send({ events: 'push' }).expect(200);
-
-      await request.delete(`/api/webhooks/${id}`).expect(200);
-    });
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
 // Crons
 // ═══════════════════════════════════════════════════════════════════
 

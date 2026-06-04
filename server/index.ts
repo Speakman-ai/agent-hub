@@ -46,17 +46,9 @@ import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import { warnIfLegacyBotGithubToken } from './github-auth-policy.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
-import {
-  getAppInfo,
-  getAppInstallations,
-  githubApiRequest,
-  buildAppManifest,
-  clearTokenCache,
-} from './github-app.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
-import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { sessionUsesWorktree } from './project-mode.js';
 import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
@@ -77,10 +69,6 @@ import createMemoryRoutes from './routes/memory.js';
 import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
 import createClawhubRoutes from './routes/clawhub.js';
-import createWebhookRoutes, {
-  createGithubWebhookHandler,
-  pendingReviewComments,
-} from './routes/webhooks.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -103,10 +91,7 @@ import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
 import createReleasesRoutes from './routes/releases.js';
 import { createApiDocsRoutes } from './routes/api-docs.js';
 import createHookRoutes from './routes/hooks.js';
-import createClaudeAuthRoutes from './routes/claude-auth.js';
 import createGeminiAuthRoutes from './routes/gemini-auth.js';
-import createCodexAuthRoutes from './routes/codex-auth.js';
-import createCursorAuthRoutes from './routes/cursor-auth.js';
 import createPerUserEngineAuthRoutes from './routes/per-user-engine-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
@@ -122,12 +107,9 @@ import { startFleetScaler } from './finalize/runner-fleet-scaler.js';
 import createInstanceBackupRoutes from './routes/instance-backup.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
-import { initWebhookWorker } from './webhook-worker.js';
 import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
 import createPrResolveRoutes from './routes/pr-resolve.js';
-import createPrNudgeReviewerRoutes from './routes/pr-nudge-reviewer.js';
-import createExternalPrReviewRoutes from './routes/external-pr-review.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
@@ -193,7 +175,6 @@ import {
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
   restoreAutonomousCrons,
-  startReviewPollingFallback,
 } from './autonomous.js';
 
 import type {
@@ -238,24 +219,8 @@ execAsync('gh api user --jq ".login"')
     console.log(`[GitHub] Authenticated as: ${ghAuthenticatedUser}`);
   })
   .catch(() => {
-    console.warn('[GitHub] Could not detect gh CLI user — webhook loop prevention disabled');
+    console.warn('[GitHub] Could not detect gh CLI user');
   });
-
-let ghBotUser: string | null = null;
-let ghAppSlug: string | null = null;
-
-if (config.githubApp?.appId && config.githubApp?.privateKey) {
-  getAppInfo(config.githubApp.appId, config.githubApp.privateKey)
-    .then((app) => {
-      ghAppSlug = (app.slug as string) || (app.name as string);
-      console.log(`[GitHub App] Connected: ${ghAppSlug} (ID: ${app.id})`);
-    })
-    .catch((err: Error) => {
-      console.warn(
-        `[GitHub App] Could not verify app — credentials may be invalid: ${err.message?.split('\n')[0]}`,
-      );
-    });
-}
 
 warnIfLegacyBotGithubToken(config);
 
@@ -303,28 +268,17 @@ if (_startupOrgId !== 'default') {
   console.log(`[Org] Restoring last-active org: ${_startupOrgId} → ${_startupDataDir}`);
 }
 
-// Backfill `sessions.owner_user_id` for legacy rows created before
-// per-user session ownership existed. The auth migration above has
-// already populated the `users` table; we set every NULL session to
-// the oldest user (the org owner) so the post-migration boot serves
-// the existing transcripts to that user without an empty sidebar.
-try {
-  resetOrgOwnerCache();
-  const { updated } = backfillSessionOwners();
-  if (updated > 0) {
-    console.log(`[Auth] Backfilled owner_user_id on ${updated} legacy session(s)`);
-  }
-} catch (err) {
-  console.error('[Auth] Failed to backfill session owners:', (err as Error).message);
-}
+// Legacy NULL-owner sessions are intentionally NOT backfilled to any user:
+// AI auth and session ownership are strictly per-account, with no org-owner
+// fallback. Such rows belong to nobody and are not auto-granted on upgrade.
 
 migrateAhwDirectories();
 // Auto-seeding Docs/Intake/Reviewer at startup is deprecated alongside the
 // sub-agent model (see CLAUDE.md "Flat Agent Model"). We no longer
 // retroactively backfill them on existing projects — projects keep
 // whatever roster they were created with. `ensureReviewerAgents` is still
-// invoked from the GitHub-App / webhook routes when the user explicitly
-// wires up GitHub.
+// invoked when a project is wired up to GitHub so the Finalize review
+// phase has a reviewer agent to spawn.
 ensureContextFiles();
 
 // Pre-create the empty `GH_CONFIG_DIR` reviewer spawns are routed to.
@@ -350,44 +304,6 @@ try {
   syncSkillsToClaude(projectSkillDirs);
 } catch (err) {
   console.warn('[skills] Startup sync failed:', (err as Error).message);
-}
-
-// ─── Missing-webhook audit ───────────────────────────────────────────
-//
-// A project with `githubRepo` set but NO enabled `webhook_configs` row
-// will never receive PR events from GitHub — and therefore its
-// reviewer agent will never be dispatched and its PRs will be merged
-// (or rot) un-reviewed. This loop logs a one-line WARN per offender at
-// startup so operators see the gap at a glance instead of debugging
-// "why isn't the reviewer firing on this repo".
-//
-// Best-effort: any failure (db not yet up, prepared statement absent
-// during mid-migration boot) is swallowed silently. We never want this
-// audit to block the server starting.
-try {
-  if (stmts) {
-    const projectsWithGithubRepo = getProjects().filter((p) => {
-      const r = (p as { githubRepo?: string | null }).githubRepo;
-      return typeof r === 'string' && r.trim().length > 0;
-    });
-    for (const project of projectsWithGithubRepo) {
-      try {
-        const rows = stmts.getWebhookConfigsByProject.all(project.id) as Array<{
-          enabled: number | null;
-        }>;
-        const hasEnabled = rows.some((r) => r?.enabled === 1);
-        if (!hasEnabled) {
-          console.warn(
-            `[ProjectAudit] github_repo=${(project as { githubRepo?: string }).githubRepo} project=${project.id} has no enabled webhook config — PRs from this repo will not be reviewed.`,
-          );
-        }
-      } catch {
-        /* per-project lookup failure is not fatal */
-      }
-    }
-  }
-} catch (err) {
-  console.warn('[ProjectAudit] Startup webhook audit failed:', (err as Error).message);
 }
 
 function ensureWorktree(
@@ -462,33 +378,6 @@ let _broadcast: BroadcastFn;
 function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
 }
-
-// Exported for tests: test/helpers.ts initializes the webhook-worker with
-// these deps so `processOnce()` / `drainWebhookQueue()` can drive the queue
-// deterministically without starting the real polling interval.
-export const webhookHandlerDeps = {
-  stmts: stmts!,
-  broadcast,
-  findAgent,
-  handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
-  runClaude,
-  tryAutonomousDispatch,
-  getProjects,
-  getConfig: () => config,
-  getGhAuthenticatedUser: () => ghAuthenticatedUser,
-  getGhBotUser: () => ghBotUser,
-  setGhBotUser: (v: string | null) => {
-    ghBotUser = v;
-  },
-  getGhAppSlug: () => ghAppSlug,
-  setGhAppSlug: (v: string | null) => {
-    ghAppSlug = v;
-  },
-} as unknown as RouteDeps;
-
-// GitHub webhook HMAC covers the raw request bytes; mount BEFORE `express.json`
-// consumes the stream (routes/webhooks.ts uses `express.raw` internally).
-app.use(createGithubWebhookHandler(webhookHandlerDeps));
 
 app.use(
   express.json({
@@ -576,12 +465,6 @@ initAutonomous({
   getProjects,
   getConfig: () => config,
   getGhAuthenticatedUser: () => ghAuthenticatedUser,
-  getGhBotUser: () => ghBotUser,
-  getGhAppSlug: () => ghAppSlug,
-  setGhAppSlug: (v: string | null) => {
-    ghAppSlug = v;
-  },
-  getWebhookHandlerDeps: () => webhookHandlerDeps,
   getDb,
   drainIdleSessionQueues: () =>
     drainIdleQueuedSessions({
@@ -859,7 +742,6 @@ export const routeDeps: RouteDeps = {
   allAgents,
   saveProjects,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
-  pendingReviewComments,
   lastDispatchedReviewId,
   scheduleAutonomousEpic,
   autonomousCrons,
@@ -867,14 +749,6 @@ export const routeDeps: RouteDeps = {
   config,
   getProjects,
   setProjects,
-  getGhBotUser: () => ghBotUser,
-  setGhBotUser: (v: string | null) => {
-    ghBotUser = v;
-  },
-  getGhAppSlug: () => ghAppSlug,
-  setGhAppSlug: (v: string | null) => {
-    ghAppSlug = v;
-  },
   serverDir: __dirname,
   buildTranscript,
   summarizeTranscript,
@@ -953,7 +827,6 @@ app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
 app.use(createClawhubRoutes(routeDeps));
-app.use(createWebhookRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
@@ -986,10 +859,7 @@ app.use(createTranscribeRoutes(routeDeps));
 app.use(createMiscRoutes(routeDeps));
 app.use(createSlackRoutes(routeDeps));
 app.use(createHookRoutes(routeDeps));
-app.use(createClaudeAuthRoutes(routeDeps));
 app.use(createGeminiAuthRoutes(routeDeps));
-app.use(createCursorAuthRoutes(routeDeps));
-app.use(createCodexAuthRoutes(routeDeps));
 app.use(createPerUserEngineAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createWorkflowRoutes(routeDeps));
@@ -999,8 +869,6 @@ app.use(createIosBuildRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
-app.use(createPrNudgeReviewerRoutes(routeDeps));
-app.use(createExternalPrReviewRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(
   createAuthRoutes({
@@ -1437,8 +1305,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
 
     restoreAutonomousCrons();
 
-    startReviewPollingFallback();
-
     setOnCronSessionUpdate((info: Record<string, unknown>) => {
       broadcast(info);
     });
@@ -1514,7 +1380,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
-    initWebhookWorker({ stmts: stmts!, routeDeps: webhookHandlerDeps });
 
     resumeOrphanedSessions(sessionsToResume);
   });

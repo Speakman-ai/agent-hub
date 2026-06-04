@@ -4,7 +4,6 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { buildEnrichedPrompt } from './chat.js';
 import { getProjectMode } from './project-mode.js';
 import config from './config.js';
-import { getOrgOwnerUserId } from './session-ownership.js';
 import { substituteWorkflowTemplate, mergeWorkflowTriggerPayload } from './workflow-templates.js';
 import type { Stmts, BroadcastFn, EnrichedAgent, Project } from './types.js';
 
@@ -274,7 +273,10 @@ export async function runWorkflowSequential(
           const out = (await runClaude(userContent, workDir, systemPrompt, {
             timeoutMs,
             skillCredentialMerge: {
-              ownerId: getOrgOwnerUserId(),
+              // No org-owner fallback — workflow steps carry no human
+              // attribution, so per-user skill creds / per-account AI auth do
+              // not resolve and the spawn surfaces an auth failure.
+              ownerId: null,
               agentId: enriched.id,
               project: stepProject,
             },

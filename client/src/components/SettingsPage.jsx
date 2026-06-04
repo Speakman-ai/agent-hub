@@ -6,11 +6,6 @@ import {
   ORCHESTRATION_FIELD_META,
 } from '../utils/orchestrationBudgets.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
-import {
-  parseAllowlist,
-  serializeAllowlist,
-  parseAllowlistFromBackend,
-} from '../utils/authorAllowlist.js';
 import { hasRole, isLocalMode } from '../utils/auth.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
@@ -19,9 +14,10 @@ import AccountSection from './AccountSection.jsx';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
-import CursorAuthSection from './CursorAuthSection.jsx';
 import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
+import PreviewSection from './PreviewSection.jsx';
+import FinalizeSettingsSection from './FinalizeSettingsSection.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import ProjectAwsProfilesEditor from './ProjectAwsProfilesEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -103,17 +99,11 @@ import {
   ChevronRight,
   X,
   Key,
-  LogIn,
-  LogOut,
   Shield,
   ExternalLink,
   CheckCircle2,
   AlertCircle,
-  Copy,
-  Eye,
-  EyeOff,
   ScrollText,
-  Link,
   FileText,
   UserCircle,
   AlertTriangle,
@@ -552,446 +542,8 @@ export function OrganizationsSection() {
 
 /* GitHubAppSection removed — merged into unified GitHubSection */
 
-function ClaudeAuthSection() {
-  const [auth, setAuth] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [apiKeySaving, setApiKeySaving] = useState(false);
-  const [apiKeyValidating, setApiKeyValidating] = useState(false);
-  const [apiKeyStatus, setApiKeyStatus] = useState(null); // { type: 'success'|'error', msg }
-  const [oauthTokenInput, setOauthTokenInput] = useState('');
-  const [oauthTokenSaving, setOauthTokenSaving] = useState(false);
-  const [oauthTokenStatus, setOauthTokenStatus] = useState(null);
-  const [showClaudeOauthToken, setShowClaudeOauthToken] = useState(false);
-
-  const inputClass =
-    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-
-  const fetchAuth = async () => {
-    setError(null);
-    try {
-      const data = await api.getClaudeAuth();
-      setAuth(data);
-    } catch (err) {
-      setAuth(null);
-      setError(err.message || 'Failed to load auth status');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchAuth();
-  }, []);
-
-  const handleSaveApiKey = async () => {
-    setApiKeySaving(true);
-    setApiKeyStatus(null);
-    try {
-      const result = await api.setClaudeApiKey(apiKeyInput);
-      if (result.ok) {
-        setApiKeyStatus({
-          type: 'success',
-          msg: result.masked ? `Saved: ${result.masked}` : 'API key cleared',
-        });
-        setApiKeyInput('');
-        await fetchAuth();
-      }
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeySaving(false);
-  };
-
-  const handleClearApiKey = async () => {
-    setApiKeySaving(true);
-    setApiKeyStatus(null);
-    try {
-      await api.setClaudeApiKey('');
-      setApiKeyStatus({ type: 'success', msg: 'API key cleared' });
-      await fetchAuth();
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeySaving(false);
-  };
-
-  const handleValidateApiKey = async () => {
-    if (!apiKeyInput) return;
-    setApiKeyValidating(true);
-    setApiKeyStatus(null);
-    try {
-      const result = await api.validateClaudeApiKey(apiKeyInput);
-      setApiKeyStatus({
-        type: result.valid ? 'success' : 'error',
-        msg: result.output,
-      });
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeyValidating(false);
-  };
-
-  const handleSaveOauthToken = async () => {
-    setOauthTokenSaving(true);
-    setOauthTokenStatus(null);
-    try {
-      // Terminal-wrapped `claude setup-token` output may contain newlines inside the token.
-      const collapsed = oauthTokenInput.trim().replace(/\s+/g, '');
-      const result = await api.setClaudeOAuthToken(collapsed);
-      if (result.ok) {
-        setOauthTokenStatus({
-          type: 'success',
-          msg: result.masked ? `Saved: ${result.masked}` : 'Cleared',
-        });
-        setOauthTokenInput('');
-        await fetchAuth();
-      }
-    } catch (err) {
-      setOauthTokenStatus({ type: 'error', msg: err.message });
-    }
-    setOauthTokenSaving(false);
-  };
-
-  const handleClearOauthToken = async () => {
-    setOauthTokenSaving(true);
-    setOauthTokenStatus(null);
-    try {
-      await api.setClaudeOAuthToken('');
-      setOauthTokenStatus({ type: 'success', msg: 'Cleared' });
-      await fetchAuth();
-    } catch (err) {
-      setOauthTokenStatus({ type: 'error', msg: err.message });
-    }
-    setOauthTokenSaving(false);
-  };
-
-  if (loading)
-    return (
-      <div className="flex items-center gap-2 text-sm text-gray-400 py-8">
-        <Loader2 size={16} className="animate-spin" />
-        <span>Loading auth status...</span>
-      </div>
-    );
-
-  if (error && !auth)
-    return (
-      <div className="space-y-4">
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-red-400 text-sm mb-2">
-            <AlertCircle size={16} />
-            <span className="font-medium">Failed to load authentication status</span>
-          </div>
-          <p className="text-xs text-gray-400 mb-3">{error}</p>
-          <button
-            onClick={() => {
-              setLoading(true);
-              fetchAuth();
-            }}
-            className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <RefreshCw size={12} />
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-
-  const isOAuthLoggedIn = auth?.oauth?.loggedIn;
-  const email = auth?.oauth?.email;
-  const orgName = auth?.oauth?.orgName;
-  const subscriptionType = auth?.oauth?.subscriptionType || auth?.token?.subscriptionType;
-  const rateLimitTier = auth?.token?.rateLimitTier;
-  const tokenExpired = auth?.token?.expired;
-  const apiKeyConfigured = auth?.apiKey?.configured;
-  const apiKeySource = auth?.apiKey?.source;
-  const oauthTokenConfigured = auth?.oauthToken?.configured;
-  const oauthTokenSource = auth?.oauthToken?.source;
-  const subscriptionAuthOk = !!(isOAuthLoggedIn || oauthTokenConfigured);
-  const activeMethod = auth?.activeMethod;
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-1">Claude Code Authentication</h3>
-        <p className="text-xs text-gray-500 mb-4">
-          API key or paste a token from <code className="text-gray-400">claude setup-token</code>.
-          Subscription CLI login stays in your terminal.
-        </p>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-            <Shield size={16} /> Status
-          </h4>
-          <span
-            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-              activeMethod === 'oauth'
-                ? 'bg-emerald-500/15 text-emerald-400'
-                : activeMethod === 'api-key'
-                  ? 'bg-blue-500/15 text-blue-400'
-                  : 'bg-red-500/15 text-red-400'
-            }`}
-          >
-            {activeMethod === 'oauth'
-              ? 'CLI OAuth'
-              : activeMethod === 'api-key'
-                ? 'API Key Active'
-                : 'Not Authenticated'}
-          </span>
-        </div>
-
-        {(subscriptionAuthOk || apiKeyConfigured) && (
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {email && (
-              <>
-                <span className="text-gray-500">Email</span>
-                <span className="text-gray-300 font-mono">{email}</span>
-              </>
-            )}
-            {orgName && orgName !== email && (
-              <>
-                <span className="text-gray-500">Organization</span>
-                <span className="text-gray-300 font-mono">{orgName}</span>
-              </>
-            )}
-            {subscriptionType && (
-              <>
-                <span className="text-gray-500">Plan</span>
-                <span className="text-gray-300 font-mono capitalize">{subscriptionType}</span>
-              </>
-            )}
-            {rateLimitTier && (
-              <>
-                <span className="text-gray-500">Rate Limit Tier</span>
-                <span className="text-gray-300 font-mono">{rateLimitTier}</span>
-              </>
-            )}
-            {apiKeyConfigured && (
-              <>
-                <span className="text-gray-500">API Key Source</span>
-                <span className="text-gray-300 font-mono capitalize">{apiKeySource}</span>
-              </>
-            )}
-            {auth?.token?.expiresAt && !apiKeyConfigured && !oauthTokenConfigured && (
-              <>
-                <span className="text-gray-500">Token Expires</span>
-                <span className={`font-mono ${tokenExpired ? 'text-red-400' : 'text-gray-300'}`}>
-                  {tokenExpired ? 'Expired' : relativeFuture(auth.token.expiresAt).label}
-                </span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Terminal size={16} /> Setup token
-        </h4>
-        <p className="text-xs text-gray-500">
-          Run <code className="text-gray-400">claude setup-token</code>, then paste here.{' '}
-          <a
-            href="https://docs.anthropic.com/en/docs/claude-code/authentication#generate-a-long-lived-token"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300"
-          >
-            Docs
-          </a>
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          If chats show <code className="text-gray-400">401 Invalid bearer</code>, run{' '}
-          <code className="text-gray-400">claude setup-token</code> again and paste the new token —
-          setup tokens can expire, and Hub runs Claude in non-interactive mode where refresh is less
-          reliable than in an interactive terminal. Multi-line terminal output is joined
-          automatically.
-        </p>
-        {oauthTokenConfigured && (
-          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
-            <div className="flex items-center gap-2 text-sm">
-              <CheckCircle2 size={14} className="text-emerald-400" />
-              <span className="text-gray-300">
-                Saved
-                <span className="text-gray-500 ml-1">
-                  ({oauthTokenSource}) {auth?.oauthToken?.masked || ''}
-                </span>
-              </span>
-            </div>
-            {oauthTokenSource === 'config' && (
-              <button
-                type="button"
-                onClick={handleClearOauthToken}
-                disabled={oauthTokenSaving}
-                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
-              >
-                {oauthTokenSaving ? '…' : 'Clear'}
-              </button>
-            )}
-          </div>
-        )}
-        <div className="space-y-2">
-          <div className="relative">
-            <input
-              type={showClaudeOauthToken ? 'text' : 'password'}
-              value={oauthTokenInput}
-              onChange={(e) => {
-                setOauthTokenInput(e.target.value);
-                setOauthTokenStatus(null);
-              }}
-              className={`${inputClass} pr-10 text-xs`}
-              placeholder="sk-ant-oat01-..."
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-            />
-            <button
-              type="button"
-              onClick={() => setShowClaudeOauthToken(!showClaudeOauthToken)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
-            >
-              {showClaudeOauthToken ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={handleSaveOauthToken}
-            disabled={!oauthTokenInput.trim().replace(/\s+/g, '') || oauthTokenSaving}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
-          >
-            {oauthTokenSaving ? <Loader2 size={12} className="animate-spin" /> : null}
-            {oauthTokenSaving ? 'Saving…' : 'Save'}
-          </button>
-          {oauthTokenStatus && (
-            <div
-              className={`flex items-center gap-2 text-xs ${
-                oauthTokenStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
-              }`}
-            >
-              {oauthTokenStatus.type === 'success' ? (
-                <CheckCircle2 size={12} />
-              ) : (
-                <AlertCircle size={12} />
-              )}
-              <span>{oauthTokenStatus.msg}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Key size={16} /> API Key
-        </h4>
-        <p className="text-xs text-gray-500">
-          Passed to spawned Claude Code processes (recommended for Agent Hub).
-        </p>
-
-        {apiKeyConfigured && (
-          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
-            <div className="flex items-center gap-2 text-sm">
-              <CheckCircle2 size={14} className="text-emerald-400" />
-              <span className="text-gray-300">
-                API key configured
-                <span className="text-gray-500 ml-1">({apiKeySource})</span>
-              </span>
-            </div>
-            {apiKeySource === 'config' && (
-              <button
-                onClick={handleClearApiKey}
-                disabled={apiKeySaving}
-                className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
-              >
-                {apiKeySaving ? 'Clearing...' : 'Clear'}
-              </button>
-            )}
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <div className="relative">
-            <input
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKeyInput}
-              onChange={(e) => {
-                setApiKeyInput(e.target.value);
-                setApiKeyStatus(null);
-              }}
-              className={`${inputClass} pr-10 text-xs`}
-              placeholder="sk-ant-api03-..."
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-            />
-            <button
-              onClick={() => setShowApiKey(!showApiKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
-            >
-              {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={handleValidateApiKey}
-              disabled={!apiKeyInput || apiKeyValidating}
-              className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-            >
-              {apiKeyValidating ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <Shield size={12} />
-              )}
-              {apiKeyValidating ? 'Validating...' : 'Validate'}
-            </button>
-            <button
-              onClick={handleSaveApiKey}
-              disabled={!apiKeyInput || apiKeySaving}
-              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-            >
-              {apiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
-              {apiKeySaving ? 'Saving...' : 'Save Key'}
-            </button>
-          </div>
-
-          {apiKeyStatus && (
-            <div
-              className={`flex items-center gap-2 text-xs mt-1 ${
-                apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
-              }`}
-            >
-              {apiKeyStatus.type === 'success' ? (
-                <CheckCircle2 size={12} />
-              ) : (
-                <AlertCircle size={12} />
-              )}
-              <span>{apiKeyStatus.msg}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="flex justify-end">
-        <button
-          onClick={() => {
-            setLoading(true);
-            fetchAuth();
-          }}
-          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
-        >
-          <RefreshCw size={12} />
-          Refresh status
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /**
- * Gemini CLI auth panel — sibling of ClaudeAuthSection but scoped to Gemini.
+ * Gemini CLI auth panel — host-wide Gemini API key management.
  * Currently exposes API-key management only (GEMINI_API_KEY).  OAuth via
  * `gemini /auth` is still a terminal-only flow; the status endpoint returns
  * `oauth.loggedIn: null` which we surface as "Not managed here" so users know
@@ -1103,11 +655,16 @@ function GeminiAuthSection() {
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-semibold mb-1">Gemini CLI Authentication</h3>
-        <p className="text-xs text-gray-500 mb-4">
+        <p className="text-xs text-gray-500 mb-3">
           Configure the <code>GEMINI_API_KEY</code> used when Agent Hub spawns the{' '}
           <code>gemini</code> CLI. Google-account OAuth via <code>gemini /auth</code> is still
           managed from the terminal and not driven by this panel.
         </p>
+        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-xs text-blue-200">
+          Gemini is used only for memory RAG — it powers the wiki/memory semantic search embeddings.
+          It is not used as a chat agent. Without a key, memory search falls back to plain full-text
+          search.
+        </div>
       </div>
 
       <div className="bg-gray-800 rounded-xl p-4">
@@ -1213,944 +770,197 @@ function GeminiAuthSection() {
  * Codex CLI auth — API key plus ChatGPT device login (`codex login --device-auth`).
  * See https://developers.openai.com/codex/noninteractive
  */
-function CodexAuthSection() {
-  const [auth, setAuth] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [apiKeySaving, setApiKeySaving] = useState(false);
-  const [apiKeyValidating, setApiKeyValidating] = useState(false);
-  const [apiKeyStatus, setApiKeyStatus] = useState(null);
-  const [deviceLoading, setDeviceLoading] = useState(false);
-  const [deviceAuthUrl, setDeviceAuthUrl] = useState(null);
-  const [deviceUserCode, setDeviceUserCode] = useState(null);
-  const [deviceMsg, setDeviceMsg] = useState(null);
-  const [deviceCopied, setDeviceCopied] = useState(null);
-  const [fullLogoutBusy, setFullLogoutBusy] = useState(false);
-  const codexDeviceTimersRef = useRef({ intervalId: null, timeoutId: null });
-
-  const clearCodexDeviceTimers = () => {
-    const { intervalId, timeoutId } = codexDeviceTimersRef.current;
-    if (intervalId !== null) clearInterval(intervalId);
-    if (timeoutId !== null) clearTimeout(timeoutId);
-    codexDeviceTimersRef.current = { intervalId: null, timeoutId: null };
-  };
-
-  const inputClass =
-    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-
-  const fetchAuth = async () => {
-    setError(null);
-    try {
-      const data = await api.getCodexAuth();
-      setAuth(data);
-    } catch (err) {
-      setAuth(null);
-      setError(err.message || 'Failed to load Codex auth status');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchAuth();
-  }, []);
-
-  useEffect(
-    () => () => {
-      clearCodexDeviceTimers();
-    },
-    [],
-  );
-
-  const handleSaveApiKey = async () => {
-    setApiKeySaving(true);
-    setApiKeyStatus(null);
-    try {
-      const result = await api.setCodexApiKey(apiKeyInput);
-      if (result.ok) {
-        setApiKeyStatus({
-          type: 'success',
-          msg: result.masked ? `Saved: ${result.masked}` : 'API key cleared',
-        });
-        setApiKeyInput('');
-        await fetchAuth();
-      }
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeySaving(false);
-  };
-
-  const handleClearApiKey = async () => {
-    setApiKeySaving(true);
-    setApiKeyStatus(null);
-    try {
-      await api.setCodexApiKey('');
-      setApiKeyStatus({ type: 'success', msg: 'API key cleared' });
-      await fetchAuth();
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeySaving(false);
-  };
-
-  const handleValidateApiKey = async () => {
-    if (!apiKeyInput) return;
-    setApiKeyValidating(true);
-    setApiKeyStatus(null);
-    try {
-      const result = await api.validateCodexApiKey(apiKeyInput);
-      setApiKeyStatus({
-        type: result.valid ? 'success' : 'error',
-        msg: result.output,
-      });
-    } catch (err) {
-      setApiKeyStatus({ type: 'error', msg: err.message });
-    }
-    setApiKeyValidating(false);
-  };
-
-  const handleDeviceLogin = async () => {
-    clearCodexDeviceTimers();
-    setDeviceLoading(true);
-    setDeviceAuthUrl(null);
-    setDeviceUserCode(null);
-    setDeviceMsg(null);
-    try {
-      const data = await api.startCodexDeviceLogin();
-      if (data.deviceAuthUrl && data.userCode) {
-        setDeviceAuthUrl(data.deviceAuthUrl);
-        setDeviceUserCode(data.userCode);
-        window.open(data.deviceAuthUrl, '_blank');
-        const timeoutId = setTimeout(() => {
-          clearCodexDeviceTimers();
-          setDeviceLoading(false);
-        }, 900_000);
-        const intervalId = setInterval(async () => {
-          try {
-            const st = await api.getCodexAuth();
-            if (st.uiStatus === 'authenticated' && !st.loginInProgress) {
-              clearCodexDeviceTimers();
-              setAuth(st);
-              setDeviceAuthUrl(null);
-              setDeviceUserCode(null);
-              setDeviceLoading(false);
-              setDeviceMsg({ type: 'success', msg: 'Codex is authenticated on this host.' });
-            } else if (!st.loginInProgress && st.uiStatus !== 'authenticated') {
-              clearCodexDeviceTimers();
-              setAuth(st);
-              setDeviceAuthUrl(null);
-              setDeviceUserCode(null);
-              setDeviceLoading(false);
-              setDeviceMsg({
-                type: 'error',
-                msg: st.statusError || 'Device login did not complete.',
-              });
-            }
-          } catch {
-            /* keep polling */
-          }
-        }, 3000);
-        codexDeviceTimersRef.current = { intervalId, timeoutId };
-      } else {
-        setDeviceLoading(false);
-        setDeviceMsg({ type: 'error', msg: data.output || 'Could not start device login.' });
-      }
-    } catch (err) {
-      setDeviceLoading(false);
-      setDeviceMsg({ type: 'error', msg: err.message || 'Device login failed' });
-    }
-  };
-
-  const handleCancelDevice = async () => {
-    clearCodexDeviceTimers();
-    try {
-      await api.cancelCodexDeviceLogin();
-    } catch {
-      /* ignore */
-    }
-    setDeviceLoading(false);
-    setDeviceAuthUrl(null);
-    setDeviceUserCode(null);
-    setDeviceMsg(null);
-  };
-
-  const handleFullLogoutCodex = async () => {
-    setDeviceMsg(null);
-    setFullLogoutBusy(true);
-    try {
-      const r = await api.logoutCodex();
-      setDeviceMsg({ type: 'success', msg: r.output || 'Codex credentials cleared.' });
-      await fetchAuth();
-    } catch (err) {
-      setDeviceMsg({ type: 'error', msg: err.message || 'Logout failed' });
-    }
-    setFullLogoutBusy(false);
-  };
-
-  const copyDeviceCode = () => {
-    if (!deviceUserCode) return;
-    navigator.clipboard.writeText(deviceUserCode);
-    setDeviceCopied('code');
-    setTimeout(() => setDeviceCopied(null), 2000);
-  };
-
-  if (loading)
-    return (
-      <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
-        <Loader2 size={16} className="animate-spin" />
-        <span>Loading Codex auth status...</span>
-      </div>
-    );
-
-  if (error && !auth)
-    return (
-      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-        <div className="flex items-center gap-2 text-red-400 text-sm mb-2">
-          <AlertCircle size={16} />
-          <span className="font-medium">Failed to load Codex auth status</span>
-        </div>
-        <p className="text-xs text-gray-400">{error}</p>
-      </div>
-    );
-
-  const apiKeyConfigured = auth?.apiKey?.configured;
-  const apiKeySource = auth?.apiKey?.source;
-  const masked = auth?.apiKey?.masked;
-  const activeMethod = auth?.activeMethod;
-  const uiStatus = auth?.uiStatus || 'missing';
-  const loginInProgress = !!auth?.loginInProgress;
-  const uiBadge =
-    uiStatus === 'authenticated'
-      ? 'bg-emerald-500/15 text-emerald-400'
-      : uiStatus === 'pending'
-        ? 'bg-amber-500/15 text-amber-400'
-        : 'bg-red-500/15 text-red-400';
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-1">Codex CLI Authentication</h3>
-        <p className="text-xs text-gray-500 mb-4">
-          Use an OpenAI API key (recommended for automation per Codex docs) or sign in with a
-          ChatGPT-linked Codex account using device authorization — no SSH required.
-        </p>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-            <Shield size={16} /> Authentication Status
-          </h4>
-          <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${uiBadge}`}>
-            {uiStatus === 'authenticated'
-              ? 'Authenticated'
-              : uiStatus === 'pending'
-                ? 'Pending login'
-                : 'Missing'}
-          </span>
-        </div>
-
-        {auth?.statusError && uiStatus !== 'authenticated' && (
-          <p className="text-xs text-amber-400/90 mb-2">{auth.statusError}</p>
-        )}
-
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <span className="text-gray-500">Hub method</span>
-          <span className="text-gray-300">
-            {activeMethod === 'api-key'
-              ? 'API key'
-              : activeMethod === 'oauth'
-                ? 'ChatGPT (CLI cache)'
-                : 'None'}
-          </span>
-          <span className="text-gray-500">Device login</span>
-          <span className="text-gray-300">{loginInProgress ? 'In progress' : 'Idle'}</span>
-          <span className="text-gray-500">OAuth cache</span>
-          <span className="text-gray-300 font-mono">
-            {auth?.oauth?.mode ? String(auth.oauth.mode) : '—'}
-          </span>
-          <span className="text-gray-500">API Key</span>
-          <span className="text-gray-300 font-mono">
-            {apiKeyConfigured ? masked || '••••••••' : '—'}
-          </span>
-          <span className="text-gray-500">Source</span>
-          <span className="text-gray-300">
-            {apiKeySource === 'environment'
-              ? 'Environment (CODEX_API_KEY / OPENAI_API_KEY)'
-              : apiKeySource === 'config'
-                ? 'Config file'
-                : 'Not set'}
-          </span>
-        </div>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Globe size={16} /> ChatGPT sign-in (device code)
-        </h4>
-        <p className="text-xs text-gray-500">
-          Starts <code>codex login --device-auth</code> on the Hub. Open the verification URL, paste
-          the one-time code, then wait for this page to show Authenticated (see{' '}
-          <a
-            href="https://developers.openai.com/codex/noninteractive"
-            target="_blank"
-            rel="noreferrer"
-            className="text-blue-400 hover:underline"
-          >
-            Codex non-interactive docs
-          </a>
-          ).
-        </p>
-        {deviceAuthUrl && (
-          <div className="rounded-lg border border-gray-700 bg-gray-900/80 p-3 space-y-2 text-xs">
-            <p className="text-gray-400">Verification page</p>
-            <a
-              href={deviceAuthUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-400 hover:underline break-all flex items-center gap-1"
-            >
-              {deviceAuthUrl} <ExternalLink size={12} />
-            </a>
-            <p className="text-gray-400 pt-1">One-time code</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <code className="text-lg tracking-widest text-white">{deviceUserCode}</code>
-              <button
-                type="button"
-                onClick={copyDeviceCode}
-                className="text-gray-400 hover:text-white flex items-center gap-1 text-xs"
-              >
-                <Copy size={12} /> {deviceCopied === 'code' ? 'Copied' : 'Copy code'}
-              </button>
-            </div>
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleDeviceLogin}
-            disabled={deviceLoading || !auth?.binary?.present}
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg"
-          >
-            {deviceLoading && <Loader2 size={14} className="animate-spin" />}
-            <LogIn size={14} />
-            {deviceLoading ? 'Waiting for OpenAI…' : 'Start ChatGPT device login'}
-          </button>
-          {deviceLoading && (
-            <button
-              type="button"
-              onClick={handleCancelDevice}
-              className="text-sm text-gray-400 hover:text-white px-3 py-2"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
-        {deviceMsg && (
-          <p
-            className={`text-xs ${deviceMsg.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
-          >
-            {deviceMsg.msg}
-          </p>
-        )}
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Key size={16} /> Set or update API key
-        </h4>
-        <p className="text-xs text-gray-500">
-          Paste an OpenAI API key from{' '}
-          <a
-            href="https://platform.openai.com/api-keys"
-            target="_blank"
-            rel="noreferrer"
-            className="text-blue-400 hover:underline"
-          >
-            platform.openai.com
-          </a>
-          . Agent Hub will export it as <code>CODEX_API_KEY</code> and <code>OPENAI_API_KEY</code>{' '}
-          when spawning the Codex CLI.
-        </p>
-
-        <div className="flex items-center gap-2">
-          <input
-            type={showApiKey ? 'text' : 'password'}
-            value={apiKeyInput}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            placeholder="sk-..."
-            className={inputClass}
-          />
-          <button
-            type="button"
-            onClick={() => setShowApiKey((v) => !v)}
-            className="text-xs text-gray-400 hover:text-white px-2 py-1.5"
-          >
-            {showApiKey ? 'Hide' : 'Show'}
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleValidateApiKey}
-            disabled={!apiKeyInput || apiKeyValidating}
-            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-          >
-            {apiKeyValidating && <Loader2 size={12} className="animate-spin" />}
-            Validate
-          </button>
-          <button
-            onClick={handleSaveApiKey}
-            disabled={!apiKeyInput || apiKeySaving}
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-          >
-            {apiKeySaving ? 'Saving...' : 'Save'}
-          </button>
-          {apiKeyConfigured && (
-            <button
-              onClick={handleClearApiKey}
-              disabled={apiKeySaving}
-              className="text-xs text-red-400 hover:text-red-300 px-2 py-1.5 transition-colors"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-
-        {apiKeyStatus && (
-          <p
-            className={`text-xs ${
-              apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
-            }`}
-          >
-            {apiKeyStatus.msg}
-          </p>
-        )}
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <LogOut size={16} /> Clear Hub key + CLI session
-        </h4>
-        <p className="text-xs text-gray-500">
-          Removes the saved API key from Agent Hub configuration and runs <code>codex logout</code>{' '}
-          so ChatGPT tokens are cleared on this host.
-        </p>
-        <button
-          type="button"
-          onClick={handleFullLogoutCodex}
-          disabled={fullLogoutBusy}
-          className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-300 text-sm px-4 py-2 rounded-lg disabled:opacity-50"
-        >
-          {fullLogoutBusy && <Loader2 size={14} className="animate-spin" />}
-          <LogOut size={14} />
-          Full sign out (Hub + CLI)
-        </button>
-      </div>
-    </div>
-  );
-}
-
-export function GitHubSection({ onProjectsChange }) {
+export function GeneralSection() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  // GitHub App state
-  const [appStatus, setAppStatus] = useState(null);
-  const [refreshingApp, setRefreshingApp] = useState(false);
-  const [syncingSecret, setSyncingSecret] = useState(false);
-  const [syncSecretMessage, setSyncSecretMessage] = useState(null);
-  const [showConnectForm, setShowConnectForm] = useState(false);
-  const [connectForm, setConnectForm] = useState({ appId: '', privateKey: '', installationId: '' });
-  const [connectError, setConnectError] = useState(null);
-  const [connecting, setConnecting] = useState(false);
-  const [publicUrlInput, setPublicUrlInput] = useState('');
-  const [showPublicUrlPrompt, setShowPublicUrlPrompt] = useState(false);
-  const pollIntervalRef = useRef(null);
-  const pollTimeoutRef = useRef(null);
-
-  // Clean up polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-    };
-  }, []);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null);
 
   useEffect(() => {
     api
       .getConfig()
       .then((data) => {
         setConfig(data);
-        setPublicUrlInput(data.publicUrl || '');
+        setEdits({
+          claudeBin: data.claudeBin,
+          cursorBin: data.cursorBin,
+          geminiBin: data.geminiBin,
+          codexBin: data.codexBin,
+        });
         setLoading(false);
       })
       .catch(() => setLoading(false));
-    // Fetch app status
-    api
-      .get('/github-app/status')
-      .then(setAppStatus)
-      .catch(() => {});
   }, []);
 
-  // Handle return from GitHub App auto-setup flow
-  useEffect(() => {
-    const hash = window.location.hash;
-    const match = hash.match(/[?&]githubApp=([^&]*)/);
-    if (!match) return;
-    const status = match[1];
-    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
-    window.history.replaceState(null, '', window.location.pathname + cleanHash);
-    if (status === 'ready' || status === 'no-install' || status === 'created') {
-      api
-        .get('/github-app/status')
-        .then(setAppStatus)
-        .catch(() => {});
-      // The server may have just seeded a Reviewer agent via
-      // `ensureReviewerAgents()` during setup-complete. A `projects_updated`
-      // WS broadcast is emitted, but the WebSocket may have been disconnected
-      // mid-redirect and missed the event. Refresh projects/agents locally
-      // too so the sidebar reflects the new Reviewer without a page reload.
-      if (onProjectsChange) onProjectsChange();
+  const isDirty =
+    config &&
+    (edits.claudeBin !== config.claudeBin ||
+      (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
+      (edits.geminiBin ?? '') !== (config.geminiBin ?? '') ||
+      (edits.codexBin ?? '') !== (config.codexBin ?? ''));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        claudeBin: edits.claudeBin,
+        cursorBin: edits.cursorBin,
+        geminiBin: edits.geminiBin,
+        codexBin: edits.codexBin,
+      };
+      await api.updateConfig(payload);
+      setConfig((prev) => ({ ...prev, ...payload }));
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } finally {
+      setSaving(false);
     }
-    if (status === 'error') {
-      const msgMatch = hash.match(/message=([^&]*)/);
-      if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
-    }
-  }, [onProjectsChange]);
+  };
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
-  // --- GitHub App handlers ---
-
-  const handleCreateApp = async () => {
-    // Ensure publicUrl is persisted via config API before navigating
-    if (publicUrlInput && publicUrlInput.trim()) {
-      await api.updateConfig({ publicUrl: publicUrlInput.trim() });
-      setConfig((prev) => ({ ...prev, publicUrl: publicUrlInput.trim() }));
-    }
-    const base = getServerBase();
-    window.open(`${base}/api/github-app/register`, '_blank');
-
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-
-    pollIntervalRef.current = setInterval(async () => {
-      try {
-        const status = await api.get('/github-app/status');
-        if (status.configured) {
-          setAppStatus(status);
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-      } catch {
-        /* ignore — keep polling */
-      }
-    }, 3000);
-    pollTimeoutRef.current = setTimeout(
-      () => {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      },
-      5 * 60 * 1000,
-    );
-  };
-
-  const handleConnectExisting = async () => {
-    setConnecting(true);
-    setConnectError(null);
-    try {
-      await api.post('/github-app/connect', {
-        appId: Number(connectForm.appId),
-        privateKey: connectForm.privateKey,
-        installationId: Number(connectForm.installationId),
-      });
-      const status = await api.get('/github-app/status');
-      setAppStatus(status);
-      setShowConnectForm(false);
-      setConnectForm({ appId: '', privateKey: '', installationId: '' });
-    } catch (err) {
-      setConnectError(err.message || 'Failed to connect');
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  const handleRefreshInstallation = async () => {
-    setRefreshingApp(true);
-    try {
-      const result = await api.post('/github-app/refresh-installation');
-      if (result.installed) {
-        setAppStatus((prev) => ({
-          ...prev,
-          hasInstallation: true,
-          installationId: result.installationId,
-        }));
-      } else {
-        alert(result.message || 'No installation found');
-      }
-    } catch (err) {
-      alert(err.message || 'Failed to refresh');
-    } finally {
-      setRefreshingApp(false);
-    }
-  };
-
-  const handleInstallApp = async () => {
-    try {
-      const data = await api.get('/github-app/install-url');
-      window.open(data.installUrl, '_blank');
-    } catch (err) {
-      alert(err.message || 'Failed to get install URL');
-    }
-  };
-
-  const handleSyncWebhookSecret = async (rotate = false) => {
-    // Push our local App webhook secret to GitHub via
-    // POST /api/github-app/sync-webhook-secret. This is the manual
-    // recovery for "the App's webhook secret on GitHub drifted out of
-    // sync with our copy in config.json" — symptom is
-    // `[Webhook] HMAC verification failed ... tried=repo + github-app`
-    // in the server log. Most drift now self-heals on the next failed
-    // delivery (see routes/webhooks.ts), but this button is the
-    // explicit operator escape hatch.
-    if (
-      rotate &&
-      !confirm(
-        'Generate a fresh webhook secret and push it to GitHub? Any other agents using ' +
-          "the App's current secret will need to be reconfigured.",
-      )
-    ) {
-      return;
-    }
-    setSyncingSecret(true);
-    setSyncSecretMessage(null);
-    try {
-      const result = await api.post('/github-app/sync-webhook-secret', rotate ? { rotate } : {});
-      setSyncSecretMessage({
-        kind: 'ok',
-        text: `Synced — pushed secret to GitHub (${result.generated ? 'newly generated, ' : ''}prefix ${result.secretPrefix}…, ${result.secretLength} chars).`,
-      });
-    } catch (err) {
-      setSyncSecretMessage({
-        kind: 'error',
-        text: err.message || 'Failed to sync webhook secret to GitHub',
-      });
-    } finally {
-      setSyncingSecret(false);
-    }
-  };
-
-  const handleRemoveApp = async () => {
-    if (!confirm('Remove the GitHub App configuration? You can re-create it anytime.')) return;
-    try {
-      await api.del('/github-app');
-      setAppStatus(null);
-      setConfig((prev) => ({ ...prev, githubApp: null }));
-    } catch {
-      /* ignore */
-    }
-  };
-
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
 
-  const handleToggleLanMode = async (next) => {
-    // Optimistic update — flip in-memory first so the toggle responds
-    // immediately. On failure we roll back AND re-fetch the config so a
-    // half-applied state can't linger.
-    setConfig((prev) => ({ ...prev, lanMode: next }));
-    try {
-      await api.updateConfig({ lanMode: next });
-    } catch (err) {
-      setConfig((prev) => ({ ...prev, lanMode: !next }));
-      try {
-        const fresh = await api.getConfig();
-        setConfig(fresh);
-      } catch {
-        /* leave the rollback in place */
-      }
-      alert((err && err.message) || 'Failed to update LAN mode');
-    }
-  };
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-4">General Settings</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          CLI binary paths are saved to <code className="text-gray-400">server/config.json</code>.
+          Changes take effect for new agent spawns immediately (no restart needed).
+        </p>
+        {typeof window !== 'undefined' && window.electronAPI?.isElectron && (
+          <div className="flex gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90 mb-4">
+            <Info className="shrink-0 mt-0.5" size={16} aria-hidden />
+            <p>
+              <span className="font-medium text-amber-50">Desktop app:</span> the embedded server
+              prepends common install locations for Git and GitHub CLI to <code>PATH</code> (and
+              uses the correct separator on Windows). If Codex or PR features still cannot find{' '}
+              <code>git</code>/<code>gh</code>, install them from git-scm.com or cli.github.com,
+              then fully quit and reopen Agent Hub. Read-only checkouts or offline networks can
+              still block git and API access.
+            </p>
+          </div>
+        )}
+      </div>
 
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">CLI Binary Paths</h4>
+
+        <div>
+          <label className={labelClass}>Claude Code CLI</label>
+          <input
+            value={edits.claudeBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, claudeBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/claude"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>claude</code> binary. Used for all claude-code engine sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Cursor Agent CLI</label>
+          <input
+            value={edits.cursorBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, cursorBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/agent"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>cursor-agent</code> binary (or its <code>agent</code> symlink, install
+            via <code>curl -fsSL https://cursor.com/install | bash</code>). Used for all
+            cursor-agent engine sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Gemini CLI</label>
+          <input
+            value={edits.geminiBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, geminiBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/gemini"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>gemini</code> binary (install via{' '}
+            <code>npm install -g @google/gemini-cli</code>). Used for all gemini-cli engine
+            sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Codex CLI</label>
+          <input
+            value={edits.codexBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, codexBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/codex"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>codex</code> binary (install via{' '}
+            <code>npm install -g @openai/codex</code>). Used for all codex-cli engine sessions.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between pt-2">
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saved' && <span className="text-xs text-emerald-400">✓ Saved</span>}
+            {saveStatus === 'error' && (
+              <span className="text-xs text-red-400">✕ Failed to save</span>
+            )}
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={!isDirty || saving}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-2">
+        <h4 className="text-sm font-medium text-gray-300">Current Config</h4>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span className="text-gray-500">Port</span>
+          <span className="text-gray-300 font-mono">{config.port}</span>
+          <span className="text-gray-500">Default CWD</span>
+          <span className="text-gray-300 font-mono truncate">{config.defaultCwd}</span>
+          <span className="text-gray-500">Default Model</span>
+          <span className="text-gray-300 font-mono">{config.defaultModel}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function GitHubSection() {
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Three independent pieces: <span className="text-gray-300">your GitHub account</span>{' '}
-          (sign-in for PR actions), <span className="text-gray-300">an OAuth App</span>{' '}
-          (server-wide; powers &ldquo;Sign in with GitHub&rdquo; without PATs), and{' '}
-          <span className="text-gray-300">a GitHub App</span> (the reviewer bot for formal PR
-          reviews). Per-project repo links live on the{' '}
-          <span className="text-gray-300">Projects</span> tab.
+          Two independent pieces: <span className="text-gray-300">your GitHub account</span>{' '}
+          (sign-in for PR actions) and <span className="text-gray-300">an OAuth App</span>{' '}
+          (server-wide; powers &ldquo;Sign in with GitHub&rdquo; without PATs). Per-project repo
+          links live on the <span className="text-gray-300">Projects</span> tab.
         </p>
       </div>
 
-      {/* LAN / air-gapped mode toggle. Lives at the top of the GitHub
-          section because every other block on this page assumes inbound
-          webhooks are reachable — LAN mode flips that assumption to
-          polling-only. The same field is also exposed on the first-run
-          SetupWizard so users opt in before any webhook setup is
-          attempted. Disabled state is the cloud-default. */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-2">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1">
-            <h4 className="text-sm font-medium text-gray-300">LAN / air-gapped mode</h4>
-            <p className="text-xs text-gray-500 mt-1">
-              Turn this on if Agent Hub is running on a private network where GitHub cannot reach
-              it. Webhook auto-registration is disabled; PR state, reviews, and CI failures are
-              detected by polling GitHub every 3 minutes using your personal access token. Turning
-              it off restores the normal webhook-driven path — no other settings change.
-            </p>
-          </div>
-          <label
-            className="relative inline-flex items-center cursor-pointer shrink-0 mt-1"
-            aria-label="Toggle LAN mode"
-          >
-            <input
-              type="checkbox"
-              className="sr-only peer"
-              checked={!!config.lanMode}
-              onChange={(e) => handleToggleLanMode(e.target.checked)}
-              data-testid="lan-mode-toggle"
-            />
-            <span className="w-10 h-6 bg-gray-700 peer-checked:bg-blue-600 rounded-full transition-colors relative">
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                  config.lanMode ? 'translate-x-4' : ''
-                }`}
-              />
-            </span>
-          </label>
-        </div>
-        {config.lanMode && (
-          <div className="bg-blue-900/20 border border-blue-700/40 rounded-lg p-2.5 text-xs text-blue-200">
-            <strong>LAN mode is on.</strong> New webhook registrations are skipped — the
-            reconciliation poller is the source of truth for PR state.
-          </div>
-        )}
-      </div>
-
-      {/* Personal GitHub OAuth — moved here so the connected account is visible
-          alongside the App + per-project tabs that depend on it. */}
+      {/* Personal GitHub OAuth — the connected account used for PR actions. */}
       <GithubConnectionSection />
 
-      {/* Server-level OAuth App credentials (separate from the GitHub App). */}
+      {/* Server-level OAuth App credentials. */}
       <PersonalOAuthConfigSection />
-
-      {/* GitHub App */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">GitHub App (Reviewer Bot)</h4>
-        <p className="text-xs text-gray-500">
-          One-time setup for the reviewer-bot identity. Posts formal PR reviews, manages webhooks,
-          and (optionally) auto-merges. <strong>Not required</strong> for personal sign-in or
-          per-user PR actions — those use the OAuth App above (or a personal access token).
-        </p>
-
-        {!appStatus?.configured ? (
-          /* State A — Not configured */
-          <div className="space-y-3">
-            {/* Identity warning */}
-            <div className="bg-amber-900/30 border border-amber-700/50 rounded-lg p-3 flex items-start gap-2">
-              <span className="text-amber-400 text-sm mt-0.5">⚠</span>
-              <div className="text-xs text-amber-300/90">
-                <strong>No reviewer bot configured.</strong> Formal PR reviews need the GitHub App
-                below. Personal PR actions (merge, list, clone) use your account in GitHub Account —
-                not the App.
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  if (!config?.publicUrl && !publicUrlInput) {
-                    setShowPublicUrlPrompt(true);
-                    setShowConnectForm(false);
-                  } else {
-                    handleCreateApp();
-                  }
-                }}
-                className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-              >
-                <Plus size={14} />
-                Create New App
-              </button>
-              <button
-                onClick={() => {
-                  setShowConnectForm(!showConnectForm);
-                  setShowPublicUrlPrompt(false);
-                }}
-                className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-              >
-                <Link size={14} />
-                Connect Existing App
-              </button>
-            </div>
-
-            {/* Inline public URL prompt */}
-            {showPublicUrlPrompt && (
-              <div className="bg-gray-900/50 rounded-lg p-3 space-y-2">
-                <label className={labelClass}>Public URL (required for GitHub callback)</label>
-                <div className="flex gap-2">
-                  <input
-                    value={publicUrlInput}
-                    onChange={(e) => setPublicUrlInput(e.target.value)}
-                    className={inputClass}
-                    placeholder="https://my-server.example.com"
-                  />
-                  <button
-                    onClick={async () => {
-                      if (!publicUrlInput.trim()) return;
-                      await api.updateConfig({ publicUrl: publicUrlInput.trim() });
-                      setConfig((prev) => ({ ...prev, publicUrl: publicUrlInput.trim() }));
-                      setShowPublicUrlPrompt(false);
-                      handleCreateApp();
-                    }}
-                    disabled={!publicUrlInput.trim()}
-                    className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    Continue
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Connect existing app form */}
-            {showConnectForm && (
-              <div className="bg-gray-900/50 rounded-lg p-3 space-y-3">
-                <div>
-                  <label className={labelClass}>App ID</label>
-                  <input
-                    type="number"
-                    value={connectForm.appId}
-                    onChange={(e) => setConnectForm((f) => ({ ...f, appId: e.target.value }))}
-                    className={inputClass}
-                    placeholder="123456"
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>Private Key</label>
-                  <textarea
-                    value={connectForm.privateKey}
-                    onChange={(e) => setConnectForm((f) => ({ ...f, privateKey: e.target.value }))}
-                    className={`${inputClass} h-24 resize-none`}
-                    placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>Installation ID</label>
-                  <input
-                    type="number"
-                    value={connectForm.installationId}
-                    onChange={(e) =>
-                      setConnectForm((f) => ({ ...f, installationId: e.target.value }))
-                    }
-                    className={inputClass}
-                    placeholder="12345678"
-                  />
-                </div>
-                {connectError && <p className="text-xs text-red-400">{connectError}</p>}
-                <button
-                  onClick={handleConnectExisting}
-                  disabled={
-                    connecting ||
-                    !connectForm.appId ||
-                    !connectForm.privateKey ||
-                    !connectForm.installationId
-                  }
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                >
-                  {connecting && <Loader2 size={12} className="animate-spin" />}
-                  {connecting ? 'Connecting...' : 'Connect'}
-                </button>
-              </div>
-            )}
-          </div>
-        ) : !appStatus?.hasInstallation ? (
-          /* State B — Created but not installed */
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
-              <span className="text-xs text-amber-400">App created — needs installation</span>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleInstallApp}
-                className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-              >
-                <ExternalLink size={12} />
-                Install on GitHub
-              </button>
-              <button
-                onClick={handleRefreshInstallation}
-                disabled={refreshingApp}
-                className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
-              >
-                <RefreshCw size={12} className={refreshingApp ? 'animate-spin' : ''} />
-                {refreshingApp ? 'Checking...' : 'Refresh'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* State C — Fully configured */
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-              <span className="text-sm text-emerald-400">
-                Connected: {appStatus.appName || appStatus.appSlug || `App #${appStatus.appId}`}
-              </span>
-              <button
-                onClick={handleRemoveApp}
-                className="text-xs text-red-400 hover:text-red-300 ml-auto"
-              >
-                Remove
-              </button>
-            </div>
-            <div className="border-t border-gray-800 pt-3 space-y-2">
-              <p className="text-xs text-gray-500">
-                <span className="text-gray-400">Webhook secret —</span> if the server log shows{' '}
-                <code className="text-[10px] text-gray-400">
-                  [Webhook] HMAC verification failed
-                </code>{' '}
-                for GitHub-App deliveries, push our local secret to GitHub to put both sides back in
-                sync. (GitHub never returns the secret on read, so we can only push.)
-              </p>
-              <div className="flex gap-2 items-center">
-                <button
-                  onClick={() => handleSyncWebhookSecret(false)}
-                  disabled={syncingSecret}
-                  className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
-                  title="Push the stored webhook secret to GitHub"
-                >
-                  <RefreshCw size={12} className={syncingSecret ? 'animate-spin' : ''} />
-                  {syncingSecret ? 'Syncing…' : 'Sync webhook secret to GitHub'}
-                </button>
-                <button
-                  onClick={() => handleSyncWebhookSecret(true)}
-                  disabled={syncingSecret}
-                  className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50"
-                  title="Generate a fresh secret and push it to GitHub (destructive)"
-                >
-                  Rotate
-                </button>
-              </div>
-              {syncSecretMessage && (
-                <p
-                  className={`text-xs ${syncSecretMessage.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}
-                >
-                  {syncSecretMessage.text}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -2189,12 +999,6 @@ export function ProjectsSection({
   const [repoTesting, setRepoTesting] = useState({});
   const [repoTestResult, setRepoTestResult] = useState({});
 
-  // Per-project author allowlist (comma-separated input, per-project webhook)
-  const [allowlistInput, setAllowlistInput] = useState({});
-  const [allowlistSaving, setAllowlistSaving] = useState({});
-  const [allowlistStatus, setAllowlistStatus] = useState({});
-  const [webhookIds, setWebhookIds] = useState({}); // projectId → first webhook id
-
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
 
@@ -2208,45 +1012,6 @@ export function ProjectsSection({
     setExpandedProject(initialExpandedProjectId);
     lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
   }, [initialExpandedProjectId, projects]);
-
-  // Load each project's first webhook config to pick up its author_allowlist.
-  // There's typically one webhook per project (auto-managed when the repo is
-  // linked), so we grab [0] and use its id for subsequent PUTs.
-  const loadAllowlistFor = async (projectId) => {
-    try {
-      const hooks = await api.getProjectWebhooks(projectId);
-      const first = Array.isArray(hooks) && hooks.length > 0 ? hooks[0] : null;
-      if (!first) return;
-      setWebhookIds((prev) => ({ ...prev, [projectId]: first.id }));
-      const list = parseAllowlistFromBackend(first.author_allowlist);
-      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(list) }));
-    } catch {
-      /* ignore — project may not have a webhook yet */
-    }
-  };
-
-  const saveAllowlist = async (projectId) => {
-    const webhookId = webhookIds[projectId];
-    if (!webhookId) {
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'no-webhook' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-      return;
-    }
-    setAllowlistSaving((prev) => ({ ...prev, [projectId]: true }));
-    setAllowlistStatus((prev) => ({ ...prev, [projectId]: null }));
-    try {
-      const normalized = parseAllowlist(allowlistInput[projectId] || '');
-      await api.updateWebhook(webhookId, { authorAllowlist: normalized });
-      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(normalized) }));
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
-    } catch {
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'error' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-    } finally {
-      setAllowlistSaving((prev) => ({ ...prev, [projectId]: false }));
-    }
-  };
 
   useEffect(() => {
     api
@@ -2271,8 +1036,6 @@ export function ProjectsSection({
       };
       repos[p.id] = p.githubRepo || '';
       repoUrls[p.id] = p.repoUrl || '';
-      // Fire-and-forget: hydrate allowlist from the webhook API.
-      loadAllowlistFor(p.id);
     });
     setProjectWorkflow(wf);
     setProjectRepos(repos);
@@ -2536,9 +1299,7 @@ export function ProjectsSection({
                         </button>
                       </div>
                       {repoSaveStatus[p.id] === 'saved' && (
-                        <span className="text-xs text-emerald-400">
-                          Saved — webhook auto-configured
-                        </span>
+                        <span className="text-xs text-emerald-400">Saved</span>
                       )}
                       {repoSaveStatus[p.id] === 'error' && (
                         <span className="text-xs text-red-400">Failed to save</span>
@@ -2555,8 +1316,8 @@ export function ProjectsSection({
                         <code className="font-mono">https://github.com/owner/repo.git</code>). When
                         set, Agent Hub auto-clones the repo into the project{' '}
                         <code className="font-mono">cwd</code> on session spawn if it's missing or
-                        not a git repo. Authenticates via the registered GitHub App. SSH URLs are
-                        not supported.
+                        not a git repo. Authenticates via your connected GitHub account. SSH URLs
+                        are not supported.
                       </p>
                       <div className="flex gap-2">
                         <input
@@ -2702,10 +1463,10 @@ export function ProjectsSection({
                     {!isWorkflowProject(p) && (
                       <>
                         <div className="pt-1 space-y-1">
-                          <label className={labelClass}>PR review model (GitHub webhook)</label>
+                          <label className={labelClass}>PR review model</label>
                           <p className="text-xs text-gray-500 mb-1">
-                            Model for the reviewer agent ({reviewerEngine}) when Auto Review runs
-                            after a PR webhook. Default follows the reviewer&apos;s Agents settings.
+                            Model for the reviewer agent ({reviewerEngine}) when Auto Review runs.
+                            Default follows the reviewer&apos;s Agents settings.
                           </p>
                           <div className="flex items-center gap-2">
                             <select
@@ -2769,50 +1530,6 @@ export function ProjectsSection({
                           </span>
                         )}
                       </div>
-                    </div>
-
-                    {/* Author Allowlist */}
-                    <div className="pt-2 border-t border-gray-800 space-y-2">
-                      <label className={labelClass}>Author Allowlist</label>
-                      <p className="text-xs text-gray-500">
-                        Only review PRs authored by these GitHub usernames. Comma-separated. Leave
-                        blank to review all PRs. Use this to prevent two Agent Hub instances on the
-                        same repo from cross-reviewing each other&apos;s PRs.
-                      </p>
-                      <div className="flex gap-2">
-                        <input
-                          value={allowlistInput[p.id] ?? ''}
-                          onChange={(e) =>
-                            setAllowlistInput((prev) => ({ ...prev, [p.id]: e.target.value }))
-                          }
-                          placeholder="e.g. mcsteen, alice"
-                          disabled={!webhookIds[p.id]}
-                          className={inputClass}
-                        />
-                        <button
-                          onClick={() => saveAllowlist(p.id)}
-                          disabled={allowlistSaving[p.id] || !webhookIds[p.id]}
-                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          {allowlistSaving[p.id] ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
-                      {allowlistStatus[p.id] === 'saved' && (
-                        <span className="text-xs text-emerald-400">Saved</span>
-                      )}
-                      {allowlistStatus[p.id] === 'error' && (
-                        <span className="text-xs text-red-400">Failed to save</span>
-                      )}
-                      {allowlistStatus[p.id] === 'no-webhook' && (
-                        <span className="text-xs text-amber-400">
-                          Save a repo first to configure the webhook
-                        </span>
-                      )}
-                      {!webhookIds[p.id] && !allowlistStatus[p.id] && (
-                        <span className="text-xs text-gray-600">
-                          No webhook yet — save a repo above to enable this field
-                        </span>
-                      )}
                     </div>
 
                     {/* Delete Project */}
@@ -8005,7 +6722,7 @@ export function ToolErrorsSection({ projects }) {
  * Settings tabs grouped into logical sections for the left sidebar.
  *
  * Grouping mirrors mental model rather than alphabetical order:
- *   - Workspace: org/account level config the user touches first
+ *   - Workspace: org/account/general level config the user touches first
  *   - Agents & Auth: per-agent and per-engine credential surfaces
  *   - Automation: heartbeats, crons, Slack
  *   - Operations: observability & infra-adjacent panels
@@ -8015,10 +6732,12 @@ const SETTINGS_GROUPS = [
     id: 'workspace',
     label: 'Workspace',
     tabs: [
+      { id: 'general', iconName: 'Settings', text: 'General' },
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
-      // Preview & Finalize moved to per-project sidebar (Preview / Runners).
+      { id: 'preview', iconName: 'Monitor', text: 'Preview' },
+      { id: 'finalize', iconName: 'ClipboardCheck', text: 'Finalize' },
     ],
   },
   {
@@ -8026,11 +6745,12 @@ const SETTINGS_GROUPS = [
     label: 'Agents & Auth',
     tabs: [
       { id: 'agents', iconName: 'Bot', text: 'Agents' },
-      // Host-wide CLI credentials (managed in ~/.agent-hub/data/config.json).
-      // Per-user CLI creds live on Settings → Account, so this tab is gated
-      // to Admin/Owner via `visibleSettingsGroups` below. Sole-source-of-truth
-      // for the tab id is `claude-auth` (historical — predates the renaming).
-      { id: 'claude-auth', iconName: 'Key', text: 'Global AI Authentication' },
+      // Host-wide Gemini API key (used for wiki embeddings; managed in
+      // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
+      // on Settings → Account, so this tab is gated to Admin/Owner via
+      // `visibleSettingsGroups` below. Sole-source-of-truth for the tab id is
+      // `claude-auth` (historical — predates the renaming).
+      { id: 'claude-auth', iconName: 'Key', text: 'Global API Keys' },
       { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
     ],
   },
@@ -8106,7 +6826,7 @@ export default function SettingsPage({
   wsRef,
 }) {
   const [tab, setTab] = useState(
-    initialTab === 'integrations' ? 'account' : initialTab || 'account',
+    initialTab === 'integrations' ? 'general' : initialTab || 'general',
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -8126,7 +6846,7 @@ export default function SettingsPage({
   // longer render the tab there. Redirect to the first visible tab so
   // the user doesn't land on a blank settings pane.
   useEffect(() => {
-    if (tab === 'orgs' && !isElectron()) setTab('account');
+    if (tab === 'orgs' && !isElectron()) setTab('general');
   }, [tab]);
 
   // The "Organizations" tab manages remote Hub-server bookmarks and the
@@ -8135,18 +6855,17 @@ export default function SettingsPage({
   // cross-origin API-key injector). The web app is locked to a single
   // Hub server, so hide the tab there.
   //
-  // Role-gated tab visibility. The host-wide "Global AI Authentication"
-  // panel writes to `~/.agent-hub/data/config.json` and only Admin/Owner
-  // users have a reason to touch it — regular users manage their own
-  // per-user creds on Settings → Account. Empty groups are dropped to
-  // keep the sidebar layout tidy when every tab in a group is hidden.
-  // The server still enforces the underlying permissions; this is a
-  // UX hint only.
+  // Role-gated tab visibility. The host-wide "Gemini API Key" panel writes
+  // to `~/.agent-hub/data/config.json` and only Admin/Owner users have a
+  // reason to touch it — regular users manage their own per-user creds on
+  // Settings → Account. Empty groups are dropped to keep the sidebar layout
+  // tidy when every tab in a group is hidden. The server still enforces the
+  // underlying permissions; this is a UX hint only.
   const electronShell = isElectron();
   // In local-bundled mode (Electron / single-user self-host) the server
   // short-circuits auth so no JWT is written and hasRole() returns false.
-  // Treat local-mode sessions as Admin-equivalent so the host-wide CLI
-  // auth tab stays visible on every fresh install.
+  // Treat local-mode sessions as Admin-equivalent so the host-wide Gemini
+  // API key tab stays visible on every fresh install.
   const isAdminPlus = hasRole('Admin') || isLocalMode();
   const visibleSettingsGroups = useMemo(() => {
     return SETTINGS_GROUPS.map((group) => ({
@@ -8167,15 +6886,6 @@ export default function SettingsPage({
     }
   }, [tab, isAdminPlus]);
 
-  // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
-  // Old `settings:preview` / `settings:finalize` deep links would otherwise
-  // resolve to a tab that no longer renders anything, so fall back to Account.
-  useEffect(() => {
-    if (tab === 'preview' || tab === 'finalize') {
-      setTab('account');
-    }
-  }, [tab]);
-
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
     for (const group of visibleSettingsGroups) {
@@ -8185,11 +6895,23 @@ export default function SettingsPage({
     return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
   }, [tab, visibleSettingsGroups]);
 
+  // Guard registered by the active section to block tab change when it
+  // has unsaved edits. Sections call `registerGuard(fn)` where `fn()`
+  // returns true (allow change) or false (block). Only the active tab
+  // owns the guard; switching tabs clears it.
+  const tabChangeGuardRef = useRef(null);
+  const registerTabChangeGuard = useCallback((fn) => {
+    tabChangeGuardRef.current = typeof fn === 'function' ? fn : null;
+  }, []);
+
   const handleSelectTab = (id) => {
     if (id === tab) {
       setMobileNavOpen(false);
       return;
     }
+    const guard = tabChangeGuardRef.current;
+    if (typeof guard === 'function' && !guard()) return;
+    tabChangeGuardRef.current = null;
     setTab(id);
     setMobileNavOpen(false);
   };
@@ -8275,18 +6997,9 @@ export default function SettingsPage({
             <AuthUpgradeBanner />
 
             <SettingsErrorBoundary key={tab}>
+              {tab === 'general' && <GeneralSection />}
               {tab === 'account' && <AccountSection />}
-              {tab === 'claude-auth' && isAdminPlus && (
-                <div className="space-y-10">
-                  <ClaudeAuthSection />
-                  <div className="h-px bg-gray-800" />
-                  <GeminiAuthSection />
-                  <div className="h-px bg-gray-800" />
-                  <CursorAuthSection />
-                  <div className="h-px bg-gray-800" />
-                  <CodexAuthSection />
-                </div>
-              )}
+              {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
               {tab === 'github' && <GitHubSection onProjectsChange={onAgentsChange} />}
               {tab === 'projects' && (
                 <ProjectsSection
@@ -8297,6 +7010,25 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
+              {tab === 'preview' && (
+                <PreviewSection
+                  projects={projects}
+                  onProjectsChange={onAgentsChange}
+                  registerGuard={registerTabChangeGuard}
+                  onOpenSession={({ sessionId, agentId }) =>
+                    onOpenSession?.({ sessionId, agentId })
+                  }
+                />
+              )}
+              {tab === 'finalize' && (
+                <FinalizeSettingsSection
+                  projects={projects}
+                  onProjectsChange={onAgentsChange}
+                  onOpenSession={({ sessionId, agentId }) =>
+                    onOpenSession?.({ sessionId, agentId })
+                  }
+                />
+              )}
               {tab === 'heartbeats' && (
                 <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
               )}

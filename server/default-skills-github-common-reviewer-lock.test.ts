@@ -129,7 +129,7 @@ describe('_common.sh require_gh_token — AGENT_HUB_REVIEWER_LOCK gate', () => {
     expect(result.stdout).not.toContain('REQUIRE_GH_TOKEN_OK');
     const stderr = result.stderr || '';
     expect(stderr).toContain('AGENT_HUB_REVIEWER_LOCK=1');
-    expect(stderr).toContain('/api/pr/review');
+    expect(stderr).toContain('in-session advisor');
   });
 
   it('falls back to `gh auth status` when AGENT_HUB_REVIEWER_LOCK is unset (legacy dev path)', () => {

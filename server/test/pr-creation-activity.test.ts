@@ -5,7 +5,7 @@
 import type supertest from 'supertest';
 import { randomUUID } from 'crypto';
 import { getRequest, createProject } from './helpers.js';
-import { webhookHandlerDeps } from '../index.js';
+import { routeDeps } from '../index.js';
 import { getDb } from '../db.js';
 
 let request: supertest.Agent;
@@ -22,7 +22,7 @@ describe('PR creation activity', () => {
     const prId = randomUUID();
     const reviewId = randomUUID();
     const now = new Date().toISOString();
-    const { stmts } = webhookHandlerDeps;
+    const { stmts } = routeDeps;
 
     stmts.createPrCreationLog.run(
       prId,
@@ -64,7 +64,7 @@ describe('PR creation activity', () => {
   it('sorts merged GET /projects/:id/reviews newest-first when pr_created and review timestamps differ', async () => {
     const project = await createProject({ name: 'PR Reviews Sort Project' });
     const projectId = project.id as string;
-    const { stmts } = webhookHandlerDeps;
+    const { stmts } = routeDeps;
     const db = getDb();
 
     const reviewOld = '2000-06-15T12:00:00.000Z';
@@ -110,7 +110,7 @@ describe('PR creation activity', () => {
     const project = await createProject({ name: 'Dashboard PR Activity' });
     const projectId = project.id as string;
     const prId = randomUUID();
-    const { stmts } = webhookHandlerDeps;
+    const { stmts } = routeDeps;
 
     stmts.createPrCreationLog.run(
       prId,
@@ -133,7 +133,7 @@ describe('PR creation activity', () => {
   it('dedupes pr_creation_logs on repeated (project_id, pr_url) inserts', () => {
     const projectId = `dedupe-${randomUUID().slice(0, 8)}`;
     const prUrl = 'https://github.com/example/dedupe/pull/7';
-    const { stmts } = webhookHandlerDeps;
+    const { stmts } = routeDeps;
 
     const r1 = stmts.createPrCreationLog.run(
       randomUUID(),

@@ -16,7 +16,7 @@ import { spawn, execFile, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
-import { buildSpawnEnv } from './config.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import {
@@ -25,7 +25,7 @@ import {
   linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
-import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
+import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import { createStreamParser } from './stream-parser.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -248,8 +248,8 @@ export async function handleDesignChat(
 
   try {
     const config = d.getConfig();
-    const designOwnerId =
-      getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+    // No org-owner fallback — only the authenticated WS user.
+    const designOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
     const engine = normalizeDesignEngine(design.agent_engine);
     const model = resolveDesignModelForEngine(engine, design.agent_model, config, designOwnerId);
     let engineSessionId = design.engine_session_id ?? null;
@@ -267,7 +267,13 @@ export async function handleDesignChat(
     // the new chat id lands in the operator HOME and the resume call can't
     // find it. See review comment on PR #1072.
     const spawnEnv = {
-      ...buildSpawnEnv(config, { userId: designOwnerId }),
+      ...resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId: designOwnerId,
+        credsOwnerId: designOwnerId,
+        sessionId: null,
+        engine,
+      }),
       AGENT_HUB_SESSION_ID: `design:${designId}`,
     } as NodeJS.ProcessEnv;
     const linkedProject = design.linkedProjects?.[0];

@@ -1277,20 +1277,6 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       console.error('[Auth] migrateAuthRecordIfNeeded after /setup failed:', err);
     }
 
-    // Belt-and-suspenders cache invalidation. `getOrgOwnerUserId` no
-    // longer caches `null` (see `session-ownership.ts`), but resetting
-    // here keeps the cache honest if a future change re-introduces a
-    // negative-cache code path. Without this, system spawns immediately
-    // after first-run setup might still resolve to a stale `null`.
-    // Imported lazily so test files that mock `../config.js` (without
-    // seeding `defaultCwd`) don't trigger `db.ts` module-load initDb.
-    try {
-      const { resetOrgOwnerCache } = await import('../session-ownership.js');
-      resetOrgOwnerCache();
-    } catch (err) {
-      console.warn('[Auth] failed to reset org owner cache after /setup:', err);
-    }
-
     const { token, expiresAt } = issueToken(
       user ?? { id: '', username: record.username },
       record.role,
@@ -1490,9 +1476,10 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       claudeCodeOAuthExpiresAt: expiry ? expiry.iso : stored.claudeCodeOAuthExpiresAt,
       claudeCodeOAuthExpired: expiry ? expiry.expired : null,
       updatedAt: stored.updatedAt,
+      // Claude auth is strictly per-account — there is no host fallback.
       hostConfigFallback: {
-        anthropicApiKey: !!config.anthropicApiKey,
-        claudeCodeOAuthToken: !!config.claudeCodeOAuthToken,
+        anthropicApiKey: false,
+        claudeCodeOAuthToken: false,
       },
     });
   });
@@ -1541,11 +1528,10 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       claudeCodeOAuthExpiresAt: expiryAfter ? expiryAfter.iso : updated.claudeCodeOAuthExpiresAt,
       claudeCodeOAuthExpired: expiryAfter ? expiryAfter.expired : null,
       updatedAt: updated.updatedAt,
-      // Mirror GET so a client can re-render the "falling back to host"
-      // hint without an extra round-trip after save.
+      // Claude auth is strictly per-account — there is no host fallback.
       hostConfigFallback: {
-        anthropicApiKey: !!config.anthropicApiKey,
-        claudeCodeOAuthToken: !!config.claudeCodeOAuthToken,
+        anthropicApiKey: false,
+        claudeCodeOAuthToken: false,
       },
     });
   });
@@ -1554,8 +1540,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   //
   // Each engine carries one API key today. The shape is intentionally
   // identical across the three so the UI can render them with one
-  // component. `buildSpawnEnv` (server/config.ts) handles per-field
-  // precedence — per-user override → host config → unset.
+  // component. Cursor / Codex are strictly per-account (no host fallback);
+  // only Gemini has a host-configured key (`buildSpawnEnv` falls back to it).
   type SingleKeyEngine = 'cursor' | 'gemini' | 'codex';
   const singleKeyEngines: Array<{
     engine: SingleKeyEngine;
@@ -1572,7 +1558,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       path: '/api/auth/me/cursor-auth',
       get: getUserCursorAuth,
       set: setUserCursorAuth,
-      hostHasKey: () => !!config.cursorApiKey,
+      // Cursor auth is strictly per-account — no host fallback.
+      hostHasKey: () => false,
     },
     {
       engine: 'gemini',
@@ -1586,7 +1573,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       path: '/api/auth/me/codex-auth',
       get: getUserCodexAuth,
       set: setUserCodexAuth,
-      hostHasKey: () => !!config.codexApiKey,
+      // Codex auth is strictly per-account — no host fallback.
+      hostHasKey: () => false,
     },
   ];
 

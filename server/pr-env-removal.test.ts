@@ -15,14 +15,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('PR-Env Removal #3 — DB invariants', () => {
   it('pr_env_config table is dropped on init and does not appear in sqlite_master', async () => {
@@ -44,28 +40,5 @@ describe('PR-Env Removal #3 — DB invariants', () => {
       .all();
     expect(rows).toEqual([]);
     db.close();
-  });
-});
-
-describe('PR-Env Removal #3 — webhook handler invariants', () => {
-  const webhooksPath = path.join(__dirname, 'routes', 'webhooks.ts');
-  const webhooksSrc = readFileSync(webhooksPath, 'utf8');
-
-  it('webhooks.ts does not import dispatchPrEnv handlers', () => {
-    expect(webhooksSrc).not.toMatch(/dispatchPrEnvBuild/);
-    expect(webhooksSrc).not.toMatch(/dispatchPrEnvTeardown/);
-  });
-
-  it('webhooks.ts does not import the deleted pr-env modules', () => {
-    expect(webhooksSrc).not.toMatch(/from\s+['"][^'"]*pr-env-store['"]/);
-    expect(webhooksSrc).not.toMatch(/from\s+['"][^'"]*pr-env-dispatch['"]/);
-    expect(webhooksSrc).not.toMatch(/from\s+['"][^'"]*pr-env-runtime['"]/);
-  });
-
-  it('pull_request.synchronize is a no-op for PR-envs — no dispatch import path remains', () => {
-    // Sentinel: the previous code block was tagged "PR-env Builder Dispatch".
-    // If a future commit re-introduces it, the sentinel will appear again
-    // and this test will flag the regression.
-    expect(webhooksSrc).not.toMatch(/PR-env Builder Dispatch/);
   });
 });

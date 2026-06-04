@@ -1,31 +1,27 @@
 // Engine authentication status — single source of truth for "can we spawn
 // any AI agent right now?" used by /api/config/models and /api/setup/status.
 //
-// Auth resolution mirrors `buildSpawnEnv` (server/config.ts): per-user
-// credentials take precedence over host fallback. Today that covers Claude
-// (anthropic API key / OAuth token) and Cursor (per-user CURSOR_API_KEY in
-// `users.cursor_api_key`, plus OAuth tokens under per-user HOME).
-// Codex mirrors Cursor: per-user API keys and per-user OAuth caches win;
-// host config/env is fallback only when the caller has no userId.
+// Auth is strictly per-account: Claude / Cursor / Codex availability is
+// resolved ONLY from the requesting user's stored keys and per-user HOME
+// OAuth caches. There is no host fallback — a request with no `userId`
+// reports these engines as unavailable. This mirrors `buildSpawnEnv`, which
+// injects only the acting user's own credentials.
 //
 // This module is async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
 // repeated calls inside a single client poll don't multiply CLI invocations.
 // When a per-user Cursor key is present we short-circuit the probe entirely
-// — a stored key is a strong-enough signal that spawning will work, and we
-// don't want the dropdown to lie just because the host has no global login.
+// — a stored key is a strong-enough signal that spawning will work.
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { execFile } from 'child_process';
 import path from 'path';
 import os from 'os';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
-import { normalizeOAuthExpiresAtMs } from './oauth-expiry.js';
 import { getUserClaudeAuth, getUserCursorAuth, getUserCodexAuth } from './users-store.js';
 import { ensurePerUserHome } from './per-user-home.js';
-import { ensureHostCliHome, hostCodexHomePath } from './host-cli-home.js';
 import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
@@ -37,29 +33,6 @@ export interface EngineAuthStatus {
   codex: boolean;
   /** True iff at least one engine has a usable credential. */
   any: boolean;
-}
-
-/**
- * Returns true when `~/.claude/.credentials.json` holds an unexpired Anthropic
- * OAuth session. Mirrors `buildSpawnEnv`'s claude OAuth fallback.
- */
-export function hasClaudeHostOauth(): boolean {
-  const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
-  if (!existsSync(credentialsPath)) return false;
-  try {
-    const raw = JSON.parse(readFileSync(credentialsPath, 'utf-8')) as {
-      claudeAiOauth?: { expiresAt?: number };
-    };
-    if (!raw?.claudeAiOauth) return false;
-    const expiresAt = raw.claudeAiOauth.expiresAt;
-    if (typeof expiresAt === 'number') return Date.now() < normalizeOAuthExpiresAtMs(expiresAt);
-    // Missing expiresAt: tooling sometimes omits it while OAuth is still valid;
-    // we stay conservative and treat as unauthenticated rather than risk a
-    // false-positive that hides the setup wizard.
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 export interface ProbeCursorStatusOpts {
@@ -99,21 +72,14 @@ export function probeCursorStatus(binPath: string, opts?: ProbeCursorStatusOpts)
 }
 
 export interface EngineAuthInputs {
-  config: {
-    anthropicApiKey?: string | null;
-    claudeCodeOAuthToken?: string | null;
-    codexApiKey?: string | null;
-  };
   cursorBin: string;
-  /** Authenticated user id, when the calling route has `AuthenticatedRequest`. */
+  /** Authenticated user id. Required — there is no host fallback. */
   userId?: string | null;
   /**
-   * Hub data dir — required with `userId` to probe Cursor OAuth under the same
-   * per-user HOME `buildSpawnEnv` uses for spawns.
+   * Hub data dir — required (with `userId`) to probe Cursor / Codex OAuth
+   * under the same per-user HOME `buildSpawnEnv` uses for spawns.
    */
   dataDir?: string | null;
-  /** Override the cursor probe (tests). Defaults to `probeCursorStatus`. */
-  cursorProbe?: (bin: string) => Promise<boolean>;
   /**
    * Override per-user HOME Cursor probe (tests). Defaults to shelling out via
    * `probeCursorStatus` with `HOME` pinned to `ensurePerUserHome(...)`.
@@ -122,45 +88,38 @@ export interface EngineAuthInputs {
 }
 
 export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<EngineAuthStatus> {
-  const { config, cursorBin, userId, dataDir, cursorProbe, cursorProbePerUserHome } = opts;
+  const { cursorBin, userId, dataDir, cursorProbePerUserHome } = opts;
 
-  // Per-user Claude credentials win over host fallback (see buildSpawnEnv).
-  let userClaude = false;
-  if (userId) {
-    try {
-      const stored = getUserClaudeAuth(userId);
-      if (stored) {
-        userClaude = !!(stored.anthropicApiKey || stored.claudeCodeOAuthToken);
-      }
-    } catch {
-      // users-store schema may be missing on bare bootstraps — treat as no creds.
-      userClaude = false;
-    }
+  // Strictly per-account: with no acting user there are no credentials to
+  // resolve, so every engine is unavailable. There is no host fallback.
+  if (!userId) {
+    return { claude: false, cursor: false, codex: false, any: false };
   }
 
-  const claude = !!(
-    userClaude ||
-    config.anthropicApiKey ||
-    process.env.ANTHROPIC_API_KEY ||
-    config.claudeCodeOAuthToken ||
-    process.env.CLAUDE_CODE_OAUTH_TOKEN ||
-    hasClaudeHostOauth()
-  );
+  // Claude — per-user API key or OAuth token.
+  let claude = false;
+  try {
+    const stored = getUserClaudeAuth(userId);
+    if (stored) {
+      claude = !!(stored.anthropicApiKey || stored.claudeCodeOAuthToken);
+    }
+  } catch {
+    // users-store schema may be missing on bare bootstraps — treat as no creds.
+    claude = false;
+  }
 
   let hasUserCodexApiKey = false;
-  if (userId) {
-    try {
-      const stored = getUserCodexAuth(userId);
-      if (stored?.apiKey) hasUserCodexApiKey = true;
-    } catch {
-      hasUserCodexApiKey = false;
-    }
+  try {
+    const stored = getUserCodexAuth(userId);
+    if (stored?.apiKey) hasUserCodexApiKey = true;
+  } catch {
+    hasUserCodexApiKey = false;
   }
 
   let codex = false;
   if (hasUserCodexApiKey) {
     codex = true;
-  } else if (userId && dataDir) {
+  } else if (dataDir) {
     try {
       if (hasPopulatedCodexDeviceAuth(userId, dataDir)) {
         codex = true;
@@ -182,39 +141,22 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
         codex = false;
       }
     }
-  } else {
-    const codexApiKey = !!(
-      config.codexApiKey ||
-      process.env.CODEX_API_KEY ||
-      process.env.OPENAI_API_KEY
-    );
-    const codexHome = dataDir ? hostCodexHomePath(dataDir) : path.join(os.homedir(), '.codex');
-    const codexFs = detectCodexAuthMode(codexHome);
-    codex =
-      codexApiKey || (codexFs.present && (codexFs.mode === 'chatgpt' || codexFs.mode === 'apikey'));
   }
 
-  // Per-user Cursor credentials win over host probe (see buildSpawnEnv
-  // / chat.ts spawn auth resolution). Without this branch the engine
-  // dropdown hides Cursor for any user who only logged in at the
-  // per-user level, even though their spawn would actually succeed.
+  // Cursor — per-user API key, else probe `cursor-agent status` under the
+  // user's own HOME.
   let hasUserCursorApiKey = false;
-  if (userId) {
-    try {
-      const stored = getUserCursorAuth(userId);
-      if (stored && stored.apiKey) hasUserCursorApiKey = true;
-    } catch {
-      // users-store schema may be missing on bare bootstraps — treat as no creds.
-      hasUserCursorApiKey = false;
-    }
+  try {
+    const stored = getUserCursorAuth(userId);
+    if (stored && stored.apiKey) hasUserCursorApiKey = true;
+  } catch {
+    hasUserCursorApiKey = false;
   }
 
   let cursor = false;
   if (hasUserCursorApiKey) {
     cursor = true;
-  } else if (userId && dataDir) {
-    // JWT / per-user API key callers never read the operator's ~/.cursor for
-    // spawns — mirror that here so the engine picker stays aligned with chat.
+  } else if (dataDir) {
     try {
       const home = ensurePerUserHome(userId, dataDir);
       const runPerUserProbe =
@@ -226,11 +168,6 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
     } catch {
       cursor = false;
     }
-  } else {
-    const hostHome = dataDir ? ensureHostCliHome(dataDir) : os.homedir();
-    const runHostProbe =
-      cursorProbe ?? ((bin: string) => probeCursorStatus(bin, { env: { HOME: hostHome } }));
-    cursor = await getCursorAuthenticatedCached(cursorBin, runHostProbe);
   }
 
   return {

@@ -131,7 +131,7 @@ describe('GET /api/auth/me/claude-auth', () => {
     expect(res.body.error).toMatch(/not found/i);
   });
 
-  it('returns masked credentials and hostConfigFallback flags', async () => {
+  it('returns masked credentials and hostConfigFallback always false (no host fallback)', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
 
@@ -142,7 +142,8 @@ describe('GET /api/auth/me/claude-auth', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ anthropicApiKey: 'sk-ant-api03-AAAA-BBBB-CCCC' });
 
-    // Set the host config to assert hostConfigFallback flips truthy.
+    // Even if a host process env carried a key, Claude auth is strictly
+    // per-account now: hostConfigFallback must stay false.
     mockConfig.anthropicApiKey = 'sk-ant-api03-host-fallback';
     mockConfig.claudeCodeOAuthToken = null;
 
@@ -153,7 +154,7 @@ describe('GET /api/auth/me/claude-auth', () => {
     expect(res.body.anthropicApiKey).toMatch(/^sk-ant-api03-…$/);
     expect(res.body.claudeCodeOAuthToken).toBeNull();
     expect(res.body.hostConfigFallback).toEqual({
-      anthropicApiKey: true,
+      anthropicApiKey: false,
       claudeCodeOAuthToken: false,
     });
   });
@@ -216,7 +217,7 @@ describe('PUT /api/auth/me/claude-auth', () => {
     expect(reloaded?.password_hash).not.toBe('INJECTED');
   });
 
-  it('returns the masked credential on response and includes hostConfigFallback', async () => {
+  it('returns the masked credential on response and includes hostConfigFallback (always false)', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
     mockConfig.anthropicApiKey = null;
@@ -230,11 +231,11 @@ describe('PUT /api/auth/me/claude-auth', () => {
     expect(res.body.anthropicApiKey).toMatch(/^sk-ant-api03-…$/);
     expect(res.body.claudeCodeOAuthToken).toBeNull();
     expect(res.body.updatedAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
-    // Parity with GET: clients should be able to re-render the
-    // "falling back to host" hint without an extra round-trip.
+    // Claude auth is strictly per-account — no host fallback, so both
+    // flags stay false regardless of any host process env.
     expect(res.body.hostConfigFallback).toEqual({
       anthropicApiKey: false,
-      claudeCodeOAuthToken: true,
+      claudeCodeOAuthToken: false,
     });
   });
 

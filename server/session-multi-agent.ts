@@ -4,12 +4,12 @@
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv } from './config.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
-import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
+import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import { buildSessionMultiSpawnArgs, normalizeSessionMultiEngine } from './session-multi-engine.js';
 import type {
@@ -382,7 +382,8 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     : 'Review the session context.';
 
   const engine = normalizeSessionMultiEngine(advisor.engine);
-  const roomOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+  // No org-owner fallback — only the authenticated WS user.
+  const roomOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
   const model = resolveEffectiveModel(config, engine, {
     agentModel: advisor.model as string | undefined,
     ownerUserId: roomOwnerId,
@@ -399,7 +400,15 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
 
   // Advisors may belong to another project; always run against the session workspace.
   const cwd = session.worktree_path || primary.cwd || process.env.HOME || '/';
-  const spawnEnv = { ...buildSpawnEnv(config, { userId: roomOwnerId }) };
+  const spawnEnv = {
+    ...resolveSessionCliSpawnEnv({
+      cfg: config,
+      ownerId: roomOwnerId,
+      credsOwnerId: roomOwnerId,
+      sessionId,
+      engine,
+    }),
+  };
   if (sessionProject && roomOwnerId) {
     mergeSkillCredentialSpawnEnv(spawnEnv, {
       ownerId: roomOwnerId,

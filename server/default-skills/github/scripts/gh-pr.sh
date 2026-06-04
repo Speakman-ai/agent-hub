@@ -10,9 +10,8 @@
 #   gh-pr.sh diff     <number>
 #   gh-pr.sh files    <number>
 #   gh-pr.sh checkout <number>
-#   gh-pr.sh review   <number> --approve
-#   gh-pr.sh review   <number> --request-changes --body <text>
-#   (Formal reviews in Agent Hub spawns: POST /api/pr/review with APPROVE or REQUEST_CHANGES only)
+#   (Formal reviews are disabled: the reviewer is an in-session advisor and
+#    emits its APPROVE / REQUEST_CHANGES verdict in session output, not to GitHub.)
 #   gh-pr.sh comment  <number> --body <text>
 #   gh-pr.sh merge    <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]
 #   gh-pr.sh ready    <number>          # mark draft as ready for review
@@ -25,12 +24,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_common.sh"
 
 # ---------------------------------------------------------------------------
-# Reviewer lock — blocks identity-attributing write subcommands from all spawns
+# Reviewer locks — restrict identity-attributing write subcommands from spawns
+#
+# `gh pr review` (formal GitHub reviews) is disabled outright in `cmd_review`:
+# the reviewer is an in-session advisor that emits its verdict in session
+# output, so Agent Hub never posts a formal review to GitHub.
 #
 # Agent Hub injects AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just
-# reviewer-role spawns) via `applyReviewerSpawnIsolation`. The universal
-# lock blocks `gh pr review` — formal review attribution must go through
-# `POST /api/pr/review` so it lands as the GitHub App identity.
+# reviewer-role spawns) via `applyReviewerSpawnIsolation`.
 #
 # Interactive non-reviewer spawns receive the session owner's per-user
 # OAuth in `GH_TOKEN` (`resolveGithubSpawnToken`), so `gh pr create` is
@@ -51,34 +52,15 @@ source "$DIR/_common.sh"
 # Defense-in-depth: AGENT_HUB_REVIEWER_ROLE_LOCK=1 is set ONLY for
 # role=reviewer spawns (see applyReviewerRoleLock in
 # server/spawn-github-credentials.ts). The role lock is stricter — it
-# blocks create / merge / close / ready (in addition to review) so that
-# a future change accidentally leaking a token into the reviewer spawn
-# env still cannot forge commits or open PRs. The lock is enforced by
+# blocks create / merge / close / ready so that a future change
+# accidentally leaking a token into the reviewer spawn env still cannot
+# forge commits or open PRs. The lock is enforced by
 # `_reviewer_role_locked` (sourced from _common.sh) called at the top
 # of each blocked subcommand, plus the gh_api allowlist in _common.sh.
 # Comment / view / diff / list / status / checks / checkout remain
 # available under the role lock because PR conversation comments are a
 # legitimate review activity and reads carry no attribution risk.
 # ---------------------------------------------------------------------------
-_reviewer_locked() {
-  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
-    cat >&2 <<LOCKED
-error: gh-pr.sh review is disabled in Agent Hub spawns.
-
-All formal PR reviews must go through the App-mediated endpoint so they
-land under the GitHub App identity instead of a personal credential. Use:
-
-  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
-    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
-    -H "Content-Type: application/json" \\
-    -d '{"prUrl":"<pr url>","event":"APPROVE|REQUEST_CHANGES","body":"<markdown>"}'
-
-(Other subcommands — comment/merge/close/ready/view/diff/list — remain available.)
-LOCKED
-    exit 2
-  fi
-}
-
 # Block `gh pr create` when the spawn carries an App installation token
 # (`ghs_…`) or no user OAuth — those would attribute the PR to the bot.
 # Per-user OAuth (`gho_` / `ghp_`) is allowed so ship/create-ticket-and-pr
@@ -299,38 +281,17 @@ cmd_checkout() {
 # pr review
 # ---------------------------------------------------------------------------
 cmd_review() {
-  _reviewer_locked review
-  [[ $# -lt 1 ]] && gh_die "pr review <number> --approve [--body <text>] | --request-changes --body <text>"
+  cat >&2 <<'DISABLED'
+error: gh-pr.sh review is disabled — Agent Hub no longer posts formal GitHub reviews.
 
-  local number="$1"; shift
+The reviewer runs as an in-session advisor. Emit your verdict directly in your
+session output: state APPROVE or REQUEST_CHANGES with a short rationale (and any
+blocking comments inline). Agent Hub reads the structured verdict from the reviewer
+session — nothing is posted to GitHub as a formal review.
 
-  local approve=false req_changes=false comment=false body=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --approve)          approve=true;      shift   ;;
-      --request-changes)  req_changes=true;  shift   ;;
-      --comment)
-        gh_die "pr review --comment is not supported: COMMENT formal reviews do not count toward required approval. Use --approve (non-blocking notes in --body) or --request-changes. In reviewer spawns use POST /api/pr/review with event APPROVE or REQUEST_CHANGES."
-        ;;
-      --body)             body="$2";         shift 2 ;;
-      *) gh_die "pr review: unknown flag '$1'" ;;
-    esac
-  done
-
-  require_gh_token
-
-  if [[ "$approve" == true ]]; then
-    local args=(pr review "$number" --approve)
-    [[ -n "$body" ]] && args+=(--body "$body")
-    gh "${args[@]}"
-    echo "Approved PR #$number"
-  elif [[ "$req_changes" == true ]]; then
-    _require_arg "--body (required for request-changes)" "$body"
-    gh pr review "$number" --request-changes --body "$body"
-    echo "Requested changes on PR #$number"
-  else
-    gh_die "pr review: specify --approve or --request-changes"
-  fi
+Reads remain available (view / diff / files / checks) for inspecting the PR.
+DISABLED
+  exit 2
 }
 
 # ---------------------------------------------------------------------------
@@ -469,7 +430,6 @@ Subcommands:
   diff      <number>
   files     <number>
   checkout  <number>
-  review    <number> --approve [--body <text>] | --request-changes --body <text>
   comment   <number> --body <text>
   merge     <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]
   ready     <number>
@@ -477,11 +437,13 @@ Subcommands:
   status
   checks    <number>
 
+Note: formal PR reviews are disabled. The reviewer is an in-session advisor —
+emit your APPROVE / REQUEST_CHANGES verdict in session output, not to GitHub.
+
 Examples:
   gh-pr.sh create --title "feat: add dark mode" --base main --draft
   gh-pr.sh list --state open --limit 10
-  gh-pr.sh review 42 --approve
-  gh-pr.sh review 42 --request-changes --body "Please add tests."
+  gh-pr.sh comment 42 --body "Looks good once CI is green."
   gh-pr.sh merge 42 --squash --delete-branch
 USAGE
     exit 2

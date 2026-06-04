@@ -399,12 +399,11 @@ Keep it short. Don't repeat the full description back.`,
 }
 
 /**
- * Ensures every project that has GitHub integration (a `githubRepo` set, or an
- * active webhook config) gets a dedicated Reviewer agent. The Reviewer is the
- * single, project-wide bot that reviews every pull request — opened or
- * synchronized. It is deliberately decoupled from autonomous-mode dispatch:
- * autonomous mode now only governs whether cards get picked up for work; PR
- * review fires on every push regardless of mode.
+ * Ensures every project that has GitHub integration (a `githubRepo` set) gets a
+ * dedicated Reviewer agent. The Reviewer is the single, project-wide review
+ * advisor used by the Finalize review phase: it inspects the local diff and
+ * emits an in-session verdict (it does NOT post formal reviews to GitHub). It
+ * is deliberately decoupled from autonomous-mode dispatch.
  */
 function ensureReviewerAgents(): boolean {
   const typedStmts = stmts as Stmts;
@@ -472,38 +471,39 @@ You wake up when a PR is opened or new commits are pushed (synchronize). You are
    - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`APPROVE\`.
    - When in doubt about a score, round UP, not down. Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
 
-7. Submit a single formal GitHub review through Agent Hub's \`POST /api/pr/review\` endpoint so the review lands with the GitHub App identity (not your \`gh\` CLI user — the CLI identity is usually the PR author and GitHub will silently downgrade APPROVE to COMMENTED for self-reviews).
+7. Emit your verdict **in-session** — Agent Hub no longer posts formal reviews to GitHub. Write your review as a normal message (prose first), then end your turn with a SINGLE structured tail block and nothing after it:
 
-   \`\`\`bash
-   curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
-     -H "X-API-Key: $AGENT_HUB_API_KEY" \\
-     -H "Content-Type: application/json" \\
-     -d '{"prUrl":"<pr-url>","event":"<EVENT>","body":"<markdown body>"}'
+   \`\`\`
+   <agenthub:review-verdict>
+   {
+     "verdict": "approved" | "changes_requested",
+     "threads": [
+       {"file_path": "server/foo.ts", "line_start": 42, "line_end": 45, "body": "**[6/10]** ..."}
+     ]
+   }
+   </agenthub:review-verdict>
    \`\`\`
 
-   Walk this decision tree in order and pick the **first** match — there are only two allowed events (\`POST /api/pr/review\` rejects \`COMMENT\`):
-   1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), grouped with blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
-   2. **Otherwise (every finding scored ≤ 3, including "CI still running but diff looks fine")** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking notes (nits, style, "CI pending") belong in the APPROVE body; they still count as approval for merge.
+   Walk this decision tree in order and pick the **first** match:
+   1. **Does any finding score greater than 3 on the severity rubric?** → \`"changes_requested"\`. List every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`) as a thread, blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to approved because "the rest looked fine."
+   2. **Otherwise (every finding scored ≤ 3, including "CI still running but diff looks fine")** → \`"approved"\`. Still write a substantive prose summary — prefix each note with its score (\`**[2/10]** …\`). \`approved\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking notes (nits, style, "CI pending") still count as approval.
 
-   **Hard rule:** Never send \`COMMENT\` — it does not satisfy required approval and the API returns 400. If nothing blocks merge, use \`APPROVE\` with your notes. If uncertain on correctness, use \`REQUEST_CHANGES\`; if only nits remain, use \`APPROVE\`.
-
-   **Hard rule (don't rubber-stamp):** If there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
+   **Hard rule (don't rubber-stamp):** If there's a real blocker, use \`"changes_requested"\` — do NOT bury a blocker in an approved verdict. The verdict is the signal; the threads are the detail. Always include the tail block; \`threads\` may be empty when there is genuinely nothing worth flagging.
 
 ## Rules
 - **Skip generated/snapshot/lockfile changes** — call them out as "skipped" if dominant.
 - **Be concrete**: file:line references, not vague "consider refactoring."
-- **One review per run** — do not post multiple reviews on the same push.
+- **One verdict per run** — emit a single structured tail block.
 - **Do not edit code** — your job ends at the review.
-- **Do not merge** — GitHub's native auto-merge handles that.
-- **Respect the author** — be direct, not pedantic. Non-blocking notes belong under \`APPROVE\` alongside the verdict.
+- **Do not merge** — merging is a human action.
+- **Respect the author** — be direct, not pedantic. Non-blocking notes belong alongside an \`approved\` verdict.
 
 ## Verification of External APIs
-If the PR touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search the current official docs and compare against what the code does. APIs change — do not rely on training data.
+If the diff touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search the current official docs and compare against what the code does. APIs change — do not rely on training data.
 
 ## What NOT to Review
 - Pure dependency bumps with no behavior change (approve)
-- Trivial doc-only PRs (approve unless wrong)
-- Your own PRs (the GitHub App identity prevents this anyway)`,
+- Trivial doc-only PRs (approve unless wrong)`,
     };
 
     const dataDir = getProjectDataDir(project.id);
@@ -512,7 +512,7 @@ If the PR touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search th
 
     writeFileSync(
       path.join(agentDir, 'IDENTITY.md'),
-      `# ${project.name} PR Reviewer\n\nYou are a read-only review bot. You leave one formal GitHub review per PR push and never edit code or merge. GitHub's native auto-merge handles landing approved PRs.\n`,
+      `# ${project.name} PR Reviewer\n\nYou are a read-only review advisor for the Finalize review phase. You inspect the local diff and emit a single in-session verdict (approved / changes_requested). You never post formal GitHub reviews, edit code, or merge.\n`,
       'utf-8',
     );
 

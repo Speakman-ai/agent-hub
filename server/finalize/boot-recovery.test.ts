@@ -38,31 +38,46 @@ function setup() {
 describe('failStuckFinalizeRunsOnBoot', () => {
   it('fails in-flight runs (infra_error) + skips their unfinished steps, leaving terminal ones alone', () => {
     const { db, stmts } = setup();
-    db.prepare("INSERT INTO finalize_runs (id, status, phase) VALUES ('r-run','running','tasks')").run();
+    db.prepare(
+      "INSERT INTO finalize_runs (id, status, phase) VALUES ('r-run','running','tasks')",
+    ).run();
     db.prepare(
       "INSERT INTO finalize_runs (id, status, phase) VALUES ('r-disp','dispatching','dispatching')",
     ).run();
     db.prepare(
       "INSERT INTO finalize_runs (id, status, phase, ended_at) VALUES ('r-done','pushed',NULL,123)",
     ).run();
-    db.prepare("INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',0,'running')").run();
-    db.prepare("INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',1,'queued')").run();
-    db.prepare("INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',2,'passed')").run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',0,'running')",
+    ).run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',1,'queued')",
+    ).run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, state) VALUES ('r-run',2,'passed')",
+    ).run();
 
     failStuckFinalizeRunsOnBoot(stmts);
 
-    const run = db.prepare("SELECT * FROM finalize_runs WHERE id='r-run'").get() as Record<string, unknown>;
+    const run = db.prepare("SELECT * FROM finalize_runs WHERE id='r-run'").get() as Record<
+      string,
+      unknown
+    >;
     expect(run.status).toBe('infra_error');
     expect(String(run.failure_reason)).toMatch(/interrupted/i);
     expect(run.phase).toBeNull();
     expect(Number(run.ended_at)).toBeGreaterThan(0);
 
     // The stalled "dispatching" run is also orphaned on restart.
-    const disp = db.prepare("SELECT status FROM finalize_runs WHERE id='r-disp'").get() as { status: string };
+    const disp = db.prepare("SELECT status FROM finalize_runs WHERE id='r-disp'").get() as {
+      status: string;
+    };
     expect(disp.status).toBe('infra_error');
 
     // A terminal run is never touched (status + ended_at preserved).
-    const done = db.prepare("SELECT status, ended_at FROM finalize_runs WHERE id='r-done'").get() as {
+    const done = db
+      .prepare("SELECT status, ended_at FROM finalize_runs WHERE id='r-done'")
+      .get() as {
       status: string;
       ended_at: number;
     };
@@ -71,7 +86,9 @@ describe('failStuckFinalizeRunsOnBoot', () => {
 
     // running/queued steps → skipped; an already-passed step is left as-is.
     const steps = db
-      .prepare("SELECT step_index, state FROM finalize_run_steps WHERE run_id='r-run' ORDER BY step_index")
+      .prepare(
+        "SELECT step_index, state FROM finalize_run_steps WHERE run_id='r-run' ORDER BY step_index",
+      )
       .all() as Array<{ step_index: number; state: string }>;
     expect(steps.map((s) => s.state)).toEqual(['skipped', 'skipped', 'passed']);
   });
@@ -80,7 +97,9 @@ describe('failStuckFinalizeRunsOnBoot', () => {
     const { db, stmts } = setup();
     db.prepare("INSERT INTO finalize_runs (id, status) VALUES ('r-done','cancelled')").run();
     expect(() => failStuckFinalizeRunsOnBoot(stmts)).not.toThrow();
-    const r = db.prepare("SELECT status FROM finalize_runs WHERE id='r-done'").get() as { status: string };
+    const r = db.prepare("SELECT status FROM finalize_runs WHERE id='r-done'").get() as {
+      status: string;
+    };
     expect(r.status).toBe('cancelled');
   });
 });

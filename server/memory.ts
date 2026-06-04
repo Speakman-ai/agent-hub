@@ -204,6 +204,12 @@ export interface MemoryRunOptions {
    * resolver falls back to any other authed engine when it's not.
    */
   preferredEngine?: SupportedEngine | null;
+  /**
+   * Acting user whose per-account credentials gate Claude / Cursor / Codex
+   * availability for this run. Strictly per-account — when absent (scheduled
+   * sync with no human in-context), only the host-global Gemini can resolve.
+   */
+  spawnOwnerUserId?: string | null;
 }
 
 /**
@@ -220,10 +226,18 @@ export interface MemoryRunOptions {
 async function runMemoryPrompt(
   prompt: string,
   systemPrompt: string | undefined,
-  { cfg, spawnEnv, cwd, timeoutMs = 3 * 60 * 1000, preferredEngine }: MemoryRunOptions,
+  {
+    cfg,
+    spawnEnv,
+    cwd,
+    timeoutMs = 3 * 60 * 1000,
+    preferredEngine,
+    spawnOwnerUserId,
+  }: MemoryRunOptions,
 ): Promise<string> {
   const resolved = await resolveOneShotEngine(cfg, {
     preferred: preferredEngine ?? 'claude-code',
+    userId: spawnOwnerUserId ?? null,
   });
   if (resolved.fallbackUsed) {
     console.warn(

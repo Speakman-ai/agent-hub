@@ -180,15 +180,13 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  *      on the box.)
  *
  *   2. `AGENT_HUB_REVIEWER_LOCK=1` — a sentinel the GitHub skill's
- *      `gh-pr.sh` write subcommands check. When set, the script
- *      refuses to invoke `gh pr review` (and other write subcommands)
- *      directly and points the agent at `POST /api/pr/review`, which
- *      is the only correct identity path for formal reviews
- *      (server-side App installation token). Applied universally so
- *      non-reviewer spawns also cannot post `gh pr review` under the
- *      session owner's account. The same sentinel is also read by
- *      `default-skills/github/scripts/_common.sh` to disable its
- *      `gh auth status` host-auth fallback (PR #612 leak).
+ *      `_common.sh` reads to disable its `gh auth status` host-auth
+ *      fallback (PR #612 leak). Formal `gh pr review` is disabled
+ *      outright in `gh-pr.sh::cmd_review`: the reviewer is an in-session
+ *      advisor that emits its verdict in session output, so Agent Hub
+ *      never posts a formal review to GitHub under any identity. Applied
+ *      universally so non-reviewer spawns also cannot post formal reviews
+ *      under the session owner's account.
  *
  *   3. Scrubs `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and
  *      `GITHUB_ENTERPRISE_TOKEN` from the env. `buildSpawnEnv` clones

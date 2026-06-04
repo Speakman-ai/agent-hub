@@ -217,19 +217,6 @@ export const api = {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
-  /**
-   * One-click GitHub webhook setup for a project that has `githubRepo`
-   * but no enabled `webhook_configs` row. Powers the missing-webhook
-   * banner — see `WebhookConfigBanner.jsx`. Returns `{ config,
-   * registration }` from POST /api/projects/:projectId/webhook/auto-configure.
-   * Throws on HTTP errors (400 no-githubRepo, 409 already-exists, 500).
-   *
-   * The route reads no body — params are derived from the path slug.
-   */
-  autoConfigureProjectWebhook: (projectId) =>
-    fetchJSON(`/projects/${projectId}/webhook/auto-configure`, {
-      method: 'POST',
-    }),
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),
   getProjectWorkflow: (projectId, workflowId) =>
@@ -707,23 +694,6 @@ export const api = {
   updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
   getModelConfig: () => fetchJSON('/config/models'),
 
-  // Claude Code Authentication
-  getClaudeAuth: () => fetchJSON('/config/claude-auth'),
-  logoutClaude: () => fetchJSON('/config/claude-auth', { method: 'DELETE' }),
-  setClaudeApiKey: (apiKey) =>
-    fetchJSON('/config/claude-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
-  setClaudeOAuthToken: (oauthToken) =>
-    fetchJSON('/config/claude-auth/oauth-token', {
-      method: 'POST',
-      body: JSON.stringify({ oauthToken }),
-    }),
-  validateClaudeApiKey: (apiKey) =>
-    fetchJSON('/config/claude-auth/validate-key', {
-      method: 'POST',
-      body: JSON.stringify({ apiKey }),
-      timeout: 35000,
-    }),
-
   // Per-user Claude credentials (each Hub user can attach their own
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN — see PR #717). Distinct
   // from the host-wide `/config/claude-auth` surface above.
@@ -773,37 +743,6 @@ export const api = {
       timeout: 35000,
     }),
   logoutGemini: () => fetchJSON('/config/gemini-auth', { method: 'DELETE' }),
-
-  // Codex CLI Authentication — mirrors the Gemini/Claude shape. Backend is
-  // server/routes/codex-auth.ts; CODEX_API_KEY / OPENAI_API_KEY are both
-  // accepted. validate-key issues a real `codex exec --json` turn so the
-  // timeout needs to exceed the Responses API warm-up (~30s).
-  getCodexAuth: () => fetchJSON('/config/codex-auth'),
-  setCodexApiKey: (apiKey) =>
-    fetchJSON('/config/codex-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
-  validateCodexApiKey: (apiKey) =>
-    fetchJSON('/config/codex-auth/validate-key', {
-      method: 'POST',
-      body: JSON.stringify({ apiKey }),
-      timeout: 35000,
-    }),
-  logoutCodex: () => fetchJSON('/config/codex-auth', { method: 'DELETE' }),
-  getCursorAuth: () => fetchJSON('/config/cursor-auth'),
-  startCursorLogin: () =>
-    fetchJSON('/config/cursor-auth/login', {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeout: 22000,
-    }),
-  cancelCursorLogin: () => fetchJSON('/config/cursor-auth/cancel-login', { method: 'POST' }),
-  logoutCursor: () => fetchJSON('/config/cursor-auth', { method: 'DELETE', timeout: 35000 }),
-  startCodexDeviceLogin: () =>
-    fetchJSON('/config/codex-auth/device-login', {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeout: 50000,
-    }),
-  cancelCodexDeviceLogin: () => fetchJSON('/config/codex-auth/cancel-login', { method: 'POST' }),
 
   // Per-user "Sign in with browser" — same UX as the host-wide endpoints
   // above but pinned at a per-user HOME so each Hub user can sign in
@@ -977,18 +916,6 @@ export const api = {
       body: JSON.stringify({ epicId }),
     }),
 
-  // Webhooks
-  getWebhooks: () => fetchJSON('/webhooks'),
-  getProjectWebhooks: (projectId) => fetchJSON(`/webhooks/project/${projectId}`),
-  createWebhook: (data) => fetchJSON('/webhooks', { method: 'POST', body: JSON.stringify(data) }),
-  updateWebhook: (id, data) =>
-    fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
-  getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
-  registerWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST' }),
-  unregisterWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'DELETE' }),
-  getWebhookRegistration: (id) => fetchJSON(`/webhooks/${id}/register`),
-
   // Background tasks
   getTasks: (limit = 50) => fetchJSON(`/tasks?limit=${limit}`),
   getTask: (taskId) => fetchJSON(`/tasks/${taskId}`),
@@ -1147,30 +1074,6 @@ export const api = {
       body: JSON.stringify({ agentId }),
       timeout: 60000,
     }),
-  /** Queue formal reviewer dispatch (same path as GitHub webhooks). */
-  nudgePrReviewer: (projectId, prNumber) =>
-    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/nudge-reviewer`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeout: 60000,
-    }),
-
-  /**
-   * Manually trigger a reviewer-only session for an external GitHub PR
-   * (contributor, dependabot, direct push). Spawns the reviewer; the
-   * reviewer posts a single formal review back to GitHub and exits.
-   *
-   * Wired through §11 of `finalize-code-changes-architecture-v0` —
-   * internal (Finalize-pushed) PRs are rejected with 409. Use
-   * `nudgePrReviewer` for those.
-   */
-  reviewExternalPr: (projectId, prUrl) =>
-    fetchJSON(`/projects/${projectId}/external-pr-review`, {
-      method: 'POST',
-      body: JSON.stringify({ prUrl }),
-      timeout: 60000,
-    }),
-
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>
     fetchJSON('/pr/merge', {

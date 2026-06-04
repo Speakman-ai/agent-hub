@@ -1305,22 +1305,20 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_base_branch TEXT DEFAULT NULL');
   }
 
-  // Persistent dedup for `pollForMissedReviews`. Stores the highest GitHub
-  // review id we have already dispatched author feedback for. Without this,
-  // the in-memory `lastDispatchedReviewId` map is cleared on every server
-  // restart, causing the same `changes_requested` reviews to be re-dispatched
-  // repeatedly (each restart = a new unwanted "Missed Review Feedback" message
-  // injected into the agent session). Persisting here means the poll can
-  // restore its dedup state after restart without touching GitHub's API.
+  // Persistent dedup for review-feedback dispatch. Stores the highest GitHub
+  // review id we have already dispatched author feedback for, so the
+  // `pull_request_review.submitted` webhook doesn't re-send the same
+  // `changes_requested` feedback after a restart clears the in-memory
+  // `lastDispatchedReviewId` map.
   try {
     db.prepare('SELECT last_dispatched_review_id FROM kanban_cards LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN last_dispatched_review_id INTEGER DEFAULT NULL');
   }
 
-  // Persistent dedup for `pollForMissedReviews`' CI-failure probe. Stores the
-  // highest GitHub check_run id we have already dispatched a CI-fix message
-  // for. Same restart-safety reasoning as `last_dispatched_review_id` above.
+  // Legacy dedup column for the (removed) review/CI poller's CI-failure probe.
+  // No longer written now that reviews/CI are webhook-only; retained so the
+  // append-only migration list stays stable on existing databases.
   try {
     db.prepare('SELECT last_dispatched_check_run_id FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -1329,9 +1327,8 @@ function initDb(dataDir: string): void {
     );
   }
 
-  // Persistent dedup for `pollForMissedReviews`' inline-comment probe. Stores
-  // the highest GitHub pull-request review comment id we have already
-  // dispatched author feedback for. Restart-safe like the siblings above.
+  // Legacy dedup column for the (removed) review/CI poller's inline-comment
+  // probe. No longer written; retained for migration-list stability.
   try {
     db.prepare('SELECT last_dispatched_review_comment_id FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -2054,23 +2051,6 @@ function initDb(dataDir: string): void {
     // The prefix is the same 8-char slice the workspace dir was named after,
     // so `id LIKE ?||'%'` is a primary-key prefix search. Returns 1 row or
     // none — callers use `.get()`.
-    // Newest live reviewer session targeting a particular PR. The bind
-    // values are `(reviewer.agent_id, 'Review: PR #<n> %')`; the LIKE
-    // pattern is safe because `<n>` is enforced numeric upstream by
-    // `parsePrUrl` in `server/routes/pr-actions.ts`. Used by the
-    // post-review cleanup hook (`server/reviewer-session-cleanup.ts`) to
-    // soft-delete the session and reclaim its worktree clone the moment
-    // a formal review lands. Filters `deleted_at IS NULL` so we never
-    // clobber an already-archived row, and orders by `created_at DESC`
-    // so re-review dispatches resolve to the freshest session.
-    getActiveReviewerSessionForPR: db.prepare(
-      `SELECT * FROM sessions
-       WHERE agent_id = ?
-         AND name LIKE ?
-         AND deleted_at IS NULL
-       ORDER BY created_at DESC
-       LIMIT 1`,
-    ),
     getRecoverableSessionByIdPrefix: db.prepare(
       `SELECT 1 FROM sessions
        WHERE id LIKE ? || '%'

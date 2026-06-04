@@ -223,7 +223,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     broadcast,
     stmts,
     handleChat,
-    pendingReviewComments,
     lastDispatchedReviewId,
     scheduleAutonomousEpic,
     autonomousCrons,
@@ -825,12 +824,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.delete('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
     const cardId = req.params.cardId as string;
 
-    const pending = pendingReviewComments.get(cardId);
-    if (pending) {
-      if ((pending as { timer?: ReturnType<typeof setTimeout> }).timer)
-        clearTimeout((pending as { timer: ReturnType<typeof setTimeout> }).timer);
-      pendingReviewComments.delete(cardId);
-    }
     lastDispatchedReviewId.delete(cardId);
 
     stmts.deleteKanbanCard.run(cardId);

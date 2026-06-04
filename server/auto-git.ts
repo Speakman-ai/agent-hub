@@ -27,7 +27,7 @@ import {
   resolveOAuthAppCredentials,
   resolveReviewerGhConfigDir,
 } from './spawn-github-credentials.js';
-import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { getSessionOwner } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
@@ -210,7 +210,7 @@ export async function resolveAutoGitGithubToken(
   config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
 ): Promise<string | null> {
   try {
-    const ownerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+    const ownerId = getSessionOwner(sessionId);
     if (!ownerId) return null;
     const oauthCreds = resolveOAuthAppCredentials(config);
     return (await getActiveAccessToken(ownerId, oauthCreds)) ?? null;
@@ -229,14 +229,12 @@ export async function resolveAutoGitGithubToken(
  * before any per-card dispatch and therefore predates the session that will
  * later own the work).
  *
- * When `githubRepo` is provided, prefers a repo-aware Owner lookup
+ * When `githubRepo` is provided, uses a repo-aware Owner lookup
  * (`resolveOwnerWithRepoAccess`) so the token actually has access to
- * the target repo — the legacy "first user wins" shortcut silently
- * returns a token from an Owner whose OAuth scope can't see the repo,
- * which is the bug that broke the PR reviewer for ~2 days. Falls back
- * to `getOrgOwnerUserId()` when no `githubRepo` is provided or no
- * Owner probes 2xx (preserves prior behaviour for callers without a
- * repo signal — e.g. tests).
+ * the target repo. Returns `null` when no `githubRepo` is provided or no
+ * Owner probes 2xx — there is no org-owner fallback; the caller must
+ * hard-fail / surface the missing-token error rather than borrow an
+ * arbitrary Owner's GitHub identity.
  *
  * Mirrors `resolveAutoGitGithubToken` in error handling — best-effort,
  * always returns `null` on failure so the caller can still attempt the
@@ -259,10 +257,9 @@ export async function resolveOrgOwnerGithubToken(
         ownerId = await probe.resolveOwnerWithRepoAccess(githubRepo);
       } catch {
         // Probe machinery failed (orgs.db not initialised in mid-boot,
-        // network panic) — fall through to the legacy resolver below.
+        // network panic) — no repo-aware owner; fall through to null.
       }
     }
-    if (!ownerId) ownerId = getOrgOwnerUserId();
     if (!ownerId) return null;
     const oauthCreds = resolveOAuthAppCredentials(config);
     return (await getActiveAccessToken(ownerId, oauthCreds)) ?? null;

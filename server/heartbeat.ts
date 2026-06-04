@@ -16,15 +16,10 @@ import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
-import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { resolveCronEngine } from './cron-engine.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
-import {
-  buildSyntheticResolvedForLinearSync,
-  executeLinearKanbanSyncCron,
-  isLinearKanbanSyncCron,
-} from './linear-kanban-sync-cron.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -399,11 +394,17 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
     // NoEnginesAvailableError when nothing is configured — caught below
     // and surfaced as a clear "set up credentials" error in the log.
     const preferredEngine = (agent as EnrichedAgent & { engine?: string }).engine ?? 'claude-code';
+    // Heartbeats are scheduled with no human in-context and carry no stored
+    // user attribution, so there is no acting user. AI auth is strictly
+    // per-account: the per-account engines (Claude/Cursor/Codex) report
+    // unavailable here and the resolver can only land on the host-global
+    // Gemini — otherwise it throws NoEnginesAvailableError (caught below).
+    const heartbeatOwnerId: string | null = null;
     const resolved = await resolveOneShotEngine(config, {
       preferred: preferredEngine,
       preferredModel: heartbeatModel,
+      userId: heartbeatOwnerId,
     });
-    const heartbeatOwnerId = getOrgOwnerUserId();
     const heartbeatEnv = buildSpawnEnv(config, { userId: heartbeatOwnerId });
     if (hbProject) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, {
@@ -600,59 +601,53 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     let detailed: OneShotDetailed;
     let resolved: Awaited<ReturnType<typeof resolveOneShotEngine>>;
 
-    if (isLinearKanbanSyncCron(cronJob)) {
-      const summary = await executeLinearKanbanSyncCron(cronJob, {
-        stmts,
-        timeoutMs,
-        cronProject: cronProject ?? null,
-        cronSkillAgentId,
+    // Resolve the engine the cron actually wants to run under: the row's
+    // explicit `engine` first, then the skill principal agent's `engine`,
+    // then the historical `claude-code` fallback. The resolver will still
+    // walk its own fallback chain if that engine isn't authed locally —
+    // NoEnginesAvailableError bubbles into the outer catch block where
+    // it's surfaced verbatim.
+    const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
+    // Crons are scheduled with no human in-context and carry no stored user
+    // attribution. AI auth is strictly per-account, so the per-account
+    // engines report unavailable and the resolver can only land on the
+    // host-global Gemini (or throws NoEnginesAvailableError, caught below).
+    const cronOwnerId: string | null = null;
+    resolved = await resolveOneShotEngine(config, {
+      preferred: preferredCronEngine,
+      preferredModel: requestedModel,
+      userId: cronOwnerId,
+    });
+    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
+    if (cronProject && cronSkillAgentId) {
+      mergeSkillCredentialSpawnEnv(cronEnv, {
+        ownerId: cronOwnerId,
+        agentId: cronSkillAgentId,
+        project: cronProject,
       });
-      detailed = { stdout: summary, stderr: '', code: 0, timedOut: false };
-      resolved = buildSyntheticResolvedForLinearSync(requestedModel);
-    } else {
-      // Resolve the engine the cron actually wants to run under: the row's
-      // explicit `engine` first, then the skill principal agent's `engine`,
-      // then the historical `claude-code` fallback. The resolver will still
-      // walk its own fallback chain if that engine isn't authed locally —
-      // NoEnginesAvailableError bubbles into the outer catch block where
-      // it's surfaced verbatim.
-      const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
-      resolved = await resolveOneShotEngine(config, {
-        preferred: preferredCronEngine,
-        preferredModel: requestedModel,
-      });
-      const cronOwnerId = getOrgOwnerUserId();
-      const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
-      if (cronProject && cronSkillAgentId) {
-        mergeSkillCredentialSpawnEnv(cronEnv, {
-          ownerId: cronOwnerId,
-          agentId: cronSkillAgentId,
-          project: cronProject,
-        });
-        // sessionId: null — crons are scheduled, not driven by an interactive
-        // chat session; decrypt-failure audit entries attribute to
-        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-        mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
-        mergeProjectAwsSpawnEnv(cronEnv, cronProject);
-      }
-      if (resolved.fallbackUsed) {
-        console.warn(
-          `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
-        );
-      }
-      detailed = await runOneShotPrompt(
-        {
-          engine: resolved.engine,
-          model: resolved.model,
-          prompt: cronJob.prompt,
-          cwd: cronCwd,
-          timeoutMs,
-          env: cronEnv,
-          detailed: true,
-        },
-        config,
+      // sessionId: null — crons are scheduled, not driven by an interactive
+      // chat session; decrypt-failure audit entries attribute to
+      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+      mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+      mergeProjectAwsSpawnEnv(cronEnv, cronProject);
+    }
+    if (resolved.fallbackUsed) {
+      console.warn(
+        `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
       );
     }
+    detailed = await runOneShotPrompt(
+      {
+        engine: resolved.engine,
+        model: resolved.model,
+        prompt: cronJob.prompt,
+        cwd: cronCwd,
+        timeoutMs,
+        env: cronEnv,
+        detailed: true,
+      },
+      config,
+    );
     const cronModel = resolved.model;
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';
@@ -712,8 +707,10 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           0,
           1,
         );
-        // System-spawned cron sessions belong to the org owner.
-        setSessionOwner(sessionId, getOrgOwnerUserId());
+        // System-spawned cron sessions are owned by nobody — there is no
+        // org-owner fallback, so the row stays NULL-owner (setSessionOwner is
+        // a no-op on null).
+        setSessionOwner(sessionId, null);
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }
@@ -1021,10 +1018,15 @@ export async function runWikiMemorySync(): Promise<void> {
   // it works whenever any engine is authed (Claude / Cursor / Codex /
   // Gemini), not just Claude Code. NoEnginesAvailableError surfaces as a
   // clear "skipping sync" log via reconcileMemoryFromWiki's catch block.
-  const wikiSyncOwnerId = getOrgOwnerUserId();
+  // No human in-context for scheduled wiki→memory sync; strictly per-account
+  // auth means the per-account engines are unavailable and only the
+  // host-global Gemini can run this (else NoEnginesAvailableError is logged
+  // by reconcileMemoryFromWiki). No org-owner fallback.
+  const wikiSyncOwnerId: string | null = null;
   const opts = {
     cfg: config,
     spawnEnv: buildSpawnEnv(config, { userId: wikiSyncOwnerId }),
+    spawnOwnerUserId: wikiSyncOwnerId,
   };
 
   for (const project of projects) {

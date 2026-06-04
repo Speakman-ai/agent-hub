@@ -25,7 +25,7 @@ import { signJwt } from '../jwt.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
-import { resetOrgOwnerCache, getSessionOwner } from '../session-ownership.js';
+import { getSessionOwner } from '../session-ownership.js';
 import config from '../config.js';
 
 interface User {
@@ -109,10 +109,6 @@ beforeAll(async () => {
   createMembership(aRow.id, orgId, 'Admin');
   createMembership(bRow.id, orgId, 'Admin');
 
-  // 3. Drop any cached org-owner lookup so post-setup spawns see the
-  //    real owner. PR #709 review specifically called out this latch.
-  resetOrgOwnerCache();
-
   userA = {
     id: aRow.id,
     username: aRow.username,
@@ -136,7 +132,6 @@ afterAll(() => {
     /* best-effort */
   }
   reloadAuthRecord();
-  resetOrgOwnerCache();
 });
 
 describe('Per-user session ownership — REST isolation', () => {

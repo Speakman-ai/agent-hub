@@ -15,14 +15,3 @@ export function resolveAgentIdFromProject(project) {
   }
   return null;
 }
-
-/** Agent id with `role: 'reviewer'` — used for PR list "Nudge reviewer". */
-export function reviewerAgentIdFromProject(project) {
-  if (!project || !Array.isArray(project.agents)) return null;
-  for (const a of project.agents) {
-    if (typeof a === 'object' && a?.role === 'reviewer' && typeof a.id === 'string') {
-      return a.id || null;
-    }
-  }
-  return null;
-}

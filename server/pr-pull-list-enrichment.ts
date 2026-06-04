@@ -1,10 +1,8 @@
 /**
  * Enrich REST-shaped PR list rows with merge/review/CI rollup fields that only
  * GitHub's GraphQL API (or `gh pr list --json`) exposes reliably. Used by
- * routes/pr-list.ts after a successful user-oauth or github-app REST list.
+ * routes/pr-list.ts after a successful user-oauth REST list.
  */
-
-import { getInstallationToken } from './github-app.js';
 
 export type CheckRollupItem = { name?: string; status?: string; conclusion?: string | null };
 
@@ -186,21 +184,4 @@ export async function enrichPullListRowsWithGraphql(opts: {
       pr.check_rollup = fromState;
     }
   }
-}
-
-export async function enrichPullListRowsWithInstallationGraphql(opts: {
-  appId: string | number;
-  privateKey: string;
-  installationId: string | number;
-  owner: string;
-  repo: string;
-  pulls: Array<Record<string, unknown>>;
-}): Promise<void> {
-  const token = await getInstallationToken(opts.appId, opts.privateKey, opts.installationId);
-  await enrichPullListRowsWithGraphql({
-    owner: opts.owner,
-    repo: opts.repo,
-    bearerToken: token,
-    pulls: opts.pulls,
-  });
 }
