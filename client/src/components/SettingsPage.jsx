@@ -15,11 +15,7 @@ import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
-import WorkflowRunsSection from './WorkflowRunsSection.jsx';
-import PreviewSection from './PreviewSection.jsx';
-import FinalizeSettingsSection from './FinalizeSettingsSection.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
-import ProjectAwsProfilesEditor from './ProjectAwsProfilesEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import { isElectron } from '../utils/isElectron.js';
@@ -980,24 +976,16 @@ export function ProjectsSection({
   /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
   initialExpandedProjectId = null,
 }) {
-  const [projectWorkflow, setProjectWorkflow] = useState({});
-  const [modelConfig, setModelConfig] = useState(null);
-  const [reviewerModelSaving, setReviewerModelSaving] = useState({});
-  const [projectRepos, setProjectRepos] = useState({});
-  const [projectRepoUrls, setProjectRepoUrls] = useState({});
-  const [workflowSaved, setWorkflowSaved] = useState({});
-  const [repoSaving, setRepoSaving] = useState({});
-  const [repoSaveStatus, setRepoSaveStatus] = useState({});
-  const [repoUrlSaving, setRepoUrlSaving] = useState({});
-  const [repoUrlSaveStatus, setRepoUrlSaveStatus] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
-  const [detecting, setDetecting] = useState({});
   /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
   const lastDeepLinkExpandIdRef = useRef(null);
 
   // Per-project repo test
   const [repoTesting, setRepoTesting] = useState({});
   const [repoTestResult, setRepoTestResult] = useState({});
+
+  // Per-project AWS-enabled toggle (in-flight guard while persisting).
+  const [awsSaving, setAwsSaving] = useState({});
 
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
@@ -1013,140 +1001,24 @@ export function ProjectsSection({
     lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
   }, [initialExpandedProjectId, projects]);
 
-  useEffect(() => {
-    api
-      .getModelConfig()
-      .then(setModelConfig)
-      .catch(() => {});
-  }, []);
-
-  // Init per-project state when projects arrive
-  useEffect(() => {
-    const wf = {};
-    const repos = {};
-    const repoUrls = {};
-    projects.forEach((p) => {
-      wf[p.id] = {
-        autoMerge: p.githubWorkflow?.autoMerge || false,
-        autoReview: p.githubWorkflow?.autoReview !== false,
-        waitForCI: p.githubWorkflow?.waitForCI || false,
-        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
-        reviewerModel:
-          typeof p.githubWorkflow?.reviewerModel === 'string' ? p.githubWorkflow.reviewerModel : '',
-      };
-      repos[p.id] = p.githubRepo || '';
-      repoUrls[p.id] = p.repoUrl || '';
-    });
-    setProjectWorkflow(wf);
-    setProjectRepos(repos);
-    setProjectRepoUrls(repoUrls);
-  }, [projects]);
-
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
   // --- Per-project handlers ---
 
-  const toggleWorkflowSetting = async (projectId, key) => {
-    const current = projectWorkflow[projectId] || {};
-    const newValue = !current[key];
-    setProjectWorkflow((prev) => ({
-      ...prev,
-      [projectId]: { ...prev[projectId], [key]: newValue },
-    }));
+  const toggleAwsEnabled = async (project) => {
+    const next = !project.awsEnabled;
+    setAwsSaving((prev) => ({ ...prev, [project.id]: true }));
     try {
-      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
-      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setProjectWorkflow((prev) => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], [key]: !newValue },
-      }));
-    }
-  };
-
-  const saveWorkflowReviewerModel = async (projectId, value) => {
-    const prevVal =
-      typeof projectWorkflow[projectId]?.reviewerModel === 'string'
-        ? projectWorkflow[projectId].reviewerModel
-        : '';
-    setProjectWorkflow((prev) => ({
-      ...prev,
-      [projectId]: { ...prev[projectId], reviewerModel: value },
-    }));
-    setReviewerModelSaving((s) => ({ ...s, [projectId]: true }));
-    try {
-      await api.updateProject(projectId, {
-        githubWorkflow: { reviewerModel: value.trim() ? value.trim() : '' },
-      });
-      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setProjectWorkflow((prev) => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], reviewerModel: prevVal },
-      }));
-    } finally {
-      setReviewerModelSaving((s) => ({ ...s, [projectId]: false }));
-    }
-  };
-
-  const saveProjectRepo = async (projectId) => {
-    setRepoSaving((prev) => ({ ...prev, [projectId]: true }));
-    setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null }));
-    try {
-      await api.updateProject(projectId, { githubRepo: projectRepos[projectId] });
-      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
-      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'error' }));
-      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-    } finally {
-      setRepoSaving((prev) => ({ ...prev, [projectId]: false }));
-    }
-  };
-
-  const saveProjectRepoUrl = async (projectId) => {
-    setRepoUrlSaving((prev) => ({ ...prev, [projectId]: true }));
-    setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null }));
-    try {
-      const raw = projectRepoUrls[projectId] || '';
-      const trimmed = raw.trim();
-      // Empty string clears the field on the server.
-      await api.updateProject(projectId, { repoUrl: trimmed || null });
-      setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
-      setTimeout(() => setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+      await api.updateProject(project.id, { awsEnabled: next });
       if (onProjectsChange) onProjectsChange();
     } catch (err) {
-      const msg = String(err?.message || err || 'Failed to save');
-      setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: { error: msg } }));
-      setTimeout(() => setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null })), 4000);
+      const msg = String(err?.message || err || 'Failed to update');
+      if (showToast) showToast(msg, 'error');
+      else alert(msg);
     } finally {
-      setRepoUrlSaving((prev) => ({ ...prev, [projectId]: false }));
-    }
-  };
-
-  const detectRepo = async (project) => {
-    setDetecting((prev) => ({ ...prev, [project.id]: true }));
-    try {
-      const res = await fetch(`${getApiBase()}/github/detect-repo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ cwd: project.cwd }),
-      });
-      const data = await res.json();
-      if (data.owner && data.repo) {
-        setProjectRepos((prev) => ({ ...prev, [project.id]: `${data.owner}/${data.repo}` }));
-      }
-    } catch {
-      /* ignore */
-    } finally {
-      setDetecting((prev) => ({ ...prev, [project.id]: false }));
+      setAwsSaving((prev) => ({ ...prev, [project.id]: false }));
     }
   };
 
@@ -1154,7 +1026,7 @@ export function ProjectsSection({
     setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
     setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
     try {
-      const repo = projectRepos[project.id];
+      const repo = project.githubRepo;
       if (!repo) {
         setRepoTestResult((prev) => ({
           ...prev,
@@ -1205,14 +1077,14 @@ export function ProjectsSection({
       <div>
         <h3 className="text-lg font-semibold mb-1">Projects</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Link GitHub repositories, configure PR workflow, and manage each project&apos;s lifecycle.
+          Configure secrets, visibility, and lifecycle settings for each project.
         </p>
       </div>
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">Projects & Repos</h4>
+        <h4 className="text-sm font-medium text-gray-300">Project Settings</h4>
         <p className="text-xs text-gray-500">
-          Link GitHub repositories and configure PR workflow for each project.
+          The GitHub repository is linked automatically when a project is created or connected.
         </p>
 
         {projects.length === 0 && (
@@ -1222,17 +1094,7 @@ export function ProjectsSection({
         <div className="space-y-2">
           {projects.map((p) => {
             const isExpanded = expandedProject === p.id;
-            const repo = projectRepos[p.id] || '';
-            const reviewerAgent = p.agents?.find((a) => a.role === 'reviewer');
-            const reviewerEngine = reviewerAgent?.engine || 'claude-code';
-            let reviewerModelOpts =
-              modelConfig?.engineValidModels?.[reviewerEngine]
-                ?.slice()
-                .sort((a, b) => a.localeCompare(b)) || [];
-            const savedReviewerModel = projectWorkflow[p.id]?.reviewerModel || '';
-            if (savedReviewerModel && !reviewerModelOpts.includes(savedReviewerModel)) {
-              reviewerModelOpts = [savedReviewerModel, ...reviewerModelOpts];
-            }
+            const repo = p.githubRepo || '';
 
             return (
               <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
@@ -1266,91 +1128,34 @@ export function ProjectsSection({
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="pl-8 pt-3 space-y-4">
-                    {/* Repo linking */}
-                    <div className="space-y-2">
-                      <label className={labelClass}>GitHub Repository</label>
-                      <div className="flex gap-2">
-                        <input
-                          value={repo}
-                          onChange={(e) =>
-                            setProjectRepos((prev) => ({ ...prev, [p.id]: e.target.value }))
-                          }
-                          className={inputClass}
-                          placeholder="owner/repo"
-                        />
-                        <button
-                          onClick={() => detectRepo(p)}
-                          disabled={detecting[p.id]}
-                          className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 disabled:opacity-50"
-                        >
-                          {detecting[p.id] ? (
-                            <Loader2 size={12} className="animate-spin" />
-                          ) : (
-                            <Globe size={12} />
-                          )}
-                          Auto-detect
-                        </button>
-                        <button
-                          onClick={() => saveProjectRepo(p.id)}
-                          disabled={repoSaving[p.id]}
-                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          {repoSaving[p.id] ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
-                      {repoSaveStatus[p.id] === 'saved' && (
-                        <span className="text-xs text-emerald-400">Saved</span>
-                      )}
-                      {repoSaveStatus[p.id] === 'error' && (
-                        <span className="text-xs text-red-400">Failed to save</span>
-                      )}
-                    </div>
-
-                    {/* Clone URL — used to auto-clone the project workspace
-                        on session spawn when `cwd` is missing or non-git.
-                        Server validates: HTTPS GitHub URLs only. */}
-                    <div className="space-y-2">
-                      <label className={labelClass}>Clone URL (auto-clone source)</label>
-                      <p className="text-xs text-gray-500">
-                        Optional HTTPS GitHub URL (e.g.{' '}
-                        <code className="font-mono">https://github.com/owner/repo.git</code>). When
-                        set, Agent Hub auto-clones the repo into the project{' '}
-                        <code className="font-mono">cwd</code> on session spawn if it's missing or
-                        not a git repo. Authenticates via your connected GitHub account. SSH URLs
-                        are not supported.
-                      </p>
-                      <div className="flex gap-2">
-                        <input
-                          value={projectRepoUrls[p.id] || ''}
-                          onChange={(e) =>
-                            setProjectRepoUrls((prev) => ({ ...prev, [p.id]: e.target.value }))
-                          }
-                          className={inputClass}
-                          placeholder="https://github.com/owner/repo.git"
-                        />
-                        <button
-                          onClick={() => saveProjectRepoUrl(p.id)}
-                          disabled={repoUrlSaving[p.id]}
-                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          {repoUrlSaving[p.id] ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
-                      {repoUrlSaveStatus[p.id] === 'saved' && (
-                        <span className="text-xs text-emerald-400">Saved</span>
-                      )}
-                      {repoUrlSaveStatus[p.id] &&
-                        typeof repoUrlSaveStatus[p.id] === 'object' &&
-                        repoUrlSaveStatus[p.id].error && (
-                          <span className="text-xs text-red-400">
-                            {repoUrlSaveStatus[p.id].error}
-                          </span>
-                        )}
-                    </div>
-
                     <ProjectSecretsEditor projectId={p.id} />
 
-                    <ProjectAwsProfilesEditor projectId={p.id} />
+                    {/* AWS toggle — when enabled, an "AWS" entry appears in the
+                        per-project sidebar where SSO profiles are managed. */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-gray-200">AWS</span>
+                        <p className="text-xs text-gray-500">
+                          Enable AWS IAM Identity Center (SSO) for this project. When on, an{' '}
+                          <strong>AWS</strong> entry appears under the project in the sidebar for
+                          managing SSO profiles.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => toggleAwsEnabled(p)}
+                        disabled={awsSaving[p.id]}
+                        data-testid={`project-aws-enabled-${p.id}`}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                          p.awsEnabled ? 'bg-emerald-600' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                            p.awsEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
 
                     <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
                       <label className={labelClass}>Visibility</label>
@@ -1387,11 +1192,10 @@ export function ProjectsSection({
                       <label className={labelClass}>Project mode</label>
                       <p className="text-xs text-gray-500">
                         <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and
-                        GitHub PR review automation. <strong>Workflow</strong>: work in the project
-                        checkout; automated reviewer dispatch and session PR flows stay off. For a{' '}
-                        <strong>tasks-only project</strong> (just wiki, board, sessions, crons,
-                        heartbeats — no git or GitHub), pick <em>Workflow</em> and leave the GitHub
-                        repo field empty.
+                        GitHub PR flows. <strong>Workflow</strong>: work in the project checkout;
+                        session PR flows stay off. For a <strong>tasks-only project</strong> (just
+                        wiki, board, sessions, crons, heartbeats — no git or GitHub), pick{' '}
+                        <em>Workflow</em>.
                       </p>
                       <select
                         value={isWorkflowProject(p) ? 'workflow' : 'dev'}
@@ -1412,98 +1216,6 @@ export function ProjectsSection({
                         <option value="workflow">Workflow / Tasks-only (no PR automation)</option>
                       </select>
                     </div>
-
-                    <SettingsErrorBoundary>
-                      <WorkflowRunsSection projectId={p.id} />
-                    </SettingsErrorBoundary>
-
-                    {/* Workflow Toggles */}
-                    {!isWorkflowProject(p) &&
-                      [
-                        {
-                          key: 'autoReview',
-                          label: 'Auto Review',
-                          desc: 'Lead agent automatically reviews every PR',
-                        },
-                        {
-                          key: 'autoMerge',
-                          label: 'Auto Merge',
-                          desc: 'Lead agent merges approved PRs automatically',
-                        },
-                        {
-                          key: 'waitForCI',
-                          label: 'Wait for CI',
-                          desc: 'Wait for all GitHub checks to pass before approving',
-                        },
-                        {
-                          key: 'waitForResolvedComments',
-                          label: 'Wait for Resolved Comments',
-                          desc: 'Wait for all review comments to be resolved',
-                        },
-                      ].map(({ key, label, desc }) => (
-                        <div key={key} className="flex items-center justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm text-gray-200">{label}</span>
-                            <p className="text-xs text-gray-500 truncate">{desc}</p>
-                          </div>
-                          <button
-                            onClick={() => toggleWorkflowSetting(p.id, key)}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
-                              projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
-                            }`}
-                          >
-                            <span
-                              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                                projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
-                              }`}
-                            />
-                          </button>
-                        </div>
-                      ))}
-                    {!isWorkflowProject(p) && (
-                      <>
-                        <div className="pt-1 space-y-1">
-                          <label className={labelClass}>PR review model</label>
-                          <p className="text-xs text-gray-500 mb-1">
-                            Model for the reviewer agent ({reviewerEngine}) when Auto Review runs.
-                            Default follows the reviewer&apos;s Agents settings.
-                          </p>
-                          <div className="flex items-center gap-2">
-                            <select
-                              value={projectWorkflow[p.id]?.reviewerModel || ''}
-                              disabled={reviewerModelSaving[p.id] || reviewerModelOpts.length === 0}
-                              onChange={(e) => saveWorkflowReviewerModel(p.id, e.target.value)}
-                              className={`${inputClass} max-w-xl flex-1`}
-                            >
-                              <option value="">Same as reviewer agent</option>
-                              {reviewerModelOpts.map((m) => (
-                                <option key={m} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </select>
-                            {reviewerModelSaving[p.id] && (
-                              <Loader2
-                                size={14}
-                                className="animate-spin text-gray-400 flex-shrink-0"
-                              />
-                            )}
-                          </div>
-                          {!modelConfig && (
-                            <p className="text-[11px] text-gray-600">Loading models…</p>
-                          )}
-                          {modelConfig && reviewerModelOpts.length === 0 && (
-                            <p className="text-[11px] text-amber-400/90">
-                              No models listed for this engine in server config — check
-                              engineValidModels.
-                            </p>
-                          )}
-                        </div>
-                        {workflowSaved[p.id] && (
-                          <span className="text-xs text-emerald-400">Saved</span>
-                        )}
-                      </>
-                    )}
 
                     {/* Test Connection */}
                     <div className="pt-2 border-t border-gray-800">
@@ -6736,8 +6448,7 @@ const SETTINGS_GROUPS = [
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
-      { id: 'preview', iconName: 'Monitor', text: 'Preview' },
-      { id: 'finalize', iconName: 'ClipboardCheck', text: 'Finalize' },
+      // Preview & Finalize moved to per-project sidebar (Preview / Runners).
     ],
   },
   {
@@ -6886,6 +6597,15 @@ export default function SettingsPage({
     }
   }, [tab, isAdminPlus]);
 
+  // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
+  // Old `settings:preview` / `settings:finalize` deep links would otherwise
+  // resolve to a tab that no longer renders anything, so fall back to General.
+  useEffect(() => {
+    if (tab === 'preview' || tab === 'finalize') {
+      setTab('general');
+    }
+  }, [tab]);
+
   // Find the currently active tab metadata across all groups (for mobile header).
   const activeTab = useMemo(() => {
     for (const group of visibleSettingsGroups) {
@@ -6895,23 +6615,14 @@ export default function SettingsPage({
     return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
   }, [tab, visibleSettingsGroups]);
 
-  // Guard registered by the active section to block tab change when it
-  // has unsaved edits. Sections call `registerGuard(fn)` where `fn()`
-  // returns true (allow change) or false (block). Only the active tab
-  // owns the guard; switching tabs clears it.
-  const tabChangeGuardRef = useRef(null);
-  const registerTabChangeGuard = useCallback((fn) => {
-    tabChangeGuardRef.current = typeof fn === 'function' ? fn : null;
-  }, []);
-
+  // The previous tab-change guard existed solely for the Preview section's
+  // unsaved-edit prompt. Preview moved to the per-project sidebar, so no
+  // settings tab registers a guard anymore and the machinery was dropped.
   const handleSelectTab = (id) => {
     if (id === tab) {
       setMobileNavOpen(false);
       return;
     }
-    const guard = tabChangeGuardRef.current;
-    if (typeof guard === 'function' && !guard()) return;
-    tabChangeGuardRef.current = null;
     setTab(id);
     setMobileNavOpen(false);
   };
@@ -7010,25 +6721,6 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
-              {tab === 'preview' && (
-                <PreviewSection
-                  projects={projects}
-                  onProjectsChange={onAgentsChange}
-                  registerGuard={registerTabChangeGuard}
-                  onOpenSession={({ sessionId, agentId }) =>
-                    onOpenSession?.({ sessionId, agentId })
-                  }
-                />
-              )}
-              {tab === 'finalize' && (
-                <FinalizeSettingsSection
-                  projects={projects}
-                  onProjectsChange={onAgentsChange}
-                  onOpenSession={({ sessionId, agentId }) =>
-                    onOpenSession?.({ sessionId, agentId })
-                  }
-                />
-              )}
               {tab === 'heartbeats' && (
                 <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
               )}

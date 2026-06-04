@@ -15,6 +15,7 @@ vi.mock('../utils/api.js', () => ({
     getModelConfig: vi.fn(),
     updateProject: vi.fn().mockResolvedValue({ ok: true }),
     deleteProject: vi.fn().mockResolvedValue({ ok: true }),
+    getProjectSecrets: vi.fn().mockResolvedValue({ secrets: {} }),
   },
 }));
 
@@ -104,14 +105,17 @@ describe('SettingsPage — tab labels', () => {
     });
   });
 
-  it('exposes a Preview tab in the Workspace group', async () => {
-    // The Preview settings panel is the only place users can configure
-    // the per-session worktree preview without hand-editing
-    // projects.json. It must appear in the sidebar under Workspace.
-    const { findByRole } = render(
+  it('no longer exposes Preview or Finalize tabs (moved to per-project sidebar)', async () => {
+    // Preview and Finalize configuration moved out of Settings and into the
+    // per-project sidebar as "Preview" and "Runners". Guard against the tabs
+    // accidentally reappearing here.
+    const { findByRole, queryByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
     );
-    expect(await findByRole('button', { name: /^Preview$/ })).toBeTruthy();
+    // Wait for the settings nav to render before asserting absence.
+    expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
+    expect(queryByRole('button', { name: /^Preview$/ })).toBeNull();
+    expect(queryByRole('button', { name: /^Finalize$/ })).toBeNull();
   });
 
   it('labels the host-wide Gemini key tab "Global API Keys"', async () => {
@@ -449,13 +453,64 @@ describe('SettingsPage — sidebar navigation', () => {
     const { getAllByText, queryByText } = render(
       <SettingsPage projects={projects} agents={[]} initialTab="projects" />,
     );
-    // The "Projects & Repos" subheading is the unique marker for the project
+    // The "Project Settings" subheading is the unique marker for the project
     // list block we moved off the GitHub tab.
     await waitFor(() => {
-      expect(queryByText('Projects & Repos')).toBeTruthy();
+      expect(queryByText('Project Settings')).toBeTruthy();
     });
     // The project name renders as a row under it.
     expect(getAllByText('Acme').length).toBeGreaterThan(0);
+  });
+
+  it('no longer renders the Clone URL, GitHub Repository, PR toggles, or workflow runs', async () => {
+    const projects = [
+      {
+        id: 'p1',
+        name: 'Acme',
+        color: '#ff0000',
+        cwd: '/tmp/a',
+        githubRepo: 'acme/acme',
+        agents: [],
+      },
+    ];
+    const { queryByText, findByText } = render(
+      <SettingsPage projects={projects} agents={[]} initialTab="projects" />,
+    );
+    // Expand the project card so all per-project controls mount.
+    fireEvent.click(await findByText('Acme'));
+    // Removed editing surfaces (repo is now set automatically).
+    expect(queryByText(/GitHub Repository/)).toBeNull();
+    expect(queryByText(/Clone URL/)).toBeNull();
+    // Removed PR automation controls (Hub runs its own review/CI cycle).
+    expect(queryByText('Auto Review')).toBeNull();
+    expect(queryByText('Auto Merge')).toBeNull();
+    expect(queryByText('Wait for CI')).toBeNull();
+    expect(queryByText('Wait for Resolved Comments')).toBeNull();
+    expect(queryByText('PR review model')).toBeNull();
+  });
+
+  it('exposes an AWS enable toggle that defaults off and persists via updateProject', async () => {
+    const { api } = await import('../utils/api.js');
+    const updateSpy = vi.spyOn(api, 'updateProject').mockResolvedValue({});
+    const onAgentsChange = vi.fn();
+    const projects = [
+      { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
+    ];
+    const { findByText, getByTestId } = render(
+      <SettingsPage
+        projects={projects}
+        agents={[]}
+        initialTab="projects"
+        onAgentsChange={onAgentsChange}
+      />,
+    );
+    fireEvent.click(await findByText('Acme'));
+    const toggle = getByTestId('project-aws-enabled-p1');
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('p1', { awsEnabled: true });
+    });
+    updateSpy.mockRestore();
   });
 
   it('does NOT render the project list on the GitHub tab anymore', async () => {
@@ -468,7 +523,7 @@ describe('SettingsPage — sidebar navigation', () => {
     // GitHub Settings heading still present…
     await findByText('GitHub Settings');
     // …but the per-project block is gone from this tab.
-    expect(queryByText('Projects & Repos')).toBeFalsy();
+    expect(queryByText('Project Settings')).toBeFalsy();
   });
 
   it('renders the GitHub Account ("Sign in with GitHub") block on the GitHub tab', async () => {

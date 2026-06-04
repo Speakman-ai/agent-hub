@@ -2235,6 +2235,20 @@ This workspace has no git repo and no PR automation — your job is planning, or
         return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'awsEnabled')) {
+      // Boolean toggle that gates the per-project "AWS" sidebar entry. Stored
+      // explicitly so the sidebar can read it off the project list; defaults
+      // to false (we delete the key) so projects stay lean until opted in.
+      const rawAwsEnabled = (req.body as Record<string, unknown>).awsEnabled;
+      if (typeof rawAwsEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'awsEnabled must be a boolean' });
+      }
+      if (rawAwsEnabled) {
+        (project as Record<string, unknown>).awsEnabled = true;
+      } else {
+        delete (project as Record<string, unknown>).awsEnabled;
+      }
+    }
     // ─── Visibility (shared ↔ private) ──────────────────────────────
     // Mirrors the create-time validation but additionally enforces the
     // role-gated transition policy (see `canChangeVisibility`). Two

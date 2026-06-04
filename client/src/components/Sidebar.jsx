@@ -14,6 +14,7 @@ import {
   ListOrdered,
   Monitor,
   Play,
+  Cloud,
   AlertTriangle,
   BarChart3,
   Plus,
@@ -1028,6 +1029,22 @@ export default function Sidebar({
                       <Monitor size={14} className="flex-shrink-0" />
                       <span className="truncate">Preview</span>
                     </button>
+
+                    {/* Project AWS (SSO profiles) — only when AWS is enabled
+                        for the project (Settings → Projects → AWS toggle). */}
+                    {project.awsEnabled && (
+                      <button
+                        onClick={() => onNavigate(`aws:${project.id}`)}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                          currentView === `aws:${project.id}`
+                            ? 'bg-gray-800 text-white'
+                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                        }`}
+                      >
+                        <Cloud size={14} className="flex-shrink-0" />
+                        <span className="truncate">AWS</span>
+                      </button>
+                    )}
 
                     {/* Project notes */}
                     <button

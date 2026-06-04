@@ -2081,6 +2081,13 @@ export interface Project {
       output?: string;
     }
   >;
+  /**
+   * When true, AWS IAM Identity Center (SSO) support is surfaced for this
+   * project: an "AWS" entry appears under the project in the sidebar where
+   * SSO profiles are managed. Defaults to `false` (omitted) — AWS stays
+   * hidden until a user opts in via Settings → Projects.
+   */
+  awsEnabled?: boolean;
   agents: Agent[];
   [key: string]: unknown;
 }

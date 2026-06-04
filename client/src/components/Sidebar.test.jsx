@@ -818,4 +818,27 @@ describe('Sidebar — per-project Runners/Preview nav', () => {
     render(<Sidebar {...buildProps()} />);
     expect(screen.queryByRole('button', { name: 'Workflows' })).toBeNull();
   });
+
+  it('hides the AWS entry when the project has not enabled AWS', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByRole('button', { name: 'AWS' })).toBeNull();
+  });
+
+  it('renders the AWS entry and routes to the project-scoped view when awsEnabled', () => {
+    const onNavigate = vi.fn();
+    const projects = [
+      {
+        id: PROJECT_ID,
+        name: 'Test Project',
+        color: '#22d3ee',
+        awsEnabled: true,
+        agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+      },
+    ];
+    render(<Sidebar {...buildProps({ projects, onNavigate })} />);
+
+    const awsBtn = screen.getByRole('button', { name: 'AWS' });
+    fireEvent.click(awsBtn);
+    expect(onNavigate).toHaveBeenCalledWith(`aws:${PROJECT_ID}`);
+  });
 });

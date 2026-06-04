@@ -49,6 +49,7 @@ import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection.jsx';
 import PreviewSection from './components/PreviewSection.jsx';
+import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import ReleasesView from './components/ReleasesView.jsx';
@@ -3826,6 +3827,16 @@ export default function App() {
                       focusAgentSession(agentId, sessionId)
                     }
                   />
+                </div>
+              ) : currentView.startsWith('aws:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <div className="max-w-4xl mx-auto">
+                    <h3 className="text-lg font-semibold mb-1">AWS</h3>
+                    <p className="text-xs text-gray-500 mb-4">
+                      IAM Identity Center (SSO) profiles for this project.
+                    </p>
+                    <ProjectAwsProfilesEditor projectId={currentView.slice('aws:'.length)} />
+                  </div>
                 </div>
               ) : currentView.startsWith('settings') ? (
                 <SettingsPage
