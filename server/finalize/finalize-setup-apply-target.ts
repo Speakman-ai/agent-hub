@@ -156,14 +156,6 @@ export async function resolveApplyTarget(
   return pickSessionWithPersistedWorktree(deps.stmts, project, preferredSessionId);
 }
 
-/** Sync picker for wizard spawn-time hints (persisted worktrees only). */
-export function pickSessionWithWorktreeForHint(
-  stmts: ResolveApplyTargetDeps['stmts'],
-  project: Project,
-): SessionWithWorktree | null {
-  return pickSessionWithPersistedWorktree(stmts, project, undefined);
-}
-
 export interface CreateCommitTargetDeps {
   stmts: Pick<Stmts, 'getSession' | 'createSession' | 'softDeleteSession'>;
   provisionSessionWorkspace?: (sessionId: string) => Promise<string>;

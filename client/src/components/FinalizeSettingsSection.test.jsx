@@ -83,7 +83,7 @@ describe('FinalizeSettingsSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/runs as a normal session in its own worktree/i)).toBeInTheDocument();
+      expect(screen.getByText(/spawns a normal worktree-backed session/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/opens a PR for review/i)).toBeInTheDocument();
     // The setup session owns its worktree — no separate commit target UI.

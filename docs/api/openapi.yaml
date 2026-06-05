@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 2.1.1
+  version: 2.1.3
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -2563,7 +2563,7 @@ components:
         - sessionId
         - branch
         - worktreePath
-      description: The project session whose worktree would receive the commit if `setup-apply` were called right now. Resolved at wizard spawn time as the most-recent worktree-bearing session; `setup-apply` re-resolves on its own request, so the value is a starting suggestion, not a guarantee. Surface to the user before calling apply.
+      description: "Legacy shape retained for response compatibility. The setup wizard now always returns `target: null` because the spawned session owns its own worktree (`use_worktree=1`) and passes its own `session_id` to `setup-apply`."
     FinalizeWizardStartResponse:
       type: object
       properties:
@@ -2580,7 +2580,7 @@ components:
           allOf:
             - $ref: "#/components/schemas/FinalizeWizardResolvedTarget"
             - nullable: true
-              description: The resolved apply target at spawn time. `null` when no worktree-bearing session exists yet — the wizard can still run but apply will 400 with `no_worktree` until one does.
+              description: Always `null`. The setup session owns its own worktree; there is no separate commit target to surface.
       required:
         - sessionId
         - agentId
@@ -2595,7 +2595,7 @@ components:
           description: Verbatim `.agent-hub/ci.yaml` to commit. Validated against the v1 parser.
         session_id:
           type: string
-          description: Optional explicit target session id. When omitted the server picks the most-recent project session that has a worktree.
+          description: Target session id whose worktree receives the commit. The setup wizard passes its own session id. When omitted the server picks the most-recent project session that has a worktree, or auto-provisions a dedicated `[Finalize Config]` worktree on a fresh branch when none exists.
         secrets:
           type: object
           properties:
@@ -9379,9 +9379,12 @@ paths:
       summary: Spawn the Finalize ci.yaml setup wizard
       description: |-
         Admin+. Scans the project (README, package manifests, .github/workflows,
-        Makefile, package.json scripts) and spawns a one-shot chat session loaded
-        with the `finalize-setup` skill. The pre-built `proposedCiYaml` always
-        parses against the v1 schema.
+        Makefile, package.json scripts) and spawns a **worktree-backed** chat
+        session (`use_worktree=1`) loaded with the `finalize-setup` skill. The
+        session provisions its own git clone on a fresh `agent-hub/…` branch so
+        the agent can author `.agent-hub/ci.yaml`, verify the pipeline locally,
+        push, and open a PR. The pre-built `proposedCiYaml` is embedded in the
+        kickoff prompt.
       parameters:
         - schema:
             type: string
@@ -9426,10 +9429,12 @@ paths:
         - Finalize
       summary: Commit a wizard-generated ci.yaml to the worktree
       description: |-
-        Admin+. Validates `ci_yaml_content` against the v1 schema, writes
+        Admin+. Validates `ci_yaml_content` against the v1/v2 schema, writes
         `<worktree>/.agent-hub/ci.yaml`, and commits the file to the worktree
-        branch. The target worktree is the request body's `session_id` when
-        supplied, else the most-recent project session that has one.
+        branch. Target resolution order: (1) request body's `session_id` when
+        supplied (the setup wizard passes its own id), (2) the most-recent
+        project session that has a worktree, (3) auto-provision a dedicated
+        `[Finalize Config]` session + worktree when none exists.
       parameters:
         - schema:
             type: string
