@@ -8,7 +8,6 @@ import {
   StickyNote,
   Trash2,
   GitFork,
-  GitPullRequest,
   ExternalLink,
   List,
   ListOrdered,
@@ -1043,7 +1042,7 @@ export default function Sidebar({
                             : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
                         }`}
                       >
-                        <GitPullRequest size={14} className="flex-shrink-0" />
+                        <ListOrdered size={14} className="flex-shrink-0" />
                         <span className="truncate">Pulls</span>
                       </button>
                     )}
