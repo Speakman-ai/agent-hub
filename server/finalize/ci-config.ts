@@ -1,15 +1,24 @@
 /**
- * ci-config.ts — Finalize Code Changes, `.agent-hub/ci.yaml` v1 parser.
+ * ci-config.ts — Finalize Code Changes, `.agent-hub/ci.yaml` parser entry point.
  *
- * Defines the v1 schema for the project's Finalize pipeline config and
- * the validator the orchestrator consumes before running steps. The full
- * design lives in the wiki page `finalize-code-changes-architecture-v0`
- * (§5); this module is the executable form of that spec.
+ * Defines the schema for the project's Finalize pipeline config and the
+ * validator the orchestrator consumes before running steps. The full design
+ * lives in the wiki page `finalize-code-changes-architecture-v0` (§5); this
+ * module is the executable form of that spec.
+ *
+ * TWO schema versions are accepted:
+ *   - `version: 1` — flat sequential `steps:` pipeline, parsed inline below.
+ *     Runs on the Hub box itself, one step at a time.
+ *   - `version: 2` — GHA-style `jobs:` / `matrix:` / `env:`, parsed by
+ *     `parseCiConfigV2Root` in `./ci-config-v2.ts`. The orchestrator fans v2
+ *     jobs out to the remote runner fleet, one container per job instance.
+ * Any other `version` value is an error (`invalid_version`). The constraints
+ * below describe the **v1** wire format; v2's allowances (job `env`, step
+ * `env`, `matrix`, `runs-on`, `needs`) live in ci-config-v2.ts.
  *
  * Hard constraints at v1 (mirroring §5 of the design doc):
  *
- *   - Top-level `version: 1` ratchet. Anything else is an error.
- *   - `on:` accepts only `finalize` and `manual`. No `pull_request` at v1.
+ *   - `on:` accepts only `finalize` and `manual`. No `pull_request`.
  *   - `steps[].run` is required. Every step is executed by the
  *     orchestrator as `bash -euo pipefail -c <run>`. There is no
  *     `shell:` override and providing one is an error.
@@ -22,10 +31,13 @@
  *     ignore. In particular, an `autofix:` field is rejected at parse
  *     time — design lock removed autofix as a distinct phase; fixes
  *     always flow back into the originating session.
- *   - Unknown step-level keys (including `shell:`, `uses:`, `with:`,
- *     `env:`, `matrix:`) are also a hard error. We do not silently drop
- *     directives so an author can't believe they enabled caching/matrix
- *     when the orchestrator ignored it.
+ *   - Unknown step-level keys are also a hard error at v1. We do not
+ *     silently drop directives so an author can't believe they enabled a
+ *     feature the orchestrator ignored. NOTE: `env:` and `matrix:` are NOT
+ *     v1 keys, but they ARE valid in v2 (see ci-config-v2.ts) — `env:` at the
+ *     job OR step level, `matrix:` at the job level ONLY (a step still cannot
+ *     carry `matrix:`). Config that needs them should declare `version: 2`
+ *     rather than assume the directive is illegal.
  *
  * Authoring path: users do not hand-roll this file from scratch. The
  * `finalize-setup` skill proposes a default ci.yaml based on repo
