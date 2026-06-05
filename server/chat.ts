@@ -858,6 +858,8 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
   }
 
   const finalizeConfigured = options.finalizeConfigured === true;
+  const finalizeTargetedTestGuidance =
+    'When the Finalize runner is configured, only run tests you added or changed while debugging them. Existing tests and broader lint/check suites run in the runner/reviewer workflow.';
 
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
@@ -903,7 +905,7 @@ This project is connected to GitHub. Follow this lifecycle for changes:
 ${lifecycleStep1}
 2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
-4. **Test & Lint**: ${finalizeConfigured ? 'Run **targeted** tests only while iterating (single file / failing case). **Do not run the full `.agent-hub/ci.yaml` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.' : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
+4. **Test & Lint**: ${finalizeConfigured ? `Run **targeted** tests only while iterating. ${finalizeTargetedTestGuidance} **Do not run the full \`.agent-hub/ci.yaml\` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.` : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
 5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ' **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to GitHub** after gates pass.' : ' Commit, push, and open the PR with `gh pr create` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and move the card to "Review" with a comment containing the PR URL.'} Never merge your own PR.
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
@@ -932,12 +934,12 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
             ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
 2. Implement on a feature branch.
-3. Rebase and commit locally — run only targeted tests while fixing. **Do not push or open a PR** (human uses Finalize Code Changes).`
+3. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
             : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
 3. Implement on a feature branch.
-4. Rebase and commit locally — run only targeted tests while fixing. **Do not push or open a PR** (human uses Finalize Code Changes).`
+4. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
           : options.sessionHasLinkedCard
             ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).

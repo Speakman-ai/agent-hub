@@ -96,7 +96,8 @@ describe('buildEnrichedPrompt — Finalize configured', () => {
       finalizeConfigured: true,
     });
     expect(prompt).toContain('Do not run the full `.agent-hub/ci.yaml` suite in-session');
-    expect(prompt).toContain('targeted');
+    expect(prompt).toContain('only run tests you added or changed');
+    expect(prompt).toContain('Existing tests and broader lint/check suites run');
   });
 
   it('warns agents to commit in the session worktree, not project cwd', () => {

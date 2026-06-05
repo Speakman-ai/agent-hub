@@ -23,6 +23,8 @@ describe('shipping-prompt', () => {
     expect(text).toContain('Finalize Code Changes');
     expect(text).toContain('git push');
     expect(text).toContain('Send It');
+    expect(text).toContain('run only tests you added or changed');
+    expect(text).toContain('Existing tests run in the Finalize runner/reviewer workflow');
   });
 
   it('appendDevAgentShippingContract is idempotent', () => {
