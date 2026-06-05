@@ -21,7 +21,6 @@ export default function FinalizeSettingsSection({
   const [wizardStarting, setWizardStarting] = useState(false);
   const [wizardError, setWizardError] = useState(null);
   const [lastSessionId, setLastSessionId] = useState(null);
-  const [resolvedTarget, setResolvedTarget] = useState(null);
   const [draft, setDraft] = useState(null);
   const [envRows, setEnvRows] = useState([]);
   const [loadingDraft, setLoadingDraft] = useState(false);
@@ -87,7 +86,6 @@ export default function FinalizeSettingsSection({
         return;
       }
       setLastSessionId(res.sessionId);
-      setResolvedTarget(res.target ?? null);
       if (typeof onOpenSession === 'function') {
         onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
       } else {
@@ -141,21 +139,11 @@ export default function FinalizeSettingsSection({
                 Last wizard session: <code className="text-emerald-300">{lastSessionId}</code>
               </p>
             )}
-            {resolvedTarget && (
-              <p className="text-xs text-gray-400 mt-2">
-                Proposed commit target: branch{' '}
-                <code className="text-gray-200">{resolvedTarget.branch}</code> in session{' '}
-                <code className="text-gray-200">{resolvedTarget.sessionId}</code>. The wizard will
-                confirm before applying; the apply call re-resolves at request time, so a fresher
-                session may take over.
-              </p>
-            )}
-            {lastSessionId && !resolvedTarget && (
-              <p className="text-xs text-amber-400 mt-2">
-                No worktree-bearing session was found for this project. Start a card-linked session
-                first; the apply step will 400 with <code>no_worktree</code> until one exists.
-              </p>
-            )}
+            <p className="text-xs text-gray-400 mt-2">
+              Runs as a normal session in its own worktree on a fresh branch: it authors{' '}
+              <code className="text-gray-200">.agent-hub/ci.yaml</code>, runs the configured steps
+              to prove the pipeline, then pushes and opens a PR for review.
+            </p>
           </div>
           <button
             type="button"

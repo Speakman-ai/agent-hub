@@ -159,10 +159,10 @@ export default function FinalizeSection({ navigation }) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Guided setup walkthrough</Text>
         <Text style={styles.cardBody}>
-          Spawns a chat session loaded with the <Text style={styles.mono}>finalize-setup</Text>{' '}
-          skill. The wizard reads README, package manifests, and existing CI workflows, then
-          proposes a v1 <Text style={styles.mono}>.agent-hub/ci.yaml</Text>. You review, edit, and
-          commit it in a single tap.
+          Spawns a normal worktree-backed session loaded with the{' '}
+          <Text style={styles.mono}>finalize-setup</Text> skill. It reads README, package manifests,
+          and existing CI workflows, proposes a <Text style={styles.mono}>.agent-hub/ci.yaml</Text>,
+          runs the configured steps to prove the pipeline, then pushes and opens a PR for review.
         </Text>
 
         {lastSessionId && (
@@ -173,16 +173,15 @@ export default function FinalizeSection({ navigation }) {
 
         {status?.kind === 'target' && (
           <Text style={styles.targetInline} testID="finalize-resolved-target">
-            Proposed commit target: {status.text}. The wizard will confirm before applying; the
-            apply call re-resolves at request time, so a fresher session may take over.
+            Commit target: {status.text}.
           </Text>
         )}
 
         {status?.kind === 'no_worktree' && (
-          <Text style={styles.warnInline} testID="finalize-no-worktree">
-            No worktree-bearing session was found for this project. Start a card-linked session
-            first; the apply step will 400 with <Text style={styles.mono}>no_worktree</Text> until
-            one exists.
+          <Text style={styles.targetInline} testID="finalize-no-worktree">
+            Runs in its own worktree on a fresh branch: it commits{' '}
+            <Text style={styles.mono}>.agent-hub/ci.yaml</Text>, runs the configured steps, then
+            pushes and opens a PR for review.
           </Text>
         )}
 

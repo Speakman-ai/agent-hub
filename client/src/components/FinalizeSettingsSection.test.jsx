@@ -72,28 +72,7 @@ describe('FinalizeSettingsSection', () => {
     });
   });
 
-  it('surfaces the resolved commit target returned by the wizard', async () => {
-    api.startFinalizeWizard.mockResolvedValueOnce({
-      sessionId: 'sess-1',
-      agentId: 'agent-1',
-      target: {
-        sessionId: 'wt-sess-1',
-        branch: 'feature/x',
-        worktreePath: '/tmp/wt',
-      },
-    });
-    render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/proposed commit target/i)).toBeInTheDocument();
-    });
-    expect(screen.getByText('feature/x')).toBeInTheDocument();
-    expect(screen.getByText('wt-sess-1')).toBeInTheDocument();
-  });
-
-  it('shows a no-worktree warning when target is null', async () => {
+  it('describes the normal worktree session flow after the wizard starts', async () => {
     api.startFinalizeWizard.mockResolvedValueOnce({
       sessionId: 'sess-1',
       agentId: 'agent-1',
@@ -104,8 +83,12 @@ describe('FinalizeSettingsSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/no worktree-bearing session/i)).toBeInTheDocument();
+      expect(screen.getByText(/runs as a normal session in its own worktree/i)).toBeInTheDocument();
     });
+    expect(screen.getByText(/opens a PR for review/i)).toBeInTheDocument();
+    // The setup session owns its worktree — no separate commit target UI.
+    expect(screen.queryByText(/proposed commit target/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no worktree-bearing session/i)).not.toBeInTheDocument();
   });
 
   it('does not promise commits to "the current session" in user-facing copy (PR #1179 fix)', () => {
