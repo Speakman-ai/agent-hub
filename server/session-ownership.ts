@@ -58,7 +58,10 @@ function isAuthDisabled(): boolean {
   return !getAuthRecord();
 }
 
-export type OwnerResolvable = Pick<AuthenticatedRequest, 'authUserId'>;
+export type OwnerResolvable = Pick<
+  AuthenticatedRequest,
+  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass'
+>;
 
 /**
  * Snapshot of a WebSocket caller's visibility context. Mirrors the
@@ -223,6 +226,16 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
   // This mirrors `authMiddleware`'s no-auth bypass so ownership doesn't
   // gate routes that auth itself doesn't.
   if (isAuthDisabled()) return true;
+  // Break-glass / single-tenant bypass. The global `x-api-key` is treated
+  // as Owner for every org (see authMiddleware) and the local-bundled
+  // server (Electron / dev box) runs without per-user auth — neither
+  // carries a per-user `authUserId` to scope against. Mirror the
+  // visibility-middleware `localBypass` (authViaApiKey || authLocalOrgBypass)
+  // so session-scoped routes don't 404 these full-privilege callers under
+  // strict JWT auth. Without this, an agent reading Finalize run/step-output
+  // logs with the injected `x-api-key` gets "Session not found" on a
+  // JWT-enabled hub because `resolveOwnerUserId` returns null.
+  if (req?.authViaApiKey || req?.authLocalOrgBypass) return true;
   // apiKey-only legacy mode: an `apiKey` is configured but per-user JWT
   // auth has never been set up (`auth.json` does not exist and the
   // `users` table is empty). The apiKey middleware already authorized

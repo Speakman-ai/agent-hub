@@ -8,7 +8,7 @@
  */
 
 import './test/setup.js';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts } from './db.js';
 import {
@@ -26,6 +26,7 @@ import type { AgentLookup } from './types.js';
 import config from './config.js';
 import { initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
 import { createUser } from './users-store.js';
+import { saveAuthRecord, reloadAuthRecord, setAuthFilePathForTests } from './auth-store.js';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import path from 'path';
@@ -110,6 +111,62 @@ describe('userOwnsSession — apiKey-only legacy mode', () => {
     } finally {
       config.apiKey = previous;
     }
+  });
+});
+
+describe('userOwnsSession — global apiKey / local-bundled break-glass under strict auth', () => {
+  // Strict-auth conditions: an apiKey is configured AND an auth.json
+  // record exists, so neither permissive bypass (isAuthDisabled,
+  // !getAuthRecord) fires and the predicate enforces per-user ownership.
+  let tmpDir: string;
+  let previousKey: string | null;
+
+  beforeEach(() => {
+    getDb().exec('DELETE FROM sessions');
+    previousKey = config.apiKey;
+    config.apiKey = 'test-key';
+    tmpDir = mkdtempSync(path.join(tmpdir(), 'session-ownership-strict-'));
+    setAuthFilePathForTests(path.join(tmpDir, 'auth.json'));
+    saveAuthRecord({
+      username: 'owner',
+      passwordHash: 'scrypt$hash',
+      jwtSecret: 'a'.repeat(64),
+    });
+    reloadAuthRecord();
+  });
+
+  afterEach(() => {
+    config.apiKey = previousKey;
+    setAuthFilePathForTests(null);
+    reloadAuthRecord();
+  });
+
+  it('strict mode actually rejects an unrelated caller (sanity check)', () => {
+    const id = seedSession();
+    setSessionOwner(id, 'creator');
+    expect(userOwnsSession({ authUserId: 'someone-else' }, id)).toBe(false);
+  });
+
+  it('global x-api-key (authViaApiKey) caller may read/own any session', () => {
+    // Regression: the global break-glass apiKey path in authMiddleware sets
+    // authRole=Owner but no authUserId, so the predicate had no user id to
+    // match against the session owner and returned false — every
+    // session-scoped Finalize log route 404'd with "Session not found".
+    const id = seedSession();
+    setSessionOwner(id, 'someone-else');
+    expect(userOwnsSession({ authViaApiKey: true }, id)).toBe(true);
+    expect(userCanReadSession({ authViaApiKey: true }, id)).toBe(true);
+
+    // Also works for a NULL-owner row (e.g. autonomous/system sessions).
+    const orphan = seedSession();
+    expect(userOwnsSession({ authViaApiKey: true }, orphan)).toBe(true);
+  });
+
+  it('local-bundled (authLocalOrgBypass) caller may read/own any session', () => {
+    const id = seedSession();
+    setSessionOwner(id, 'someone-else');
+    expect(userOwnsSession({ authLocalOrgBypass: true }, id)).toBe(true);
+    expect(userCanReadSession({ authLocalOrgBypass: true }, id)).toBe(true);
   });
 });
 

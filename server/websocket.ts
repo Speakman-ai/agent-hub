@@ -248,7 +248,14 @@ export default function createWebSocket(
     // `sessionId`. Sessions that don't yet exist (orphan auto-create
     // path used by `chat`) are permitted — they get stamped with the
     // caller's user id at create time.
-    const ownerReq = { authUserId: getWsAuthUserId(ws as AuthStampedWs) };
+    // The global `x-api-key` break-glass (and local-bundled / no-auth
+    // handshakes) authenticate with no per-user id — they're stamped with
+    // `localBypass` instead. Forward that as `authViaApiKey` so the
+    // ownership gate treats them as full-privilege Owners, matching REST.
+    const ownerReq = {
+      authUserId: getWsAuthUserId(ws as AuthStampedWs),
+      authViaApiKey: Boolean(getWsAuthVisibility(ws as AuthStampedWs)?.localBypass),
+    };
     const mayActOnSession = (sessionId: string): boolean => {
       try {
         const row = stmts!.getSession.get(sessionId) as { id?: string } | undefined;
