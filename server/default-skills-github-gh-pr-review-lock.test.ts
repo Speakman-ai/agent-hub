@@ -238,12 +238,18 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
 describe('gh-pr.sh layout', () => {
   it('default-skills/github/scripts/gh-pr.sh is present and executable', () => {
     expect(existsSync(SCRIPT)).toBe(true);
-    // execFileSync with --help-equivalent (the script prints usage to
-    // stderr and exits 2 when called with no args). We assert non-zero
-    // exit and a usage line on stderr.
+    // The script prints usage to stderr and exits 2 when called with no
+    // args — but `_common.sh` calls `require_gh_cli` at source time, which
+    // hard-exits with "gh CLI not found" BEFORE arg parsing if `gh` isn't on
+    // PATH. Run with the same `gh` stub the other tests use so this assertion
+    // is hermetic (passes whether or not the host has gh installed — e.g. the
+    // Finalize DinD runner has no gh, unlike GitHub Actions runners).
     let stderr = '';
     try {
-      execFileSync('bash', [SCRIPT], { stdio: ['ignore', 'ignore', 'pipe'] });
+      execFileSync('bash', [SCRIPT], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        env: { PATH: stubbedPath, HOME: os.tmpdir() },
+      });
     } catch (err: unknown) {
       stderr = (err as { stderr?: Buffer | string }).stderr?.toString() || '';
     }
