@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolvePushGateBaseline, runFinalizePush } from './push-run.js';
+import { resolvePushGateBaseline, runFinalizePush, runSessionPushToGithub } from './push-run.js';
 import type { FinalizeRunRow, KanbanCardRow, Project, SessionRow } from '../types.js';
 
 vi.mock('./worktree-changes.js', () => ({
@@ -47,6 +47,7 @@ const project = { id: 'proj-1', githubRepo: 'o/r' } as Project;
 
 function makeDeps() {
   const broadcast = vi.fn();
+  const addMessage = { run: vi.fn() };
   return {
     deps: {
       stmts: {
@@ -54,13 +55,29 @@ function makeDeps() {
         failFinalizeRun: { run: vi.fn() },
         markFinalizeRunPushed: { run: vi.fn() },
         updateFinalizeRunPrUrl: { run: vi.fn() },
+        // Timeline-message writes (terminal block) need these.
+        addMessage,
+        touchSession: { run: vi.fn() },
+        getMessageById: { get: vi.fn(() => undefined) },
+        getKanbanEpic: { get: vi.fn(() => undefined) },
       },
       broadcast,
       config: {},
       findAgent: vi.fn(),
     },
     broadcast,
+    addMessage,
   };
+}
+
+/** Pull the parsed metadata from the last `finalize_run_terminal` timeline write. */
+function lastTerminalMetadata(addMessage: { run: { mock: { calls: unknown[][] } } }) {
+  const calls = addMessage.run.mock.calls;
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const meta = JSON.parse(calls[i][7] as string);
+    if (meta.kind === 'finalize_run_terminal') return meta;
+  }
+  return null;
 }
 
 describe('runFinalizePush force', () => {
@@ -106,6 +123,72 @@ describe('runFinalizePush force', () => {
     if (!outcome.ok) {
       expect(outcome.error).toBe('not_ready_to_push');
     }
+  });
+});
+
+describe('bypassed-gates timeline', () => {
+  it('marks a forced finalize push with bypassedGates=true', async () => {
+    const { deps, addMessage } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+    const run = {
+      ...baseRun(),
+      status: 'dispatching' as const,
+      reviewer_verdict: 'changes_requested' as const,
+    };
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run,
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(lastTerminalMetadata(addMessage)?.bypassedGates).toBe(true);
+  });
+
+  it('marks a gated ready_to_push push with bypassedGates=false', async () => {
+    const { deps, addMessage } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/2' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(), // status: ready_to_push, reviewer approved
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    const meta = lastTerminalMetadata(addMessage);
+    expect(meta?.status).toBe('pushed');
+    expect(meta?.bypassedGates).toBe(false);
+  });
+
+  it('marks a session push (no finalize run) with bypassedGates=true', async () => {
+    const { deps, addMessage } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/3' });
+
+    const outcome = await runSessionPushToGithub({
+      deps: deps as never,
+      project,
+      session,
+      card,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    const meta = lastTerminalMetadata(addMessage);
+    expect(meta?.status).toBe('pushed');
+    expect(meta?.bypassedGates).toBe(true);
   });
 });
 

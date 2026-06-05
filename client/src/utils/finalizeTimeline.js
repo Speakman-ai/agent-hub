@@ -104,6 +104,7 @@ export function parseFinalizeTerminalMetadata(metadataString) {
     status: parsed.status ?? null,
     failureReason: parsed.failureReason ?? parsed.failure_reason ?? null,
     round: typeof parsed.round === 'number' ? parsed.round : 0,
+    bypassedGates: Boolean(parsed.bypassedGates ?? parsed.bypassed_gates),
   };
 }
 

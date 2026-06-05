@@ -23,8 +23,12 @@ export default function FinalizeTerminalBlock({ message }) {
   const meta = parseFinalizeTerminalMetadata(message.metadata);
   if (!meta) return null;
 
-  const isSuccess = meta.status === 'pushed' || meta.status === 'ready_to_push';
-  const isWarn = meta.status === 'stalled_no_response';
+  // A push that skipped the review + checks gate is a success state but worth
+  // flagging — render it amber, not green, so the operator sees that tests and
+  // review never ran.
+  const bypassedPush = meta.status === 'pushed' && meta.bypassedGates;
+  const isSuccess = !bypassedPush && (meta.status === 'pushed' || meta.status === 'ready_to_push');
+  const isWarn = bypassedPush || meta.status === 'stalled_no_response';
   const Icon = isSuccess ? CheckCircle2 : isWarn ? AlertTriangle : XCircle;
   const tone = isSuccess ? 'text-emerald-300' : isWarn ? 'text-amber-300' : 'text-red-300';
   const border = isSuccess
@@ -39,9 +43,16 @@ export default function FinalizeTerminalBlock({ message }) {
         <div className="flex items-center gap-2">
           <Icon className={`w-4 h-4 shrink-0 ${tone}`} />
           <p className={`text-sm font-medium ${tone}`}>
-            {labelForStatus(meta.status, meta.failureReason)}
+            {bypassedPush
+              ? 'Pushed to GitHub without tests or review'
+              : labelForStatus(meta.status, meta.failureReason)}
           </p>
         </div>
+        {bypassedPush ? (
+          <p className="text-[12px] text-amber-200/70 mt-1">
+            Review and checks did not both pass before this push.
+          </p>
+        ) : null}
         {message.created_at ? (
           <div className="text-[11px] text-gray-600 mt-1.5">{relativeTime(message.created_at)}</div>
         ) : null}

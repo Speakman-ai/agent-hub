@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseFinalizeTimelineKind,
   parseFinalizeReviewRoundMetadata,
+  parseFinalizeTerminalMetadata,
   isFinalizeStepOutputMessage,
 } from './finalizeTimeline.js';
 
@@ -19,6 +20,19 @@ describe('finalizeTimeline utils', () => {
     expect(meta?.runId).toBe('run-1');
     expect(meta?.round).toBe(2);
     expect(meta?.threads).toHaveLength(1);
+  });
+
+  it('parses terminal metadata with bypassedGates flag', () => {
+    const bypassed = parseFinalizeTerminalMetadata(
+      JSON.stringify({ kind: 'finalize_run_terminal', status: 'pushed', bypassedGates: true }),
+    );
+    expect(bypassed?.status).toBe('pushed');
+    expect(bypassed?.bypassedGates).toBe(true);
+
+    const gated = parseFinalizeTerminalMetadata(
+      JSON.stringify({ kind: 'finalize_run_terminal', status: 'pushed' }),
+    );
+    expect(gated?.bypassedGates).toBe(false);
   });
 
   it('detects finalize_step_output for suppression', () => {

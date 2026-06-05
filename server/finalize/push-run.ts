@@ -131,10 +131,12 @@ async function executePush(args: {
   validatedHeadSha: string;
   /** Branch to push — the worktree's checked-out branch (holds validated HEAD). */
   pushBranch: string;
+  /** True when the push skipped the review + checks gate (force / push anyway). */
+  bypassedGates: boolean;
   pushAndCreatePr?: PushAndCreatePrFn;
   lifecycle?: CardLifecycle;
 }): Promise<FinalizePushOutcome> {
-  const { deps, project, run, card, session, validatedHeadSha, pushBranch } = args;
+  const { deps, project, run, card, session, validatedHeadSha, pushBranch, bypassedGates } = args;
   const { stmts, broadcast } = deps;
   const pushFn =
     args.pushAndCreatePr ?? buildOrchestratorDeps(deps, card, project.id).pushAndCreatePr;
@@ -263,6 +265,7 @@ async function executePush(args: {
       runId: run.id,
       status: 'pushed',
       round: readFinalizeLoopRound(run),
+      bypassedGates,
     },
   );
 
@@ -373,6 +376,9 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     session,
     validatedHeadSha,
     pushBranch,
+    // A forced push skips the review + checks gate; a ready_to_push push
+    // (force=false) cleared it. This drives the timeline warning.
+    bypassedGates: force,
     pushAndCreatePr: args.pushAndCreatePr,
   });
 }
@@ -383,6 +389,8 @@ export interface RunSessionPushArgs {
   session: SessionRow;
   card: KanbanCardRow;
   pushAndCreatePr?: PushAndCreatePrFn;
+  /** Resolve the worktree HEAD SHA (injectable for tests). */
+  resolveHeadSha?: (worktreePath: string) => Promise<string>;
   /** Resolve the worktree's checked-out branch (injectable for tests). */
   resolveCurrentBranch?: (worktreePath: string) => Promise<string | null>;
 }
@@ -395,6 +403,7 @@ export async function runSessionPushToGithub(
   args: RunSessionPushArgs,
 ): Promise<FinalizePushOutcome> {
   const { deps, project, session, card } = args;
+  const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
   if (!session.worktree_path || !session.worktree_branch) {
     return {
       ok: false,
@@ -416,7 +425,7 @@ export async function runSessionPushToGithub(
 
   let currentHead: string;
   try {
-    currentHead = await defaultResolveHeadSha(session.worktree_path);
+    currentHead = await resolveHead(session.worktree_path);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -435,6 +444,7 @@ export async function runSessionPushToGithub(
   );
 
   const pushFn = args.pushAndCreatePr ?? createPushAndCreatePr({ config: deps.config });
+  const runId = `session-push-${uuidv4()}`;
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
@@ -442,7 +452,7 @@ export async function runSessionPushToGithub(
       getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
     const pushResult = await pushFn({
-      runId: `session-push-${uuidv4()}`,
+      runId,
       worktreePath: session.worktree_path,
       branch: pushBranch,
       baseBranch,
@@ -461,6 +471,18 @@ export async function runSessionPushToGithub(
         message: 'Push step returned no PR URL.',
       };
     }
+    // No finalize run existed, so review + checks never ran. Record a terminal
+    // timeline message marked bypassedGates so the session surfaces an amber
+    // "pushed without tests or review" warning instead of silently succeeding.
+    writeFinalizeRunTerminalTimeline(
+      { stmts: deps.stmts as Stmts, broadcast: deps.broadcast },
+      {
+        sessionId: session.id,
+        runId,
+        status: 'pushed',
+        bypassedGates: true,
+      },
+    );
     return { ok: true, prUrl: pushResult.prUrl };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -5,6 +5,7 @@ import {
   readFinalizeLoopRound,
   writeFinalizeChecksRoundTimeline,
   writeFinalizeReviewRoundTimeline,
+  writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
 } from './timeline-message.js';
 
@@ -104,6 +105,40 @@ describe('timeline-message', () => {
       },
     );
     expect(stmts.addMessage.run.mock.calls[0][3]).toContain('test failed');
+  });
+
+  it('writeFinalizeRunTerminalTimeline marks a gated push as pushed without warning', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRunTerminalTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm3' },
+      { sessionId: 'sess-1', runId: 'run-1', status: 'pushed' },
+    );
+    expect(stmts.addMessage.run.mock.calls[0][3]).toBe('Finalize run pushed');
+    const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
+    expect(metadata.bypassedGates).toBe(false);
+  });
+
+  it('writeFinalizeRunTerminalTimeline flags a bypassed push in content and payload', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRunTerminalTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm4' },
+      { sessionId: 'sess-1', runId: 'run-1', status: 'pushed', bypassedGates: true },
+    );
+    expect(stmts.addMessage.run.mock.calls[0][3]).toBe(
+      'Pushed to GitHub without running tests or review',
+    );
+    const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
+    expect(metadata.kind).toBe('finalize_run_terminal');
+    expect(metadata.status).toBe('pushed');
+    expect(metadata.bypassedGates).toBe(true);
   });
 
   it('readFinalizeLoopRound defaults invalid values to 0', () => {

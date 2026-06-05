@@ -261,11 +261,20 @@ export function writeFinalizeRunTerminalTimeline(
     status: string;
     failureReason?: string | null;
     round?: number;
+    /**
+     * True when the push skipped the review + checks gate (an operator
+     * "push anyway" / force push, or a session push with no finalize run).
+     * Drives the amber "pushed without tests or review" warning client-side.
+     */
+    bypassedGates?: boolean;
   },
 ): string | null {
+  const bypassedGates = Boolean(args.bypassedGates);
   const content =
     args.status === 'pushed'
-      ? 'Finalize run pushed'
+      ? bypassedGates
+        ? 'Pushed to GitHub without running tests or review'
+        : 'Finalize run pushed'
       : args.status === 'cancelled'
         ? 'Finalize run cancelled'
         : args.status === 'ready_to_push'
@@ -282,6 +291,7 @@ export function writeFinalizeRunTerminalTimeline(
       status: args.status,
       failureReason: args.failureReason ?? null,
       round: args.round ?? 0,
+      bypassedGates,
     },
   });
 }
