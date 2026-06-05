@@ -260,8 +260,8 @@ describe('Sidebar — actionable session visibility', () => {
   });
 });
 
-describe('Sidebar — waiting-on-user indicator', () => {
-  it('renders a "Waiting for your input" dot only on sessions in awaitingInputBySession', () => {
+describe('Sidebar — always-on session state icon', () => {
+  it('renders a state icon on every session row (idle and awaiting both resolve to waiting)', () => {
     const props = buildProps({
       sessions: [
         { id: 's-ask', name: 'Picker session' },
@@ -273,18 +273,16 @@ describe('Sidebar — waiting-on-user indicator', () => {
     });
     render(<Sidebar {...props} />);
 
-    expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toBeInTheDocument();
-    expect(screen.queryByTestId('awaiting-input-indicator-s-idle')).not.toBeInTheDocument();
-    // Icon carries both an aria-label (screen reader) and a <title> child
-    // (hover tooltip). Either accessor is sufficient — assert the aria-label
-    // which is the more reliable / colorblind-safe affordance.
-    expect(screen.getByTestId('awaiting-input-indicator-s-ask')).toHaveAttribute(
-      'aria-label',
-      'Waiting for your input',
-    );
+    // The icon is ALWAYS present now — idle and awaiting collapse into the
+    // single "Waiting for user input" state.
+    const askIcon = screen.getByTestId('session-state-icon-s-ask');
+    const idleIcon = screen.getByTestId('session-state-icon-s-idle');
+    expect(askIcon).toHaveAttribute('data-session-state', 'waiting_for_user_input');
+    expect(idleIcon).toHaveAttribute('data-session-state', 'waiting_for_user_input');
+    expect(askIcon).toHaveAttribute('aria-label', 'Waiting for user input');
   });
 
-  it('renders a subdued spinner for running sessions instead of the green ask dot', () => {
+  it('shows the working state for sessions with an active task', () => {
     const props = buildProps({
       sessions: [{ id: 's-running', name: 'Running session' }],
       activeTaskSessionIds: { 's-running': true },
@@ -293,13 +291,13 @@ describe('Sidebar — waiting-on-user indicator', () => {
     });
     render(<Sidebar {...props} />);
 
-    // The "task running" indicator is now the subdued spinner, not a green dot.
-    expect(screen.getByTestId('session-running-indicator-s-running')).toBeInTheDocument();
-    // It is NOT the prominent green-dot used for awaiting input.
-    expect(screen.queryByTestId('awaiting-input-indicator-s-running')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-state-icon-s-running')).toHaveAttribute(
+      'data-session-state',
+      'working',
+    );
   });
 
-  it('prefers the running spinner over the waiting dot when both states briefly overlap', () => {
+  it('prefers working over waiting when an active task and a stale ask overlap', () => {
     const props = buildProps({
       sessions: [{ id: 's-overlap', name: 'Resuming session' }],
       activeTaskSessionIds: { 's-overlap': true },
@@ -308,10 +306,10 @@ describe('Sidebar — waiting-on-user indicator', () => {
     });
     render(<Sidebar {...props} />);
 
-    // Active task suppresses the waiting indicator; the user can't both be
-    // "answering" and "waiting" at the same instant from the user's POV.
-    expect(screen.queryByTestId('awaiting-input-indicator-s-overlap')).not.toBeInTheDocument();
-    expect(screen.getByTestId('session-running-indicator-s-overlap')).toBeInTheDocument();
+    expect(screen.getByTestId('session-state-icon-s-overlap')).toHaveAttribute(
+      'data-session-state',
+      'working',
+    );
   });
 
   it('keeps awaiting-input sessions visible when the agent row is collapsed', () => {
@@ -335,29 +333,31 @@ describe('Sidebar — waiting-on-user indicator', () => {
   });
 });
 
-describe('Sidebar — ready-to-push indicator', () => {
-  it('renders a green check only on sessions whose finalize status is ready_to_push', () => {
+describe('Sidebar — finalize-driven session states', () => {
+  it('maps finalize statuses to the right state icon per row', () => {
     const props = buildProps({
       sessions: [
         { id: 's-ready', name: 'Finalized session' },
-        { id: 's-idle', name: 'Idle session' },
+        { id: 's-review', name: 'Reviewing session' },
       ],
       activeTaskSessionIds: {},
       changesReadyBySession: {},
-      finalizeStatusBySession: { 's-ready': 'ready_to_push', 's-idle': 'reviewing' },
+      finalizeStatusBySession: { 's-ready': 'ready_to_push', 's-review': 'reviewing' },
     });
     render(<Sidebar {...props} />);
 
-    expect(screen.getByTestId('ready-to-push-indicator-s-ready')).toBeInTheDocument();
-    expect(screen.getByTestId('ready-to-push-indicator-s-ready')).toHaveAttribute(
-      'aria-label',
-      'Ready to push to GitHub',
+    // ready_to_push collapses into the "pending push" state.
+    expect(screen.getByTestId('session-state-icon-s-ready')).toHaveAttribute(
+      'data-session-state',
+      'pending_push',
     );
-    // A session that has a finalize run but is not ready_to_push gets no check.
-    expect(screen.queryByTestId('ready-to-push-indicator-s-idle')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-state-icon-s-review')).toHaveAttribute(
+      'data-session-state',
+      'reviewing',
+    );
   });
 
-  it('shows no check when finalizeStatusBySession is empty', () => {
+  it('falls back to waiting when finalizeStatusBySession is empty', () => {
     const props = buildProps({
       sessions: [{ id: 's-1', name: 'Plain session' }],
       activeTaskSessionIds: {},
@@ -365,10 +365,13 @@ describe('Sidebar — ready-to-push indicator', () => {
       finalizeStatusBySession: {},
     });
     render(<Sidebar {...props} />);
-    expect(screen.queryByTestId('ready-to-push-indicator-s-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-state-icon-s-1')).toHaveAttribute(
+      'data-session-state',
+      'waiting_for_user_input',
+    );
   });
 
-  it('keeps the ready-to-push check in the project-collapsed actionable list', () => {
+  it('keeps the state icon in the project-collapsed actionable list', () => {
     const props = buildProps({
       sessions: [{ id: 's-ready', name: 'Finalized session' }],
       activeTaskSessionIds: {},
@@ -380,9 +383,10 @@ describe('Sidebar — ready-to-push indicator', () => {
     fireEvent.click(screen.getByText('Test Project')); // collapse project
 
     const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
-    expect(
-      within(collapsedPanel).getByTestId('ready-to-push-indicator-s-ready'),
-    ).toBeInTheDocument();
+    expect(within(collapsedPanel).getByTestId('session-state-icon-s-ready')).toHaveAttribute(
+      'data-session-state',
+      'pending_push',
+    );
   });
 });
 

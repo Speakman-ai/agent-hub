@@ -25,7 +25,6 @@ import {
   Lock,
   GripVertical,
   MessageCircleQuestion,
-  CheckCircle2,
   ScanEye,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
@@ -40,6 +39,8 @@ import {
 import AgentAvatar from './AgentAvatar.jsx';
 import { daysUntilPurge } from '../utils/time.js';
 import SidebarSessionOrchestration from './SidebarSessionOrchestration.jsx';
+import SessionStateIcon from './SessionStateIcon.jsx';
+import { deriveSessionState } from '../utils/deriveSessionState.js';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -608,13 +609,12 @@ export default function Sidebar({
                                 return (
                                   <div className="ml-5 mb-2" data-testid="agent-sessions-list">
                                     {visibleSessions.map((session) => {
-                                      const isRunning = !!activeTaskSessionIds[session.id];
-                                      const isAwaitingInput =
-                                        !isRunning && !!awaitingInputBySession[session.id];
+                                      const sessionState = deriveSessionState(session, {
+                                        activeTaskSessionIds,
+                                        finalizeStatusBySession,
+                                      });
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
-                                      const isReadyToPush =
-                                        finalizeStatusBySession[session.id] === 'ready_to_push';
                                       const resolvePrHref =
                                         prReady && isResolvePrSessionTitle(session.name)
                                           ? inferPrUrlFromSessionTitle(
@@ -708,23 +708,11 @@ export default function Sidebar({
                                                 }}
                                                 className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
                                               >
-                                                {isAwaitingInput ? (
-                                                  <MessageCircleQuestion
-                                                    size={12}
-                                                    data-testid={`awaiting-input-indicator-${session.id}`}
-                                                    className="text-amber-400 animate-pulse flex-shrink-0"
-                                                    aria-label="Waiting for your input"
-                                                  >
-                                                    <title>Waiting for your input</title>
-                                                  </MessageCircleQuestion>
-                                                ) : isRunning ? (
-                                                  <Loader2
-                                                    size={10}
-                                                    data-testid={`session-running-indicator-${session.id}`}
-                                                    className="text-gray-500 animate-spin flex-shrink-0"
-                                                    aria-label="Task running"
-                                                  />
-                                                ) : null}
+                                                <SessionStateIcon
+                                                  state={sessionState}
+                                                  size={12}
+                                                  testId={`session-state-icon-${session.id}`}
+                                                />
                                                 {subagentsBySession[session.id]?.running > 0 && (
                                                   <span
                                                     className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
@@ -741,16 +729,6 @@ export default function Sidebar({
                                                     title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
                                                   >
                                                     <GitPullRequest size={11} />
-                                                  </span>
-                                                )}
-                                                {isReadyToPush && (
-                                                  <span
-                                                    data-testid={`ready-to-push-indicator-${session.id}`}
-                                                    className="flex items-center text-emerald-400 flex-shrink-0"
-                                                    title="Checks and review passed — ready to push to GitHub"
-                                                    aria-label="Ready to push to GitHub"
-                                                  >
-                                                    <CheckCircle2 size={12} />
                                                   </span>
                                                 )}
                                                 <span className="truncate">{session.name}</span>
@@ -1112,12 +1090,11 @@ export default function Sidebar({
                         data-testid="project-collapsed-actionable"
                       >
                         {actionableSessions.map((session) => {
-                          const isRunning = !!activeTaskSessionIds[session.id];
-                          const isAwaitingInput =
-                            !isRunning && !!awaitingInputBySession[session.id];
+                          const sessionState = deriveSessionState(session, {
+                            activeTaskSessionIds,
+                            finalizeStatusBySession,
+                          });
                           const prReady = changesReadyBySession[session.id];
-                          const isReadyToPush =
-                            finalizeStatusBySession[session.id] === 'ready_to_push';
                           const resolvePrHref =
                             prReady && isResolvePrSessionTitle(session.name)
                               ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
@@ -1138,22 +1115,11 @@ export default function Sidebar({
                               }`}
                               title={session.name}
                             >
-                              {isAwaitingInput ? (
-                                <MessageCircleQuestion
-                                  size={12}
-                                  data-testid={`awaiting-input-indicator-${session.id}`}
-                                  className="text-amber-400 animate-pulse flex-shrink-0"
-                                  aria-label="Waiting for your input"
-                                >
-                                  <title>Waiting for your input</title>
-                                </MessageCircleQuestion>
-                              ) : isRunning ? (
-                                <Loader2
-                                  size={10}
-                                  className="text-gray-500 animate-spin flex-shrink-0"
-                                  aria-label="Task running"
-                                />
-                              ) : null}
+                              <SessionStateIcon
+                                state={sessionState}
+                                size={12}
+                                testId={`session-state-icon-${session.id}`}
+                              />
                               {showCreatePrReadyGlyph && (
                                 <span
                                   data-testid="pr-ready-indicator"
@@ -1170,16 +1136,6 @@ export default function Sidebar({
                                   aria-hidden
                                 >
                                   <ExternalLink size={11} />
-                                </span>
-                              )}
-                              {isReadyToPush && (
-                                <span
-                                  data-testid={`ready-to-push-indicator-${session.id}`}
-                                  className="flex items-center text-emerald-400 flex-shrink-0"
-                                  title="Checks and review passed — ready to push to GitHub"
-                                  aria-label="Ready to push to GitHub"
-                                >
-                                  <CheckCircle2 size={12} />
                                 </span>
                               )}
                               <span className="truncate">{session.name}</span>

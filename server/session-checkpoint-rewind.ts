@@ -1,4 +1,5 @@
 import type { SessionRow, Stmts } from './types.js';
+import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -29,6 +30,14 @@ export type SessionWireRow = SessionRow & {
    * threaded into `enrichSessionForClient`; otherwise `null`.
    */
   finalize_status: string | null;
+  /**
+   * Always-on lifecycle state — exactly one of `SESSION_STATES`. When `stmts`
+   * is threaded this is the freshly-resolved live value (authoritative even if
+   * the persisted `sessions.state` cache is stale); without `stmts` it falls
+   * back to the persisted column, then to the default. Clients render one icon
+   * per state, so this field is never null on the wire.
+   */
+  state: SessionState;
 };
 
 /**
@@ -50,7 +59,7 @@ function lookupCardIdForSession(stmts: Stmts, sessionId: string): string | null 
  * unit-test DB lacking the `finalize_runs` table falls back to `null`
  * rather than throwing.
  */
-function lookupFinalizeStatusForSession(stmts: Stmts, sessionId: string): string | null {
+export function lookupFinalizeStatusForSession(stmts: Stmts, sessionId: string): string | null {
   try {
     const row = stmts.getLatestFinalizeRunForSession.get(sessionId) as
       | { status?: string; mode?: string }
@@ -139,5 +148,8 @@ export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionW
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
     card_id: stmts ? lookupCardIdForSession(stmts, row.id) : null,
     finalize_status: stmts ? lookupFinalizeStatusForSession(stmts, row.id) : null,
+    state: stmts
+      ? computeSessionState(stmts, row.id)
+      : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
   };
 }

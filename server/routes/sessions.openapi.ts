@@ -70,6 +70,22 @@ export const SessionComponent = registerComponent(
         description:
           "Optional Design Studio design id linked to this session. When set, the web client renders the design's live canvas in a preview pane beside the chat. Set/cleared via `PUT /api/sessions/{sessionId}/linked-design`. Not a foreign key — a stale id (design since deleted) is tolerated and ignored at render time.",
       }),
+      state: z
+        .enum([
+          'waiting_for_user_input',
+          'working',
+          'running_tests',
+          'reviewing',
+          'pending_checks',
+          'pending_push',
+          'pushed',
+          'merged',
+        ])
+        .optional()
+        .openapi({
+          description:
+            'Always-on lifecycle state of the session — exactly one value, surfaced as a single status icon in the clients. Resolved server-side at read time from active-task / Finalize-run / Done-column signals (see `server/session-state.ts`) and present on enriched session payloads (list, detail, `session_created`). Clients keep it live by re-deriving from the signal maps they already receive (`active-tasks-snapshot`, `awaiting_input`, `finalize_run_phase_changed`). A dedicated `session_state` WebSocket push + persisted `sessions.state` cache are planned but not yet emitted.',
+        }),
       agents: z
         .array(
           z.object({

@@ -1133,6 +1133,18 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Always-on session lifecycle state (denormalized cache of `resolveSessionState`).
+  // Today serialization always resolves the live value on read, so this column
+  // currently stays NULL in production. The write path — `recomputeSessionState`
+  // backfilling this cache at signal boundaries + emitting the `session_state`
+  // event — is staged but not yet wired (follow-up). The column is added now so
+  // that wiring is a pure write-path change with no migration.
+  try {
+    db.prepare('SELECT state FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN state TEXT DEFAULT NULL');
+  }
+
   // Per-user session ownership (Phase 4). Logical reference to a row in the
   // shared orgs.db `users` table — kept as plain TEXT (not a FK) because the
   // users table lives in a different SQLite database. NULL is reserved for
@@ -2092,6 +2104,9 @@ function initDb(dataDir: string): void {
     updateSessionFinalizeAutomation: db.prepare(
       "UPDATE sessions SET finalize_automation = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    // Derived state cache — intentionally does NOT touch `updated_at` so that
+    // frequent signal-boundary recomputes don't churn the session sort order.
+    updateSessionState: db.prepare('UPDATE sessions SET state = ? WHERE id = ?'),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
     ),
