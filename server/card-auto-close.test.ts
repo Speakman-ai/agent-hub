@@ -182,11 +182,15 @@ describe('buildAutoCloseCommentBody', () => {
 describe('handleCardAutoClose', () => {
   function makeStmts(overrides: Partial<Stmts> = {}): Stmts {
     const defaults = {
+      getActiveTask: { get: vi.fn().mockReturnValue(undefined) },
       getKanbanCardBySession: { get: vi.fn().mockReturnValue(undefined) },
+      getKanbanColumn: { get: vi.fn().mockReturnValue(undefined) },
       getKanbanColumns: { all: vi.fn().mockReturnValue([]) },
+      getLatestFinalizeRunForSession: { get: vi.fn().mockReturnValue(undefined) },
       moveKanbanCard: { run: vi.fn() },
       createKanbanCardComment: { run: vi.fn() },
       getKanbanCard: { get: vi.fn().mockReturnValue(undefined) },
+      updateSessionState: { run: vi.fn() },
     };
     return { ...defaults, ...overrides } as unknown as Stmts;
   }
@@ -223,13 +227,23 @@ describe('handleCardAutoClose', () => {
   };
 
   it('moves the linked card to Done and inserts a comment', () => {
-    const moveRun = vi.fn();
+    let movedToDone = false;
+    const moveRun = vi.fn().mockImplementation(() => {
+      movedToDone = true;
+    });
     const commentRun = vi.fn();
+    const updateStateRun = vi.fn();
     const stmts = makeStmts({
-      getKanbanCardBySession: { get: vi.fn().mockReturnValue(card) },
+      getKanbanCardBySession: {
+        get: vi
+          .fn()
+          .mockImplementation(() => (movedToDone ? { ...card, column_id: 'col-done' } : card)),
+      },
+      getKanbanColumn: { get: vi.fn().mockReturnValue(doneCol) },
       getKanbanColumns: { all: vi.fn().mockReturnValue([doneCol]) },
       moveKanbanCard: { run: moveRun },
       createKanbanCardComment: { run: commentRun },
+      updateSessionState: { run: updateStateRun },
     } as unknown as Partial<Stmts>);
     const broadcast = vi.fn();
 
@@ -252,6 +266,13 @@ describe('handleCardAutoClose', () => {
     expect(bodyArg).toContain('Shipped in PR #201.');
     expect(bodyArg).toContain('sess-1');
     expect(broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
+    expect(updateStateRun).toHaveBeenCalledWith('merged', 'sess-1');
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'session_state',
+      sessionId: 'sess-1',
+      agentId: 'hub-backend',
+      state: 'merged',
+    });
   });
 
   it('includes the duplicate card title in the comment when available', () => {

@@ -84,7 +84,7 @@ export const SessionComponent = registerComponent(
         .optional()
         .openapi({
           description:
-            'Always-on lifecycle state of the session — exactly one value, surfaced as a single status icon in the clients. Resolved server-side at read time from active-task / Finalize-run / Done-column signals (see `server/session-state.ts`) and present on enriched session payloads (list, detail, `session_created`). Clients keep it live by re-deriving from the signal maps they already receive (`active-tasks-snapshot`, `awaiting_input`, `finalize_run_phase_changed`). A dedicated `session_state` WebSocket push + persisted `sessions.state` cache are planned but not yet emitted.',
+            'Always-on lifecycle state of the session — exactly one value, surfaced as a single status icon in the clients. Resolved server-side at read time from active-task / Finalize-run / Done-column signals (see `server/session-state.ts`) and present on enriched session payloads (list, detail, `session_created`). The server also backfills the persisted `sessions.state` cache and emits a dedicated `session_state` WebSocket push at production signal boundaries (chat turn start/end, linked-card auto-close, kanban move to Done). Clients keep Finalize phases live from `finalize_run_phase_changed` and use `session_state` for persisted seed / terminal updates such as `merged`.',
         }),
       agents: z
         .array(

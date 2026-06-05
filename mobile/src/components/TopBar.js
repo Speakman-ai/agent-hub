@@ -23,6 +23,7 @@ import { copyToClipboard } from '../utils/clipboard';
 import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
 import BugReportButton from './BugReportButton';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
+import SessionStateIcon from './SessionStateIcon';
 
 export default function TopBar({ projectId, agentId } = {}) {
   const {
@@ -40,6 +41,7 @@ export default function TopBar({ projectId, agentId } = {}) {
     handleModelChange,
     handleNewSession,
     activeSessionId,
+    activeSessionState,
     agents,
     handleOpenHandoffSession,
   } = useApp();
@@ -103,6 +105,13 @@ export default function TopBar({ projectId, agentId } = {}) {
         {activeAgent && (
           <View style={styles.agentInfo}>
             <View style={[styles.agentDot, { backgroundColor: activeAgent.color }]} />
+            {activeSessionId ? (
+              <SessionStateIcon
+                state={activeSessionState}
+                size={14}
+                testID="topbar-session-state-icon"
+              />
+            ) : null}
             <Text style={styles.agentName} numberOfLines={1}>
               {activeAgent.name}
             </Text>

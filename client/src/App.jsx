@@ -119,6 +119,7 @@ import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewL
 import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
 import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor.js';
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive.js';
+import { deriveSessionState } from './utils/deriveSessionState.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -1197,6 +1198,23 @@ export default function App() {
             setSessionAgents(data.session.agents);
           }
           break;
+        case 'session_state': {
+          // Server-side lifecycle cache push. Keep the session row seed current
+          // so late terminal states (pushed / merged) update immediately even
+          // when no independent client-side signal map changes.
+          const sid = data.sessionId;
+          if (!sid || typeof data.state !== 'string') break;
+          const current = sessionsByIdRef.current.get(sid);
+          if (current) {
+            sessionsByIdRef.current.set(sid, { ...current, state: data.state });
+            setSessionsIndexTick((t) => t + 1);
+          }
+          setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, state: data.state } : s)));
+          setCronSessions((prev) =>
+            prev.map((s) => (s.id === sid ? { ...s, state: data.state } : s)),
+          );
+          break;
+        }
         case 'session-worktree-detected':
           // Worktree-only mode: keep the session-row flag in sync for any
           // debugging surfaces / future tooling, but the user-facing
@@ -3383,6 +3401,15 @@ export default function App() {
     [activeSessionId, activeSession, agents, projects, activeAgentId, sessionsIndexTick],
   );
 
+  const activeSessionState = useMemo(
+    () =>
+      deriveSessionState(activeSession, {
+        activeTaskSessionIds: activeTasks,
+        finalizeStatusBySession,
+      }),
+    [activeSession, activeTasks, finalizeStatusBySession],
+  );
+
   const activeSessionWorktreeReady =
     !activeSession ||
     !isSessionWorktreeEnabled(activeSession) ||
@@ -3797,6 +3824,7 @@ export default function App() {
                 modelConfig={modelConfig}
                 messages={messages}
                 activeSessionId={activeSessionId}
+                activeSessionState={activeSessionState}
                 sessionAskMode={sessionAskMode}
                 onAskModeChange={handleAskModeChange}
                 projectId={

@@ -8,6 +8,7 @@ import {
 import { Palette } from 'lucide-react';
 import { api } from '../utils/api.js';
 import BugReportButton from './BugReportButton.jsx';
+import SessionStateIcon from './SessionStateIcon.jsx';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
@@ -59,6 +60,7 @@ export default function TopBar({
   modelConfig,
   messages,
   activeSessionId,
+  activeSessionState,
   sessionAskMode,
   onAskModeChange,
   projectId,
@@ -143,6 +145,13 @@ export default function TopBar({
               className="w-3 h-3 rounded-full flex-shrink-0"
               style={{ backgroundColor: headerAccent }}
             />
+            {activeSessionId && (
+              <SessionStateIcon
+                state={activeSessionState}
+                size={14}
+                testId="topbar-session-state-icon"
+              />
+            )}
             <div className="min-w-0">
               <h2 className="font-semibold truncate">{agent.name}</h2>
               <p className="text-xs text-gray-500 font-mono truncate hidden sm:block">

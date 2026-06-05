@@ -108,6 +108,7 @@ import {
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
+import { recomputeSessionState } from './session-state.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
 import {
   notifyFinalizeSessionTurnEnd,
@@ -2411,6 +2412,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const message = err instanceof Error ? err.message : String(err);
         console.error('Failed to insert active_tasks row:', message);
       }
+      // Turn-start signal boundary: the session is now `working`. Persist the
+      // resolved state to the `sessions.state` cache and push a `session_state`
+      // event so every sidebar (web + mobile) flips to the working glyph live.
+      recomputeSessionState(stmts, sessionId, { agentId, broadcast });
 
       broadcast({
         type: 'thinking',
@@ -3060,6 +3065,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         try {
           stmts.deleteActiveTask.run(sessionId);
         } catch {}
+        // The turn never spawned (bad cwd) — leave the cache out of `working`.
+        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
         drainQueue(sessionId);
         return;
       }
@@ -4224,6 +4231,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // that doesn't repeat the ask), it broadcasts `waiting: false` so
         // clients drop the indicator.
         broadcastAwaitingInputForSession(sessionId, stmts, broadcast);
+        // Turn-end signal boundary: the active task is gone, so the resolved
+        // state drops back to whatever the live signals say (waiting / merged /
+        // settled pushed). Persist + push `session_state` so the icon updates.
+        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
 
         const wouldBaseContinue =
           reactLoopEnabled && continuationContextAdded && !controlFlowPresent;

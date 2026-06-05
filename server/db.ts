@@ -1146,11 +1146,11 @@ function initDb(dataDir: string): void {
   }
 
   // Always-on session lifecycle state (denormalized cache of `resolveSessionState`).
-  // Today serialization always resolves the live value on read, so this column
-  // currently stays NULL in production. The write path — `recomputeSessionState`
-  // backfilling this cache at signal boundaries + emitting the `session_state`
-  // event — is staged but not yet wired (follow-up). The column is added now so
-  // that wiring is a pure write-path change with no migration.
+  // `recomputeSessionState` backfills this column at the production signal
+  // boundaries (chat turn start/end, card auto-close, kanban move) and emits the
+  // `session_state` event. Serialization still resolves the live value on read
+  // via `enrichSessionForClient`, so the column is a best-effort seed/cache, not
+  // the source of truth — a NULL here is always safe.
   try {
     db.prepare('SELECT state FROM sessions LIMIT 1').get();
   } catch {

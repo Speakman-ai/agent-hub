@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveSessionState,
+  recomputeSessionState,
   isSessionState,
   SESSION_STATES,
   DEFAULT_SESSION_STATE,
@@ -107,5 +108,30 @@ describe('isSessionState', () => {
     expect(isSessionState('nope')).toBe(false);
     expect(isSessionState(null)).toBe(false);
     expect(isSessionState(7)).toBe(false);
+  });
+});
+
+describe('recomputeSessionState', () => {
+  it('persists and broadcasts the resolved state at a live signal boundary', () => {
+    const updates: unknown[][] = [];
+    const broadcasts: unknown[] = [];
+    const stmts = {
+      getLatestFinalizeRunForSession: { get: () => undefined },
+      getActiveTask: { get: () => undefined },
+      getKanbanCardBySession: { get: () => ({ column_id: 'done-col' }) },
+      getKanbanColumn: { get: () => ({ name: 'Done' }) },
+      updateSessionState: { run: (...args: unknown[]) => updates.push(args) },
+    };
+
+    const state = recomputeSessionState(stmts as never, 'sess-1', {
+      agentId: 'agent-1',
+      broadcast: (msg) => broadcasts.push(msg),
+    });
+
+    expect(state).toBe('merged');
+    expect(updates).toEqual([['merged', 'sess-1']]);
+    expect(broadcasts).toEqual([
+      { type: 'session_state', sessionId: 'sess-1', agentId: 'agent-1', state: 'merged' },
+    ]);
   });
 });

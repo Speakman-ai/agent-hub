@@ -15,6 +15,8 @@ import { colors } from '../theme/colors';
 import { relativeTime, daysUntilPurge } from '../utils/time';
 import humanCron from '../utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
+import { deriveSessionState } from '../utils/deriveSessionState';
+import SessionStateIcon from './SessionStateIcon';
 
 export default function DrawerContent({ navigation }) {
   const {
@@ -34,6 +36,8 @@ export default function DrawerContent({ navigation }) {
     refreshProjects,
     refreshAgents,
     cronSessions,
+    activeTasks,
+    finalizeStatusBySession,
     unreadThreadCounts,
     reloadMessages,
   } = useApp();
@@ -179,6 +183,13 @@ export default function DrawerContent({ navigation }) {
               onPress={() => handleSessionSelect(session.id)}
               onLongPress={() => confirmDeleteSession(session.id)}
             >
+              <SessionStateIcon
+                state={deriveSessionState(session, {
+                  activeTaskSessionIds: activeTasks,
+                  finalizeStatusBySession,
+                })}
+                testID={`session-state-icon-${session.id}`}
+              />
               <Text
                 style={[
                   styles.sessionName,
@@ -343,6 +354,13 @@ export default function DrawerContent({ navigation }) {
                 ]}
                 onPress={() => handleCronSessionSelect(cs.id)}
               >
+                <SessionStateIcon
+                  state={deriveSessionState(cs, {
+                    activeTaskSessionIds: activeTasks,
+                    finalizeStatusBySession,
+                  })}
+                  testID={`session-state-icon-${cs.id}`}
+                />
                 <View style={styles.agentInfo}>
                   <Text
                     style={[
@@ -768,6 +786,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sessionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
     paddingHorizontal: 8,
     paddingVertical: 10,
     borderRadius: 6,
@@ -777,6 +798,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray800,
   },
   sessionName: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 12,
     color: colors.gray500,
   },

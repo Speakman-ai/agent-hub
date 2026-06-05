@@ -297,6 +297,28 @@ describe('Sidebar — always-on session state icon', () => {
     );
   });
 
+  it('renders the shared state icon on scheduled-task rows', () => {
+    const props = buildProps({
+      sessions: [],
+      activeTaskSessionIds: { 'cron-sess': true },
+      changesReadyBySession: {},
+      cronSessions: [
+        {
+          id: 'cron-sess',
+          agent_id: AGENT_ID,
+          cron_name: 'Nightly reconcile',
+          cron_schedule: '0 0 * * *',
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByTestId('session-state-icon-cron-sess')).toHaveAttribute(
+      'data-session-state',
+      'working',
+    );
+  });
+
   it('prefers working over waiting when an active task and a stale ask overlap', () => {
     const props = buildProps({
       sessions: [{ id: 's-overlap', name: 'Resuming session' }],

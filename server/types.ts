@@ -80,10 +80,10 @@ export interface SessionRow {
   finalize_automation?: string | null;
   /**
    * Always-on lifecycle state — one of `server/session-state.ts` `SESSION_STATES`.
-   * Denormalized cache of `resolveSessionState`. Currently always NULL in
-   * production: serialization resolves the live value on read; the
-   * `recomputeSessionState` write/broadcast path that would populate this cache
-   * is staged but not yet wired.
+   * Denormalized cache of `resolveSessionState`, backfilled by
+   * `recomputeSessionState` at the chat/card-close/kanban-move signal boundaries
+   * (which also emit the `session_state` event). Serialization still resolves the
+   * live value on read, so this is a best-effort seed/cache — NULL is safe.
    */
   state?: string | null;
 }

@@ -22,6 +22,7 @@ import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { coalescePromiseByKey } from '../utils/coalesceInFlight';
 import { createReloadMessages } from '../utils/sessionReload';
+import { deriveSessionState } from '../utils/deriveSessionState';
 import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
@@ -107,6 +108,10 @@ export function AppProvider({ children }) {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Map of sessionId -> latest Finalize Code Changes status string. Mirrors
+  // the web sidebar's live status map so mobile can derive the same session
+  // lifecycle state from Finalize WS events.
+  const [finalizeStatusBySession, setFinalizeStatusBySession] = useState({});
   const [shipFailureAt, setShipFailureAt] = useState(null);
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
@@ -134,6 +139,14 @@ export function AppProvider({ children }) {
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const activeSession =
+    sessions.find((s) => s.id === activeSessionId) ||
+    cronSessions.find((s) => s.id === activeSessionId) ||
+    null;
+  const activeSessionState = deriveSessionState(activeSession, {
+    activeTaskSessionIds: activeTasks,
+    finalizeStatusBySession,
+  });
   const defaultModelForEngine = (engine) => {
     const fromConfig = modelConfig?.engineDefaultModels?.[engine];
     if (fromConfig) return fromConfig;
@@ -335,6 +348,17 @@ export function AppProvider({ children }) {
           setSessionAgents(data.session.agents);
         }
         break;
+      case 'session_state': {
+        const sid = data.sessionId;
+        if (!sid || typeof data.state !== 'string') break;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sid ? { ...s, state: data.state } : s)),
+        );
+        setCronSessions((prev) =>
+          prev.map((s) => (s.id === sid ? { ...s, state: data.state } : s)),
+        );
+        break;
+      }
       case 'session-worktree-detected':
         // Keep the per-session row flag in sync for debugging / future
         // tooling. The user-facing badge was removed when Agent Hub
@@ -546,6 +570,13 @@ export function AppProvider({ children }) {
 
       case 'session_deleted':
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+        setCronSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+        setFinalizeStatusBySession((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
         break;
 
       case 'session_created': {
@@ -622,6 +653,20 @@ export function AppProvider({ children }) {
       case 'auto_pr_failed':
         if (data.sessionId === activeSessionIdRef.current) {
           setShipFailureAt(Date.now());
+        }
+        break;
+
+      case 'finalize_run_phase_changed':
+      case 'finalize_run_completed':
+        if (data.session_id && typeof data.status === 'string') {
+          setFinalizeStatusBySession((prev) => {
+            const incoming =
+              data.status === 'ready_to_push' && data.validated === false
+                ? 'phase_passed'
+                : data.status;
+            if (prev[data.session_id] === incoming) return prev;
+            return { ...prev, [data.session_id]: incoming };
+          });
         }
         break;
 
@@ -1153,6 +1198,7 @@ export function AppProvider({ children }) {
     setEventsByMessage({});
     setCronSessions([]);
     setChangesReady({});
+    setFinalizeStatusBySession({});
     setSessionHandoffs([]);
     setSessionAskMode(false);
     // Reconnect WebSocket to new org
@@ -1599,6 +1645,7 @@ export function AppProvider({ children }) {
     activeAgent,
     sessions,
     activeSessionId,
+    activeSessionState,
     setActiveSessionId,
     messages,
     reloadMessages,
@@ -1615,6 +1662,7 @@ export function AppProvider({ children }) {
     reconnecting,
     isProcessing,
     activeTasks,
+    finalizeStatusBySession,
     handleNewSession,
     handleEngineChange,
     handleModelChange,

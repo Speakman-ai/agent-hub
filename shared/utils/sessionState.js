@@ -1,8 +1,6 @@
-// Shared, framework-free session lifecycle state model. Imported by the server
-// (`server/session-state.ts`) and the web client so the resolver and the
-// per-state icon metadata never drift between surfaces. The mobile client is
-// intended to consume this same module too, but its `SessionStateIcon` surface
-// is a follow-up and is not wired up yet.
+// Shared, framework-free session lifecycle state model. Imported by the server,
+// web client, and mobile client so the resolver and per-state icon metadata
+// never drift between surfaces.
 
 /**
  * Canonical pipeline order (early → late). Stable wire strings persisted in

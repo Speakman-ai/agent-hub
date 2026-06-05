@@ -30,6 +30,7 @@ function renderTopBar(overrides = {}) {
     onModelChange: vi.fn(),
     messages: [],
     activeSessionId: 'session-1',
+    activeSessionState: 'reviewing',
     sessionAskMode: false,
     onAskModeChange: () => {},
     projectId: 'proj-a',
@@ -43,6 +44,19 @@ function renderTopBar(overrides = {}) {
 }
 
 describe('<TopBar /> engine picker', () => {
+  it('renders the active session lifecycle icon in the header', () => {
+    renderTopBar();
+    expect(screen.getByTestId('topbar-session-state-icon')).toHaveAttribute(
+      'data-session-state',
+      'reviewing',
+    );
+  });
+
+  it('hides the session lifecycle icon when no session is active', () => {
+    renderTopBar({ activeSessionId: null });
+    expect(screen.queryByTestId('topbar-session-state-icon')).toBeNull();
+  });
+
   it('renders the current engine label in the dropdown trigger', () => {
     renderTopBar({ sessionEngine: 'claude-code' });
     const trigger = screen.getByRole('button', { name: /select engine/i });

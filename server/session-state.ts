@@ -71,18 +71,22 @@ export function computeSessionState(stmts: Stmts, sessionId: string): SessionSta
 }
 
 /** Broadcaster callback shape (matches the WebSocket `broadcast` helper). */
-type Broadcast = (msg: unknown) => void;
+type Broadcast = (msg: Record<string, unknown>) => void;
 
 /**
- * Recompute a session's state, persist it to `sessions.state` if it changed,
- * and broadcast a `session_state` event so clients update their single status
- * icon without a full refetch. Returns the resolved state.
+ * Recompute a session's state, persist it to `sessions.state`, and broadcast a
+ * `session_state` event so clients update their single status icon without a
+ * full refetch. Returns the resolved state.
  *
- * NOTE: this write/broadcast path is staged but **not yet wired into any
- * production signal boundary** — today the clients re-derive state live from
- * the signal maps they already receive and the server resolves it at read time
- * in `enrichSessionForClient`. Wiring this in (chat task start/end, awaiting
- * input, Finalize phase changes, card-done) is tracked as a follow-up.
+ * Wired into the production signal boundaries that change a session's resolved
+ * state: chat turn start/end (`chat.ts`, around the `active_tasks` insert/delete
+ * + awaiting-input broadcast), the linked-card auto-close path (`card-auto-close
+ * .ts`), and the kanban move route (`routes/board.ts`) — the last being the
+ * live `merged` trigger when a PR merge or human drag lands the card in Done.
+ * Finalize-phase states still reach clients via the existing
+ * `finalize_run_phase_changed` event (the orchestrator's `stmts` is a narrow
+ * `Pick` without the lookups this resolver needs); `enrichSessionForClient`
+ * remains the authoritative read-time resolver in every case.
  *
  * Best-effort and side-effect-tolerant: a missing `updateSessionState`
  * statement (older test DBs) or a throwing broadcast never propagates.

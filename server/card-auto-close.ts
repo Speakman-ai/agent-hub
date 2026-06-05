@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Stmts, BroadcastFn, KanbanCardRow, KanbanColumnRow } from './types.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
+import { recomputeSessionState } from './session-state.js';
 
 // ─── Kanban card auto-close — `<agenthub:close-card>` block protocol ─────────
 //
@@ -294,6 +295,12 @@ export function handleCardAutoClose(
   } catch {
     /* broadcast failures should never surface */
   }
+
+  // The linked card just landed in Done — the session's resolved state flips to
+  // `merged` (Done-column membership is the durable local merge signal). Persist
+  // it and push `session_state` so the sidebar icon updates live without a
+  // refetch. Best-effort; never blocks the close result.
+  recomputeSessionState(stmts, sessionId, { agentId: author ?? null, broadcast });
 
   return {
     ok: true,

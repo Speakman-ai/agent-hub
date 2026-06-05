@@ -24,7 +24,6 @@ import {
   Loader2,
   Lock,
   GripVertical,
-  MessageCircleQuestion,
   ScanEye,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
@@ -270,8 +269,10 @@ export default function Sidebar({
                 Scheduled Tasks
               </div>
               {cronSessions.map((cs) => {
-                const isRunning = !!activeTaskSessionIds[cs.id];
-                const isAwaitingInput = !isRunning && !!awaitingInputBySession[cs.id];
+                const sessionState = deriveSessionState(cs, {
+                  activeTaskSessionIds,
+                  finalizeStatusBySession,
+                });
                 return (
                   <button
                     type="button"
@@ -283,22 +284,11 @@ export default function Sidebar({
                         : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
                     }`}
                   >
-                    {isAwaitingInput ? (
-                      <MessageCircleQuestion
-                        size={12}
-                        data-testid={`awaiting-input-indicator-${cs.id}`}
-                        className="text-amber-400 animate-pulse flex-shrink-0"
-                        aria-label="Waiting for your input"
-                      >
-                        <title>Waiting for your input</title>
-                      </MessageCircleQuestion>
-                    ) : isRunning ? (
-                      <Loader2
-                        size={10}
-                        className="text-gray-500 animate-spin flex-shrink-0"
-                        aria-label="Task running"
-                      />
-                    ) : null}
+                    <SessionStateIcon
+                      state={sessionState}
+                      size={12}
+                      testId={`session-state-icon-${cs.id}`}
+                    />
                     <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
                     <span className="text-xs text-gray-600 flex-shrink-0">
                       {humanCron(cs.cron_schedule)}

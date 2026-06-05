@@ -29,6 +29,7 @@ import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
+import { recomputeSessionState } from '../session-state.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
@@ -585,6 +586,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             sessionId: updatedCard.session_id || undefined,
             agentId,
           });
+          // Live merged trigger: when a session-linked card crosses a column
+          // boundary (e.g. a PR merge or a human drag lands it in Done), the
+          // session's resolved lifecycle state changes — typically to `merged`.
+          // Recompute + push `session_state` so the sidebar icon flips live.
+          if (updatedCard.session_id) {
+            recomputeSessionState(stmts, updatedCard.session_id, { agentId, broadcast });
+          }
           maybeStartKanbanColumnWorkflowRuns(
             {
               stmts,
