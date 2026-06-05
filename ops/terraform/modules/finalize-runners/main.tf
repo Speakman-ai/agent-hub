@@ -254,7 +254,12 @@ resource "aws_ecs_service" "agent" {
 
   # Avoid a deploy deadlock when capacity is scaling from zero.
   deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
+  # >100 so a rolling deploy can stand up new-revision tasks WHILE old tasks that
+  # are still running a job hold ECS task scale-in protection (they won't drain
+  # until the job finishes/protection expires). At 100 the deploy would block on
+  # the protected tasks (DEPLOYMENT_BLOCKED). One task per instance, so the extra
+  # headroom is transient and the capacity provider adds/removes instances to match.
+  deployment_maximum_percent = 200
 
   # The Hub's queue-depth autoscaler owns desiredCount at runtime (scales the
   # agent count to match active jobs, back to zero when idle). Don't let TF

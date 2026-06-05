@@ -118,6 +118,17 @@ resource "aws_iam_role_policy" "task_runtime" {
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = ["${aws_cloudwatch_log_group.runner.arn}:*"]
       },
+      {
+        # Task scale-in protection: the agent marks its own task protected while it
+        # owns a job (via the $ECS_AGENT_URI endpoint) so a deploy/scale-in can't
+        # SIGKILL it mid-run and strand the shard. Scoped to this cluster's tasks.
+        Sid    = "TaskProtection"
+        Effect = "Allow"
+        Action = ["ecs:UpdateTaskProtection", "ecs:GetTaskProtection"]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${local.name}/*",
+        ]
+      },
     ]
   })
 }

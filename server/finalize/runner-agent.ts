@@ -18,6 +18,11 @@ import { startJobContainer, stopJobContainer } from './job-container.js';
 import type { RunnerDirective } from './runner-job-channel.js';
 import type { RunnerJobWireSpec } from './runner-backend-remote.js';
 import { LocalDirBundleStore, materializeWorktree, type BundleStore } from './worktree-bundle.js';
+import {
+  ecsTaskProtection,
+  noopTaskProtection,
+  type TaskProtection,
+} from './ecs-task-protection.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -62,15 +67,24 @@ export async function runAgentJob(args: {
   materialize?: (spec: RunnerJobWireSpec, destPath: string) => Promise<void>;
   logFlushMs?: number;
   heartbeatMs?: number;
+  protection?: TaskProtection;
 }): Promise<{ stepExits: Array<{ stepIndex: number; exitCode: number | null }> }> {
   const { jobId, spec, transport, docker } = args;
+  const protection = args.protection ?? noopTaskProtection();
+  // Shield this ECS task from deployment / scale-in termination while it owns the
+  // job. A killed agent strands the shard (lease expires → reaper marks it `lost`)
+  // and hangs the waiting session; protection makes a rolling deploy wait for the
+  // job instead of SIGKILLing it. Best-effort — protection errors must NEVER fail
+  // the job (a non-ECS host returns a no-op; a transient API blip retries below).
+  void protection.set(true).catch(() => {});
   // Background heartbeat for the WHOLE job — through worktree materialize, DinD
   // startup, and long/silent steps — so the Hub's lease never expires under a
   // live agent (which would let the reaper mark it lost and the scaler kill it).
-  const heartbeat = setInterval(
-    () => void transport.heartbeat(jobId).catch(() => {}),
-    args.heartbeatMs ?? 30_000,
-  );
+  // The same tick re-arms task protection before its bounded expiry lapses.
+  const heartbeat = setInterval(() => {
+    void transport.heartbeat(jobId).catch(() => {});
+    void protection.set(true).catch(() => {});
+  }, args.heartbeatMs ?? 30_000);
   if (typeof (heartbeat as { unref?: () => void }).unref === 'function') {
     (heartbeat as { unref: () => void }).unref();
   }
@@ -116,6 +130,11 @@ export async function runAgentJob(args: {
     }
   } finally {
     clearInterval(heartbeat);
+    // Job done (or failed): release protection so deploys / scale-to-zero can
+    // replace this now-idle task. Awaited so the next claim can't race a deploy
+    // that's waiting on this task to drain. Still best-effort — expiry is the
+    // backstop if the clear can't reach the control plane.
+    await protection.set(false).catch(() => {});
   }
   return { stepExits };
 }
@@ -241,6 +260,9 @@ export async function runAgentMain(): Promise<void> {
   const { token } = await registerAgent(hubUrl, fleetToken, orgScope);
   const transport = httpTransport(hubUrl, token);
   const docker = realDockerOps();
+  // Under ECS this protects the task from being killed mid-job by a deploy or
+  // scale-in; off-ECS (local 2a fleet) $ECS_AGENT_URI is unset → no-op.
+  const protection = ecsTaskProtection();
   // Cross-host fleet: the wire spec carries a presigned getUrl, so materialize
   // fetches credential-free (store stays null, no AWS SDK in this bundle).
   // Same-host 2a: no getUrl, so fall back to the local-dir store.
@@ -268,6 +290,7 @@ export async function runAgentMain(): Promise<void> {
         transport,
         docker,
         materialize,
+        protection,
       });
     } catch (err) {
       console.error(`[runner-agent] job ${claimed.jobId} failed: ${(err as Error).message}`);

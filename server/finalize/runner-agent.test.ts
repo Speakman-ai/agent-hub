@@ -6,7 +6,19 @@ import {
   type AgentPollResult,
   type AgentTransport,
 } from './runner-agent.js';
+import type { TaskProtection } from './ecs-task-protection.js';
 import type { RunnerJobWireSpec } from './runner-backend-remote.js';
+
+/** Records the on/off protection calls so we can assert the job lifecycle. */
+function fakeProtection(): TaskProtection & { calls: boolean[] } {
+  const calls: boolean[] = [];
+  return {
+    calls,
+    async set(enabled) {
+      calls.push(enabled);
+    },
+  };
+}
 
 const wire = (over: Partial<RunnerJobWireSpec> = {}): RunnerJobWireSpec => ({
   orgId: 'o',
@@ -94,6 +106,38 @@ describe('runAgentJob', () => {
     const { transport, docker, events } = fakes([{ type: 'gone' }], () => 0);
     await runAgentJob({ jobId: 'j', spec: wire(), workspaceDir: '/ws', transport, docker });
     expect(events).toEqual(['start:/ws/repo', 'stop:c1', 'finish']);
+  });
+
+  it('protects the task on start and releases it on finish', async () => {
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    const protection = fakeProtection();
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      protection,
+    });
+    // First call protects (true); the final call (in finally) releases (false).
+    expect(protection.calls[0]).toBe(true);
+    expect(protection.calls.at(-1)).toBe(false);
+  });
+
+  it('still releases protection when the job throws', async () => {
+    const { transport, docker } = fakes([{ type: 'finish' }], () => 0);
+    docker.startContainer = async () => {
+      throw new Error('dind boot failed');
+    };
+    const protection = fakeProtection();
+    await expect(
+      runAgentJob({ jobId: 'j', spec: wire(), workspaceDir: '/ws', transport, docker, protection }),
+    ).rejects.toThrow('dind boot failed');
+    expect(protection.calls[0]).toBe(true);
+    expect(protection.calls.at(-1)).toBe(false);
   });
 
   it('materializes the worktree when a bundle ref is present', async () => {
