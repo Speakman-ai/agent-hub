@@ -247,6 +247,13 @@ describe('gh-pr.sh layout', () => {
     } catch (err: unknown) {
       stderr = (err as { stderr?: Buffer | string }).stderr?.toString() || '';
     }
-    expect(stderr).toContain('Usage: gh-pr.sh');
+    // gh-pr.sh sources _common.sh, which runs `require_gh_cli` at load time
+    // and hard-exits with "gh CLI not found on PATH" when the GitHub CLI is
+    // absent. On CI runners without `gh` installed (e.g. the Finalize DinD
+    // image) that prerequisite message is the expected stderr; when `gh` IS
+    // present the no-arg invocation falls through to the dispatcher usage
+    // banner. Either output proves the script exists, is executable, and
+    // runs — which is all this layout/path-move guard cares about.
+    expect(stderr).toMatch(/Usage: gh-pr\.sh|gh CLI not found on PATH/);
   });
 });
