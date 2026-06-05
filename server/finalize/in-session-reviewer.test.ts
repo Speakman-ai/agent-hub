@@ -170,12 +170,31 @@ function makeDeps(
     agentId: string | null;
   }> = [];
   const attached: Array<{ sessionId: string; agentId: string }> = [];
+  const removed: Array<{ sessionId: string; agentId: string }> = [];
   return {
     deps: {
       stmts: {
         addSessionAgent: {
           run: vi.fn((sessionId: string, agentId: string) => {
             attached.push({ sessionId, agentId });
+          }),
+        },
+        removeSessionAgent: {
+          run: vi.fn((sessionId: string, agentId: string) => {
+            removed.push({ sessionId, agentId });
+          }),
+        },
+        getSessionAgents: {
+          all: vi.fn(() => {
+            const removedIds = new Set(removed.map((r) => r.agentId));
+            return attached
+              .filter((a) => !removedIds.has(a.agentId))
+              .map((a, i) => ({
+                session_id: a.sessionId,
+                agent_id: a.agentId,
+                position: i,
+                added_at: 't',
+              }));
           }),
         },
         addMessage: {
@@ -216,6 +235,7 @@ function makeDeps(
     },
     messages,
     attached,
+    removed,
   };
 }
 
@@ -494,5 +514,86 @@ describe('runReviewerTurn — cancellation', () => {
         signal,
       }),
     ).rejects.toThrow(/cancelled/);
+  });
+});
+
+// ─── Eject lifecycle ─────────────────────────────────────────────────
+// The reviewer must leave the session roster once its turn ends — clean
+// verdict, parse failure, or a cancel that kills the CLI mid-turn. The
+// flow is: attach (bring in) → review → remove (eject). The persisted
+// review message stays in the timeline; only the session_agents row goes.
+
+function sessionUpdatedBroadcasts(broadcast: ReturnType<typeof vi.fn>): unknown[] {
+  return broadcast.mock.calls
+    .map((c) => c[0] as { type?: string })
+    .filter((m) => m?.type === 'session-updated');
+}
+
+describe('runReviewerTurn — eject lifecycle', () => {
+  it('removes the reviewer from the session after a clean verdict', async () => {
+    const assistantText = `Looks fine.
+
+<agenthub:review-verdict>{"verdict":"approved","threads":[]}</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps, attached, removed, messages } = makeDeps(spawnFn);
+
+    await runReviewerTurn(deps, {
+      runId: 'run-eject-ok',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    // The review message itself survives the eject — only the roster row goes.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.agentId).toBe('rev-1');
+    // Roster is broadcast for both the join and the leave so sidebars update live.
+    const broadcast = deps.broadcast as unknown as ReturnType<typeof vi.fn>;
+    expect(sessionUpdatedBroadcasts(broadcast).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('removes the reviewer even when the tail block is missing (throw path)', async () => {
+    const { spawnFn } = makeSpawnFake('No block here.');
+    const { deps, removed } = makeDeps(spawnFn);
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-eject-throw',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toThrow(/without a parseable review verdict/);
+
+    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+  });
+
+  it('removes the reviewer when a cancel aborts before spawn', async () => {
+    const { spawnFn } = makeSpawnFake('ignored');
+    const { deps, attached, removed } = makeDeps(spawnFn);
+    const signal = { aborted: true, onAbort: () => () => undefined };
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-eject-cancel',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+        signal,
+      }),
+    ).rejects.toThrow(/cancelled/);
+
+    // Reviewer was attached (bring-in happens before the spawn cancel check)
+    // and then ejected by the finally.
+    expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
   });
 });

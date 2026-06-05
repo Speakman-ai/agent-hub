@@ -50,6 +50,7 @@ import {
   type ReviewerLocalDiffInputs,
 } from './reviewer-dispatch.js';
 import { detectReviewVerdictBlock, stripReviewVerdictBlock } from './review-verdict-block.js';
+import { listSessionAgents } from '../session-agents.js';
 import type {
   AgentLookup,
   AppConfig,
@@ -65,7 +66,15 @@ import type {
 export const REVIEWER_TURN_TIMEOUT_MS_DEFAULT = 10 * 60 * 1000;
 
 export interface InSessionReviewerDeps {
-  stmts: Pick<Stmts, 'addSessionAgent' | 'addMessage' | 'touchSession' | 'getSession'>;
+  stmts: Pick<
+    Stmts,
+    | 'addSessionAgent'
+    | 'removeSessionAgent'
+    | 'getSessionAgents'
+    | 'addMessage'
+    | 'touchSession'
+    | 'getSession'
+  >;
   broadcast: BroadcastFn;
   /** Same shape RouteDeps exposes; we use it to resolve the reviewer EnrichedAgent. */
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
@@ -163,181 +172,244 @@ export async function runReviewerTurn(
     throw new Error(`[in-session-reviewer] session=${sessionId} not found`);
   }
 
+  // Capture the narrowed (non-null) values so the closures below — which
+  // TypeScript widens back to the original `| null` / `| undefined` types
+  // across the function boundary — see the proven-present shapes.
+  const reviewerAgent: EnrichedAgent = reviewer;
+  const sessionRow: SessionRow = session;
+
+  // Broadcast the current session roster so web/mobile sidebars update
+  // live as the reviewer joins and (in the `finally` below) leaves. The
+  // payload is a partial session row — the clients merge it field-by-field
+  // and read `agents` to refresh the multi-agent roster panel.
+  const broadcastRoster = (): void => {
+    try {
+      const agents = listSessionAgents(deps.stmts, sessionRow, deps.getEnrichedAgent);
+      deps.broadcast({
+        type: 'session-updated',
+        session: {
+          id: sessionId,
+          agents,
+          advisor_count: Math.max(0, agents.length - 1),
+        },
+      });
+    } catch (err) {
+      log(
+        `[in-session-reviewer] broadcastRoster(${sessionId}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  };
+
   // Attach reviewer to session (idempotent via INSERT OR IGNORE in
   // `addSessionAgent`). A second Finalize iteration on the same session
   // therefore re-uses the existing attachment row.
   try {
-    deps.stmts.addSessionAgent.run(sessionId, reviewer.id, sessionId);
+    deps.stmts.addSessionAgent.run(sessionId, reviewerAgent.id, sessionId);
+    broadcastRoster();
   } catch (err) {
     log(
-      `[in-session-reviewer] addSessionAgent(${sessionId},${reviewer.id}) failed: ${
+      `[in-session-reviewer] addSessionAgent(${sessionId},${reviewerAgent.id}) failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
   }
 
-  // Build the SCOPED prompt — the local-diff inputs, not the transcript.
-  // The user-prompt size is bounded by the diff body; we do not feed
-  // prior review messages back in (per design risk: avoid context
-  // snowball across iterations).
-  const userPrompt = buildLocalDiffReviewerPrompt({ inputs, card, project });
-
-  const enrichedSystem = deps.buildEnrichedPrompt(reviewer);
-  const systemPrompt = composeReviewerSystemPrompt(enrichedSystem, project, card);
-
-  const engine = normalizeSessionMultiEngine(reviewer.engine);
-  // No org-owner fallback — only the session's own owner.
-  const roomOwnerId = session.owner_user_id || null;
-  const model = resolveEffectiveModel(config, engine, {
-    agentModel: reviewer.model as string | undefined,
-    ownerUserId: roomOwnerId,
-  });
-
-  // Use session worktree by default; fall back to the runId-attached
-  // worktree path (passed in by the orchestrator) when the session row
-  // does not yet carry one.
-  const cwd = session.worktree_path || worktreePath || reviewer.cwd || process.env.HOME || '/';
-
-  // Spawn env: orchestrator env + agent's project secrets / aws / skill
-  // credentials so the reviewer CLI carries through the project's
-  // configured auth surface without leaking the executor's identity.
-  const spawnEnv: NodeJS.ProcessEnv = {
-    ...resolveSessionCliSpawnEnv({
-      cfg: config,
-      ownerId: roomOwnerId,
-      credsOwnerId: roomOwnerId,
-      sessionId,
-      engine,
-    }),
-  };
-  const reviewerProject = deps.findAgent?.(reviewer.id)?.project ?? project;
-  if (reviewerProject && roomOwnerId) {
-    mergeSkillCredentialSpawnEnv(spawnEnv, {
-      ownerId: roomOwnerId,
-      agentId: reviewer.id,
-      project: reviewerProject,
-    });
-    mergeProjectSecretsSpawnEnv(spawnEnv, {
-      projectId: reviewerProject.id,
-      sessionId,
-    });
-    mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject);
-  }
-
-  // Pre-spawn cancel check — beats the persist-message write so a
-  // cancellation race with attach + spawn does not leave a partial chat
-  // message in the timeline.
-  if (args.signal?.aborted) {
-    throw new Error('cancelled');
-  }
-
-  const assistantMsgId = newId();
-  deps.broadcast({
-    type: 'thinking',
-    sessionId,
-    agentId: reviewer.id,
-    agentName: reviewer.name,
-    agentColor: reviewer.color,
-    messageId: assistantMsgId,
-  });
-
-  const rawText = await runOneTurn({
-    engine,
-    model,
-    systemPrompt,
-    userPrompt,
-    bins: {
-      claude: deps.getClaudeBin(),
-      cursor: deps.getCursorBin(),
-      gemini: deps.getGeminiBin(),
-      codex: deps.getCodexBin(),
-    },
-    cwd,
-    spawnEnv,
-    logTag: `finalize ${runId} reviewer ${reviewer.id}`,
-    codexDangerBypass: !!config.codexDangerBypass,
-    codexProfile: config.codexProfile,
-    timeoutMs,
-    signal: args.signal,
-    sessionId,
-    activeProcesses: deps.activeProcesses,
-    spawnFn,
-    broadcast: deps.broadcast,
-    reviewerName: reviewer.name,
-    reviewerColor: reviewer.color,
-    reviewerId: reviewer.id,
-    assistantMsgId,
-  });
-
-  // Persist the assistant message into the session timeline. Use the
-  // SAME id we used for the streaming events so subscribers can join
-  // partial-text events to the final row without re-keying.
-  const visibleText = stripReviewVerdictBlock(rawText) || rawText;
+  // The reviewer is "in" the session now. Whatever happens next — a clean
+  // verdict, a parse failure, a timeout, or a Finalize cancel that kills
+  // the CLI mid-turn — the reviewer must eject itself so it does not
+  // linger in the roster. The `finally` removes the attachment row and
+  // re-broadcasts the roster. The persisted review message stays in the
+  // timeline (only the `session_agents` row is removed).
   try {
-    deps.stmts.addMessage.run(
-      assistantMsgId,
+    return await runReviewerTurnInner(sessionId, reviewerAgent, sessionRow);
+  } finally {
+    try {
+      deps.stmts.removeSessionAgent.run(sessionId, reviewerAgent.id);
+      broadcastRoster();
+    } catch (err) {
+      log(
+        `[in-session-reviewer] removeSessionAgent(${sessionId},${reviewerAgent.id}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // ─── Reviewer turn body ────────────────────────────────────────────
+  // Hoisted into a closure so the attach/eject lifecycle above can wrap
+  // it in a single try/finally without re-indenting the whole body. The
+  // `sessionId` / `reviewer` / `session` params shadow the outer consts
+  // with their proven non-null types.
+  async function runReviewerTurnInner(
+    sessionId: string,
+    reviewer: EnrichedAgent,
+    session: SessionRow,
+  ): Promise<ReviewerRunResult> {
+    // Build the SCOPED prompt — the local-diff inputs, not the transcript.
+    // The user-prompt size is bounded by the diff body; we do not feed
+    // prior review messages back in (per design risk: avoid context
+    // snowball across iterations).
+    const userPrompt = buildLocalDiffReviewerPrompt({ inputs, card, project });
+
+    const enrichedSystem = deps.buildEnrichedPrompt(reviewer);
+    const systemPrompt = composeReviewerSystemPrompt(enrichedSystem, project, card);
+
+    const engine = normalizeSessionMultiEngine(reviewer.engine);
+    // No org-owner fallback — only the session's own owner.
+    const roomOwnerId = session.owner_user_id || null;
+    const model = resolveEffectiveModel(config, engine, {
+      agentModel: reviewer.model as string | undefined,
+      ownerUserId: roomOwnerId,
+    });
+
+    // Use session worktree by default; fall back to the runId-attached
+    // worktree path (passed in by the orchestrator) when the session row
+    // does not yet carry one.
+    const cwd = session.worktree_path || worktreePath || reviewer.cwd || process.env.HOME || '/';
+
+    // Spawn env: orchestrator env + agent's project secrets / aws / skill
+    // credentials so the reviewer CLI carries through the project's
+    // configured auth surface without leaking the executor's identity.
+    const spawnEnv: NodeJS.ProcessEnv = {
+      ...resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId: roomOwnerId,
+        credsOwnerId: roomOwnerId,
+        sessionId,
+        engine,
+      }),
+    };
+    const reviewerProject = deps.findAgent?.(reviewer.id)?.project ?? project;
+    if (reviewerProject && roomOwnerId) {
+      mergeSkillCredentialSpawnEnv(spawnEnv, {
+        ownerId: roomOwnerId,
+        agentId: reviewer.id,
+        project: reviewerProject,
+      });
+      mergeProjectSecretsSpawnEnv(spawnEnv, {
+        projectId: reviewerProject.id,
+        sessionId,
+      });
+      mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject);
+    }
+
+    // Pre-spawn cancel check — beats the persist-message write so a
+    // cancellation race with attach + spawn does not leave a partial chat
+    // message in the timeline.
+    if (args.signal?.aborted) {
+      throw new Error('cancelled');
+    }
+
+    const assistantMsgId = newId();
+    deps.broadcast({
+      type: 'thinking',
       sessionId,
-      'assistant',
-      visibleText,
+      agentId: reviewer.id,
+      agentName: reviewer.name,
+      agentColor: reviewer.color,
+      messageId: assistantMsgId,
+    });
+
+    const rawText = await runOneTurn({
       engine,
       model,
-      null,
-      null,
-      reviewer.id,
-      reviewer.name,
-      reviewer.color ?? null,
-    );
-    deps.stmts.touchSession.run(sessionId);
-  } catch (err) {
-    log(
-      `[in-session-reviewer] persist message failed for run=${runId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
+      systemPrompt,
+      userPrompt,
+      bins: {
+        claude: deps.getClaudeBin(),
+        cursor: deps.getCursorBin(),
+        gemini: deps.getGeminiBin(),
+        codex: deps.getCodexBin(),
+      },
+      cwd,
+      spawnEnv,
+      logTag: `finalize ${runId} reviewer ${reviewer.id}`,
+      codexDangerBypass: !!config.codexDangerBypass,
+      codexProfile: config.codexProfile,
+      timeoutMs,
+      signal: args.signal,
+      sessionId,
+      activeProcesses: deps.activeProcesses,
+      spawnFn,
+      broadcast: deps.broadcast,
+      reviewerName: reviewer.name,
+      reviewerColor: reviewer.color,
+      reviewerId: reviewer.id,
+      assistantMsgId,
+    });
 
-  deps.broadcast({
-    type: 'message',
-    message: {
-      id: assistantMsgId,
-      session_id: sessionId,
-      role: 'assistant',
-      agent_id: reviewer.id,
-      agent_name: reviewer.name,
-      agent_color: reviewer.color,
-      content: visibleText,
-      engine,
-      model,
-      created_at: new Date(now()).toISOString(),
-    },
-  });
-  deps.broadcast({
-    type: 'done',
-    sessionId,
-    agentId: reviewer.id,
-    agentName: reviewer.name,
-  });
+    // Persist the assistant message into the session timeline. Use the
+    // SAME id we used for the streaming events so subscribers can join
+    // partial-text events to the final row without re-keying.
+    const visibleText = stripReviewVerdictBlock(rawText) || rawText;
+    try {
+      deps.stmts.addMessage.run(
+        assistantMsgId,
+        sessionId,
+        'assistant',
+        visibleText,
+        engine,
+        model,
+        null,
+        null,
+        reviewer.id,
+        reviewer.name,
+        reviewer.color ?? null,
+      );
+      deps.stmts.touchSession.run(sessionId);
+    } catch (err) {
+      log(
+        `[in-session-reviewer] persist message failed for run=${runId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
-  // Parse the tail. Missing or malformed tail produces a deliberate
-  // throw — the reviewer-dispatch helper turns this into a
-  // `review_failed` outcome so the orchestrator does not silently treat
-  // a blank reviewer message as "approved".
-  const parsed = detectReviewVerdictBlock(rawText);
-  if (!parsed.present) {
-    throw new Error(
-      `reviewer turn ended without a parseable review verdict (run=${runId}) — expected a <agenthub:review-verdict> block or trailing {"verdict":...} JSON`,
-    );
-  }
-  if (!parsed.task) {
-    throw new Error(
-      `reviewer tail block was malformed (run=${runId}, reason=${parsed.reason ?? 'unknown'})`,
-    );
-  }
+    deps.broadcast({
+      type: 'message',
+      message: {
+        id: assistantMsgId,
+        session_id: sessionId,
+        role: 'assistant',
+        agent_id: reviewer.id,
+        agent_name: reviewer.name,
+        agent_color: reviewer.color,
+        content: visibleText,
+        engine,
+        model,
+        created_at: new Date(now()).toISOString(),
+      },
+    });
+    deps.broadcast({
+      type: 'done',
+      sessionId,
+      agentId: reviewer.id,
+      agentName: reviewer.name,
+    });
 
-  return {
-    verdict: parsed.task.verdict,
-    threads: parsed.task.threads,
-  };
+    // Parse the tail. Missing or malformed tail produces a deliberate
+    // throw — the reviewer-dispatch helper turns this into a
+    // `review_failed` outcome so the orchestrator does not silently treat
+    // a blank reviewer message as "approved".
+    const parsed = detectReviewVerdictBlock(rawText);
+    if (!parsed.present) {
+      throw new Error(
+        `reviewer turn ended without a parseable review verdict (run=${runId}) — expected a <agenthub:review-verdict> block or trailing {"verdict":...} JSON`,
+      );
+    }
+    if (!parsed.task) {
+      throw new Error(
+        `reviewer tail block was malformed (run=${runId}, reason=${parsed.reason ?? 'unknown'})`,
+      );
+    }
+
+    return {
+      verdict: parsed.task.verdict,
+      threads: parsed.task.threads,
+    };
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

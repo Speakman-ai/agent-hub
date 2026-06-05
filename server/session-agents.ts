@@ -8,7 +8,7 @@ import type {
 import { enrichSessionForClient, type SessionWireRow } from './session-checkpoint-rewind.js';
 
 export function listSessionAgents(
-  stmts: Stmts,
+  stmts: Pick<Stmts, 'getSessionAgents'>,
   session: SessionRow,
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null,
 ): SessionAgentDetail[] {
