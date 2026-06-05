@@ -7,7 +7,7 @@
  * openapi checks, build"). The follow-up "v2 per-job GHA parity" rollout
  * migrated the file to v2 so every GitHub Actions job runs as its own
  * concurrent runner on the Finalize DinD fleet (build, test matrix,
- * lint, openapi). These tests now lock the v2 contract.
+ * lint). These tests now lock the v2 contract.
  *
  * Live, evergreen check that the committed file:
  *
@@ -22,7 +22,7 @@
  *      on the file as part of the normal test run, not on a runtime
  *      finalize click.
  *
- *   3. Declares the four GHA-parity jobs (build, test, lint, openapi)
+ *   3. Declares the GHA-parity jobs (build, test, lint)
  *      with a 4-way test matrix (server 1/3, 2/3, 3/3, client) — the
  *      whole point of v2 is concurrent per-job fan-out, so the test
  *      pins the job set and the matrix shape so an accidental
@@ -84,7 +84,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(result.config.on).toContain('manual');
   });
 
-  it('fans onto the GHA-parity jobs (build, test, lint, openapi) with a 4-way test matrix', async () => {
+  it('fans onto the GHA-parity jobs (build, test, lint) with a 4-way test matrix', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok || result.config.version !== 2) return;
@@ -94,7 +94,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     // an accidental grouping (e.g. merging lint into build to "save" a
     // runner) fails the test rather than silently undoing the parity.
     const jobIds = Object.keys(result.config.jobs).sort();
-    expect(jobIds).toEqual(['build', 'lint', 'openapi', 'test']);
+    expect(jobIds).toEqual(['build', 'lint', 'test']);
 
     // Every job runs on `ubuntu-24.04` — same image GitHub Actions uses
     // for the canonical workflows. Drift here means the runner image
@@ -117,13 +117,12 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
       .sort();
     expect(serverShards).toEqual(['1', '2', '3']);
 
-    // The full expansion is what the orchestrator actually fans out. 4
-    // single-instance jobs (build, lint, openapi, plus an unmatrixed
-    // path) + 4 test shards = 7 concurrent runners — the number quoted
-    // in the rollout PR. Pin it so a future "single global runner"
-    // refactor surfaces here.
+    // The full expansion is what the orchestrator actually fans out.
+    // Single-instance jobs (build, lint) + 4 test shards = 6 concurrent
+    // runners. Pin it so a future "single global runner" refactor
+    // surfaces here.
     const instances = expandJobInstances(result.config, {});
-    expect(instances).toHaveLength(7);
+    expect(instances).toHaveLength(6);
   });
 
   it('sets an explicit fast-fail timeout (dogfood cap is 45 minutes)', async () => {

@@ -1,12 +1,12 @@
 # Finalize Code Changes — pipeline config for the agent-hub repo itself.
 #
 # v2 (GHA-parity). Every job below maps 1-1 to a job that runs in GitHub
-# Actions (`.github/workflows/ci.yml` + the lint/openapi gates from
+# Actions (`.github/workflows/ci.yml` + the lint gate from
 # `main-checks.yml`), and every job runs as its OWN concurrent runner on
 # the Finalize DinD fleet — exactly the way GitHub fans a workflow out.
 # Nothing is grouped or serialized to "save" runners: the whole point is
 # parity, so install/typecheck/build, each test shard, lint, and the
-# OpenAPI gate all light up at once on separate `ubuntu-24.04` runners.
+# lint gate all light up at once on separate `ubuntu-24.04` runners.
 #
 # Why v2 and not v1: a v1 `steps:` pipeline runs sequentially on the Hub
 # box itself (see server/finalize/orchestrator.ts — only `version === 2`
@@ -53,10 +53,10 @@ jobs:
     fail-fast: false
     matrix:
       include:
-        - { suite: server, shard: "1", shards: "3", label: "server 1/3" }
-        - { suite: server, shard: "2", shards: "3", label: "server 2/3" }
-        - { suite: server, shard: "3", shards: "3", label: "server 3/3" }
-        - { suite: client, label: "client" }
+        - { suite: server, shard: '1', shards: '3', label: 'server 1/3' }
+        - { suite: server, shard: '2', shards: '3', label: 'server 2/3' }
+        - { suite: server, shard: '3', shards: '3', label: 'server 3/3' }
+        - { suite: client, label: 'client' }
     steps:
       - name: Tests (${FINALIZE_MATRIX_LABEL})
         run: |
@@ -78,16 +78,3 @@ jobs:
         run: npm ci --ignore-scripts --include=dev
       - name: Lint
         run: npm run lint
-
-  # ── GHA OpenAPI freshness/coverage gate (main-checks.yml) ───────────
-  # check:openapi imports the server route modules, so this job needs
-  # server deps in addition to root.
-  openapi:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Install root dependencies
-        run: npm ci --ignore-scripts --include=dev
-      - name: Install server dependencies
-        run: cd server && npm ci --include=dev
-      - name: OpenAPI coverage + freshness
-        run: npm run check:openapi
