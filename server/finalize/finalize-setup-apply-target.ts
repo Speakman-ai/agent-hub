@@ -4,6 +4,7 @@
 import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { v4 as uuidv4 } from 'uuid';
 import { sessionUsesWorktree } from '../project-mode.js';
 import type { Project, SessionRow, Stmts } from '../types.js';
 
@@ -161,4 +162,95 @@ export function pickSessionWithWorktreeForHint(
   project: Project,
 ): SessionWithWorktree | null {
   return pickSessionWithPersistedWorktree(stmts, project, undefined);
+}
+
+export interface CreateCommitTargetDeps {
+  stmts: Pick<Stmts, 'getSession' | 'createSession' | 'softDeleteSession'>;
+  provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
+}
+
+export interface CommitTargetSessionSpec {
+  agentId: string;
+  name: string;
+  engine: string;
+  model: string;
+}
+
+/**
+ * Provision a worktree for an already-created session and resolve it into
+ * a {@link SessionWithWorktree}. Returns null when provisioning is
+ * unavailable or fails (e.g. `project.cwd` is not a git repo and the
+ * project has no `repoUrl` to clone) — `ensureSessionWorkspace` swallows
+ * those failures and leaves `worktree_path` unset rather than throwing.
+ */
+export async function provisionCommitTargetWorktree(
+  deps: {
+    stmts: Pick<Stmts, 'getSession'>;
+    provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
+  },
+  sessionId: string,
+): Promise<SessionWithWorktree | null> {
+  if (!deps.provisionSessionWorkspace) return null;
+  try {
+    await deps.provisionSessionWorkspace(sessionId);
+  } catch (err) {
+    console.warn(
+      `[finalize-setup] provisionSessionWorkspace failed for commit-target session=${sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  }
+  const refreshed = deps.stmts.getSession.get(sessionId) as SessionRow | undefined;
+  if (refreshed?.worktree_path && refreshed.worktree_branch) {
+    return {
+      id: refreshed.id,
+      worktree_path: refreshed.worktree_path,
+      worktree_branch: refreshed.worktree_branch,
+    };
+  }
+  return null;
+}
+
+/**
+ * Last-resort fallback for setup-apply: when no existing session owns a
+ * worktree (the common case when the wizard is launched from Settings
+ * rather than from a card-linked session), create a dedicated
+ * `[Finalize Config]` session, clone the project into a fresh feature
+ * branch, and return it as the commit target. Without this the apply
+ * endpoint 400s with `no_worktree` and the generated ci.yaml can never
+ * be committed.
+ *
+ * Returns null when provisioning is unavailable or fails; on failure the
+ * orphan session row is soft-deleted so it does not clutter the sidebar.
+ */
+export async function createAndProvisionCommitTarget(
+  deps: CreateCommitTargetDeps,
+  spec: CommitTargetSessionSpec,
+  onCreate?: (sessionId: string) => void,
+): Promise<SessionWithWorktree | null> {
+  if (!deps.provisionSessionWorkspace) return null;
+  const sessionId = uuidv4();
+  // use_worktree=1: this session OWNS the config branch/worktree the
+  // ci.yaml commit lands on. ask_mode=0.
+  deps.stmts.createSession.run(
+    sessionId,
+    spec.agentId,
+    spec.name,
+    spec.engine,
+    spec.model,
+    1,
+    0,
+    1,
+  );
+  onCreate?.(sessionId);
+  const target = await provisionCommitTargetWorktree(
+    { stmts: deps.stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
+    sessionId,
+  );
+  if (!target) {
+    deps.stmts.softDeleteSession.run(sessionId);
+    return null;
+  }
+  return target;
 }

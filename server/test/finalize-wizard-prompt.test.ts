@@ -14,15 +14,16 @@
  *      "Bound values" header.
  *   2. `PROJECT_ID` and `PROJECT_CWD` appear with the literal values
  *      passed in (caller can grep for them in the rendered prompt).
- *   3. The resolved apply target is surfaced (or the no-worktree
- *      callout when null) so the agent always tells the user which
- *      branch will receive the commit (PR #1179 round-1 fix).
+ *   3. The session is framed as a normal worktree-backed session that
+ *      commits, verifies, pushes, and opens a PR — and the wizard's own
+ *      `SESSION_ID` is bound so the agent passes its own id to
+ *      setup-apply (never demanding a different session).
  *   4. The draft JSON is embedded under a "Server-provided draft"
  *      heading and the agent is told NOT to re-run the scanners.
  *   5. The skill is loaded via the `<agenthub:skill>` gateway block
  *      with name `finalize-setup`.
- *   6. The "Required walkthrough order" is documented and includes the
- *      "Confirm target branch" step that the round-1 fix added.
+ *   6. The "Required walkthrough order" is documented through the
+ *      verify-in-worktree + push + PR steps.
  *   7. The prompt does NOT promote any made-up shell env vars — every
  *      bound value is in the prompt itself, not implied via env. This
  *      matches the failure mode that triggered the preview-wizard test.
@@ -42,11 +43,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
 import './setup.js';
-import {
-  buildKickoffPrompt,
-  FINALIZE_SETUP_SKILL_SCRIPTS_DIR,
-  type ResolvedApplyTarget,
-} from '../routes/finalize-wizard.js';
+import { buildKickoffPrompt, FINALIZE_SETUP_SKILL_SCRIPTS_DIR } from '../routes/finalize-wizard.js';
 import type { FinalizeSetupDraft } from '../finalize-setup-draft.js';
 
 const sampleDraft: FinalizeSetupDraft = {
@@ -73,102 +70,96 @@ const sampleDraft: FinalizeSetupDraft = {
     'version: 1\non:\n  - finalize\n  - manual\nsteps:\n  - name: install\n    run: npm ci --include=dev\n  - name: test\n    run: npm test\n',
 };
 
-const resolvedTarget: ResolvedApplyTarget = {
-  sessionId: 'sess-abc',
-  branch: 'feature/x',
-  worktreePath: '/srv/workspaces/demo/wt',
-};
-
 describe('finalize-wizard kickoff prompt', () => {
-  const promptWithTarget = buildKickoffPrompt(
+  const prompt = buildKickoffPrompt(
     'demo-project-id',
     '/srv/workspaces/demo',
     sampleDraft,
-    resolvedTarget,
-  );
-  const promptNoTarget = buildKickoffPrompt(
-    'demo-project-id',
-    '/srv/workspaces/demo',
-    sampleDraft,
-    null,
+    'wizard-session-123',
   );
 
   it('declares guided walkthrough and bound values', () => {
-    expect(promptWithTarget).toMatch(/guided walkthrough/i);
-    expect(promptWithTarget).toMatch(/## Bound values/);
-    expect(promptWithTarget).toMatch(/PROJECT_ID.*`demo-project-id`/);
-    expect(promptWithTarget).toMatch(/PROJECT_CWD.*`\/srv\/workspaces\/demo`/);
+    expect(prompt).toMatch(/guided walkthrough/i);
+    expect(prompt).toMatch(/## Bound values/);
+    expect(prompt).toMatch(/PROJECT_ID.*`demo-project-id`/);
+    expect(prompt).toMatch(/PROJECT_CWD.*`\/srv\/workspaces\/demo`/);
   });
 
-  it('surfaces the resolved apply target so the agent can confirm it (PR #1179 round 1)', () => {
-    expect(promptWithTarget).toMatch(/RESOLVED COMMIT TARGET/);
-    expect(promptWithTarget).toMatch(/session sess-abc/);
-    expect(promptWithTarget).toMatch(/feature\/x/);
-    expect(promptWithTarget).toMatch(/\/srv\/workspaces\/demo\/wt/);
-    // Heads-up callout about apply-time re-resolution.
-    expect(promptWithTarget).toMatch(/re-resolution at apply time/i);
+  it('frames the session as a normal worktree-backed session that ships a PR', () => {
+    expect(prompt).toMatch(/normal worktree-backed session/i);
+    // The session owns its worktree and commits to its OWN branch.
+    expect(prompt).toMatch(/your own dedicated git worktree/i);
+    expect(prompt).toMatch(/open a (pull request|PR)/i);
   });
 
-  it('signals the no-worktree fallback when target is null', () => {
-    expect(promptNoTarget).toMatch(/no worktree-bearing session found yet/i);
-    // Even when target is null, the heads-up callout still appears so
-    // the agent never forgets to confirm whatever lands at apply time.
-    expect(promptNoTarget).toMatch(/re-resolution at apply time/i);
+  it('binds the session id so the agent passes its own id to setup-apply', () => {
+    expect(prompt).toMatch(/YOUR SESSION_ID/);
+    expect(prompt).toMatch(/`wizard-session-123`/);
+  });
+
+  it('never tells the agent to hunt for or supply a different session_id', () => {
+    // Regression: the wizard used to demand a session_id / "start a
+    // card-linked session first" even though it now owns its worktree.
+    expect(prompt).toMatch(/this session IS the working session/i);
+    expect(prompt).not.toMatch(/start a (different|card-linked) session/i);
+    expect(prompt).not.toMatch(/Pick a different session/i);
   });
 
   it('embeds the draft JSON and tells the agent NOT to rescan', () => {
-    expect(promptWithTarget).toMatch(/Server-provided draft \(do NOT re-run scanners\)/);
-    expect(promptWithTarget).toMatch(/"stack":\s*"node"/);
-    expect(promptWithTarget).toMatch(/"packageManager":\s*"npm"/);
-    expect(promptWithTarget).toMatch(/proposedCiYaml/);
+    expect(prompt).toMatch(/Server-provided draft \(do NOT re-run scanners\)/);
+    expect(prompt).toMatch(/"stack":\s*"node"/);
+    expect(prompt).toMatch(/"packageManager":\s*"npm"/);
+    expect(prompt).toMatch(/proposedCiYaml/);
   });
 
-  it('documents the full walkthrough order including the PR #1179 round-1 confirm step', () => {
-    expect(promptWithTarget).toMatch(/## Required walkthrough order/);
-    expect(promptWithTarget).toMatch(/1\. \*\*Summarise the repo\*\*/);
-    expect(promptWithTarget).toMatch(/2\. \*\*Existing config\*\*/);
-    expect(promptWithTarget).toMatch(/3\. \*\*Monorepo \/ sub-projects\*\*/);
-    expect(promptWithTarget).toMatch(/4\. \*\*Pipeline proposal\*\*/);
-    expect(promptWithTarget).toMatch(/5\. \*\*Env vars \/ secrets\*\*/);
-    // Round-1 fix: confirm-before-apply guard.
-    expect(promptWithTarget).toMatch(/6\. \*\*Confirm target branch\*\*/);
-    expect(promptWithTarget).toMatch(/7\. \*\*Persist\*\*/);
-    expect(promptWithTarget).toMatch(/8\. \*\*`POST .*wizard-complete`\*\*/);
+  it('documents the full walkthrough order through verify + push + PR', () => {
+    expect(prompt).toMatch(/## Required walkthrough order/);
+    expect(prompt).toMatch(/1\. \*\*Summarise the repo\*\*/);
+    expect(prompt).toMatch(/2\. \*\*Existing config\*\*/);
+    expect(prompt).toMatch(/3\. \*\*Monorepo \/ sub-projects\*\*/);
+    expect(prompt).toMatch(/4\. \*\*Pipeline proposal\*\*/);
+    expect(prompt).toMatch(/5\. \*\*Env vars \/ secrets\*\*/);
+    expect(prompt).toMatch(/6\. \*\*Confirm with the user\*\*/);
+    expect(prompt).toMatch(/7\. \*\*Commit\*\*/);
+    // The whole point of the worktree: run the configured steps locally.
+    expect(prompt).toMatch(/8\. \*\*Verify in your worktree\*\*/);
+    expect(prompt).toMatch(/9\. \*\*Push \+ open a PR\*\*/);
+    expect(prompt).toMatch(/10\. \*\*`POST .*wizard-complete`\*\*/);
   });
 
   it('teaches v2 per-job fan-out as the GHA-parity default in the proposal step', () => {
     // The wizard must prefer v2 concurrent jobs (one per GitHub job on
     // the DinD fleet) whenever the repo runs more than one CI lane, and
     // must never group/serialize/drop jobs to save runners.
-    expect(promptWithTarget).toMatch(/Prefer v2/i);
-    expect(promptWithTarget).toMatch(/concurrent `jobs:`/);
-    expect(promptWithTarget).toMatch(/one v2 `job` per GitHub job/i);
-    expect(promptWithTarget).toMatch(/matrix\.include/);
-    expect(promptWithTarget).toMatch(/Do NOT group, serialize, or drop jobs/i);
-    expect(promptWithTarget).toMatch(/FINALIZE_MATRIX_/);
+    expect(prompt).toMatch(/Prefer v2/i);
+    expect(prompt).toMatch(/concurrent `jobs:`/);
+    expect(prompt).toMatch(/one v2 `job` per GitHub job/i);
+    expect(prompt).toMatch(/matrix\.include/);
+    expect(prompt).toMatch(/Do NOT group, serialize, or drop jobs/i);
+    expect(prompt).toMatch(/FINALIZE_MATRIX_/);
   });
 
   it('keeps schema guardrails (shared constraints + banned fields) in the proposal step', () => {
     // The agent still can't emit a banned field; the prompt enumerates
     // the shared constraints and the per-version env/matrix rules.
-    expect(promptWithTarget).toMatch(/`on:` must be `finalize`\/`manual`/);
-    expect(promptWithTarget).toMatch(/`timeout_minutes` in `\[1, 240\]`/);
+    expect(prompt).toMatch(/`on:` must be `finalize`\/`manual`/);
+    expect(prompt).toMatch(/`timeout_minutes` in `\[1, 240\]`/);
     // shell/uses/with banned at every version; env/matrix are v2-only.
-    expect(promptWithTarget).toMatch(/Never\*\* propose `shell:`, `uses:`, or `with:`/);
-    expect(promptWithTarget).toMatch(/At \*\*v1\*\*, `env:` and `matrix:` are also rejected/);
+    expect(prompt).toMatch(/Never\*\* propose `shell:`, `uses:`, or `with:`/);
+    expect(prompt).toMatch(/At \*\*v1\*\*, `env:` and `matrix:` are also rejected/);
   });
 
   it('documents CI replacement mode so the wizard does not refuse complex steps', () => {
-    expect(promptWithTarget).toMatch(/CI replacement mode/i);
-    expect(promptWithTarget).toMatch(/replace GitHub Actions CI/i);
-    expect(promptWithTarget).toMatch(/stop downgrading scope/i);
-    expect(promptWithTarget).toMatch(/Never.*refuse, argue feasibility, or shrink/i);
+    expect(prompt).toMatch(/CI replacement mode/i);
+    expect(prompt).toMatch(/replace GitHub Actions CI/i);
+    expect(prompt).toMatch(/stop downgrading scope/i);
+    expect(prompt).toMatch(/Never.*refuse, argue feasibility, or shrink/i);
   });
 
   it('loads the finalize-setup skill via the gateway block', () => {
-    expect(promptWithTarget).toMatch(/<agenthub:skill>/);
-    expect(promptWithTarget).toMatch(/"name":"finalize-setup"/);
-    expect(promptWithTarget).toMatch(/<\/agenthub:skill>/);
+    expect(prompt).toMatch(/<agenthub:skill>/);
+    expect(prompt).toMatch(/"name":"finalize-setup"/);
+    expect(prompt).toMatch(/<\/agenthub:skill>/);
   });
 
   it('does not reference made-up shell env vars for binding context', () => {
@@ -176,10 +167,10 @@ describe('finalize-wizard kickoff prompt', () => {
     // prompt referenced `$AGENT_HUB_SKILL_DIR` / `$PROJECT_WIZARD_ID`
     // style vars that were never set. Make sure none of those snuck in
     // here either — the prompt should self-contain all binding context.
-    expect(promptWithTarget).not.toMatch(/\$FINALIZE_WIZARD_PROJECT_ID/);
-    expect(promptWithTarget).not.toMatch(/\$AGENT_HUB_SKILL_DIR/);
-    expect(promptWithTarget).not.toMatch(/\$FINALIZE_SETUP_SKILL_SCRIPTS_DIR/);
-    expect(promptWithTarget).not.toMatch(/\$PROJECT_WIZARD_ID/);
+    expect(prompt).not.toMatch(/\$FINALIZE_WIZARD_PROJECT_ID/);
+    expect(prompt).not.toMatch(/\$AGENT_HUB_SKILL_DIR/);
+    expect(prompt).not.toMatch(/\$FINALIZE_SETUP_SKILL_SCRIPTS_DIR/);
+    expect(prompt).not.toMatch(/\$PROJECT_WIZARD_ID/);
   });
 });
 

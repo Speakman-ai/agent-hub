@@ -197,30 +197,31 @@ describe('POST /api/projects/:projectId/finalize/setup-wizard', () => {
     expect(typeof res.body.sessionId).toBe('string');
     expect(res.body.sessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(res.body.agentId).toBe(agentId);
-    expect(res.body.session.use_worktree).toBe(0);
+    // The setup session is a normal worktree-backed session now.
+    expect(res.body.session.use_worktree).toBe(1);
     expect(res.body.session.name).toMatch(/Finalize Setup/);
     expect(res.body.draft.stack).toBe('node');
     expect(res.body.draft.packageManager).toBe('npm');
     expect(res.body.draft.proposedCiYaml).toMatch(/npm ci --include=dev/);
-    // No worktree-bearing session exists yet → target is null.
+    // The session owns its own worktree; there is no separate target.
     expect(res.body.target).toBeNull();
   });
 
-  it('returns the resolved apply target when a worktree-bearing session exists', async () => {
+  it('spawns its own worktree-backed session and does not reuse an existing one as target', async () => {
     const projectId = await makeProject();
     const agentId = await makeAgent(projectId);
-    const { sessionId, branch, worktreeDir } = seedSessionWithRepo(agentId);
+    // Seed an unrelated worktree-bearing session — the wizard must NOT
+    // adopt it as a commit target; it owns its own worktree.
+    const seeded = seedSessionWithRepo(agentId);
 
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-wizard`)
       .set('Authorization', `Bearer ${adminJwt}`)
       .send({})
       .expect(201);
-    expect(res.body.target).toEqual({
-      sessionId,
-      branch,
-      worktreePath: worktreeDir,
-    });
+    expect(res.body.target).toBeNull();
+    expect(res.body.sessionId).not.toBe(seeded.sessionId);
+    expect(res.body.session.use_worktree).toBe(1);
   });
 });
 
@@ -475,6 +476,45 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     // ci.yaml landed in the newer worktree, NOT the older one.
     expect(readFileSync(path.join(newer.worktreeDir, '.agent-hub', 'ci.yaml'), 'utf8')).toBe(yaml);
   });
+
+  it('auto-provisions a dedicated config worktree when no session_id and no existing worktree (Settings flow)', async () => {
+    // Reproduces the reported bug: the wizard launched from Settings has
+    // no card-linked session, so there is no worktree to commit into.
+    // The apply endpoint must provision a dedicated `[Finalize Config]`
+    // worktree on the fly instead of 400ing with `no_worktree`.
+    const repoDir = mkdtempSync(path.join(tmpdir(), 'ah-finalize-autoprov-'));
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: repoDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: repoDir });
+    writeFileSync(path.join(repoDir, 'README.md'), 'seed\n');
+    execFileSync('git', ['add', '.'], { cwd: repoDir });
+    execFileSync('git', ['commit', '-m', 'seed'], { cwd: repoDir });
+
+    const projectId = await makeProject(repoDir);
+    await makeAgent(projectId);
+
+    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const res = await request
+      .post(`/api/projects/${projectId}/finalize/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ ci_yaml_content: yaml }) // <-- no session_id (Settings flow)
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(typeof res.body.session_id).toBe('string');
+    expect(typeof res.body.branch).toBe('string');
+    // Branch came from a freshly provisioned session clone, not the
+    // primary checkout.
+    expect(res.body.branch).toMatch(/^agent-hub\//);
+    expect(res.body.commit_sha).toMatch(/^[0-9a-f]{40}$/);
+
+    // The provisioned session row carries the worktree the file landed in.
+    const row = getDb()
+      .prepare('SELECT worktree_path, name FROM sessions WHERE id = ?')
+      .get(res.body.session_id) as { worktree_path: string; name: string };
+    expect(row.name).toMatch(/Finalize Config/);
+    expect(readFileSync(path.join(row.worktree_path, '.agent-hub', 'ci.yaml'), 'utf8')).toBe(yaml);
+  }, 60_000);
 
   it('400 when the worktree path is missing on disk', async () => {
     const projectId = await makeProject();

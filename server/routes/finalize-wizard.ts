@@ -1,15 +1,18 @@
 /**
  * Finalize Code Changes — `.agent-hub/ci.yaml` setup wizard.
  *
- * Mirrors the preview-setup-wizard pattern: spawn a one-shot session
- * with the server-precomputed draft baked into the kickoff prompt, let
- * the user iterate via `agenthub:ask`, then commit the final YAML to
- * the worktree in one shot.
+ * The setup wizard spawns a **normal worktree-backed session** (not a
+ * read-only chat surface): the session gets its own dedicated git
+ * worktree on a fresh `agent-hub/…` branch, and the agent authors
+ * `.agent-hub/ci.yaml`, runs the configured tests locally to prove the
+ * pipeline, commits, pushes, and opens a PR for review — exactly like
+ * any coding session. The server-precomputed draft is baked into the
+ * kickoff prompt so the agent doesn't re-scan.
  *
  *   POST /api/projects/:projectId/finalize/setup-wizard
- *     Admin+. Spawns a wizard session loaded with the `finalize-setup`
- *     skill, embedding the project draft. Returns
- *     `{ sessionId, agentId, draft, session }`.
+ *     Admin+. Spawns a worktree-backed session (`use_worktree=1`) loaded
+ *     with the `finalize-setup` skill, embedding the project draft.
+ *     Returns `{ sessionId, agentId, draft, session, target: null }`.
  *
  *   POST /api/projects/:projectId/finalize/setup-apply
  *     Admin+. Validates the proposed `ci_yaml_content` against the
@@ -23,14 +26,21 @@
  *     panel so it can refresh state.
  *
  * Lookup order for the target worktree (apply endpoint):
- *   - Request body `session_id` (when the chat session knows its own id)
- *     → use persisted worktree when set; otherwise bind the project's primary
- *       git checkout (`project.cwd` + current branch) for resumed sessions
- *       that chat in the main repo without a dedicated worktree clone yet.
+ *   - Request body `session_id` — the setup session passes its OWN id,
+ *     whose worktree was provisioned on the first chat turn. Uses the
+ *     persisted worktree when set; otherwise binds the project's primary
+ *     git checkout (`project.cwd` + current branch) as a fallback for
+ *     resumed sessions without a dedicated clone yet.
  *   - Otherwise the most-recent session for the project that has both a
  *     `worktree_path` and a `worktree_branch`.
+ *   - If none of the above resolve (e.g. a bare apply call with no
+ *     session_id and no worktree-bearing session anywhere), a dedicated
+ *     `[Finalize Config]` session is created and provisioned on the fly
+ *     so the generated ci.yaml still has a worktree + branch to commit
+ *     to.
  *
- * Tests live in `server/routes/finalize-wizard.test.ts`.
+ * Tests live in `server/test/finalize-wizard-route.test.ts` and
+ * `server/test/finalize-wizard-prompt.test.ts`.
  */
 import path from 'path';
 import { promises as fs } from 'fs';
@@ -46,9 +56,8 @@ import { collectFinalizeSetupDraft, type FinalizeSetupDraft } from '../finalize-
 import { parseCiConfig } from '../finalize/ci-config.js';
 import { applyWizardSecrets, type WizardApplySecrets } from '../wizard-secrets-apply.js';
 import {
-  pickSessionWithWorktreeForHint,
   resolveApplyTarget,
-  type ResolvedApplyTarget,
+  createAndProvisionCommitTarget,
 } from '../finalize/finalize-setup-apply-target.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { Project, RouteDeps, SessionRow } from '../types.js';
@@ -103,24 +112,21 @@ export function buildKickoffPrompt(
   projectId: string,
   projectCwd: string,
   draft: FinalizeSetupDraft,
-  target: ResolvedApplyTarget | null,
+  sessionId: string,
 ): string {
   const draftJson = JSON.stringify(draft, null, 2);
-  const targetLine = target
-    ? `\`session ${target.sessionId}\` → branch \`${target.branch}\` at \`${target.worktreePath}\``
-    : "(no worktree-bearing session found yet — pass `session_id` on setup-apply to bind this card session's checkout, or start a card-linked session first)";
   return [
     '# Finalize Setup — guided walkthrough (required)',
     '',
-    'You are the **default** authoring path for `.agent-hub/ci.yaml`. Walk the user through Finalize configuration **interactively** — do not tell them to read schema docs. The repo scan below is the starting point.',
+    'You are the **default** authoring path for `.agent-hub/ci.yaml`, and you run as a **normal worktree-backed session**. You are already checked out in your own dedicated git worktree on a fresh `agent-hub/…` branch (a clone of the project). Everything you do here — editing files, committing, running tests, pushing — happens in that worktree, exactly like any coding session. Walk the user through Finalize configuration **interactively** (do not tell them to read schema docs), then **prove the config by running it locally and ship it through a normal PR review**.',
     '',
     '## Bound values',
     '',
     `- **PROJECT_ID**: \`${projectId}\``,
-    `- **PROJECT_CWD**: \`${projectCwd}\``,
-    `- **RESOLVED COMMIT TARGET (at wizard spawn time)**: ${targetLine}`,
+    `- **PROJECT_CWD** (where the draft below was scanned from): \`${projectCwd}\``,
+    `- **YOUR SESSION_ID** (pass this to setup-apply): \`${sessionId}\``,
     '',
-    "> **Heads up — re-resolution at apply time.** Server picks the project's most-recent worktree-bearing session at the moment of `setup-apply`. If a fresher session has appeared between spawn and apply, the file will land THERE, not on the target shown above. **Always echo back the `branch` from the apply response and ask the user to confirm it matches what they expected — then post `finalize/wizard-complete`. If it does not match, do NOT post wizard-complete; halt and tell the user, so they can revert and re-run.**",
+    '> Your worktree + branch are provisioned automatically on this first turn — you are already inside them. Author, commit, test, and push from here. Do **not** ask the user for a `session_id` and do **not** tell them to start a different/card-linked session: **this session IS the working session**, and its worktree is where the config lands.',
     '',
     '## Server-provided draft (do NOT re-run scanners)',
     '',
@@ -141,9 +147,11 @@ export function buildKickoffPrompt(
     "   - v2 reminders: each job runs on its own runner with a fresh worktree and **no `node_modules` sharing between jobs**, so every job installs its own deps (mirror each GitHub job's install scope). v2 steps have **no `if:`** — branch inside the `run` script off the injected `FINALIZE_MATRIX_*` env vars (a `matrix.include` key `foo` becomes `$FINALIZE_MATRIX_FOO`). Reference project secrets via `${VAR}` in a job/step `env:` block.",
     '   - Shared constraints: `on:` must be `finalize`/`manual`; `timeout_minutes` in `[1, 240]`. Full schema for both versions: `references/ci-yaml-schema.md`.',
     '5. **Env vars / secrets** — call out `draft.envVars` entries the steps will read. v1 ci.yaml has no `env:` field. For each missing value, `agenthub:ask` whether to collect it now (bundle into `setup-apply` as `secrets`) or skip. Persist via `setup-apply` `{ "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` — same as preview wizard. Users can also edit secrets in Settings → Finalize → Project secrets.',
-    '6. **Confirm target branch** — before posting setup-apply, restate the resolved commit target ABOVE to the user in plain prose ("This will land on branch `X` in session `Y`") and use a fenced `agenthub:ask` with at least two options: **Apply** / **Pick a different session**. If the user picks the second, ask them for the explicit `session_id` (or pause the wizard so they can start the right session and re-run). Do not call setup-apply without that confirmation.',
-    '7. **Persist** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<id confirmed in step 6>", "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` (secrets optional). Server validates ci.yaml against the v1 parser; on 400 with `ci_config_invalid`, fix the error code/path and retry. The response includes `branch`, `session_id`, and `secrets_imported` — echo both back to the user as a second sanity check, then post wizard-complete.',
-    '8. **`POST .../finalize/wizard-complete`**, then `<agenthub:close-card>`.',
+    '6. **Confirm with the user** — restate the proposed pipeline in plain prose and `agenthub:ask` a simple **Apply** / **Cancel**. **Never make the user pick or supply a `session_id`** — you already own the worktree.',
+    '7. **Commit** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<YOUR SESSION_ID above>", "secrets": { ... } }` (secrets optional). This validates the schema and commits `.agent-hub/ci.yaml` into **this session\'s own worktree**. On 400 `ci_config_invalid`, fix the error code/path and retry — do not work around the validation.',
+    '8. **Verify in your worktree** — actually run the steps you just configured (the `run:` commands from the ci.yaml — e.g. install, lint, tests) right here in the worktree to prove the pipeline is green **before** you push. This local proof is the whole point of working in a worktree. If anything fails, fix the config (or the repo), re-apply via setup-apply, and re-run until clean.',
+    '9. **Push + open a PR** — push your branch and open a pull request (`gh pr create`) describing the new Finalize runner config so it goes through normal review like any change. Report the PR URL back to the user.',
+    '10. **`POST .../finalize/wizard-complete`**, then `<agenthub:close-card>`.',
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type`.',
     '',
@@ -221,10 +229,10 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         return;
       }
 
-      // Use the project root for the scan. The worktree (target of
-      // setup-apply) is decided at apply time — the wizard does NOT need
-      // a worktree to introspect; the proposed YAML is identical
-      // regardless of which branch ends up receiving the commit.
+      // Scan from the project root — the proposed YAML is identical
+      // regardless of branch. The wizard session itself gets a real
+      // worktree (below) so it can commit, test, and push like any
+      // normal session.
       const draft = collectFinalizeSetupDraft(cwd);
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
@@ -234,16 +242,15 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         ownerUserId: ownerUid,
       });
       const sessionName = `${SESSION_NAME_PREFIX} ${project.name || project.id}`;
-      // use_worktree=0 by design — do NOT change this without re-reading
-      // the apply route. The wizard session is a read-only chat surface
-      // that collects user input and proposes YAML; the actual file
-      // write + git commit happen in the `setup-apply` endpoint, which
-      // targets a DIFFERENT session's worktree (the originating
-      // card-linked session, resolved at apply time). Setting
-      // use_worktree=1 would clone the project into a throwaway
-      // worktree for the wizard itself — the commit would land on the
-      // wrong branch and never reach the originating session's PR.
-      const useWorktree = 0;
+      // use_worktree=1: the setup session runs like a normal coding
+      // session. `ensureWorktree` provisions a dedicated clone on a fresh
+      // `agent-hub/…` branch on the first chat turn, so the agent authors
+      // `.agent-hub/ci.yaml`, runs the configured tests locally to prove
+      // the pipeline, then pushes its branch and opens a PR for review —
+      // exactly the flow the user expects for "set up the runner". The
+      // commit lands in THIS session's own worktree (the agent passes its
+      // own session_id to setup-apply).
+      const useWorktree = 1;
       const askMode = 0;
       stmts.createSession.run(
         sessionId,
@@ -257,27 +264,12 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
       );
       setSessionOwner(sessionId, ownerUid);
 
-      // Resolve the apply target NOW and pass it both into the kickoff
-      // prompt (so the agent surfaces it to the user) and into the
-      // response payload (so the Settings UI can show it before the
-      // commit lands). This is the wizard's best guess — `setup-apply`
-      // re-resolves at request time, so a fresher session that appears
-      // between spawn and apply will displace this target. The skill
-      // walkthrough is responsible for echoing the `branch` returned by
-      // apply back to the user as a confirmation step.
-      const resolvedTarget = pickSessionWithWorktreeForHint(stmts, project);
-      const resolvedTargetPayload: ResolvedApplyTarget | null = resolvedTarget
-        ? {
-            sessionId: resolvedTarget.id,
-            branch: resolvedTarget.worktree_branch,
-            worktreePath: resolvedTarget.worktree_path,
-          }
-        : null;
-      const prompt = buildKickoffPrompt(project.id, cwd, draft, resolvedTargetPayload);
+      const prompt = buildKickoffPrompt(project.id, cwd, draft, sessionId);
       // Fire-and-forget chat handler — mirror the bug-reports / board
       // pattern: never let a downstream rejection escape as an
       // UnhandledPromiseRejection. The wizard route's HTTP response is
-      // already in flight.
+      // already in flight. The worktree is provisioned inside handleChat
+      // (ensureWorktree) before the agent's first turn runs.
       void handleChat(null, {
         type: 'chat',
         agentId,
@@ -300,7 +292,9 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         agentId,
         draft,
         session,
-        target: resolvedTargetPayload,
+        // The setup session owns its own worktree; there is no separate
+        // commit target to surface. Kept for response-shape stability.
+        target: null,
       });
     },
   );
@@ -335,16 +329,44 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         });
         return;
       }
-      const target = await resolveApplyTarget(
+      let target = await resolveApplyTarget(
         { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
         project,
         body.session_id,
       );
+      // No existing worktree-bearing session (the common case when the
+      // wizard is launched from Settings rather than a card session).
+      // Provision a dedicated `[Finalize Config]` worktree on a fresh
+      // branch so the generated ci.yaml has somewhere to land — without
+      // this the apply 400s with `no_worktree` and the config can never
+      // be committed.
+      if (!target) {
+        const agentId = pickWizardAgent(project);
+        const agentLookup = agentId ? findAgent(agentId) : null;
+        if (agentId && agentLookup) {
+          const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+          const engine = agentLookup.agent.engine || 'claude-code';
+          const model = resolveEffectiveModel(config, engine, {
+            agentModel: agentLookup.agent.model,
+            ownerUserId: ownerUid,
+          });
+          target = await createAndProvisionCommitTarget(
+            { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
+            {
+              agentId,
+              name: `[Finalize Config] ${project.name || project.id}`,
+              engine,
+              model,
+            },
+            (sid) => setSessionOwner(sid, ownerUid),
+          );
+        }
+      }
       if (!target) {
         res.status(400).json({
           error: 'no_worktree',
           message:
-            'No session with an active worktree was found for this project. Pass `session_id` for the card session you are working in (setup-apply can bind its checkout), or start a card-linked session first.',
+            'No session with an active worktree was found and a dedicated config worktree could not be provisioned (is the project cwd a git repo?). Pass `session_id` for the card session you are working in, or start a card-linked session first.',
         });
         return;
       }

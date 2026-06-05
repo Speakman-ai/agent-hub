@@ -9,28 +9,31 @@ description: >-
   already runs — a v2 concurrent-jobs pipeline (GHA parity, one job per
   GitHub job on the DinD fleet) when the repo has more than one CI lane,
   or a simple v1 sequential pipeline otherwise — collects env vars,
-  persists via setup-apply (commits the file to the worktree).
+  proves the pipeline locally, then commits + pushes + opens a PR.
 version: 1.0.0
 keep-coding-instructions: true
 ---
 
 # Finalize Setup — Guided Walkthrough (default)
 
-You are the **default** authoring path for `.agent-hub/ci.yaml`. Users
-should not have to read the v1 schema docs to get started — your job is
-to introspect the repo, propose a sensible default, get user approval on
-a small set of decisions, and persist the file via `setup-apply`.
+You are the **default** authoring path for `.agent-hub/ci.yaml`, and you
+run as a **normal worktree-backed session**. You are already checked out
+in your own dedicated git worktree on a fresh `agent-hub/…` branch — a
+clone of the project. Author the config here, **prove it by running the
+configured steps locally**, then **commit, push, and open a PR** so the
+runner config goes through normal review, exactly like any code change.
+Users should not have to read the schema docs to get started.
 
 ## Bound values
 
-- **`PROJECT_ID`**, **`PROJECT_CWD`** — from kickoff.
-- **`RESOLVED COMMIT TARGET`** — at wizard spawn time the server picks
-  the most-recent project session that has a worktree, and prints it
-  into the kickoff prompt (`session <id>` → branch `<branch>` at
-  `<path>`). **Apply re-resolves at request time** — if a fresher
-  worktree-bearing session appears between spawn and apply, the commit
-  will land on THAT one unless you pass an explicit `session_id`. Treat
-  the target as a starting suggestion, not a guarantee.
+- **`PROJECT_ID`**, **`PROJECT_CWD`** — from kickoff. `PROJECT_CWD` is
+  where the draft was scanned from; your actual working directory is your
+  session's worktree clone.
+- **`YOUR SESSION_ID`** — printed in the kickoff prompt. This session
+  owns the worktree the config commits to. **Pass it as `session_id` to
+  `setup-apply`.** Never ask the user for a `session_id` and never tell
+  them to start a different or card-linked session — *this* session is
+  the working session.
 - **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`** — set for curl. If any
   wizard curl returns HTTP **401** or **403**, halt — see
   [Auth failure](#auth-failure) below. **Never** ask the operator to
@@ -240,43 +243,30 @@ Persist secrets in the same `setup-apply` call as the ci.yaml commit:
 curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/finalize/setup-apply" \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"ci_yaml_content\": \"<YAML>\", \"session_id\": \"<id>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"AWS_ACCESS_KEY_ID=...\\nPOSTGRES_DB_PASSWORD=...\\n\", \"defaultKind\": \"secret\"}}"
+  -d "{\"ci_yaml_content\": \"<YAML>\", \"session_id\": \"<YOUR SESSION_ID>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"AWS_ACCESS_KEY_ID=...\\nPOSTGRES_DB_PASSWORD=...\\n\", \"defaultKind\": \"secret\"}}"
 ```
 
 Use `kind: secret` for tokens/passwords; `plain` for non-sensitive config.
 Never echo decrypted secret values back in chat after apply.
 
-## Step 6 — Confirm target branch (required, before apply)
+## Step 6 — Confirm with the user
 
-Re-state the resolved commit target to the user in plain prose:
+Restate the proposed pipeline in plain prose and `agenthub:ask` a simple
+**Apply** / **Cancel**. **Never** make the user pick or supply a
+`session_id` — you already own the worktree the config commits to. Only
+call `setup-apply` after the user approves.
 
-> "This will land on branch **`<branch>`** in session
-> **`<session_id>`** at `<worktree_path>`."
+## Step 7 — Commit (setup-apply with YOUR own session_id)
 
-Then `agenthub:ask`:
-
-- **Apply** — keep the resolved target
-- **Pick a different session** — collect the explicit session id (or
-  pause so the user can start the right session and re-run the wizard)
-
-**Do not call setup-apply without this confirmation.** The default
-heuristic (most-recent worktree-bearing session) can land the commit on
-an unrelated in-flight branch in a busy project — the confirmation step
-is what makes this safe.
-
-## Step 7 — Persist
-
-Always pass the confirmed `session_id` so the apply endpoint targets
-the same session the user just approved (no re-resolution race). When
-that session has no persisted worktree yet — common for resumed card
-sessions working in the project's primary checkout — setup-apply binds
-`project.cwd` and the current git branch automatically.
+Call `setup-apply` with **`YOUR SESSION_ID`** (from the kickoff bound
+values). This validates the schema and commits `.agent-hub/ci.yaml` into
+**this session's own worktree** — the same worktree you're working in.
 
 ```bash
 curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/finalize/setup-apply" \
   -H "x-api-key: $AGENT_HUB_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"ci_yaml_content\": \"<the final YAML>\", \"session_id\": \"<id confirmed in step 6>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"KEY=value\\n\", \"defaultKind\": \"secret\"}}"
+  -d "{\"ci_yaml_content\": \"<the final YAML>\", \"session_id\": \"<YOUR SESSION_ID>\", \"secrets\": {\"mode\": \"merge\", \"env\": \"KEY=value\\n\", \"defaultKind\": \"secret\"}}"
 ```
 
 (`secrets` is optional — omit when nothing new to store.)
@@ -300,15 +290,44 @@ fails validation (the parser auto-selects the v1 or v2 schema from the
 `version:` field). Fix the issue and re-submit — do not work around the
 validation.
 
-## Step 8 — Close the session
+## Step 8 — Verify in your worktree (prove the pipeline)
 
-After a successful apply, echo `branch` and `session_id` from the
-response so the user can spot any drift, then summarise:
+You are in a real worktree — **use it**. Run the steps you just
+configured (the `run:` commands from the ci.yaml: install, lint, tests,
+etc.) right here, in dependency order, to prove the pipeline is green
+**before** you push. This is the whole point of working in a worktree:
+catch failures locally, not on the runner.
+
+- If a step fails because the **config** is wrong, fix the YAML and
+  re-run `setup-apply` (it re-commits), then re-run the step.
+- If it fails because of a **missing secret/env var**, collect it (step
+  5) and re-apply, or note the runner prerequisite for the user.
+- Don't claim success you didn't observe — only report green for steps
+  you actually ran.
+
+## Step 9 — Push + open a PR
+
+Ship it like any change so it goes through review:
+
+```bash
+git push -u origin HEAD
+gh pr create --title "Add Finalize runner config (.agent-hub/ci.yaml)" \
+  --body "Adds the Finalize CI pipeline. Verified locally: <which steps you ran + results>."
+```
+
+Report the PR URL back to the user. Do **not** merge it yourself — a
+human merges after review.
+
+## Step 10 — Close the session
+
+After the PR is open, echo `branch`, `session_id`, and the PR URL so the
+user can review, then summarise:
 
 - File committed at `<commit_sha>` on branch `<branch>` in session
-  `<session_id>`.
-- The card and session can now run Finalize → click **Finalize** in the
-  card view and the steps you just configured will run.
+  `<session_id>`; PR opened at `<pr_url>`.
+- Once merged, the card and session can run Finalize → click
+  **Finalize** in the card view and the steps you just configured will
+  run.
 
 ```xml
 <agenthub:close-card>
