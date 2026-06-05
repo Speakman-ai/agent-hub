@@ -72,7 +72,13 @@ export const DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS = 1;
  * end of the structured prompt.
  */
 export const DISPATCH_TRAILER =
-  'Please fix and commit. The pipeline will re-run automatically when you finish your turn. Do not re-run the full `.agent-hub/ci.yaml` suite locally — read pass/fail and step logs in the session strip; run only targeted tests for the failing case if needed.';
+  'Please fix and commit. The pipeline will re-run automatically when you finish your turn. ' +
+  'You do NOT have the web run-timeline UI, so to read why a step failed use the agent-hub skill: ' +
+  '`finalize.sh failed` dumps full logs for every failed step, `finalize.sh latest` lists per-step ' +
+  'pass/fail, and `finalize.sh output <stepIndex>` shows one step. (Equivalent REST: ' +
+  'GET /api/sessions/:sessionId/finalize-runs/latest and ' +
+  'GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output.) ' +
+  'Do not re-run the full `.agent-hub/ci.yaml` suite locally — run only targeted tests for the failing case if needed.';
 
 /** Trailer for reviewer-only dispatches — CI is deferred until approval. */
 export const DISPATCH_TRAILER_REVIEWER =

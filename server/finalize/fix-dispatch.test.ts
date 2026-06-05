@@ -177,6 +177,22 @@ describe('composeDispatchBody', () => {
     });
     expect(body.endsWith(`\n${DISPATCH_TRAILER}`)).toBe(true);
   });
+
+  // Regression: a spawned agent has no web "session strip". The trailer
+  // must point it at the retrieval surface it CAN reach (the finalize.sh
+  // wrapper / REST endpoints), not the UI. Earlier wording told the agent
+  // to "read step logs in the session strip", which wasted a whole fix
+  // turn while it hunted for a way to see the failure output.
+  it('points the agent at the log-retrieval surface, not the web strip', () => {
+    expect(DISPATCH_TRAILER).not.toContain('session strip');
+    // The wrapper subcommands the agent should reach for.
+    expect(DISPATCH_TRAILER).toContain('finalize.sh failed');
+    expect(DISPATCH_TRAILER).toContain('finalize.sh latest');
+    expect(DISPATCH_TRAILER).toContain('finalize.sh output');
+    // The underlying REST endpoints, in case the wrapper is unavailable.
+    expect(DISPATCH_TRAILER).toContain('/finalize-runs/latest');
+    expect(DISPATCH_TRAILER).toContain('/steps/:stepIndex/output');
+  });
 });
 
 // ─── dispatch flow tests ──────────────────────────────────────────────
