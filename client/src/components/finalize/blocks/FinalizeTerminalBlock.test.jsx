@@ -25,6 +25,33 @@ describe('FinalizeTerminalBlock', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders a clickable PR link when a successful push carries a prUrl', () => {
+    renderTerminal({ status: 'pushed', prUrl: 'https://github.com/acme/repo/pull/42' });
+    const link = screen.getByTestId('finalize-terminal-pr-link');
+    expect(link).toHaveAttribute('href', 'https://github.com/acme/repo/pull/42');
+    expect(link).toHaveTextContent('View PR #42');
+  });
+
+  it('renders the PR link for a bypassed push too', () => {
+    renderTerminal({
+      status: 'pushed',
+      bypassedGates: true,
+      prUrl: 'https://github.com/acme/repo/pull/7',
+    });
+    const link = screen.getByTestId('finalize-terminal-pr-link');
+    expect(link).toHaveAttribute('href', 'https://github.com/acme/repo/pull/7');
+  });
+
+  it('omits the PR link when no prUrl is present', () => {
+    renderTerminal({ status: 'pushed' });
+    expect(screen.queryByTestId('finalize-terminal-pr-link')).not.toBeInTheDocument();
+  });
+
+  it('does not render a PR link for non-push terminal statuses', () => {
+    renderTerminal({ status: 'failed', prUrl: 'https://github.com/acme/repo/pull/9' });
+    expect(screen.queryByTestId('finalize-terminal-pr-link')).not.toBeInTheDocument();
+  });
+
   it('returns null for non-finalize metadata', () => {
     const { container } = render(
       <FinalizeTerminalBlock message={{ metadata: JSON.stringify({ kind: 'pr_created' }) }} />,

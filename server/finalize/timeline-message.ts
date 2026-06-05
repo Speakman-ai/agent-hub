@@ -267,9 +267,16 @@ export function writeFinalizeRunTerminalTimeline(
      * Drives the amber "pushed without tests or review" warning client-side.
      */
     bypassedGates?: boolean;
+    /**
+     * The opened/updated PR URL for a successful push. Carried in the
+     * payload so the session's terminal block can render a clickable PR
+     * link instead of plain "Pushed to GitHub" text.
+     */
+    prUrl?: string | null;
   },
 ): string | null {
   const bypassedGates = Boolean(args.bypassedGates);
+  const prUrl = typeof args.prUrl === 'string' && args.prUrl.length > 0 ? args.prUrl : null;
   const content =
     args.status === 'pushed'
       ? bypassedGates
@@ -292,6 +299,7 @@ export function writeFinalizeRunTerminalTimeline(
       failureReason: args.failureReason ?? null,
       round: args.round ?? 0,
       bypassedGates,
+      prUrl,
     },
   });
 }

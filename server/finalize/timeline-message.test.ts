@@ -141,6 +141,39 @@ describe('timeline-message', () => {
     expect(metadata.bypassedGates).toBe(true);
   });
 
+  it('writeFinalizeRunTerminalTimeline carries prUrl in the payload on a successful push', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRunTerminalTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm5' },
+      {
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        status: 'pushed',
+        prUrl: 'https://github.com/acme/repo/pull/42',
+      },
+    );
+    const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
+    expect(metadata.prUrl).toBe('https://github.com/acme/repo/pull/42');
+  });
+
+  it('writeFinalizeRunTerminalTimeline normalizes a missing/empty prUrl to null', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRunTerminalTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm6' },
+      { sessionId: 'sess-1', runId: 'run-1', status: 'pushed', prUrl: '' },
+    );
+    const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
+    expect(metadata.prUrl).toBeNull();
+  });
+
   it('readFinalizeLoopRound defaults invalid values to 0', () => {
     expect(readFinalizeLoopRound(null)).toBe(0);
     expect(readFinalizeLoopRound({ loop_round: 3 })).toBe(3);

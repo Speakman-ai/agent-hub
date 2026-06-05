@@ -266,6 +266,7 @@ async function executePush(args: {
       status: 'pushed',
       round: readFinalizeLoopRound(run),
       bypassedGates,
+      prUrl: pushResult.prUrl,
     },
   );
 
@@ -481,6 +482,7 @@ export async function runSessionPushToGithub(
         runId,
         status: 'pushed',
         bypassedGates: true,
+        prUrl: pushResult.prUrl,
       },
     );
     return { ok: true, prUrl: pushResult.prUrl };

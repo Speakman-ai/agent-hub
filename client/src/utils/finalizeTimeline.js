@@ -99,12 +99,14 @@ export function parseFinalizeReadyToPushMetadata(metadataString) {
 export function parseFinalizeTerminalMetadata(metadataString) {
   const parsed = parseFinalizeTimelineMetadata(metadataString);
   if (!parsed || parsed.kind !== 'finalize_run_terminal') return null;
+  const rawPrUrl = parsed.prUrl ?? parsed.pr_url;
   return {
     runId: parsed.runId ?? parsed.run_id ?? null,
     status: parsed.status ?? null,
     failureReason: parsed.failureReason ?? parsed.failure_reason ?? null,
     round: typeof parsed.round === 'number' ? parsed.round : 0,
     bypassedGates: Boolean(parsed.bypassedGates ?? parsed.bypassed_gates),
+    prUrl: typeof rawPrUrl === 'string' && rawPrUrl ? rawPrUrl : null,
   };
 }
 

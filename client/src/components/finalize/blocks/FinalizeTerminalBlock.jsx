@@ -1,5 +1,6 @@
-import { CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, XCircle, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { parseFinalizeTerminalMetadata } from '../../../utils/finalizeTimeline.js';
+import { prNumberFromUrl } from '../../../utils/prFormatting.js';
 import { relativeTime } from '../../../utils/time.js';
 
 function labelForStatus(status, failureReason) {
@@ -37,6 +38,12 @@ export default function FinalizeTerminalBlock({ message }) {
       ? 'border-amber-700/40 bg-amber-950/20'
       : 'border-red-700/40 bg-red-950/20';
 
+  const prUrl = meta.status === 'pushed' ? meta.prUrl : null;
+  const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
+  const linkTone = isWarn
+    ? 'text-amber-300 hover:text-amber-200'
+    : 'text-emerald-300 hover:text-emerald-200';
+
   return (
     <div className="flex justify-center mb-4" data-testid="finalize-terminal-block">
       <div className={`max-w-[95%] sm:max-w-[80%] w-full border rounded-xl px-4 py-3 ${border}`}>
@@ -52,6 +59,18 @@ export default function FinalizeTerminalBlock({ message }) {
           <p className="text-[12px] text-amber-200/70 mt-1">
             Review and checks did not both pass before this push.
           </p>
+        ) : null}
+        {prUrl ? (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium underline ${linkTone}`}
+            data-testid="finalize-terminal-pr-link"
+          >
+            <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+            {prNumber ? `View PR #${prNumber}` : 'View pull request'}
+          </a>
         ) : null}
         {message.created_at ? (
           <div className="text-[11px] text-gray-600 mt-1.5">{relativeTime(message.created_at)}</div>
