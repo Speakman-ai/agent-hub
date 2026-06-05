@@ -1155,6 +1155,17 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
   }
 
+  // Linked Design Studio design: when set, the session renders that design's
+  // live canvas in a preview pane beside the chat (PUT /api/sessions/:id/
+  // linked-design). NULL = no design linked. Not a FK — designs live in a
+  // separate org-scoped table and may be deleted independently; the link is
+  // resolved (and silently ignored when stale) at render time.
+  try {
+    db.prepare('SELECT linked_design_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN linked_design_id TEXT DEFAULT NULL');
+  }
+
   // Message attribution for multi-agent assistant turns
   try {
     db.prepare('SELECT agent_id FROM messages LIMIT 1').get();
@@ -2009,6 +2020,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionMaxTurns: db.prepare(
       "UPDATE sessions SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionLinkedDesign: db.prepare(
+      "UPDATE sessions SET linked_design_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     // Soft-delete: mark the row archived. Worktree is intentionally preserved

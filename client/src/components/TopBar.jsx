@@ -5,6 +5,7 @@ import {
   buildNoteTitle,
   saveConversationAsNote,
 } from '../utils/export.js';
+import { Palette } from 'lucide-react';
 import { api } from '../utils/api.js';
 import BugReportButton from './BugReportButton.jsx';
 
@@ -64,6 +65,9 @@ export default function TopBar({
   showToast,
   onOpenForward,
   canForward,
+  onOpenLinkDesign,
+  canLinkDesign,
+  linkedDesignActive,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
@@ -633,6 +637,27 @@ export default function TopBar({
                 d="M3 10h11a4 4 0 014 4v3m0 0l-3-3m3 3l-3 3"
               />
             </svg>
+          </button>
+        )}
+        {/* Link a Design Studio design — renders its live canvas beside the chat */}
+        {agent && activeSessionId && (
+          <button
+            onClick={onOpenLinkDesign}
+            disabled={!canLinkDesign}
+            title={
+              linkedDesignActive
+                ? 'A design is linked — view, swap, or unlink it'
+                : 'Link a design to preview its live mockup beside this chat'
+            }
+            className={`hidden sm:flex p-2 transition-colors min-w-[44px] min-h-[44px] items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed ${
+              linkedDesignActive
+                ? 'text-purple-400 hover:text-purple-300'
+                : 'text-gray-400 hover:text-white'
+            }`}
+            aria-label="Link a design to this session"
+            data-testid="topbar-link-design"
+          >
+            <Palette className="h-5 w-5" />
           </button>
         )}
         {/* Reviewer agents are spawned only by the Finalize review phase —

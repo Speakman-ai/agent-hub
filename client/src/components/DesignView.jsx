@@ -719,7 +719,7 @@ export function injectBaseHref(html, baseHref) {
  * `reloadToken` re-runs the fetch (e.g. on every `design_updated` WS event)
  * so the agent's file writes show up immediately on the canvas.
  */
-function DesignCanvas({ designId, reloadToken, onManualReload }) {
+export function DesignCanvas({ designId, reloadToken, onManualReload }) {
   const base = getServerBase();
   const [srcdoc, setSrcdoc] = useState(null);
   const [error, setError] = useState(null);

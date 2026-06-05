@@ -16,6 +16,8 @@ import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
+import SessionDesignPane from './components/SessionDesignPane.jsx';
+import LinkDesignModal from './components/LinkDesignModal.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
   paneOpenStorageKey,
@@ -206,6 +208,12 @@ export default function App() {
   // Cache-buster for the design iframe. Bumped on every `design_updated` WS
   // event for the active design so the iframe re-fetches the latest files.
   const [designReloadToken, setDesignReloadToken] = useState(0);
+  // Cache-buster for the in-session linked-design preview pane. Bumped on
+  // every `design_updated` WS event whose design id matches the active
+  // session's `linked_design_id`, so the embedded canvas updates live.
+  const [sessionDesignReloadToken, setSessionDesignReloadToken] = useState(0);
+  // Controls the "Link a design" picker modal for the active chat session.
+  const [showLinkDesign, setShowLinkDesign] = useState(false);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
   // Last `delegation_error` per session — surfaces "Dispatch failed: …" on
@@ -336,6 +344,10 @@ export default function App() {
   const messagesColumnRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  // Linked-design id of the active session — kept in a ref so the stable WS
+  // handler can decide whether a `design_updated` event should refresh the
+  // in-session preview pane. Assigned after `activeSession` is derived below.
+  const activeSessionLinkedDesignIdRef = useRef(null);
   // Persist the active session per-agent so a reload / Electron restart
   // restores the same session. Intentionally scoped by agent because sessions
   // belong to agents; a remembered id for the wrong agent would be invalid.
@@ -1286,6 +1298,11 @@ export default function App() {
             setDesignStreaming(null);
             setDesignThinking(false);
             setDesignProcessing(false);
+          }
+          // If the active chat session embeds this design as a live preview
+          // pane, refresh that iframe too so edits show up without leaving chat.
+          if (data.designId && data.designId === activeSessionLinkedDesignIdRef.current) {
+            setSessionDesignReloadToken((t) => t + 1);
           }
           // Also refresh design row metadata (updated_at) in the list.
           setDesigns((prev) =>
@@ -3305,6 +3322,48 @@ export default function App() {
     [sessions, activeSessionId, sessionsIndexTick],
   );
 
+  // Resolve the design linked to the active session (if any) against the
+  // loaded designs list. A stale id (design since deleted) resolves to
+  // undefined and the preview pane simply doesn't render.
+  const linkedDesign = useMemo(() => {
+    const id = activeSession?.linked_design_id;
+    if (!id) return null;
+    return designs.find((d) => d.id === id) || null;
+  }, [activeSession, designs]);
+  activeSessionLinkedDesignIdRef.current = activeSession?.linked_design_id ?? null;
+
+  const handleLinkSessionDesign = useCallback(
+    async (designId) => {
+      if (!activeSessionId) return;
+      try {
+        const updated = await api.setSessionLinkedDesign(activeSessionId, designId);
+        setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
+        setSessionDesignReloadToken((t) => t + 1);
+        setShowLinkDesign(false);
+      } catch (err) {
+        showToast(err?.message || 'Failed to link design', 'error', 6000);
+      }
+    },
+    [activeSessionId, showToast],
+  );
+
+  const handleUnlinkSessionDesign = useCallback(async () => {
+    if (!activeSessionId) return;
+    try {
+      const updated = await api.setSessionLinkedDesign(activeSessionId, null);
+      setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
+      setShowLinkDesign(false);
+    } catch (err) {
+      showToast(err?.message || 'Failed to unlink design', 'error', 6000);
+    }
+  }, [activeSessionId, showToast]);
+
+  const handleOpenLinkedDesignStudio = useCallback(() => {
+    if (!linkedDesign) return;
+    setActiveDesignId(linkedDesign.id);
+    setCurrentView('design');
+  }, [linkedDesign]);
+
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
     () => agents.find((a) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
@@ -3753,6 +3812,9 @@ export default function App() {
                 canForward={
                   !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
                 }
+                onOpenLinkDesign={() => setShowLinkDesign(true)}
+                canLinkDesign={!!activeSessionId}
+                linkedDesignActive={!!linkedDesign}
               />
 
               {currentView === 'chat' && activeSessionId && (
@@ -4386,6 +4448,15 @@ export default function App() {
                         onConfigure={handlePreviewConfigure}
                       />
                     )}
+                    {linkedDesign && (
+                      <SessionDesignPane
+                        design={linkedDesign}
+                        reloadToken={sessionDesignReloadToken}
+                        onUnlink={handleUnlinkSessionDesign}
+                        onOpenStudio={handleOpenLinkedDesignStudio}
+                        onManualReload={() => setSessionDesignReloadToken((t) => t + 1)}
+                      />
+                    )}
                   </div>
                 </div>
               )}
@@ -4434,6 +4505,17 @@ export default function App() {
               showToast(`Forwarded to ${session.name || 'new session'}`, 'success', 4000);
             }}
             onError={(msg) => showToast(`Forward failed: ${msg}`, 'error', 6000)}
+          />
+        )}
+
+        {/* Link a Design Studio design to the active session */}
+        {showLinkDesign && activeSessionId && (
+          <LinkDesignModal
+            designs={designs}
+            currentDesignId={activeSession?.linked_design_id ?? null}
+            onClose={() => setShowLinkDesign(false)}
+            onSelect={handleLinkSessionDesign}
+            onUnlink={handleUnlinkSessionDesign}
           />
         )}
 

@@ -61,6 +61,14 @@ export interface SessionRow {
   /** Max advisor turns per user message round in multi-agent sessions (0 = unlimited). */
   max_turns?: number;
   /**
+   * Optional Design Studio design id linked to this session. When set, the
+   * client renders that design's live canvas in a preview pane beside the
+   * chat (see `PUT /api/sessions/:id/linked-design`). NULL = none. Not a FK:
+   * designs are org-scoped and independently deletable, so a stale id is
+   * tolerated and ignored at render time.
+   */
+  linked_design_id?: string | null;
+  /**
    * When `1`, session end may commit/push/open a PR without the operator
    * clicking Create ticket & PR (board assign + autonomous dispatch).
    */
@@ -948,6 +956,7 @@ export interface Stmts {
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   updateSessionMaxTurns: Stmt;
+  updateSessionLinkedDesign: Stmt;
   deleteSession: Stmt;
   softDeleteSession: Stmt;
   restoreArchivedSession: Stmt;

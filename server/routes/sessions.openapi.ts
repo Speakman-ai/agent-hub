@@ -66,6 +66,10 @@ export const SessionComponent = registerComponent(
       orchestration_phase: z.string().nullable().optional(),
       orchestration_meta: z.string().nullable().optional(),
       max_turns: z.number().int().optional(),
+      linked_design_id: z.string().nullable().optional().openapi({
+        description:
+          "Optional Design Studio design id linked to this session. When set, the web client renders the design's live canvas in a preview pane beside the chat. Set/cleared via `PUT /api/sessions/{sessionId}/linked-design`. Not a foreign key — a stale id (design since deleted) is tolerated and ignored at render time.",
+      }),
       agents: z
         .array(
           z.object({
@@ -180,6 +184,19 @@ export const PutSessionEngineRequestSchema = z.object({
 
 export const PutSessionModelRequestSchema = z.object({
   model: z.string({ error: 'Invalid model' }).min(1, 'Invalid model'),
+});
+
+/**
+ * PUT /api/sessions/:sessionId/linked-design — link a Design Studio design to
+ * the session (or clear it). `designId: null` unlinks. A non-null id must
+ * reference a design in the caller's active org.
+ */
+export const PutSessionLinkedDesignRequestSchema = z.object({
+  designId: z
+    .string()
+    .min(1, 'designId must be a non-empty string or null')
+    .nullable()
+    .openapi({ description: 'Design id to link, or null to clear the link.' }),
 });
 
 export const RewindRequestSchema = z.object({
@@ -334,6 +351,25 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/linked-design
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/linked-design',
+  tags: ['Sessions'],
+  summary: 'Link (or unlink) a Design Studio design to a session',
+  description:
+    "Sets `linked_design_id` so the web client renders the design's live canvas in a preview pane beside the chat. Pass `designId: null` to clear the link. A non-null id must reference a design in the caller's active org.",
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(PutSessionLinkedDesignRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Session or design not found.'),
   },
 });
 

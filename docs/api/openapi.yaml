@@ -1518,6 +1518,10 @@ components:
           nullable: true
         max_turns:
           type: integer
+        linked_design_id:
+          type: string
+          nullable: true
+          description: Optional Design Studio design id linked to this session. When set, the web client renders the design's live canvas in a preview pane beside the chat. Set/cleared via `PUT /api/sessions/{sessionId}/linked-design`. Not a foreign key — a stale id (design since deleted) is tolerated and ignored at render time.
         agents:
           type: array
           items:
@@ -7657,6 +7661,52 @@ paths:
                   - $ref: "#/components/schemas/SessionMessagesList"
         "404":
           description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/linked-design:
+    put:
+      tags:
+        - Sessions
+      summary: Link (or unlink) a Design Studio design to a session
+      description: "Sets `linked_design_id` so the web client renders the design's live canvas in a preview pane beside the chat. Pass `designId: null` to clear the link. A non-null id must reference a design in the caller's active org."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                designId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  description: Design id to link, or null to clear the link.
+              required:
+                - designId
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or design not found.
           content:
             application/json:
               schema:

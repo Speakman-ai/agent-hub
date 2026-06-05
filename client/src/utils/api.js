@@ -404,6 +404,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
+  /**
+   * Link a Design Studio design to a session so its live canvas renders in a
+   * preview pane beside the chat. Pass `designId: null` to clear the link.
+   */
+  setSessionLinkedDesign: (sessionId, designId) =>
+    fetchJSON(`/sessions/${sessionId}/linked-design`, {
+      method: 'PUT',
+      body: JSON.stringify({ designId: designId ?? null }),
+    }),
   // `setSessionWorktree` was removed when Agent Hub locked to
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.

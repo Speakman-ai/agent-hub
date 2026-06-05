@@ -11,6 +11,7 @@ import {
   ToggleEnabledRequestSchema,
   PutSessionEngineRequestSchema,
   PutSessionModelRequestSchema,
+  PutSessionLinkedDesignRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
 } from './sessions.openapi.js';
@@ -87,6 +88,8 @@ import {
   engineSupportsCheckpointRewind,
 } from '../session-checkpoint-rewind.js';
 import { enrichSessionWithAgents } from '../session-agents.js';
+import { getDesign } from '../designs-store.js';
+import { getActiveOrgId } from '../orgs.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -327,8 +330,16 @@ export function summarizeTranscript(
 }
 
 export default function createSessionRoutes(deps: RouteDeps): Router {
-  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses, broadcast } =
-    deps;
+  const {
+    stmts,
+    findAgent,
+    findProject,
+    getEnrichedAgent,
+    handleChat,
+    config,
+    activeProcesses,
+    broadcast,
+  } = deps;
 
   /**
    * Tear down any preview groups owned by `sessionId` across both runtimes.
@@ -878,6 +889,39 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow;
     const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);
+    deps.broadcast({ type: 'session-updated', session: enriched });
+    res.json(enriched);
+  });
+
+  /**
+   * Link (or unlink) a Design Studio design to this session. When linked, the
+   * web client renders the design's live canvas in a preview pane beside the
+   * chat so the user can iterate on the mockup with the agent before
+   * implementation. `designId: null` clears the link.
+   *
+   * The design must exist in the caller's active org (org scoping flows
+   * through `getDesign`). The link is stored as a plain id, not a FK — if the
+   * design is later deleted the stale id is tolerated and ignored at render.
+   */
+  router.put('/api/sessions/:sessionId/linked-design', (req: Request, res: Response) => {
+    const parsed = parseBody(PutSessionLinkedDesignRequestSchema, req, res);
+    if (!parsed) return;
+    const sessionId = req.params.sessionId as string;
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const designId = parsed.designId ?? null;
+    if (designId !== null) {
+      const design = getDesign(designId, findProject, getActiveOrgId());
+      if (!design) return res.status(404).json({ error: 'Design not found' });
+    }
+
+    stmts.updateSessionLinkedDesign.run(designId, sessionId);
+    const updated = stmts.getSession.get(sessionId) as SessionRow;
+    const enriched = enrichSessionForClient(updated, stmts);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
