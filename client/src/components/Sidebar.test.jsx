@@ -91,6 +91,13 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.getByText('Idle session')).toBeInTheDocument();
   });
 
+  it('does not render the legacy purple PR-ready glyph for changes-ready sessions', () => {
+    render(<Sidebar {...buildProps()} />);
+
+    expect(screen.getByText('PR ready session')).toBeInTheDocument();
+    expect(screen.queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
+
   it('invokes onFocusSession with agent and session id when a session row is clicked', () => {
     const onFocusSession = vi.fn();
     render(<Sidebar {...buildProps({ onFocusSession })} />);
@@ -144,6 +151,7 @@ describe('Sidebar — actionable session visibility', () => {
     expect(within(collapsedPanel).getByText('Running task')).toBeInTheDocument();
     expect(within(collapsedPanel).getByText('PR ready session')).toBeInTheDocument();
     expect(within(collapsedPanel).queryByText('Idle session')).not.toBeInTheDocument();
+    expect(within(collapsedPanel).queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
 
     // Standard sessions list should be gone.
     expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();

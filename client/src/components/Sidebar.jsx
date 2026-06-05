@@ -203,9 +203,8 @@ export default function Sidebar({
   // - it's currently running (tracked via activeTaskSessionIds)
   // - it has a pending PR/changes ready (tracked via changesReadyBySession), including
   //   `[Resolve PR #N]` sessions — so users can reopen them from the collapsed sidebar.
-  //   The misleading "create PR" purple glyph is suppressed for those titles separately
-  //   (see `showCreatePrReadyGlyph`); an external-link affordance (`resolvePrHref`) carries
-  //   the "existing PR" semantics instead.
+  //   Resolve sessions may still render an external-link affordance (`resolvePrHref`);
+  //   PR-ready status itself is represented by the shared session state icon.
   // - it's blocked on an `agenthub:ask` picker awaiting user input
   //   (tracked via awaitingInputBySession). Stays visible behind ▸ so users
   //   never miss a session that needs their reply.
@@ -612,10 +611,6 @@ export default function Sidebar({
                                               project.githubRepo,
                                             )
                                           : null;
-                                      const showCreatePrReadyGlyph =
-                                        !!prReady &&
-                                        !resolvePrHref &&
-                                        !isResolvePrSessionTitle(session.name);
                                       return (
                                         <div
                                           key={session.id}
@@ -710,15 +705,6 @@ export default function Sidebar({
                                                   >
                                                     <GitFork size={10} />
                                                     {subagentsBySession[session.id].running}
-                                                  </span>
-                                                )}
-                                                {showCreatePrReadyGlyph && (
-                                                  <span
-                                                    data-testid="pr-ready-indicator"
-                                                    className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
-                                                    title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
-                                                  >
-                                                    <GitPullRequest size={11} />
                                                   </span>
                                                 )}
                                                 <span className="truncate">{session.name}</span>
@@ -1089,8 +1075,6 @@ export default function Sidebar({
                             prReady && isResolvePrSessionTitle(session.name)
                               ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
                               : null;
-                          const showCreatePrReadyGlyph =
-                            !!prReady && !resolvePrHref && !isResolvePrSessionTitle(session.name);
                           return (
                             <button
                               type="button"
@@ -1110,15 +1094,6 @@ export default function Sidebar({
                                 size={12}
                                 testId={`session-state-icon-${session.id}`}
                               />
-                              {showCreatePrReadyGlyph && (
-                                <span
-                                  data-testid="pr-ready-indicator"
-                                  className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
-                                  title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
-                                >
-                                  <GitPullRequest size={11} />
-                                </span>
-                              )}
                               {resolvePrHref && (
                                 <span
                                   className="flex items-center text-sky-400 flex-shrink-0"
