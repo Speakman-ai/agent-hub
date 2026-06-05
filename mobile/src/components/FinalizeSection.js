@@ -1,16 +1,12 @@
 /**
  * FinalizeSection — Settings → Finalize panel (React Native).
  *
- * Mirrors the web `FinalizeSettingsSection` (PR #1179 + the reviewer
- * follow-up that surfaced the resolved commit target). The wizard
- * itself runs in the existing mobile chat surface; this section is the
- * entry point:
+ * Mirrors the web `FinalizeSettingsSection`. The wizard runs as a
+ * normal worktree-backed session in the mobile chat surface; this
+ * section is the entry point:
  *   - project picker
- *   - "Set up Finalize" button → POST /api/projects/:id/finalize/setup-wizard
- *   - on success, navigate to the spawned chat session
- *   - render the resolved commit target (branch + session) so the user
- *     can see which session will receive the ci.yaml commit
- *   - show a `no_worktree` warning when target is null
+ *   - "Set up Runner" button → POST /api/projects/:id/finalize/setup-wizard
+ *   - on success, open the spawned chat session
  *
  * Pure state helpers live in `mobile/src/utils/finalizeWizard.js` so
  * they can be exercised by the existing pure-JS vitest suite. WS
@@ -28,11 +24,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import {
-  pickInitialProjectId,
-  pickFinalizeStatus,
-  shouldRefreshOnWizardComplete,
-} from '../utils/finalizeWizard';
+import { pickInitialProjectId, shouldRefreshOnWizardComplete } from '../utils/finalizeWizard';
 
 export default function FinalizeSection({ navigation }) {
   const {
@@ -47,7 +39,6 @@ export default function FinalizeSection({ navigation }) {
   const [wizardStarting, setWizardStarting] = useState(false);
   const [wizardError, setWizardError] = useState(null);
   const [lastSessionId, setLastSessionId] = useState(null);
-  const [resolvedTarget, setResolvedTarget] = useState(null);
 
   // Keep the picker in sync when the project list mutates underneath us
   // (e.g. a new project is created elsewhere).
@@ -68,7 +59,6 @@ export default function FinalizeSection({ navigation }) {
   }, [lastFinalizeWizardEvent, projectId, refreshProjects]);
 
   const project = projects.find((p) => p.id === projectId) || null;
-  const status = pickFinalizeStatus({ lastSessionId, target: resolvedTarget });
   // We track the wizard's agent id separately so the "Open wizard chat"
   // button works even after the user changes the project picker (which
   // clears `project` but not the just-spawned session).
@@ -84,16 +74,7 @@ export default function FinalizeSection({ navigation }) {
         setWizardError('Server did not return a wizard session id');
         return;
       }
-      // Set state and STOP. We deliberately do NOT auto-navigate: the
-      // user needs to see the resolved commit target (branch + session)
-      // on this screen before going to the wizard chat — otherwise the
-      // round-2 contract from PR #1179 ("Settings shows the proposed
-      // branch before the wizard starts") is silently dropped on mobile,
-      // where the small screen makes the in-chat echo easy to miss.
-      // The "Open wizard chat" button below performs the navigation
-      // once the user has confirmed the target.
       setLastSessionId(res.sessionId);
-      setResolvedTarget(res.target ?? null);
       setSpawnedAgentId(res.agentId || null);
     } catch (err) {
       setWizardError(err?.message || 'Failed to start setup walkthrough');
@@ -119,11 +100,11 @@ export default function FinalizeSection({ navigation }) {
     <View>
       <Text style={styles.sectionTitle}>Runner</Text>
       <Text style={styles.sectionDesc}>
-        Author <Text style={styles.mono}>.agent-hub/ci.yaml</Text> — the v1 config that drives the
+        Author <Text style={styles.mono}>.agent-hub/ci.yaml</Text> — the config that drives the
         Runner pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Tap{' '}
-        <Text style={styles.boldText}>Set up Runner</Text> to spawn a chat session that scans the
-        repo and walks you through a proposed config. The wizard commits the file to a session that
-        already has a worktree.
+        <Text style={styles.boldText}>Set up Runner</Text> to spawn a normal worktree-backed session
+        that scans the repo, proposes a config, runs the configured steps to prove the pipeline, then
+        pushes and opens a PR for review.
       </Text>
 
       <Text style={styles.fieldLabel}>Project</Text>
@@ -171,20 +152,6 @@ export default function FinalizeSection({ navigation }) {
           </Text>
         )}
 
-        {status?.kind === 'target' && (
-          <Text style={styles.targetInline} testID="finalize-resolved-target">
-            Commit target: {status.text}.
-          </Text>
-        )}
-
-        {status?.kind === 'no_worktree' && (
-          <Text style={styles.targetInline} testID="finalize-no-worktree">
-            Runs in its own worktree on a fresh branch: it commits{' '}
-            <Text style={styles.mono}>.agent-hub/ci.yaml</Text>, runs the configured steps, then
-            pushes and opens a PR for review.
-          </Text>
-        )}
-
         <TouchableOpacity
           onPress={handleStartWalkthrough}
           disabled={!project || wizardStarting}
@@ -226,8 +193,8 @@ export default function FinalizeSection({ navigation }) {
           • A single file at <Text style={styles.mono}>.agent-hub/ci.yaml</Text>.
         </Text>
         <Text style={styles.bullet}>
-          • Committed to a project session that has a worktree — the wizard surfaces the resolved
-          branch and asks you to confirm before applying.
+          • Committed on a fresh branch in the setup session&apos;s own worktree, verified locally,
+          then pushed and opened as a PR for review.
         </Text>
         <Text style={styles.bullet}>
           • One step per check you want to run before pushing — install, typecheck, lint, test, etc.

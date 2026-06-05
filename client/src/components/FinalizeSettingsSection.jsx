@@ -128,22 +128,18 @@ export default function FinalizeSettingsSection({
               Guided setup walkthrough
             </h4>
             <p className="text-xs text-gray-500 max-w-xl">
-              Spawns a chat session loaded with the{' '}
-              <code className="text-gray-300">finalize-setup</code> skill. The wizard reads{' '}
-              <code className="text-gray-300">README.md</code>, package manifests, existing CI
-              workflows, and proposes a v1 <code className="text-gray-300">.agent-hub/ci.yaml</code>
-              . It can collect missing secrets and persist them alongside the config commit.
+              Spawns a normal worktree-backed session loaded with the{' '}
+              <code className="text-gray-300">finalize-setup</code> skill. It scans{' '}
+              <code className="text-gray-300">README.md</code>, package manifests, and existing CI
+              workflows, proposes a <code className="text-gray-300">.agent-hub/ci.yaml</code>, runs
+              the configured steps to prove the pipeline, then pushes and opens a PR for review. It
+              can also collect missing secrets and persist them alongside the config commit.
             </p>
             {lastSessionId && (
               <p className="text-xs text-emerald-400 mt-2">
                 Last wizard session: <code className="text-emerald-300">{lastSessionId}</code>
               </p>
             )}
-            <p className="text-xs text-gray-400 mt-2">
-              Runs as a normal session in its own worktree on a fresh branch: it authors{' '}
-              <code className="text-gray-200">.agent-hub/ci.yaml</code>, runs the configured steps
-              to prove the pipeline, then pushes and opens a PR for review.
-            </p>
           </div>
           <button
             type="button"
@@ -243,10 +239,8 @@ export default function FinalizeSettingsSection({
             A single file at <code className="text-gray-300">.agent-hub/ci.yaml</code>
           </li>
           <li>
-            Committed to a project session that has a worktree — the wizard surfaces the resolved
-            branch and asks you to confirm before applying. Pass an explicit
-            <code className="text-gray-300"> session_id</code> in the wizard if you want to target a
-            specific in-flight session.
+            Committed on a fresh branch in the setup session&apos;s own worktree, verified locally,
+            then pushed and opened as a PR for review — like any code change.
           </li>
           <li>
             One step per check you want to run before pushing — install, typecheck, lint, test, etc.

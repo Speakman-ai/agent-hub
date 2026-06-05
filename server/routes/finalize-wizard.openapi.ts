@@ -89,7 +89,7 @@ const FinalizeWizardResolvedTarget = registerComponent(
     })
     .openapi({
       description:
-        'The project session whose worktree would receive the commit if `setup-apply` were called right now. Resolved at wizard spawn time as the most-recent worktree-bearing session; `setup-apply` re-resolves on its own request, so the value is a starting suggestion, not a guarantee. Surface to the user before calling apply.',
+        'Legacy shape retained for response compatibility. The setup wizard now always returns `target: null` because the spawned session owns its own worktree (`use_worktree=1`) and passes its own `session_id` to `setup-apply`.',
     }),
 );
 
@@ -105,7 +105,7 @@ const FinalizeWizardStartResponse = registerComponent(
         .openapi({ description: 'Raw `sessions` row for the spawned wizard session.' }),
       target: FinalizeWizardResolvedTarget.nullable().openapi({
         description:
-          'The resolved apply target at spawn time. `null` when no worktree-bearing session exists yet — the wizard can still run but apply will 400 with `no_worktree` until one does.',
+          'Always `null`. The setup session owns its own worktree; there is no separate commit target to surface.',
       }),
     })
     .openapi({ description: 'Wizard session spawned successfully.' }),
@@ -143,9 +143,12 @@ registerPath({
   summary: 'Spawn the Finalize ci.yaml setup wizard',
   description: [
     'Admin+. Scans the project (README, package manifests, .github/workflows,',
-    'Makefile, package.json scripts) and spawns a one-shot chat session loaded',
-    'with the `finalize-setup` skill. The pre-built `proposedCiYaml` always',
-    'parses against the v1 schema.',
+    'Makefile, package.json scripts) and spawns a **worktree-backed** chat',
+    'session (`use_worktree=1`) loaded with the `finalize-setup` skill. The',
+    'session provisions its own git clone on a fresh `agent-hub/…` branch so',
+    'the agent can author `.agent-hub/ci.yaml`, verify the pipeline locally,',
+    'push, and open a PR. The pre-built `proposedCiYaml` is embedded in the',
+    'kickoff prompt.',
   ].join('\n'),
   request: {
     params: z.object({ projectId: z.string() }),
@@ -173,7 +176,7 @@ const FinalizeSetupApplyRequest = registerComponent(
       }),
       session_id: z.string().optional().openapi({
         description:
-          'Optional explicit target session id. When omitted the server picks the most-recent project session that has a worktree.',
+          'Target session id whose worktree receives the commit. The setup wizard passes its own session id. When omitted the server picks the most-recent project session that has a worktree, or auto-provisions a dedicated `[Finalize Config]` worktree on a fresh branch when none exists.',
       }),
       secrets: z
         .object({
@@ -227,10 +230,12 @@ registerPath({
   tags: ['Finalize'],
   summary: 'Commit a wizard-generated ci.yaml to the worktree',
   description: [
-    'Admin+. Validates `ci_yaml_content` against the v1 schema, writes',
+    'Admin+. Validates `ci_yaml_content` against the v1/v2 schema, writes',
     '`<worktree>/.agent-hub/ci.yaml`, and commits the file to the worktree',
-    "branch. The target worktree is the request body's `session_id` when",
-    'supplied, else the most-recent project session that has one.',
+    "branch. Target resolution order: (1) request body's `session_id` when",
+    'supplied (the setup wizard passes its own id), (2) the most-recent',
+    'project session that has a worktree, (3) auto-provision a dedicated',
+    '`[Finalize Config]` session + worktree when none exists.',
   ].join('\n'),
   request: {
     params: z.object({ projectId: z.string() }),
