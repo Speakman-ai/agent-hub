@@ -3887,6 +3887,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     setAgents(initialAgents);
   }, [initialAgents]);
 
+  const configurableAgents = useMemo(
+    () => agents.filter((agent) => agent.role !== 'reviewer'),
+    [agents],
+  );
+
   useEffect(() => {
     api
       .getModelConfig()
@@ -3921,23 +3926,27 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   }, [engineChoices, bulkEngine]);
 
   const handleBulkApplyAll = async () => {
-    if (!modelConfig || agents.length === 0) return;
+    if (!modelConfig || configurableAgents.length === 0) return;
     const effectiveModel = bulkModel || getDefaultModel(bulkEngine);
     if (
       !window.confirm(
-        `Set all ${agents.length} agents to engine "${bulkEngine}" with model "${effectiveModel}"?`,
+        `Set all ${configurableAgents.length} agents to engine "${bulkEngine}" with model "${effectiveModel}"?`,
       )
     ) {
       return;
     }
     setBulkSaving(true);
     try {
-      await api.bulkSetAllAgentsEngine({ engine: bulkEngine, model: effectiveModel });
+      await Promise.all(
+        configurableAgents.map((agent) =>
+          api.updateAgent(agent.id, { engine: bulkEngine, model: effectiveModel }),
+        ),
+      );
       const list = await api.getAgents();
       setAgents(list);
       setEdits({});
       if (onAgentsChange) onAgentsChange();
-      showToast?.(`Updated ${agents.length} agent(s) to ${bulkEngine}.`, 'success');
+      showToast?.(`Updated ${configurableAgents.length} agent(s) to ${bulkEngine}.`, 'success');
     } catch (e) {
       console.error('Bulk agent engine update failed:', e);
       const msg = e instanceof Error ? e.message : 'Bulk engine update failed.';
@@ -4831,9 +4840,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       <div className="space-y-3">
         {(() => {
           // Group agents: leads first, then subs indented under their lead
-          const leads = agents.filter((a) => a.role === 'lead');
-          const subs = agents.filter((a) => a.role === 'sub');
-          const standalone = agents.filter((a) => a.role !== 'lead' && a.role !== 'sub');
+          const leads = configurableAgents.filter((a) => a.role === 'lead');
+          const subs = configurableAgents.filter((a) => a.role === 'sub');
+          const standalone = configurableAgents.filter(
+            (a) => a.role !== 'lead' && a.role !== 'sub',
+          );
           const subsByParent = {};
           for (const s of subs) {
             const pid = s.parentAgentId;

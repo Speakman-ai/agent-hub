@@ -3936,7 +3936,11 @@ export default function App() {
               ) : currentView === 'notes' && notesProjectId ? (
                 <NotesEditor projectId={notesProjectId} />
               ) : currentView === 'reviewer' && reviewerProjectId ? (
-                <ReviewerPage projectId={reviewerProjectId} projects={projects} />
+                <ReviewerPage
+                  projectId={reviewerProjectId}
+                  projects={projects}
+                  onAgentsChange={refreshAgents}
+                />
               ) : currentView === 'threads' && threadsProjectId ? (
                 activeThreadId ? (
                   <ThreadView

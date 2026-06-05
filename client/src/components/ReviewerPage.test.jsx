@@ -15,7 +15,9 @@ import { api } from '../utils/api.js';
 vi.mock('../utils/api.js', () => ({
   api: {
     getContext: vi.fn(),
+    getModelConfig: vi.fn(),
     saveContext: vi.fn(),
+    updateAgent: vi.fn(),
   },
 }));
 
@@ -23,6 +25,8 @@ const reviewerAgent = {
   id: 'proj-1-reviewer',
   name: 'Demo Reviewer',
   role: 'reviewer',
+  engine: 'claude-code',
+  model: 'claude-opus-4-8',
   active: true,
 };
 
@@ -41,6 +45,17 @@ const projectWithoutReviewer = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getModelConfig.mockResolvedValue({
+    defaultModel: 'claude-opus-4-8',
+    engineDefaultModels: {
+      'claude-code': 'claude-opus-4-8',
+      'codex-cli': 'gpt-5-codex',
+    },
+    engineValidModels: {
+      'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'],
+      'codex-cli': ['gpt-5-codex', 'gpt-5'],
+    },
+  });
 });
 
 describe('ReviewerPage', () => {
@@ -79,6 +94,69 @@ describe('ReviewerPage', () => {
         'IDENTITY.md',
         'updated body',
       ),
+    );
+  });
+
+  it('lets the user switch and save the reviewer model', async () => {
+    const onAgentsChange = vi.fn();
+    api.getContext.mockResolvedValue({ 'IDENTITY.md': 'reviewer body' });
+    api.updateAgent.mockResolvedValue({
+      ...reviewerAgent,
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    render(
+      <ReviewerPage
+        projectId="proj-1"
+        projects={[projectWithReviewer]}
+        onAgentsChange={onAgentsChange}
+      />,
+    );
+
+    const modelSelect = await screen.findByTestId('reviewer-model-select');
+    expect(modelSelect).toHaveValue('claude-opus-4-8');
+
+    fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
+    fireEvent.click(screen.getByRole('button', { name: /save model/i }));
+
+    await waitFor(() =>
+      expect(api.updateAgent).toHaveBeenCalledWith('proj-1-reviewer', {
+        engine: 'claude-code',
+        model: 'claude-sonnet-4-20250514',
+      }),
+    );
+    expect(onAgentsChange).toHaveBeenCalled();
+  });
+
+  it('resets the reviewer model when switching engines', async () => {
+    api.getContext.mockResolvedValue({ 'IDENTITY.md': 'reviewer body' });
+    api.updateAgent.mockResolvedValue({
+      ...reviewerAgent,
+      engine: 'codex-cli',
+      model: '',
+    });
+
+    render(<ReviewerPage projectId="proj-1" projects={[projectWithReviewer]} />);
+
+    fireEvent.change(await screen.findByTestId('reviewer-engine-select'), {
+      target: { value: 'codex-cli' },
+    });
+
+    const modelSelect = await screen.findByTestId('reviewer-model-select');
+    expect(modelSelect).toHaveValue('');
+    expect(Array.from(modelSelect.options).map((option) => option.value)).toEqual([
+      '',
+      'gpt-5-codex',
+      'gpt-5',
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: /save model/i }));
+
+    await waitFor(() =>
+      expect(api.updateAgent).toHaveBeenCalledWith('proj-1-reviewer', {
+        engine: 'codex-cli',
+        model: '',
+      }),
     );
   });
 

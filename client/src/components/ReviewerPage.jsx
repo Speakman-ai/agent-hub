@@ -7,7 +7,7 @@ import { ScanEye, FileText, Pencil, PenLine, Save, Loader2 } from 'lucide-react'
 
 // Per-project page for editing the reviewer agent's markdown context files
 // (served by the existing GET/PUT /api/agents/:agentId/context endpoints).
-export default function ReviewerPage({ projectId, projects = [] }) {
+export default function ReviewerPage({ projectId, projects = [], onAgentsChange }) {
   const project = useMemo(
     () => projects.find((p) => p.id === projectId) || null,
     [projects, projectId],
@@ -23,6 +23,37 @@ export default function ReviewerPage({ projectId, projects = [] }) {
   const [context, setContext] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [modelConfig, setModelConfig] = useState(null);
+  const [modelConfigError, setModelConfigError] = useState(null);
+  const [reviewerDraft, setReviewerDraft] = useState({ engine: 'claude-code', model: '' });
+  const [savingModel, setSavingModel] = useState(false);
+  const [modelSaveStatus, setModelSaveStatus] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelConfigError(null);
+    api
+      .getModelConfig()
+      .then((cfg) => {
+        if (!cancelled) setModelConfig(cfg || null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelConfigError(err && err.message ? err.message : 'Failed to load models');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setReviewerDraft({
+      engine: reviewerAgent?.engine || 'claude-code',
+      model: reviewerAgent?.model || '',
+    });
+    setModelSaveStatus(null);
+  }, [reviewerAgent?.id, reviewerAgent?.engine, reviewerAgent?.model]);
 
   useEffect(() => {
     if (!reviewerAgentId) {
@@ -57,6 +88,42 @@ export default function ReviewerPage({ projectId, projects = [] }) {
   }, []);
 
   const fileEntries = context ? Object.entries(context) : [];
+  const reviewerEngine = reviewerDraft.engine || reviewerAgent?.engine || 'claude-code';
+  const engineChoices = useMemo(() => {
+    if (!modelConfig?.engineValidModels) return [];
+    return Object.keys(modelConfig.engineValidModels).filter(
+      (engine) => (modelConfig.engineValidModels[engine]?.length ?? 0) > 0,
+    );
+  }, [modelConfig]);
+  const modelChoices = modelConfig?.engineValidModels?.[reviewerEngine] || [];
+  const defaultModel =
+    modelConfig?.engineDefaultModels?.[reviewerEngine] || modelConfig?.defaultModel || '';
+  const modelDirty =
+    reviewerAgent &&
+    (reviewerDraft.engine !== (reviewerAgent.engine || 'claude-code') ||
+      (reviewerDraft.model || '') !== (reviewerAgent.model || ''));
+
+  const handleModelSave = async () => {
+    if (!reviewerAgentId) return;
+    setSavingModel(true);
+    setModelSaveStatus(null);
+    try {
+      const updated = await api.updateAgent(reviewerAgentId, {
+        engine: reviewerDraft.engine || 'claude-code',
+        model: reviewerDraft.model || '',
+      });
+      setReviewerDraft({
+        engine: updated?.engine || reviewerDraft.engine || 'claude-code',
+        model: updated?.model || '',
+      });
+      setModelSaveStatus('saved');
+      if (onAgentsChange) onAgentsChange();
+    } catch (err) {
+      setModelSaveStatus(err && err.message ? err.message : 'Save failed');
+    } finally {
+      setSavingModel(false);
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto bg-gray-900 text-gray-100">
@@ -81,25 +148,116 @@ export default function ReviewerPage({ projectId, projects = [] }) {
           <EmptyState message="Project not found." />
         ) : !reviewerAgent ? (
           <EmptyState message="This project has no reviewer yet. The reviewer agent is created automatically once the project has GitHub integration (a connected repo or an enabled webhook)." />
-        ) : loading ? (
-          <div className="flex items-center gap-2 text-sm text-gray-400 py-8">
-            <Loader2 size={16} className="animate-spin" /> Loading reviewer files…
-          </div>
-        ) : error ? (
-          <EmptyState message={`Could not load reviewer files: ${error}`} />
-        ) : fileEntries.length === 0 ? (
-          <EmptyState message="No markdown files found for this reviewer." />
         ) : (
-          <div className="space-y-2">
-            {fileEntries.map(([filename, content]) => (
-              <ReviewerFilePanel
-                key={filename}
-                filename={filename}
-                content={content}
-                agentId={reviewerAgentId}
-                onSaved={handleSaved}
-              />
-            ))}
+          <div className="space-y-4">
+            <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="reviewer-engine-select"
+                    className="block text-xs text-gray-400 mb-1"
+                  >
+                    Engine
+                  </label>
+                  <select
+                    id="reviewer-engine-select"
+                    data-testid="reviewer-engine-select"
+                    value={reviewerEngine}
+                    disabled={!modelConfig || savingModel}
+                    onChange={(e) =>
+                      setReviewerDraft({
+                        engine: e.target.value,
+                        model: '',
+                      })
+                    }
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 disabled:opacity-60"
+                  >
+                    {engineChoices.length === 0 ? (
+                      <option value={reviewerEngine}>{reviewerEngine}</option>
+                    ) : (
+                      engineChoices.map((engine) => (
+                        <option key={engine} value={engine}>
+                          {engine}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor="reviewer-model-select"
+                    className="block text-xs text-gray-400 mb-1"
+                  >
+                    Model
+                  </label>
+                  <select
+                    id="reviewer-model-select"
+                    data-testid="reviewer-model-select"
+                    value={reviewerDraft.model || ''}
+                    disabled={!modelConfig || savingModel}
+                    onChange={(e) =>
+                      setReviewerDraft((draft) => ({ ...draft, model: e.target.value }))
+                    }
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 disabled:opacity-60"
+                  >
+                    <option value="">
+                      {defaultModel ? `Engine default (${defaultModel})` : 'Engine default'}
+                    </option>
+                    {modelChoices.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={handleModelSave}
+                  disabled={!modelDirty || savingModel}
+                  className="text-xs bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50 flex items-center gap-1"
+                >
+                  {savingModel ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Save size={12} />
+                  )}
+                  Save model
+                </button>
+                {modelConfigError && (
+                  <span className="text-xs text-red-400">{modelConfigError}</span>
+                )}
+                {modelSaveStatus === 'saved' && (
+                  <span className="text-xs text-emerald-400">Saved</span>
+                )}
+                {modelSaveStatus && modelSaveStatus !== 'saved' && (
+                  <span className="text-xs text-red-400">{modelSaveStatus}</span>
+                )}
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="flex items-center gap-2 text-sm text-gray-400 py-8">
+                <Loader2 size={16} className="animate-spin" /> Loading reviewer files…
+              </div>
+            ) : error ? (
+              <EmptyState message={`Could not load reviewer files: ${error}`} />
+            ) : fileEntries.length === 0 ? (
+              <EmptyState message="No markdown files found for this reviewer." />
+            ) : (
+              <div className="space-y-2">
+                {fileEntries.map(([filename, content]) => (
+                  <ReviewerFilePanel
+                    key={filename}
+                    filename={filename}
+                    content={content}
+                    agentId={reviewerAgentId}
+                    onSaved={handleSaved}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

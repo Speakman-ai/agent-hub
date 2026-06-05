@@ -15,6 +15,8 @@ vi.mock('../utils/api.js', () => ({
     getModelConfig: vi.fn(),
     updateProject: vi.fn().mockResolvedValue({ ok: true }),
     deleteProject: vi.fn().mockResolvedValue({ ok: true }),
+    getAgents: vi.fn(),
+    updateAgent: vi.fn(),
     getProjectSecrets: vi.fn().mockResolvedValue({ secrets: {} }),
   },
 }));
@@ -132,6 +134,37 @@ describe('SettingsPage — tab labels', () => {
     expect(queryByText('AI Authentication')).toBeNull();
     // Regression guard: don't accidentally render a tab labeled just "Auth".
     expect(queryByRole('button', { name: /^Auth$/ })).toBeNull();
+  });
+
+  it('hides reviewer-role agents from Settings Agents', async () => {
+    const agents = [
+      {
+        id: 'agent-dev',
+        name: 'Agent Hub Dev',
+        role: 'lead',
+        engine: 'claude-code',
+        model: 'claude-opus-4-8',
+        color: '#22c55e',
+        active: true,
+      },
+      {
+        id: 'agent-reviewer',
+        name: 'agent-hub Reviewer',
+        role: 'reviewer',
+        engine: 'claude-code',
+        model: 'claude-sonnet-4-20250514',
+        color: '#a855f7',
+        active: true,
+      },
+    ];
+
+    const { findByText, queryByText } = render(
+      <SettingsPage projects={[]} agents={agents} onAgentsChange={() => {}} initialTab="agents" />,
+    );
+
+    expect(await findByText('Agent Hub Dev')).toBeTruthy();
+    expect(queryByText('agent-hub Reviewer')).toBeNull();
+    expect(queryByText('agent-reviewer')).toBeNull();
   });
 });
 
