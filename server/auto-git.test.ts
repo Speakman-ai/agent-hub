@@ -25,8 +25,12 @@ vi.mock('./session-ownership.js', () => ({
 vi.mock('./github-connections-store.js', () => ({
   getActiveAccessToken: vi.fn(async () => null),
 }));
+vi.mock('./finalize/automation-runner.js', () => ({
+  maybeAutoStartFinalizeForSession: vi.fn(async () => undefined),
+}));
 
 import { exec, execFile, spawn } from 'child_process';
+import { existsSync } from 'fs';
 import {
   checkWorktreeChanges,
   initAutoGit,
@@ -51,6 +55,7 @@ import {
 } from './auto-git.js';
 import path from 'path';
 import type { MessageRow } from './types.js';
+import { maybeAutoStartFinalizeForSession } from './finalize/automation-runner.js';
 
 function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
   return {
@@ -564,6 +569,56 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
       (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
     );
     expect(autoPrEvents).toHaveLength(0);
+  });
+
+  it('does not auto-start Finalize when called for a non-terminal ReAct checkpoint', async () => {
+    const existsSyncMock = existsSync as unknown as ReturnType<typeof vi.fn>;
+    existsSyncMock.mockImplementation((filePath: string) =>
+      filePath.endsWith('/.agent-hub/ci.yaml'),
+    );
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'ReAct work session', code_changed_at: null })) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+    const broadcast = vi.fn();
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/react-step\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-react', 'agent-1', project, agent, '/worktree', '', {
+      allowFinalizeAutoStart: false,
+    });
+    await Promise.resolve();
+
+    expect(broadcast.mock.calls.some((c) => c[0]?.type === 'changes_ready')).toBe(true);
+    expect(maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
+
+    existsSyncMock.mockImplementation(() => false);
   });
 
   it('card-assignment session auto-triggers skill ship (no server push)', async () => {

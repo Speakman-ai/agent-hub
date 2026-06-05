@@ -404,6 +404,7 @@ export interface ChatHandlerDeps {
     agent: Agent,
     cwd: string,
     finalContent: string,
+    options?: { allowFinalizeAutoStart?: boolean },
   ) => Promise<void>;
   tryAutonomousDispatch: () => void;
 }
@@ -4429,19 +4430,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
         }
 
-        const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
+        const runWorktreeAutoCommitAndDrainTail = async (
+          allowFinalizeAutoStart: boolean,
+        ): Promise<void> => {
           const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
           if (worktreeClaude) {
             await new Promise<void>((resolve) => setTimeout(resolve, 1200));
           }
-          await autoCommitAndPR(
-            sessionId,
-            agentId,
-            project,
-            agent,
-            effectiveCwd,
-            finalContent,
-          ).catch((err: unknown) => {
+          await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent, {
+            allowFinalizeAutoStart,
+          }).catch((err: unknown) => {
             const message = err instanceof Error ? err.message : String(err);
             console.error('[auto-commit] Unexpected error:', message);
           });
@@ -4452,7 +4450,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         };
 
         if (shouldAutoContinue) {
-          await runWorktreeAutoCommitAndDrainTail();
+          await runWorktreeAutoCommitAndDrainTail(false);
           setImmediate(() => {
             handleChat(null, {
               type: 'chat',
@@ -4709,7 +4707,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // from the HTTP stop hook immediately; if git still looked clean, the hook
         // path marked the session "handled" and proc skipped — no `changes_ready`
         // / Create PR banner even with Isolated ON.
-        await runWorktreeAutoCommitAndDrainTail();
+        await runWorktreeAutoCommitAndDrainTail(true);
       });
 
       proc.on('error', (err: Error) => {

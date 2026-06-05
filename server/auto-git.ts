@@ -772,6 +772,10 @@ export type TriggerAutoSessionShipFn = (args: {
   session: SessionRow;
 }) => Promise<{ ok: true } | { ok: false; code?: string; error?: string }>;
 
+export interface AutoCommitAndPROptions {
+  allowFinalizeAutoStart?: boolean;
+}
+
 interface AutoGitDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -2324,8 +2328,10 @@ export async function autoCommitAndPR(
   agent: Agent,
   effectiveCwd: string,
   _finalContent: string,
+  options: AutoCommitAndPROptions = {},
 ): Promise<void> {
   const d = getDeps();
+  const allowFinalizeAutoStart = options.allowFinalizeAutoStart ?? true;
   try {
     // Tasks-only projects: no GitHub repo configured means no PR lifecycle.
     // Make this explicit at the top so the no-GitHub case is obvious from
@@ -2435,7 +2441,7 @@ export async function autoCommitAndPR(
         sessionName,
         ...changesReadyData,
       });
-      if (finalizeBlocksShip) {
+      if (finalizeBlocksShip && allowFinalizeAutoStart) {
         // Lazy import: keep `auto-git.js` free of the finalize orchestrator +
         // db.ts/project-model.ts module-load side effects (those auto-init at
         // import). A static import here dragged that whole graph into every
