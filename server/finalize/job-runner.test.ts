@@ -540,7 +540,6 @@ jobs:
     // is independent of the environment it runs in.
     vi.stubEnv('FINALIZE_RUNNER_DOCKER_MODE', 'dind');
     const deps: StepRunnerDeps = {
-      runnerBackend: createLocalRunnerBackend(),
       stmts: {
         getFinalizeRun: { get: vi.fn() },
         updateFinalizeRunPhase: { run: vi.fn() },

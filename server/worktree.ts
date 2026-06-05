@@ -986,6 +986,100 @@ export async function ensureProjectRepoCloned(
   return true;
 }
 
+export type ProjectCloneUpdateStatus = 'updated' | 'noop' | 'skipped' | 'error';
+
+export interface ProjectCloneUpdateResult {
+  status: ProjectCloneUpdateStatus;
+  /** Short machine-ish reason for `skipped`/`error` (safe to log). */
+  reason?: string;
+  branch?: string;
+  beforeSha?: string;
+  afterSha?: string;
+}
+
+/**
+ * Force an existing project working clone to match its remote, preserving
+ * untracked files.
+ *
+ * WHY: {@link ensureProjectRepoCloned} only clones when the directory is
+ * missing — its fast path returns immediately for a healthy repo. Nothing ever
+ * updated an existing clone, so a long-lived project checkout (the `cwd` an
+ * agent reads + branches worktrees from) could sit pinned for weeks while the
+ * server itself moved on. This is the refresh-on-use fix: both the session
+ * worktree path and the process-worktree path (heartbeat / cron / finalize)
+ * call this when they use the clone, so it's current exactly when it's read.
+ *
+ * POLICY (chosen for this feature): `git fetch origin` then
+ * `git reset --hard origin/<current-branch>`. This is a FORCE update — tracked
+ * local edits/commits in the project clone are discarded so the tree always
+ * matches the remote. Untracked files are left alone (no `git clean`) so
+ * per-clone scratch files (e.g. a `MEMORY.md` an agent dropped) survive. A
+ * detached HEAD, or a branch with no `origin/<branch>` counterpart, is skipped
+ * rather than guessed at.
+ *
+ * `authArgs` is the pre-resolved git auth prefix (the `-c http.…extraheader=…`
+ * pair from {@link gitAuthArgsForGithubPat}); the token is never written to the
+ * clone's `.git/config`. Pass `[]` for public repos / no credential.
+ *
+ * Never throws — every failure is returned as `{ status: 'error', reason }`
+ * with auth secrets redacted, so a best-effort refresh never blocks the caller.
+ */
+export async function updateProjectCloneToOrigin(
+  projectCwd: string,
+  authArgs: string[],
+  opts: { projectId?: string; fetchTimeoutMs?: number } = {},
+): Promise<ProjectCloneUpdateResult> {
+  if (!existsSync(projectCwd) || !(await isGitRepo(projectCwd))) {
+    return { status: 'skipped', reason: 'not-a-git-repo' };
+  }
+
+  let branch: string;
+  try {
+    branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: projectCwd });
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return { status: 'error', reason: redactAuthHeader(raw) };
+  }
+  // A detached HEAD has no branch to track; don't fabricate a reset target.
+  if (!branch || branch === 'HEAD') {
+    return { status: 'skipped', reason: 'detached-head' };
+  }
+
+  try {
+    const before = await runGit(['rev-parse', 'HEAD'], { cwd: projectCwd });
+    await runGit([...authArgs, 'fetch', 'origin', '--prune'], {
+      cwd: projectCwd,
+      timeoutMs: opts.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+    });
+    // Confirm the remote actually has this branch before resetting; a
+    // local-only branch (no `origin/<branch>`) would make reset fail — skip.
+    try {
+      await runGit(['rev-parse', '--verify', '--quiet', `origin/${branch}`], { cwd: projectCwd });
+    } catch {
+      return {
+        status: 'skipped',
+        reason: `no-remote-branch:origin/${branch}`,
+        branch,
+        beforeSha: before,
+      };
+    }
+    const target = await runGit(['rev-parse', `origin/${branch}`], { cwd: projectCwd });
+    if (target === before) {
+      return { status: 'noop', branch, beforeSha: before, afterSha: before };
+    }
+    // FORCE: discard tracked local changes/commits; untracked files preserved
+    // (no `git clean`). Resetting the *currently checked-out* branch in its own
+    // clone is safe w.r.t. linked worktrees — git only blocks *checking out* a
+    // branch that's checked out elsewhere, not resetting the current one.
+    await runGit(['reset', '--hard', `origin/${branch}`], { cwd: projectCwd });
+    const after = await runGit(['rev-parse', 'HEAD'], { cwd: projectCwd });
+    return { status: 'updated', branch, beforeSha: before, afterSha: after };
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return { status: 'error', reason: redactAuthHeader(raw), branch };
+  }
+}
+
 export async function getOrCreateProcessWorktree(
   projectCwd: string,
   processKey: string,
@@ -1027,6 +1121,23 @@ export async function getOrCreateProcessWorktree(
       // Fall through — the existing isGitRepo check below will return
       // projectCwd as-is (legacy non-git fallback) so the session can
       // still spawn against an empty workspace if that's all we have.
+    }
+
+    // Refresh-on-use: force the project clone current with its remote before a
+    // heartbeat / cron / finalize process-worktree branches off it, so these
+    // background readers never see a stale checkout (the gap that left the
+    // project clone pinned while the server moved on). Reuses the owner creds
+    // resolved above; best-effort — never blocks the process worktree.
+    const refreshed = await updateProjectCloneToOrigin(projectCwd, authArgs, { projectId });
+    if (refreshed.status === 'updated') {
+      console.log(
+        `[Workspace] Process-worktree refresh: ${projectId ?? projectCwd} ${refreshed.branch} ` +
+          `${refreshed.beforeSha?.slice(0, 8)} → ${refreshed.afterSha?.slice(0, 8)}`,
+      );
+    } else if (refreshed.status === 'error') {
+      console.warn(
+        `[Workspace] Process-worktree refresh failed for ${projectId ?? projectCwd}: ${refreshed.reason}`,
+      );
     }
   }
 
@@ -1530,6 +1641,24 @@ export async function ensureSessionWorkspace(
       console.error(`[Workspace] ${message}`);
       onFailure?.(session.id, message);
       return projectCwd;
+    }
+
+    // Session-start refresh: force the project clone current with its remote
+    // before we branch this session's worktree off it, so a new session always
+    // starts on the latest `main` instead of whatever the long-lived checkout
+    // was last left at. Reuses `authArgs` resolved above (the repo-access owner
+    // for system-spawned sessions). Best-effort — a fetch/reset failure must
+    // not block the session, so we log and continue on the existing checkout.
+    const refreshed = await updateProjectCloneToOrigin(projectCwd, authArgs, { projectId });
+    if (refreshed.status === 'updated') {
+      console.log(
+        `[Workspace] Session-start refresh: project ${projectId ?? projectCwd} ${refreshed.branch} ` +
+          `${refreshed.beforeSha?.slice(0, 8)} → ${refreshed.afterSha?.slice(0, 8)}`,
+      );
+    } else if (refreshed.status === 'error') {
+      console.warn(
+        `[Workspace] Session-start refresh failed for ${projectId ?? projectCwd}: ${refreshed.reason}`,
+      );
     }
   }
 
