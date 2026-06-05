@@ -75,6 +75,7 @@ import {
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -3355,9 +3356,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // "Failed to spawn codex: spawn /usr/local/bin/codex ENOENT" error with
       // the cryptic "codex-cli exited with code -2".
       let spawnErrored = false;
+      const codexFileChangeToolUseIds = new Set<string>();
+
+      function handleParsedEvents(events: StreamEvent[]): void {
+        const enriched =
+          engine === 'codex-cli'
+            ? enrichCodexFileChangeDiffs(events, effectiveCwd, {
+                fileChangeToolUseIds: codexFileChangeToolUseIds,
+              })
+            : events;
+        for (const event of enriched) handleEvent(event);
+      }
 
       proc.stdout!.on('data', (chunk: Buffer) => {
-        for (const event of parser.feed(chunk)) handleEvent(event);
+        handleParsedEvents(parser.feed(chunk));
       });
 
       proc.stderr!.on('data', (chunk: Buffer) => {
@@ -3425,7 +3437,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           detail: isAutoContinuation ? 'auto_continuation' : 'user_turn',
         });
 
-        for (const event of parser.flush()) handleEvent(event);
+        handleParsedEvents(parser.flush());
 
         const assembled = (finalText || partialFallback).trim();
 

@@ -23,7 +23,7 @@ export function shortenPath(filePath) {
  * arrives on `item.completed` (merged into the tool card via
  * `mergeEditInputWithToolResult` + `tool_result.output` JSON).
  *
- * @param {Array<{ path?: string, kind?: string, unified_diff?: string, content?: string }>} changes
+ * @param {Array<{ path?: string, kind?: string, unified_diff?: string, unifiedDiff?: string, diff?: string, patch?: string, patchContent?: string, patch_content?: string, content?: string }>} changes
  */
 function parseCodexFileChanges(changes) {
   if (!changes.length) {
@@ -48,8 +48,9 @@ function parseCodexFileChanges(changes) {
     const p = c?.path ?? '';
     const kind = String(c?.kind ?? '').toLowerCase();
     const label = kind === 'add' ? 'add' : kind === 'delete' ? 'delete' : 'update';
-    if (typeof c?.unified_diff === 'string' && c.unified_diff.trim()) {
-      const parsed = parseApplyPatchContent(c.unified_diff);
+    const patch = getCodexPatchText(c);
+    if (patch) {
+      const parsed = parseApplyPatchContent(patch);
       removals.push(...parsed.removals);
       additions.push(`${label}  ${p}`);
       additions.push(...parsed.additions);
@@ -78,6 +79,23 @@ function parseCodexFileChanges(changes) {
     removals,
     additions,
   };
+}
+
+function getCodexPatchText(change) {
+  if (!change || typeof change !== 'object') return '';
+  for (const key of [
+    'unified_diff',
+    'unifiedDiff',
+    'diff',
+    'patch',
+    'patchContent',
+    'patch_content',
+  ]) {
+    if (typeof change[key] === 'string' && change[key].trim()) {
+      return change[key];
+    }
+  }
+  return '';
 }
 
 function stripLeadingBom(s) {
@@ -134,8 +152,9 @@ export function mergeEditInputWithToolResult(input, toolResult) {
     const fin = byPath.get(p);
     if (!fin || typeof fin !== 'object') return st;
     const next = { ...st };
-    if (typeof fin.unified_diff === 'string' && fin.unified_diff.trim()) {
-      next.unified_diff = fin.unified_diff;
+    const patch = getCodexPatchText(fin);
+    if (patch) {
+      next.unified_diff = patch;
       touched = true;
     }
     if (typeof fin.content === 'string' && fin.content.trim()) {

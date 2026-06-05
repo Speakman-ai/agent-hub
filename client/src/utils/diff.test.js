@@ -149,6 +149,17 @@ describe('parseDiffLines', () => {
     expect(result.additions).toEqual(['update  x.ts', 'new']);
   });
 
+  it('renders Codex diff field aliases as line changes', () => {
+    for (const key of ['unifiedDiff', 'diff', 'patch', 'patchContent', 'patch_content']) {
+      const result = parseDiffLines('Edit', {
+        changes: [{ path: `${key}.ts`, kind: 'update', [key]: '-old\n+new' }],
+      });
+      expect(result.filePath).toBe(`${key}.ts`);
+      expect(result.removals).toEqual(['old']);
+      expect(result.additions).toEqual([`update  ${key}.ts`, 'new']);
+    }
+  });
+
   it('parses CRLF unified_diff bodies', () => {
     const result = parseDiffLines('Edit', {
       changes: [{ path: 'x.ts', kind: 'update', unified_diff: '-old\r\n+new\r\n' }],
@@ -175,6 +186,23 @@ describe('parseDiffLines', () => {
     const result = parseDiffLines('Edit', merged);
     expect(result.removals).toEqual(['before']);
     expect(result.additions).toEqual(['update  ci.yml', 'after']);
+  });
+
+  it('merges Codex file_change patch aliases from tool_result.output JSON', () => {
+    const input = { changes: [{ path: 'client/src/App.jsx', kind: 'update' }] };
+    const merged = mergeEditInputWithToolResult(input, {
+      output: JSON.stringify([
+        {
+          path: 'client/src/App.jsx',
+          kind: 'update',
+          patch: '@@ -1,1 +1,1 @@\n-before\n+after\n',
+        },
+      ]),
+    });
+    const result = parseDiffLines('Edit', merged);
+    expect(result.removals).toEqual(['before']);
+    expect(result.additions).toEqual(['update  client/src/App.jsx', 'after']);
+    expect(result.additions.join('\n')).not.toContain('line-level diff not included');
   });
 
   it('parses Codex git-style unified_diff headers', () => {
