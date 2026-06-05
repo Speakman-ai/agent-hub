@@ -15,6 +15,7 @@ import type {
   SessionRow,
 } from '../types.js';
 import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
+import { normalizeJobFilter } from './finalize-keys.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
@@ -67,6 +68,7 @@ async function kickoffFinalizeRun(
     triggerSource: 'ui_button' | 'agent_block';
     triggeredByUserId: string;
     mode?: FinalizeRunMode;
+    jobFilter?: string[] | null;
   },
 ): Promise<
   | { kind: 'started'; runId: string; status: string }
@@ -77,7 +79,10 @@ async function kickoffFinalizeRun(
 > {
   const { project, card, session } = args;
   const { stmts } = deps;
-  const mode: FinalizeRunMode = args.mode ?? 'full';
+  // A job filter forces checks-scope (mirrors the orchestrator) so the early
+  // idempotency probe below computes the same key the orchestrator will.
+  const jobFilter = normalizeJobFilter(args.jobFilter);
+  const mode: FinalizeRunMode = jobFilter ? 'checks' : (args.mode ?? 'full');
 
   if (!session.worktree_path) {
     return { kind: 'error', error: 'no_worktree', message: 'Session has no worktree_path.' };
@@ -110,6 +115,7 @@ async function kickoffFinalizeRun(
     branch: session.worktree_branch,
     headSha,
     mode,
+    jobFilter,
   });
   const existing = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
     | FinalizeRunRow
@@ -151,6 +157,7 @@ async function kickoffFinalizeRun(
     authorName: ownerId,
     authorEmail: `${ownerId}@local`,
     mode,
+    jobFilter,
     signal,
   });
   orchestratorPromise
@@ -228,6 +235,7 @@ export async function triggerFinalizeRun(
     card: KanbanCardRow;
     session: SessionRow;
     mode?: FinalizeRunMode;
+    jobFilter?: string[] | null;
   },
 ): Promise<TriggerFinalizeRunResult> {
   const { req, project, card, session } = args;
@@ -239,6 +247,7 @@ export async function triggerFinalizeRun(
     triggerSource: 'ui_button',
     triggeredByUserId: ownerId,
     mode: args.mode,
+    jobFilter: args.jobFilter,
   });
 
   switch (outcome.kind) {

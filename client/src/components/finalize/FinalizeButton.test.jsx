@@ -9,6 +9,7 @@ vi.mock('../../utils/api.js', () => ({
     pushSessionToGithub: vi.fn(),
     cancelFinalizeRun: vi.fn(),
     getSessionWorktreeChanges: vi.fn().mockResolvedValue({ committable: true }),
+    getFinalizeCiJobs: vi.fn().mockResolvedValue({ version: 1, jobs: [], error: null }),
   },
 }));
 
@@ -69,6 +70,7 @@ describe('FinalizeButton', () => {
     // call history but NOT implementations, so a per-test override (e.g. the
     // staleness specs that inject a `headSha`) would otherwise leak forward.
     api.getSessionWorktreeChanges.mockResolvedValue({ committable: true });
+    api.getFinalizeCiJobs.mockResolvedValue({ version: 1, jobs: [], error: null });
     api.startFinalizeRun.mockResolvedValue({
       run_id: 'run-1',
       status: 'queued',
@@ -519,5 +521,73 @@ describe('FinalizeButton', () => {
     render(<FinalizeButton {...baseProps} pendingChanges={null} />);
     const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
     await waitFor(() => expect(pushBtn).toBeDisabled());
+  });
+
+  describe('single-job "Run Tests" dropdown', () => {
+    it('shows no caret when the config exposes no selectable jobs', async () => {
+      api.getFinalizeCiJobs.mockResolvedValue({ version: 1, jobs: [], error: null });
+      render(<FinalizeButton {...baseProps} />);
+      await screen.findByTestId('finalize-run-tests-button');
+      expect(screen.queryByTestId('finalize-run-tests-caret')).not.toBeInTheDocument();
+    });
+
+    it('renders a caret and lists jobs (with needs) when v2 jobs exist', async () => {
+      api.getFinalizeCiJobs.mockResolvedValue({
+        version: 2,
+        jobs: [
+          { id: 'build', needs: [], warmup: false },
+          { id: 'test', needs: ['build'], warmup: false },
+        ],
+        error: null,
+      });
+      render(<FinalizeButton {...baseProps} />);
+      const caret = await screen.findByTestId('finalize-run-tests-caret');
+      fireEvent.click(caret);
+
+      expect(await screen.findByTestId('finalize-run-tests-menu')).toBeInTheDocument();
+      expect(screen.getByTestId('finalize-run-job-build')).toBeInTheDocument();
+      const testItem = screen.getByTestId('finalize-run-job-test');
+      expect(testItem).toHaveTextContent('test');
+      expect(testItem).toHaveTextContent('needs build');
+    });
+
+    it('running a single job posts mode=checks with that job and never the full suite', async () => {
+      api.getFinalizeCiJobs.mockResolvedValue({
+        version: 2,
+        jobs: [{ id: 'test', needs: ['build'], warmup: false }],
+        error: null,
+      });
+      render(<FinalizeButton {...baseProps} />);
+      const caret = await screen.findByTestId('finalize-run-tests-caret');
+      fireEvent.click(caret);
+      const testItem = await screen.findByTestId('finalize-run-job-test');
+
+      await act(async () => {
+        fireEvent.click(testItem);
+      });
+
+      expect(api.startFinalizeRun).toHaveBeenCalledWith('proj-1', 'card-1', {
+        mode: 'checks',
+        jobs: ['test'],
+      });
+      // The menu closes after selection.
+      await waitFor(() =>
+        expect(screen.queryByTestId('finalize-run-tests-menu')).not.toBeInTheDocument(),
+      );
+    });
+
+    it('the main Run Tests button still runs the full suite (no jobs filter)', async () => {
+      api.getFinalizeCiJobs.mockResolvedValue({
+        version: 2,
+        jobs: [{ id: 'test', needs: [], warmup: false }],
+        error: null,
+      });
+      render(<FinalizeButton {...baseProps} />);
+      const runTests = await screen.findByTestId('finalize-run-tests-button');
+      await act(async () => {
+        fireEvent.click(runTests);
+      });
+      expect(api.startFinalizeRun).toHaveBeenCalledWith('proj-1', 'card-1', { mode: 'checks' });
+    });
   });
 });

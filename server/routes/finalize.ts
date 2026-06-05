@@ -51,6 +51,8 @@ import type {
   SessionRow,
 } from '../types.js';
 import { type OrchestratorOutcome } from '../finalize/orchestrator.js';
+import { loadCiConfigFromFile } from '../finalize/ci-config.js';
+import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
 import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
 import { triggerFinalizeRun } from '../finalize/trigger-run.js';
 import { abortFinalizeRunInProcess } from '../finalize/run-abort-registry.js';
@@ -93,6 +95,23 @@ function parseFinalizeModeFromBody(body: unknown): FinalizeRunMode {
     return raw as FinalizeRunMode;
   }
   return 'full';
+}
+
+/**
+ * Resolve the optional `jobs` field on a Finalize trigger request body — the
+ * single-job "Run Tests" dropdown sends `{ jobs: ["test"] }` to scope the run
+ * to one ci.yaml v2 job (plus its `needs:` deps). Returns `null` for a normal
+ * full-suite run. Non-array / non-string-element / blank values are dropped;
+ * the orchestrator forces `mode: 'checks'` whenever a non-null filter is present.
+ */
+function parseFinalizeJobsFromBody(body: unknown): string[] | null {
+  const raw = (body as { jobs?: unknown } | null | undefined)?.jobs;
+  if (!Array.isArray(raw)) return null;
+  const jobs = raw
+    .filter((j): j is string => typeof j === 'string')
+    .map((j) => j.trim())
+    .filter((j) => j.length > 0);
+  return jobs.length > 0 ? jobs : null;
 }
 
 /**
@@ -186,6 +205,54 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   });
 
   // ───────────────────────────────────────────────────────────────
+  // GET /api/sessions/:sessionId/finalize/ci-jobs
+  // ───────────────────────────────────────────────────────────────
+  //
+  // Lists the ci.yaml v2 jobs for a session's worktree so the "Run Tests"
+  // split-button dropdown can offer per-job debug runs. Only v2 (GHA-parity)
+  // configs have a job concept; v1 sequential-step configs return an empty
+  // `jobs` list (the dropdown hides). Never 404s on a missing/invalid ci.yaml
+  // — it returns `{ version: null, jobs: [], error }` so the client can render
+  // a quiet "no selectable jobs" state instead of an error.
+  router.get('/api/sessions/:sessionId/finalize/ci-jobs', async (req: Request, res: Response) => {
+    const sessionId = req.params.sessionId as string;
+    if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    if (!session.worktree_path) {
+      return res.json({ version: null, jobs: [], error: 'no_worktree' });
+    }
+
+    const ciConfigPath = `${session.worktree_path}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
+    let parsed;
+    try {
+      parsed = await loadCiConfigFromFile(ciConfigPath);
+    } catch (err) {
+      return res.json({
+        version: null,
+        jobs: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (!parsed.ok) {
+      return res.json({ version: null, jobs: [], error: parsed.error.code });
+    }
+    if (parsed.config.version !== 2) {
+      // v1 sequential steps — no job-level selection.
+      return res.json({ version: 1, jobs: [], error: null });
+    }
+    const jobs = Object.entries(parsed.config.jobs).map(([id, job]) => ({
+      id,
+      needs: job.needs,
+      warmup: job.warmup,
+    }));
+    return res.json({ version: 2, jobs, error: null });
+  });
+
+  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/cards/:cardId/finalize
   // ───────────────────────────────────────────────────────────────
   router.post(
@@ -234,6 +301,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         card,
         session,
         mode: parseFinalizeModeFromBody(req.body),
+        jobFilter: parseFinalizeJobsFromBody(req.body),
       });
       return res.status(outcome.httpStatus).json(outcome.body);
     },
@@ -278,6 +346,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         card,
         session,
         mode: parseFinalizeModeFromBody(req.body),
+        jobFilter: parseFinalizeJobsFromBody(req.body),
       });
       return res.status(outcome.httpStatus).json({ ...outcome.body, card_created: cardCreated });
     },

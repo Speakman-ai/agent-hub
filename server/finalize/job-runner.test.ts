@@ -5,6 +5,7 @@ import {
   runJobPhase,
   sanitizeComposeProjectName,
   readMaxParallelJobs,
+  resolveJobClosure,
   DEFAULT_MAX_PARALLEL_JOBS,
 } from './job-runner.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
@@ -579,5 +580,105 @@ jobs:
     expect(stopJobContainer).toHaveBeenCalledTimes(1);
     expect(createJobScopedSpawnStep).toHaveBeenCalledTimes(1);
     expect(execRuns).toEqual(['echo one', 'echo two']);
+  });
+});
+
+describe('resolveJobClosure', () => {
+  const needs = new Map<string, string[]>([
+    ['build', []],
+    ['test', ['build']],
+    ['e2e', ['build', 'test']],
+    ['lint', []],
+  ]);
+
+  it('includes the requested job plus its transitive deps', () => {
+    expect([...resolveJobClosure(['e2e'], needs)].sort()).toEqual(['build', 'e2e', 'test']);
+  });
+
+  it('a leaf job with no deps resolves to just itself', () => {
+    expect([...resolveJobClosure(['lint'], needs)]).toEqual(['lint']);
+  });
+
+  it('drops unknown requested ids', () => {
+    expect([...resolveJobClosure(['nope'], needs)]).toEqual([]);
+    expect([...resolveJobClosure(['test', 'nope'], needs)].sort()).toEqual(['build', 'test']);
+  });
+});
+
+describe('runJobPhase single-job filter', () => {
+  const FILTER_CONFIG = `
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    warmup: true
+    steps:
+      - run: prepare-cmd
+  alpha:
+    runs-on: host
+    steps:
+      - run: alpha-cmd
+  beta:
+    runs-on: host
+    steps:
+      - run: beta-cmd
+`;
+
+  const makeDeps = (spawnStep: SpawnStepFn): StepRunnerDeps => ({
+    stmts: {
+      getFinalizeRun: { get: vi.fn() },
+      updateFinalizeRunPhase: { run: vi.fn() },
+      updateFinalizeRunActiveSeconds: { run: vi.fn() },
+      failFinalizeRun: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+      upsertFinalizeRunStep: { run: vi.fn() },
+      listFinalizeRunStepsForRun: { all: vi.fn(() => []) },
+      upsertFinalizeRunJob: { run: vi.fn() },
+      listFinalizeRunJobsForRun: { all: vi.fn(() => []) },
+    } as unknown as StepRunnerDeps['stmts'],
+    broadcast: vi.fn(),
+    spawnStep,
+  });
+
+  it('runs only the selected job plus its warmup prereq, skipping the rest', async () => {
+    const runs: string[] = [];
+    const parsed = parseCiConfig(FILTER_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(makeFakeSpawnStep((r) => runs.push(r))), {
+      runId: 'filter-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+      jobFilter: ['alpha'],
+    });
+
+    expect(result.status).toBe('success');
+    // alpha (selected) + prepare (implicit warmup prereq) run; beta is dropped.
+    expect(runs.sort()).toEqual(['alpha-cmd', 'prepare-cmd']);
+    expect(runs).not.toContain('beta-cmd');
+  });
+
+  it('infra_errors when no requested job exists in the config', async () => {
+    const parsed = parseCiConfig(FILTER_CONFIG);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(makeFakeSpawnStep()), {
+      runId: 'filter-run-2',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+      jobFilter: ['ghost'],
+    });
+
+    expect(result.status).toBe('infra_error');
   });
 });

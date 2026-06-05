@@ -716,7 +716,9 @@ function initDb(dataDir: string): void {
       ended_at INTEGER,
       pr_url TEXT,
       validated_head_sha TEXT,
-      mode TEXT NOT NULL DEFAULT 'full'
+      mode TEXT NOT NULL DEFAULT 'full',
+      -- JSON array of ci.yaml v2 job ids for single-job debug runs; NULL = all jobs.
+      job_filter TEXT
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
@@ -795,6 +797,16 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT mode FROM finalize_runs LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE finalize_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'full'");
+  }
+
+  // job_filter: JSON array of ci.yaml v2 job ids for single-job "Run Tests"
+  // dropdown runs. NULL for normal runs (every job). Job-filtered rows are
+  // excluded from the per-phase pickers below so a debug run never flips the
+  // "Tested" badge or claims full validation.
+  try {
+    db.prepare('SELECT job_filter FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN job_filter TEXT');
   }
 
   try {
@@ -3346,8 +3358,8 @@ function initDb(dataDir: string): void {
         id, card_id, session_id, project_id, branch, head_sha,
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email, retry_of_run_id,
-        started_at, mode
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        started_at, mode, job_filter
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Promote a finalize run to its terminal `pushed` state and record the
     // ended_at clock in one atomic update. Used by the push step (§9) after
@@ -3402,11 +3414,17 @@ function initDb(dataDir: string): void {
     // (mode 'checks' / 'review') OR from a combined 'full' run that
     // exercised both. Same (started_at DESC, id DESC) tiebreak as the
     // overall picker so all three agree on which row is "latest".
+    // `job_filter IS NULL` excludes single-job "Run Tests" dropdown debug
+    // runs: a partial run must never become the phase summary that flips the
+    // "Tested" badge, nor count toward full validation / push automation. The
+    // full suite (mode 'checks'/'full' with no filter) is the only thing that
+    // can mark a session tested.
     getLatestChecksRunForSession: db.prepare(
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
           AND mode IN ('checks', 'full')
+          AND job_filter IS NULL
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -3415,6 +3433,7 @@ function initDb(dataDir: string): void {
          FROM finalize_runs
         WHERE session_id = ?
           AND mode IN ('review', 'full')
+          AND job_filter IS NULL
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),

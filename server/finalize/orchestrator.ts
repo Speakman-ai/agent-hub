@@ -110,7 +110,11 @@ import {
   writeFinalizeRunTerminalTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
-import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
+import {
+  computeIdempotencyKey,
+  DEFAULT_CI_CONFIG_RELATIVE_PATH,
+  normalizeJobFilter,
+} from './finalize-keys.js';
 
 export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
 
@@ -328,6 +332,15 @@ export interface OrchestratorOptions {
    * a checks-only and a review-only run can co-exist on one head SHA.
    */
   mode?: FinalizeRunMode;
+  /**
+   * Single-job "Run Tests" dropdown scope: a list of ci.yaml v2 job ids to
+   * run (plus their transitive `needs:` deps). `null`/omitted runs every
+   * job. A filtered run is a debug run — the reviewer phase is skipped and
+   * it can NEVER reach full validation (the per-phase pickers exclude it),
+   * so it never flips "Tested" nor enables auto-push. Folded into the
+   * idempotency key so it coexists with the full checks run on the same head.
+   */
+  jobFilter?: string[] | null;
   /** Acting user id (clicker or autonomous owner). */
   triggeredByUserId: string;
   /** Git identity snapshot at start time — locked into the row. */
@@ -443,7 +456,12 @@ export async function runFinalize(
   // Which phases this run executes. Threaded through the idempotency key
   // (so checks-only and review-only runs can co-exist on one head SHA)
   // and the per-iteration phase gating below.
-  const mode: FinalizeRunMode = opts.mode ?? 'full';
+  // A job-filtered run (the "Run Tests" dropdown's single-job debug run) is
+  // always checks-scoped: the reviewer phase is skipped and it can never claim
+  // full validation. Force mode → 'checks' when a filter is present so callers
+  // can't accidentally pair a filter with 'full'/'review'.
+  const jobFilter = normalizeJobFilter(opts.jobFilter);
+  const mode: FinalizeRunMode = jobFilter ? 'checks' : (opts.mode ?? 'full');
   const reviewRequired = mode !== 'checks';
   const checksRequired = mode !== 'review';
 
@@ -453,6 +471,7 @@ export async function runFinalize(
     branch: opts.branch,
     headSha: opts.headSha,
     mode,
+    jobFilter,
   });
   const existing = deps.stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
     | FinalizeRunRow
@@ -483,6 +502,7 @@ export async function runFinalize(
       opts.retryOfRunId ?? null,
       startedAt,
       mode,
+      jobFilter ? JSON.stringify(jobFilter) : null,
     );
   } catch (err) {
     // UNIQUE collision race: another caller raced us between the lookup
@@ -1067,6 +1087,7 @@ export async function runFinalize(
                 env: spawnEnv,
                 orgId,
                 projectId: opts.project.id,
+                jobFilter,
               },
             );
           } else {
@@ -1241,13 +1262,15 @@ export async function runFinalize(
         // threaded onto the broadcast so live consumers (the sidebar
         // "ready to push" indicator) can distinguish a real full validation
         // from a single-phase park.
-        const fullyValidated = isBranchFullyValidated(
-          deps,
-          sessionId,
-          mode,
-          gateOutcome.validatedHeadSha,
-          runId,
-        );
+        // A job-filtered debug run validated only a SUBSET of the checks, so
+        // it can never be "fully validated" — even if a prior full review run
+        // passed the same head. `isBranchFullyValidated` (mode 'checks') trusts
+        // the current run as the checks proof, so we must short-circuit here
+        // rather than rely on the per-phase pickers alone. This keeps a partial
+        // run from ever flipping ready-to-push or firing push automation.
+        const fullyValidated = jobFilter
+          ? false
+          : isBranchFullyValidated(deps, sessionId, mode, gateOutcome.validatedHeadSha, runId);
         deps.broadcast({
           type: 'finalize_run_phase_changed',
           run_id: runId,

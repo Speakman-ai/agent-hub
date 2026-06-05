@@ -798,7 +798,52 @@ components:
             - checks
             - review
           description: Which phases to run. `full` (default) = rebase + reviewer + checks; `checks` ("Run Tests") = rebase + CI only; `review` ("Reviewer") = rebase + reviewer only. Folded into the idempotency key so a checks-only and a review-only run can co-exist on one HEAD SHA.
-      description: Optional `mode` selects which phases run. The rest of the run is keyed off the card, its linked session, and the resolved HEAD SHA.
+        jobs:
+          type: array
+          items:
+            type: string
+          description: 'Single-job "Run Tests" dropdown scope: ci.yaml v2 job ids to run, plus their transitive `needs:` deps. When present the run is forced to `mode: checks`, is a DEBUG run that never flips the "Tested" badge or enables auto-push, and is folded into the idempotency key so it coexists with the full checks run on the same HEAD. Omit for a normal full-suite run.'
+      description: Optional `mode` selects which phases run; optional `jobs` scopes a "Run Tests" run to specific ci.yaml v2 jobs. The rest of the run is keyed off the card, its linked session, and the resolved HEAD SHA.
+    FinalizeCiJob:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ci.yaml v2 job id.
+        needs:
+          type: array
+          items:
+            type: string
+          description: Job ids this job depends on (`needs:`).
+        warmup:
+          type: boolean
+          description: True for a warmup/prepare job (implicit prereq of all jobs).
+      required:
+        - id
+        - needs
+        - warmup
+      description: One selectable ci.yaml v2 job for the Run Tests dropdown.
+    FinalizeCiJobsResponse:
+      type: object
+      properties:
+        version:
+          type: integer
+          nullable: true
+          description: "ci.yaml schema version: `2` for GHA-parity jobs, `1` for sequential steps (no selectable jobs), `null` when the config is missing or invalid."
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/FinalizeCiJob"
+          description: Selectable jobs — only populated for v2 configs; empty for v1 / null.
+        error:
+          type: string
+          nullable: true
+          description: Non-null when the worktree or ci.yaml could not be read/parsed (e.g. `no_worktree`, a parse-error code). The dropdown renders a quiet empty state rather than failing.
+      required:
+        - version
+        - jobs
+        - error
+      description: ci.yaml jobs for a session worktree, powering the Run Tests dropdown.
     StartFinalizeRunResponse:
       type: object
       properties:
@@ -6074,6 +6119,33 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LatestFinalizeRunForSessionResponse"
+  /api/sessions/{sessionId}/finalize/ci-jobs:
+    get:
+      tags:
+        - Finalize
+      summary: List selectable ci.yaml jobs for a session
+      description: 'Returns the ci.yaml v2 jobs (with their `needs:` deps) for the session worktree so the "Run Tests" split-button dropdown can offer per-job debug runs. v1 configs return an empty `jobs` list. Never 404s on a missing/invalid config — returns `{ version: null, jobs: [], error }`.'
+      parameters:
+        - schema:
+            type: string
+            description: sessions.id.
+          required: true
+          description: sessions.id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: ci.yaml jobs for the session worktree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiJobsResponse"
+        "404":
+          description: Session not found, or caller cannot read the session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
   /api/projects/{projectId}/cards/{cardId}/finalize:
     post:
       tags:

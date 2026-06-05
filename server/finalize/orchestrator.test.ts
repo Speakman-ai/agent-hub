@@ -599,6 +599,34 @@ describe('runFinalize — split modes', () => {
     expect(hook).toHaveBeenCalledTimes(1);
   });
 
+  it('a job-filtered debug run never promotes, even with a matching review sibling', async () => {
+    // Single-job "Run Tests" runs validate only a subset of checks, so they
+    // must never count as full validation — not even when a full/review
+    // sibling already passed the exact same head. The fix keeps a debug run
+    // from silently flipping ready-to-push and firing push automation.
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { deps, stmts } = makeDeps();
+    stmts.rows.set('review-sibling', {
+      id: 'review-sibling',
+      idempotency_key: 'idem-review',
+      session_id: 'sess-1',
+      mode: 'review',
+      status: 'ready_to_push',
+      validated_head_sha: 'deadbeefcafebabe',
+      started_at: 1,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks', jobFilter: ['alpha'] }));
+    expect(result.kind).toBe('ready_to_push');
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).not.toContain('finalize_ready_to_push');
+    expect(hook).not.toHaveBeenCalled();
+    setReadyToPushAutomationHook(null);
+  });
+
   it('does NOT promote when the review sibling validated a different head', async () => {
     const { deps, stmts } = makeDeps();
     // Sibling review passed, but against an older commit — the branch moved

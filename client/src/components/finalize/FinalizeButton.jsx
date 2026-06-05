@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlaskConical, Eye, Loader2, Upload, Square, CheckCircle2 } from 'lucide-react';
+import {
+  FlaskConical,
+  Eye,
+  Loader2,
+  Upload,
+  Square,
+  CheckCircle2,
+  ChevronDown,
+} from 'lucide-react';
 import {
   useFinalizeRun,
   isFinalizeInFlight,
@@ -67,7 +75,12 @@ export default function FinalizeButton({
   // Current worktree HEAD — used to expire a phase's done-state once new
   // commits land (the validated commit no longer matches HEAD).
   const [worktreeHeadSha, setWorktreeHeadSha] = useState(null);
+  // Single-job "Run Tests" dropdown: the selectable ci.yaml v2 jobs for this
+  // session's worktree, plus the open/closed state of the attached menu.
+  const [ciJobs, setCiJobs] = useState([]);
+  const [jobsMenuOpen, setJobsMenuOpen] = useState(false);
   const optimisticTimerRef = useRef(null);
+  const jobsMenuRef = useRef(null);
 
   useEffect(
     () => () => {
@@ -120,6 +133,47 @@ export default function FinalizeButton({
     };
   }, [sessionId]);
 
+  // Resolve the selectable ci.yaml v2 jobs once per session so the caret only
+  // appears when there's something to pick. v1 / missing / invalid configs
+  // return no jobs and the dropdown stays hidden.
+  useEffect(() => {
+    if (!sessionId) {
+      setCiJobs([]);
+      return undefined;
+    }
+    let cancelled = false;
+    api
+      .getFinalizeCiJobs(sessionId)
+      .then((data) => {
+        if (!cancelled) setCiJobs(Array.isArray(data?.jobs) ? data.jobs : []);
+      })
+      .catch(() => {
+        if (!cancelled) setCiJobs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  // Close the jobs menu on an outside click / Escape.
+  useEffect(() => {
+    if (!jobsMenuOpen) return undefined;
+    const onPointerDown = (e) => {
+      if (jobsMenuRef.current && !jobsMenuRef.current.contains(e.target)) {
+        setJobsMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setJobsMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [jobsMenuOpen]);
+
   const readyToPush = isReadyToPush(status);
   const inFlight = isFinalizeInFlight(status) || optimisticBlock;
   const runId = run?.id ?? null;
@@ -129,24 +183,31 @@ export default function FinalizeButton({
   const noChangesHint = noCommittableChangesTooltip(worktreeBranch || branchLabel);
 
   const handleStart = useCallback(
-    async (mode) => {
+    async (mode, { jobs = null } = {}) => {
       // A run already in flight blocks a second trigger; a prior
       // `ready_to_push` row does NOT — the other split button may still
       // run its phase (modes are distinct idempotency keys server-side).
       if (inFlight || !canShip) return;
       if (!projectId || !sessionId) return;
+      setJobsMenuOpen(false);
+      // A single-job run is always checks-scoped (the server forces it too).
+      const effectiveMode = jobs && jobs.length ? 'checks' : mode;
       setOptimisticBlock(true);
-      setPendingMode(mode);
+      setPendingMode(effectiveMode);
       if (optimisticTimerRef.current) clearTimeout(optimisticTimerRef.current);
       optimisticTimerRef.current = setTimeout(() => {
         setOptimisticBlock(false);
         setPendingMode(null);
       }, OPTIMISTIC_BLOCK_MS);
+      // Only attach `jobs` for an actual single-job run so the full-suite
+      // call shape stays `{ mode }` (the server treats a missing/empty filter
+      // as "run everything").
+      const payload = jobs && jobs.length ? { mode: effectiveMode, jobs } : { mode: effectiveMode };
       try {
         if (cardId) {
-          await api.startFinalizeRun(projectId, cardId, { mode });
+          await api.startFinalizeRun(projectId, cardId, payload);
         } else {
-          await api.startFinalizeRunForSession(projectId, sessionId, { mode });
+          await api.startFinalizeRunForSession(projectId, sessionId, payload);
         }
       } catch (err) {
         if (optimisticTimerRef.current) {
@@ -291,6 +352,9 @@ export default function FinalizeButton({
   const checksStoppable = checksBusy && !!runId && !stopping;
   const reviewStoppable = reviewBusy && !!runId && !stopping;
   const runTestsLabel = checksBusy ? 'Stop Tests' : tested ? 'Tested' : 'Run Tests';
+  // The dropdown caret only appears when the worktree's ci.yaml exposes
+  // selectable v2 jobs. Disabled whenever the main trigger is.
+  const showJobsCaret = ciJobs.length > 0;
   const reviewerLabel = reviewBusy ? 'Stop Reviewing' : reviewed ? 'Reviewed' : 'Reviewer';
   const noChangesOr = (active) => (!canShip ? noChangesHint : active);
   const activeSuffix =
@@ -300,39 +364,92 @@ export default function FinalizeButton({
 
   return (
     <div className="relative inline-flex items-center gap-1">
-      <button
-        type="button"
-        onClick={checksBusy ? handleStop : () => handleStart('checks')}
-        disabled={checksBusy ? !checksStoppable : triggerDisabled}
-        title={
-          compact
-            ? undefined
-            : checksBusy
-              ? `Stop tests — halts the run and waits for input (running checks: ${phaseLabel}${activeSuffix})`
-              : noChangesOr(
-                  tested
-                    ? 'CI checks passed — run again to re-test'
-                    : `Rebase and run CI checks${branchLabel ? ` · ${branchLabel}` : ''} (does not push)`,
-                )
-        }
-        aria-label={runTestsLabel}
-        aria-busy={checksBusy}
-        data-testid="finalize-run-tests-button"
-        className={triggerClasses(checksBusy, tested)}
-      >
-        {checksBusy ? (
-          checksStoppable ? (
-            <Square size={compact ? 12 : 14} className="shrink-0 fill-current" />
+      <div className="relative inline-flex" ref={jobsMenuRef}>
+        <button
+          type="button"
+          onClick={checksBusy ? handleStop : () => handleStart('checks')}
+          disabled={checksBusy ? !checksStoppable : triggerDisabled}
+          title={
+            compact
+              ? undefined
+              : checksBusy
+                ? `Stop tests — halts the run and waits for input (running checks: ${phaseLabel}${activeSuffix})`
+                : noChangesOr(
+                    tested
+                      ? 'CI checks passed — run again to re-test'
+                      : `Rebase and run CI checks${branchLabel ? ` · ${branchLabel}` : ''} (does not push)`,
+                  )
+          }
+          aria-label={runTestsLabel}
+          aria-busy={checksBusy}
+          data-testid="finalize-run-tests-button"
+          className={`${triggerClasses(checksBusy, tested)}${
+            showJobsCaret ? ' !rounded-r-none' : ''
+          }`}
+        >
+          {checksBusy ? (
+            checksStoppable ? (
+              <Square size={compact ? 12 : 14} className="shrink-0 fill-current" />
+            ) : (
+              <Loader2 size={compact ? 12 : 14} className="animate-spin shrink-0" />
+            )
+          ) : tested ? (
+            <CheckCircle2 size={compact ? 12 : 14} className="shrink-0 text-emerald-400" />
           ) : (
-            <Loader2 size={compact ? 12 : 14} className="animate-spin shrink-0" />
-          )
-        ) : tested ? (
-          <CheckCircle2 size={compact ? 12 : 14} className="shrink-0 text-emerald-400" />
-        ) : (
-          <FlaskConical size={compact ? 12 : 14} />
-        )}
-        {runTestsLabel}
-      </button>
+            <FlaskConical size={compact ? 12 : 14} />
+          )}
+          {runTestsLabel}
+        </button>
+        {showJobsCaret ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setJobsMenuOpen((v) => !v)}
+              disabled={triggerDisabled}
+              title="Run a single CI job (debugging) — does not count toward Tested"
+              aria-label="Choose a single test to run"
+              aria-haspopup="menu"
+              aria-expanded={jobsMenuOpen}
+              data-testid="finalize-run-tests-caret"
+              className={`${triggerClasses(false, tested)} !rounded-l-none -ml-px px-1.5`}
+            >
+              <ChevronDown size={compact ? 12 : 14} className="shrink-0" />
+            </button>
+            {jobsMenuOpen ? (
+              <div
+                role="menu"
+                data-testid="finalize-run-tests-menu"
+                className="absolute left-0 top-full mt-1 z-50 w-60 max-h-72 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 py-1 shadow-xl"
+              >
+                <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-gray-400">
+                  Run one job (deps run first)
+                </div>
+                {ciJobs.map((job) => (
+                  <button
+                    key={job.id}
+                    type="button"
+                    role="menuitem"
+                    disabled={triggerDisabled}
+                    onClick={() => handleStart('checks', { jobs: [job.id] })}
+                    data-testid={`finalize-run-job-${job.id}`}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs text-gray-100 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="truncate font-medium">{job.id}</span>
+                    {Array.isArray(job.needs) && job.needs.length > 0 ? (
+                      <span className="shrink-0 text-[10px] text-gray-400">
+                        needs {job.needs.join(', ')}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+                <div className="mt-1 border-t border-gray-700 px-3 pb-1 pt-1.5 text-[10px] leading-snug text-gray-500">
+                  Single-job runs are for debugging. Run the full suite to mark Tested.
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
       <button
         type="button"
         onClick={reviewBusy ? handleStop : () => handleStart('review')}
