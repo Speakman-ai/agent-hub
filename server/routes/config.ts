@@ -228,6 +228,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       publicUrl: config.publicUrl || '',
       apiKey: config.apiKey || '',
       authRequired: !!config.apiKey,
+      openaiApiKey: config.openaiApiKey ? '••••••••' : '',
+      openaiApiKeySet: !!config.openaiApiKey,
       // Wildcard subdomain base for "subdomain preview" mode (Phase 4
       // of the session-previews RFC). When non-empty, the UI builds
       // iframe URLs as `<sessionId>.<base>` so the app sees itself at
@@ -297,6 +299,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'defaultCwd',
       'port',
       'apiKey',
+      'openaiApiKey',
       'publicUrl',
       'codexDangerBypass',
       'codexProfile',
@@ -309,6 +312,17 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
+    }
+    if (updates.openaiApiKey !== undefined) {
+      const raw = updates.openaiApiKey;
+      if (raw == null) {
+        updates.openaiApiKey = null;
+      } else if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        updates.openaiApiKey = trimmed.length > 0 ? trimmed : null;
+      } else {
+        delete updates.openaiApiKey;
+      }
     }
     if (updates.codexProfile !== undefined) {
       // Normalize: empty / whitespace / null → null (unset). Otherwise trim.
@@ -377,7 +391,12 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
 
     res.json({
       ok: true,
-      updated: Object.fromEntries(Object.entries(updates)),
+      updated: Object.fromEntries(
+        Object.entries(updates).map(([key, value]) => [
+          key,
+          key === 'openaiApiKey' ? (value ? '••••••••' : null) : value,
+        ]),
+      ),
     });
   });
 

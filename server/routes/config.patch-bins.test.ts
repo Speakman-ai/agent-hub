@@ -19,6 +19,7 @@
 import type TestAgent from 'supertest/lib/agent.js';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { vi } from 'vitest';
 import { getRequest } from '../test/helpers.js';
 
 let request: TestAgent;
@@ -100,6 +101,55 @@ describe('PATCH /api/config — engine bin paths', () => {
 
     await request.patch('/api/config').send({ lanMode: false }).expect(200);
     expect(readFileConfig().lanMode).toBe(false);
+  });
+
+  it('persists openaiApiKey, masks responses, and exposes configured status', async () => {
+    await request.patch('/api/config').send({ openaiApiKey: ' sk-openai-test ' }).expect(200);
+
+    expect(readFileConfig().openaiApiKey).toBe('sk-openai-test');
+    const configured = await request.get('/api/config').expect(200);
+    expect(configured.body.openaiApiKey).toBe('••••••••');
+    expect(configured.body.openaiApiKeySet).toBe(true);
+
+    const cleared = await request.patch('/api/config').send({ openaiApiKey: '' }).expect(200);
+    expect(cleared.body.updated).toEqual({ openaiApiKey: null });
+    expect(readFileConfig().openaiApiKey).toBeNull();
+
+    const afterClear = await request.get('/api/config').expect(200);
+    expect(afterClear.body.openaiApiKey).toBe('');
+    expect(afterClear.body.openaiApiKeySet).toBe(false);
+  });
+
+  it('uses the saved openaiApiKey for the already-mounted transcription route', async () => {
+    await request.patch('/api/config').send({ openaiApiKey: 'sk-openai-live' }).expect(200);
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ text: 'hello from saved key' }),
+      headers: new Headers(),
+    })) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const res = await request
+        .post('/api/transcribe')
+        .set('content-type', 'audio/webm')
+        .send(Buffer.from('fake-audio'))
+        .expect(200);
+
+      expect(res.body.transcript).toBe('hello from saved key');
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/audio/transcriptions',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { Authorization: 'Bearer sk-openai-live' },
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      await request.patch('/api/config').send({ openaiApiKey: '' }).expect(200);
+    }
   });
 
   it('still rejects updates with no allowlisted fields', async () => {

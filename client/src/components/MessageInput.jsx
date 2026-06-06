@@ -371,7 +371,7 @@ export default function MessageInput({
         });
         if (res.status === 501) {
           reportTranscribeError(
-            'Voice transcription not configured. Ask your admin to set OPENAI_API_KEY (Settings → Voice).',
+            'Voice transcription not configured. Ask your admin to set the OpenAI API key in Account settings.',
           );
           return;
         }

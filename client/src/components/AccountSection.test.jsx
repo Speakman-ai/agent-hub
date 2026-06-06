@@ -15,7 +15,7 @@ vi.mock('../utils/connection.js', () => ({
   getAuthHeaders: vi.fn(() => ({})),
 }));
 
-import AccountSection, { roleOptionsFor } from './AccountSection.jsx';
+import AccountSection, { HostOpenAIKeySection, roleOptionsFor } from './AccountSection.jsx';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
 beforeEach(() => {
@@ -143,5 +143,34 @@ describe('AccountSection — Add user button visibility', () => {
     const roleSelect = screen.getByLabelText(/^role$/i);
     const optionLabels = Array.from(roleSelect.querySelectorAll('option')).map((o) => o.value);
     expect(optionLabels).toEqual(['Owner', 'Admin', 'User']);
+  });
+});
+
+describe('HostOpenAIKeySection', () => {
+  it('saves the host OpenAI API key through PATCH /api/config', async () => {
+    const fetchMock = mockFetchSequence([
+      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
+      jsonResponse({ ok: true, updated: { openaiApiKey: '••••••••' } }),
+    ]);
+
+    render(<HostOpenAIKeySection />);
+
+    expect(await screen.findByText(/not configured/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('OpenAI API key'), {
+      target: { value: ' sk-test-openai ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save api key/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/config',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ openaiApiKey: 'sk-test-openai' }),
+        }),
+      ),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved');
   });
 });

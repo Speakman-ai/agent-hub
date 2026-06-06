@@ -122,7 +122,7 @@ describe('POST /api/transcribe', () => {
       .send(Buffer.from('fake'));
     expect(res.status).toBe(501);
     expect(res.body.error).toMatch(/not configured/i);
-    expect(res.body.hint).toMatch(/OPENAI_API_KEY|on-device/i);
+    expect(res.body.hint).toMatch(/Account settings|on-device/i);
   });
 
   it('returns 415 for unsupported content-types', async () => {

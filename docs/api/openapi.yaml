@@ -1802,6 +1802,12 @@ components:
           type: string
         authRequired:
           type: boolean
+        openaiApiKey:
+          type: string
+          description: Masked OpenAI API key used for host services. Empty when unset.
+        openaiApiKeySet:
+          type: boolean
+          description: Whether the host OpenAI API key is configured.
         personalOAuth:
           type: object
           properties:
@@ -1867,6 +1873,8 @@ components:
         - publicUrl
         - apiKey
         - authRequired
+        - openaiApiKey
+        - openaiApiKeySet
         - personalOAuth
         - botGithubToken
         - botGithubTokenSet
@@ -8544,7 +8552,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
       requestBody:
         content:
           application/json:
@@ -8568,6 +8576,10 @@ paths:
                 apiKey:
                   type: string
                   nullable: true
+                openaiApiKey:
+                  type: string
+                  nullable: true
+                  description: Host OpenAI API key for Whisper transcription and session titles. Empty string or null clears it.
                 publicUrl:
                   type: string
                 botGithubToken:

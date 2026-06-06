@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Copy,
+  Eye,
+  EyeOff,
   Key,
   Loader2,
   LogOut,
@@ -197,7 +199,7 @@ export default function AccountSection() {
           Roles are hierarchical: <span className="text-emerald-300">Owner</span> {'>'}{' '}
           <span className="text-indigo-300">Admin</span> {'>'}{' '}
           <span className="text-gray-300">User</span>. Owner has full control and cannot be demoted
-          while they're the only one.
+          while they&apos;re the only one.
         </p>
       </div>
 
@@ -235,6 +237,8 @@ export default function AccountSection() {
           }
         />
       )}
+
+      {me && isAdminPlus && <HostOpenAIKeySection />}
 
       {me && <ApiKeysSection />}
 
@@ -325,6 +329,132 @@ export default function AccountSection() {
             await loadUsers();
           }}
         />
+      )}
+    </div>
+  );
+}
+
+export function HostOpenAIKeySection() {
+  const [loading, setLoading] = useState(true);
+  const [configured, setConfigured] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const load = useCallback(async () => {
+    setStatus(null);
+    try {
+      const body = await api.getConfig();
+      setConfigured(!!body.openaiApiKeySet || !!body.openaiApiKey);
+    } catch (err) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const save = async (value) => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const body = await api.updateConfig({ openaiApiKey: value });
+      const nextConfigured = !!body?.updated?.openaiApiKey;
+      setConfigured(nextConfigured);
+      setApiKeyInput('');
+      setStatus({ type: 'success', msg: nextConfigured ? 'Saved' : 'Cleared' });
+    } catch (err) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+      <div>
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Key size={14} /> OpenAI API key
+        </h4>
+        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+          Host key used for voice transcription and generated session titles.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 size={12} className="animate-spin" /> Loading OpenAI key status…
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
+            <div className="text-sm text-gray-300">
+              Status:{' '}
+              <span className={configured ? 'text-emerald-300' : 'text-gray-500'}>
+                {configured ? 'Configured' : 'Not configured'}
+              </span>
+            </div>
+            {configured && (
+              <button
+                type="button"
+                onClick={() => save('')}
+                disabled={saving}
+                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+                aria-label="Clear OpenAI API key"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          <div className="relative">
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKeyInput}
+              onChange={(e) => {
+                setApiKeyInput(e.target.value);
+                setStatus(null);
+              }}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 pr-10 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+              placeholder="sk-..."
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              aria-label="OpenAI API key"
+            />
+            <button
+              type="button"
+              onClick={() => setShowApiKey((value) => !value)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
+              aria-label={showApiKey ? 'Hide OpenAI API key' : 'Show OpenAI API key'}
+            >
+              {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => save(apiKeyInput.trim())}
+            disabled={!apiKeyInput.trim() || saving}
+            className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+            {saving ? 'Saving…' : 'Save API key'}
+          </button>
+        </>
+      )}
+
+      {status && (
+        <div
+          role={status.type === 'success' ? 'status' : 'alert'}
+          className={`text-xs ${status.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+        >
+          {status.msg}
+        </div>
       )}
     </div>
   );

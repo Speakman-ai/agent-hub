@@ -269,6 +269,137 @@ function OrganizationsSection() {
   );
 }
 
+function AccountSection() {
+  const [loading, setLoading] = useState(true);
+  const [configured, setConfigured] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    setStatus(null);
+    try {
+      const body = await api.getConfig();
+      setConfigured(!!body.openaiApiKeySet || !!body.openaiApiKey);
+    } catch (err) {
+      setStatus({ type: 'error', message: err.message || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const saveOpenAIKey = async (value) => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const body = await api.updateConfig({ openaiApiKey: value.trim() });
+      const nextConfigured = !!body?.updated?.openaiApiKey;
+      setConfigured(nextConfigured);
+      setApiKey('');
+      setStatus({ type: 'success', message: nextConfigured ? 'Saved' : 'Cleared' });
+    } catch (err) {
+      setStatus({ type: 'error', message: err.message || String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Account</Text>
+      <Text style={styles.sectionDesc}>
+        Configure host account settings used by Agent Hub services.
+      </Text>
+
+      <View style={styles.accountCard}>
+        <Text style={styles.accountCardTitle}>OpenAI API key</Text>
+        <Text style={styles.sectionDesc}>
+          Used for voice transcription and generated session titles.
+        </Text>
+
+        {loading ? (
+          <ActivityIndicator color={colors.indigo500} style={{ marginTop: 12 }} />
+        ) : (
+          <>
+            <View style={styles.accountStatusRow}>
+              <Text style={styles.accountMutedText}>Status</Text>
+              <Text
+                style={[
+                  styles.accountStatusText,
+                  { color: configured ? colors.emerald400 : colors.gray500 },
+                ]}
+              >
+                {configured ? 'Configured' : 'Not configured'}
+              </Text>
+            </View>
+
+            <Text style={[styles.inputLabel, { marginTop: 12 }]}>OpenAI API key</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TextInput
+                style={[styles.textInput, { flex: 1 }]}
+                value={apiKey}
+                onChangeText={(value) => {
+                  setApiKey(value);
+                  setStatus(null);
+                }}
+                placeholder="sk-..."
+                placeholderTextColor={colors.gray600}
+                secureTextEntry={!showApiKey}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                onPress={() => setShowApiKey((value) => !value)}
+                style={{ paddingHorizontal: 8, paddingVertical: 10 }}
+              >
+                <Text style={{ color: colors.gray400, fontSize: 13 }}>
+                  {showApiKey ? 'Hide' : 'Show'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.accountActionRow}>
+              <TouchableOpacity
+                style={[styles.saveBtn, (!apiKey.trim() || saving) && { opacity: 0.4 }]}
+                onPress={() => saveOpenAIKey(apiKey)}
+                disabled={!apiKey.trim() || saving}
+              >
+                <Text style={styles.saveBtnText}>{saving ? 'Saving...' : 'Save API Key'}</Text>
+              </TouchableOpacity>
+              {configured && (
+                <TouchableOpacity
+                  style={[styles.accountDangerBtn, saving && { opacity: 0.4 }]}
+                  onPress={() => saveOpenAIKey('')}
+                  disabled={saving}
+                >
+                  <Text style={styles.accountDangerBtnText}>Clear</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </>
+        )}
+
+        {status && (
+          <Text
+            style={[
+              styles.accountStatusNote,
+              { color: status.type === 'success' ? colors.emerald400 : colors.red400 },
+            ]}
+          >
+            {status.message}
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
 // ─── Usage Analytics Tab ─────────────────────────────────────
 function UsageSection() {
   const [usage, setUsage] = useState(null);
@@ -2184,6 +2315,7 @@ export default function SettingsScreen({ navigation }) {
 
   const tabs = [
     { id: 'orgs', label: 'Servers' },
+    { id: 'account', label: 'Account' },
     { id: 'usage', label: 'Usage' },
     { id: 'heartbeats', label: 'Heartbeats' },
     { id: 'crons', label: 'Crons' },
@@ -2229,6 +2361,7 @@ export default function SettingsScreen({ navigation }) {
           </ScrollView>
 
           {tab === 'orgs' && <OrganizationsSection />}
+          {tab === 'account' && <AccountSection />}
           {tab === 'usage' && <UsageSection />}
           {tab === 'heartbeats' && <HeartbeatSection />}
           {tab === 'crons' && <CronSection />}
@@ -2716,6 +2849,54 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     color: colors.gray500,
+  },
+  accountCard: {
+    backgroundColor: colors.gray800,
+    borderRadius: 12,
+    padding: 16,
+  },
+  accountCardTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.white,
+    marginBottom: 8,
+  },
+  accountStatusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    padding: 12,
+  },
+  accountMutedText: {
+    fontSize: 13,
+    color: colors.gray500,
+  },
+  accountStatusText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  accountActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+  },
+  accountDangerBtn: {
+    backgroundColor: colors.red600,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  accountDangerBtnText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  accountStatusNote: {
+    fontSize: 13,
+    marginTop: 12,
   },
   // ─── Organizations styles ─────────────────
   sectionDesc: {

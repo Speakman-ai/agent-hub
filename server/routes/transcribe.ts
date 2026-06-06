@@ -135,7 +135,7 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
           // fall back to Web Speech API on web/Electron.
           return res.status(501).json({
             error: 'Transcription not configured',
-            hint: 'Set OPENAI_API_KEY on the server or use on-device transcription.',
+            hint: 'Set the OpenAI API key in Account settings or use on-device transcription.',
           });
         }
 

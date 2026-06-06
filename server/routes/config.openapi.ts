@@ -52,6 +52,12 @@ export const AppConfigComponent = registerComponent(
       publicUrl: z.string(),
       apiKey: z.string(),
       authRequired: z.boolean(),
+      openaiApiKey: z.string().openapi({
+        description: 'Masked OpenAI API key used for host services. Empty when unset.',
+      }),
+      openaiApiKeySet: z.boolean().openapi({
+        description: 'Whether the host OpenAI API key is configured.',
+      }),
       personalOAuth: z.object({
         configured: z.boolean(),
         clientId: z.string().nullable(),
@@ -236,6 +242,10 @@ export const PatchConfigRequestSchema = z
     defaultCwd: z.string().optional(),
     port: z.number().int().optional(),
     apiKey: z.string().nullable().optional(),
+    openaiApiKey: z.string().nullable().optional().openapi({
+      description:
+        'Host OpenAI API key for Whisper transcription and session titles. Empty string or null clears it.',
+    }),
     publicUrl: z.string().optional(),
     botGithubToken: z.string().nullable().optional(),
     codexDangerBypass: z.boolean().optional(),
@@ -319,7 +329,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with `botGithubToken` masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {
