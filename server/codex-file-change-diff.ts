@@ -35,7 +35,7 @@ function hasPatchText(change: CodexChange): boolean {
 }
 
 function defaultGitDiff(cwd: string, filePath: string): string {
-  return execFileSync('git', ['diff', '--', filePath], {
+  return execFileSync('git', ['diff', 'HEAD', '--', filePath], {
     cwd,
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,

@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import type { StreamEvent } from './types.js';
 
@@ -36,6 +40,46 @@ describe('enrichCodexFileChangeDiffs', () => {
         unified_diff: '@@ -1,1 +1,1 @@\n-before\n+after\n',
       },
     ]);
+  });
+
+  it('uses the HEAD file diff so staged-only changes still render', () => {
+    const repo = mkdtempSync(path.join(tmpdir(), 'agent-hub-codex-diff-'));
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+
+    try {
+      git(['init']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'user.name', 'Test User']);
+      writeFileSync(path.join(repo, 'f.ts'), 'before\n');
+      git(['add', 'f.ts']);
+      git(['commit', '-m', 'init']);
+      writeFileSync(path.join(repo, 'f.ts'), 'after\n');
+      git(['add', 'f.ts']);
+
+      const events: StreamEvent[] = [
+        {
+          type: 'tool_use',
+          id: 'fc_1',
+          tool: 'Edit',
+          input: { changes: [{ path: 'f.ts', kind: 'update' }] },
+        },
+        {
+          type: 'tool_result',
+          toolUseId: 'fc_1',
+          output: JSON.stringify([{ path: 'f.ts', kind: 'update' }]),
+          isError: false,
+        },
+      ];
+
+      const [, event] = enrichCodexFileChangeDiffs(events, repo);
+
+      expect(event.type).toBe('tool_result');
+      const output = JSON.parse((event as { output: string }).output);
+      expect(output[0].unified_diff).toContain('-before');
+      expect(output[0].unified_diff).toContain('+after');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('does not overwrite Codex results that already include patch text', () => {
