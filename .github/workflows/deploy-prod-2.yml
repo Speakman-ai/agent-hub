@@ -17,11 +17,8 @@ permissions:
   contents: read
 
 jobs:
-  # Tests are not re-run here. The tag was already gated by ci.yml on the PR
-  # that produced it (build + typecheck + server/client baseline). Re-verifying
-  # on every prod-2 rollout duplicates known-green work and slows the rollout.
-  # If you need to re-run tests against the tag before rolling, do it manually
-  # via `gh workflow run ci.yml --ref <tag>` (or run `npm test` locally).
+  # Test suites are not run from GitHub Actions. The tag was already checked by
+  # the Agent Hub finalize flow before rollout.
   deploy-prod-2:
     name: Deploy agent-hub-prod-2
     runs-on: ubuntu-latest

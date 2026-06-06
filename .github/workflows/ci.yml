@@ -2,12 +2,11 @@ name: CI
 
 # PR baseline. Every PR runs the same jobs regardless of which files changed —
 # no path-based skipping, no conditional matrix. The whole point is a
-# CONSISTENT signal: if `CI` is green, the PR built, typechecked, and passed
-# the server + client test suites.
+# CONSISTENT signal: if `CI` is green, the PR built and typechecked.
 #
-# Heavier checks (lint, format, terraform, OpenAPI freshness, skill-coupling,
-# electron, mobile) run on `push: main` via `main-checks.yml` and are NOT
-# blocking. We check the main branch periodically and fix what's broken.
+# Heavier checks (lint, format, terraform, OpenAPI freshness, skill-coupling)
+# run on `push: main` via `main-checks.yml` and are NOT blocking. We check the
+# main branch periodically and fix what's broken.
 #
 # Branch protection should require **CI** (the gate job below).
 
@@ -67,79 +66,17 @@ jobs:
       - name: Server typecheck (tsc --noEmit)
         run: cd server && npx tsc --noEmit
 
-  test:
-    name: Tests (${{ matrix.label }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { suite: server, shard: 1, shards: 3, label: 'server 1/3' }
-          - { suite: server, shard: 2, shards: 3, label: 'server 2/3' }
-          - { suite: server, shard: 3, shards: 3, label: 'server 3/3' }
-          - { suite: client, label: 'client' }
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            npm ci --ignore-scripts --include=dev && exit 0
-            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Rebuild native modules (server only)
-        if: matrix.suite == 'server'
-        run: npm rebuild better-sqlite3
-
-      - name: Install server dependencies
-        if: matrix.suite == 'server'
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd server && npm ci --include=dev) && exit 0
-            echo "npm ci (server) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Install client dependencies
-        if: matrix.suite == 'client'
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd client && npm ci --include=dev) && exit 0
-            echo "npm ci (client) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Run server tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
-        if: matrix.suite == 'server'
-        run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
-
-      - name: Run client tests
-        if: matrix.suite == 'client'
-        run: cd client && npm test
-
   ci:
     # Single required status check. Aggregates the always-on jobs above.
     name: CI
-    needs: [build, test]
+    needs: [build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded
         env:
           BUILD: ${{ needs.build.result }}
-          TEST: ${{ needs.test.result }}
         run: |
           set -euo pipefail
           case "$BUILD" in success) ;; *) echo "::error::Build & typecheck job: $BUILD"; exit 1 ;; esac
-          case "$TEST" in success) ;; *) echo "::error::Tests job: $TEST"; exit 1 ;; esac
-          echo "CI: OK (build=$BUILD test=$TEST)"
+          echo "CI: OK (build=$BUILD)"

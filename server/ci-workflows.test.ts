@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
 
@@ -6,20 +6,19 @@ import { describe, it, expect } from 'vitest';
  * Locks the PR-baseline / post-merge split introduced when we stripped CI
  * down to consistent baseline checks:
  *
- *   - `.github/workflows/ci.yml`         — PR gate (build + typecheck +
- *                                          server shards + client tests).
+ *   - `.github/workflows/ci.yml`         — PR gate (build + typecheck).
  *                                          MUST run unconditionally on every
  *                                          PR (no path filter, no `if:` on the
  *                                          jobs that the gate depends on).
  *   - `.github/workflows/main-checks.yml` — push:main informational suite
- *                                           (lint, terraform, skill-coupling,
- *                                           electron, mobile).
+ *                                           (lint, terraform, skill-coupling).
  *   - `.github/workflows/skill-coupling.yml` was folded into main-checks.yml
  *                                            and should NOT exist.
  *   - `.github/workflows/api-docs.yml` runs on push:main only (no PR trigger).
  *
- * If a future PR re-adds path-based skipping to the PR gate (or moves a
- * deferred suite back into ci.yml), this test fires.
+ * If a future PR re-adds path-based skipping to the PR gate, moves a deferred
+ * check back into ci.yml, or reintroduces test-suite execution in GitHub
+ * Actions, this test fires.
  */
 
 const repoRoot = join(__dirname, '..');
@@ -45,31 +44,28 @@ describe('PR baseline (.github/workflows/ci.yml)', () => {
     expect(/ci-path-plan|ci-path-scope|ci-uncovered-paths/.test(yml)).toBe(false);
   });
 
-  it('declares a `build` and `test` job that always run (no top-level if:)', () => {
-    // The build/test jobs gate the `CI` aggregator and must not be guarded by
-    // path filters. We allow `if:` on individual matrix STEPS (e.g. install
-    // server deps only for the server matrix row), but not on the job key.
+  it('declares a `build` job that always runs and no `test` job', () => {
+    // The build job gates the `CI` aggregator and must not be guarded by path
+    // filters.
     const buildBlock = extractJob(yml, 'build');
     const testBlock = extractJob(yml, 'test');
     expect(buildBlock, 'ci.yml is missing a `build:` job').toBeTruthy();
-    expect(testBlock, 'ci.yml is missing a `test:` job').toBeTruthy();
-    // First two lines of each job block: `  build:` then `    name: ...`.
+    expect(testBlock, 'ci.yml should not declare a `test:` job').toBeNull();
+    // First two lines of the job block: `  build:` then `    name: ...`.
     // No `if:` should appear at indent depth 4 (job-level).
     expect(jobHasTopLevelIf(yml, 'build')).toBe(false);
-    expect(jobHasTopLevelIf(yml, 'test')).toBe(false);
   });
 
   it('aggregates into a single required status named `CI`', () => {
-    // The required check is the `ci:` job with `name: CI` that `needs` build+test.
+    // The required check is the `ci:` job with `name: CI` that `needs` build.
     expect(yml).toMatch(/^\s{2}ci:\s*\n[\s\S]+?name:\s*CI\b/m);
-    expect(yml).toMatch(/needs:\s*\[\s*build\s*,\s*test\s*\]/);
+    expect(yml).toMatch(/needs:\s*\[\s*build\s*\]/);
   });
 
-  it('runs server tests sharded 3-way and the client suite', () => {
-    expect(yml).toMatch(/shard:\s*1[^\n]*shards:\s*3/);
-    expect(yml).toMatch(/shard:\s*2[^\n]*shards:\s*3/);
-    expect(yml).toMatch(/shard:\s*3[^\n]*shards:\s*3/);
-    expect(yml).toMatch(/suite:\s*client/);
+  it('does not run server or client test suites', () => {
+    expect(yml).not.toMatch(/shard:\s*[123][^\n]*shards:\s*3/);
+    expect(yml).not.toMatch(/suite:\s*client/);
+    expect(yml).not.toMatch(/npm\s+(run\s+)?test|npx\s+vitest|vitest\s+run/);
   });
 });
 
@@ -86,9 +82,11 @@ describe('Post-merge informational suite (.github/workflows/main-checks.yml)', (
   });
 
   it('declares the deferred suites as jobs', () => {
-    for (const job of ['lint', 'terraform', 'skill-coupling', 'electron-tests', 'mobile-tests']) {
+    for (const job of ['lint', 'terraform', 'skill-coupling']) {
       expect(extractJob(yml, job), `main-checks.yml missing job \`${job}\``).toBeTruthy();
     }
+    expect(extractJob(yml, 'electron-tests')).toBeNull();
+    expect(extractJob(yml, 'mobile-tests')).toBeNull();
   });
 
   it('does not aggregate into a required-style gate (these checks are informational)', () => {
@@ -107,6 +105,26 @@ describe('Deleted / retargeted workflows', () => {
     const yml = readWorkflow('api-docs.yml');
     expect(/^\s+pull_request:\s*\n/m.test(yml)).toBe(false);
     expect(yml).toMatch(/^\s+push:\s*\n\s+branches:\s*\[main\]/m);
+  });
+});
+
+describe('GitHub Actions test-suite execution', () => {
+  it('does not run tests from any workflow', () => {
+    const forbidden = [
+      /npm\s+(run\s+)?test\b/,
+      /npx\s+vitest\b/,
+      /vitest\s+run\b/,
+      /playwright\s+test\b/,
+      /\bjest\b/,
+      /\bdetox\b/,
+      /\btest\s+-f\b/,
+    ];
+    for (const name of readdirSync(workflowsDir).filter((entry) => entry.endsWith('.yml'))) {
+      const yml = readWorkflow(name);
+      for (const pattern of forbidden) {
+        expect(yml, `${name} should not match ${pattern}`).not.toMatch(pattern);
+      }
+    }
   });
 });
 

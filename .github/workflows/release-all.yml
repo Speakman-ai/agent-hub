@@ -52,11 +52,8 @@ permissions:
   contents: read
 
 jobs:
-  # Tests are not re-run here. ci.yml gates every PR with the baseline suite
-  # (build + typecheck + server/client tests) before merge to main, so by the
-  # time main is taggable the baseline is already green. Skipping the duplicate
-  # run shortens the release cycle. If you suspect main is dirty, run
-  # `gh workflow run ci.yml --ref main` before triggering Release.
+  # Test suites are not run from GitHub Actions. Release is manually triggered
+  # after the Agent Hub finalize flow has checked the change.
   release:
     name: Tag & release
     runs-on: ubuntu-latest

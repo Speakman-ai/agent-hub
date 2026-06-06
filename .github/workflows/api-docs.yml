@@ -2,8 +2,7 @@ name: API Docs
 
 # Builds the Redoc-rendered OpenAPI bundle and publishes it to GitHub Pages.
 # The build step strips operations flagged `x-internal: true` via
-# `scripts/build-openapi-public.ts` — the unit test for the filter lives in
-# `server/openapi-filter.test.ts`.
+# `scripts/build-openapi-public.ts`.
 #
 # Runs ONLY on push to main (and manual dispatch). The OpenAPI coverage
 # ratchet + freshness diff used to fire on PRs as well; they were moved here
@@ -11,7 +10,7 @@ name: API Docs
 # If freshness goes red on main, regenerate `docs/api/openapi.yaml` locally
 # and push a fix.
 #
-# **One-time repo setting required:** Settings → Pages → Source → "GitHub
+# **One-time repo setting required:** Settings -> Pages -> Source -> "GitHub
 # Actions". The deploy job will fail until that toggle is flipped.
 
 on:
@@ -72,9 +71,6 @@ jobs:
       - name: Rebuild better-sqlite3 native binding (server)
         run: cd server && npm rebuild better-sqlite3
 
-      - name: Run filter unit tests
-        run: cd server && npx vitest run openapi-filter.test.ts openapi-coverage.test.ts openapi/registry.test.ts
-
       # Coverage ratchet — fails the build when a new route handler lands
       # without a `registry.registerPath(...)` (or when the per-file baseline
       # in `scripts/openapi-coverage-baseline.json` is exceeded).
@@ -106,9 +102,6 @@ jobs:
 
       - name: Build filtered bundle (strip x-internal)
         run: cd server && npx tsx ../scripts/build-openapi-public.ts --out ../docs/api/_site
-
-      - name: Smoke-test output
-        run: test -f docs/api/_site/openapi.yaml
 
       - name: Show output for log/debug
         run: |

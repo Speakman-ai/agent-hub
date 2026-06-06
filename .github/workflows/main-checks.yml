@@ -8,10 +8,8 @@ name: Main Checks
 #   - Server typecheck duplicate signal (kept on PR baseline too)
 #   - Terraform fmt / init / validate
 #   - Skill-coupling enforcement
-#   - Electron tests
-#   - Mobile tests
 #
-# OpenAPI freshness + coverage + filter unit tests live in `api-docs.yml`
+# OpenAPI freshness + coverage checks live in `api-docs.yml`
 # alongside the docs deploy — keeping them together avoids re-implementing
 # the better-sqlite3 native-rebuild dance in two workflows.
 #
@@ -137,58 +135,3 @@ jobs:
           # affects the PR-time use case (which no longer exists). Leave blank.
           PR_LABELS: ''
         run: node .github/scripts/skill-coupling.mjs
-
-  electron-tests:
-    name: Electron tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            npm ci --ignore-scripts --include=dev && exit 0
-            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Run electron tests
-        run: cd electron && npx vitest run
-
-  mobile-tests:
-    name: Mobile tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            npm ci --ignore-scripts --include=dev && exit 0
-            echo "npm ci (root) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Install mobile dependencies
-        run: |
-          for attempt in 1 2 3 4; do
-            (cd mobile && npm ci --include=dev) && exit 0
-            echo "npm ci (mobile) failed attempt $attempt/4; retry in 15s..."
-            sleep 15
-          done
-          exit 1
-
-      - name: Run mobile tests
-        run: cd mobile && npm test
