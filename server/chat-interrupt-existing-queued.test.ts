@@ -18,6 +18,11 @@ vi.mock('./process-groups.js', async (importOriginal) => {
   return { ...actual, killProcessGroup: killProcessGroupMock };
 });
 
+vi.mock('./per-user-cli-spawn.js', () => ({
+  EngineAuthRequiredError: class EngineAuthRequiredError extends Error {},
+  resolveSessionCliSpawnEnv: vi.fn(() => ({})),
+}));
+
 function makeAgent(id: string): Agent {
   return {
     id,
@@ -80,7 +85,7 @@ function stubChatDeps(
     handleDelegationCancel: vi.fn(),
     synthesizeResults: vi.fn(),
     parseDelegateBlock: vi.fn(),
-    autoCommitAndPR: vi.fn(),
+    autoCommitAndPR: vi.fn(async () => undefined),
     tryAutonomousDispatch: vi.fn(),
   };
 
@@ -148,5 +153,38 @@ describe('handleChat — interrupt-now existing queued row', () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+
+  it('broadcasts primary agent metadata on ordinary thinking events', async () => {
+    const agentId = `${testPrefix}-agent-meta`;
+    const sessionId = `${testPrefix}-sess-meta`;
+    const stmts = getStmts();
+    stmts.createSession.run(
+      sessionId,
+      agentId,
+      'metadata test',
+      'claude-code',
+      'claude-opus-4-8',
+      0,
+      0,
+      1,
+    );
+    const { handleChat, broadcasts } = stubChatDeps(sessionId, agentId, new Map());
+
+    await handleChat(null, {
+      type: 'chat',
+      agentId,
+      sessionId,
+      content: 'hello',
+    });
+
+    expect(broadcasts).toContainEqual(
+      expect.objectContaining({
+        type: 'thinking',
+        sessionId,
+        agentId,
+        agentName: 'Interrupt test agent',
+      }),
+    );
   });
 });

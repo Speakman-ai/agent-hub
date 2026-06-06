@@ -404,7 +404,7 @@ export async function dispatchFixMessage(
   }
 
   // Pre-cancel: caller already aborted before we set up the wait
-  // primitives. Skip both watchdog and turn-end subscription.
+  // primitives. Skip both watchdog, turn-end subscription, and spawn.
   if (opts.signal?.aborted) {
     return { outcome: 'cancelled', messageId, activeSecondsBilled };
   }

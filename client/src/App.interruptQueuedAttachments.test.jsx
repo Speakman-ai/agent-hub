@@ -152,7 +152,16 @@ const PROJECT_FIXTURE = [
     color: '#3b82f6',
     cwd: '/tmp/w',
     ahw: '/tmp/w',
-    agents: [{ id: 'agent-1', name: 'A1', color: '#3b82f6', engine: 'claude-code' }],
+    agents: [
+      { id: 'agent-1', name: 'A1', color: '#3b82f6', engine: 'claude-code' },
+      {
+        id: 'reviewer-1',
+        name: 'Reviewer',
+        color: '#a855f7',
+        engine: 'claude-code',
+        role: 'reviewer',
+      },
+    ],
   },
 ];
 
@@ -160,6 +169,12 @@ const ONE_SESSION = [{ id: 's-1', name: 'S1', agent_id: 'agent-1', engine: 'clau
 
 import App from './App.jsx';
 import { api } from './utils/api.js';
+
+function reviewerStreamLabels() {
+  return screen
+    .queryAllByText('Reviewer')
+    .filter((el) => String(el.className || '').includes('text-gray-500'));
+}
 
 function mockFetch() {
   globalThis.fetch = vi.fn((url) => {
@@ -241,5 +256,59 @@ describe('App — interrupt queued message with persisted attachments', () => {
 
     expect(api.uploadImage).not.toHaveBeenCalled();
     expect(api.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('replaces a stale reviewer streaming label from the active task snapshot', async () => {
+    localStorage.setItem('activeAgentId', 'agent-1');
+
+    render(<App />);
+
+    await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
+    await act(async () => {
+      ctl.resolveProjects(PROJECT_FIXTURE);
+    });
+    await waitFor(() => expect(typeof ctl.resolveSessionsByAgent['agent-1']).toBe('function'), {
+      timeout: 3000,
+    });
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-1'](ONE_SESSION);
+    });
+    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('s-1'));
+    await screen.findByText('follow-up while streaming');
+    await waitFor(() => expect(typeof ctl.onMessage).toBe('function'));
+
+    await act(async () => {
+      ctl.onMessage({
+        type: 'thinking',
+        sessionId: 's-1',
+        messageId: 'review-stream',
+        agentId: 'reviewer-1',
+        agentName: 'Reviewer',
+        agentColor: '#a855f7',
+        engine: 'claude-code',
+      });
+    });
+    await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(1));
+
+    await act(async () => {
+      ctl.onMessage({
+        type: 'active-tasks-snapshot',
+        tasks: [
+          {
+            sessionId: 's-1',
+            messageId: 'agent-stream',
+            agentId: 'agent-1',
+            content: 'primary agent output',
+            engine: 'claude-code',
+            model: null,
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      expect(reviewerStreamLabels()).toHaveLength(0);
+      expect(screen.getByText(/primary agent output/)).toBeTruthy();
+    });
   });
 });

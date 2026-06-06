@@ -734,6 +734,7 @@ export default function App() {
           for (const t of data.tasks || []) {
             next[t.sessionId] = {
               messageId: t.messageId,
+              agentId: t.agentId || null,
               content: t.content || '',
               engine: t.engine || null,
               model: t.model || null,
@@ -748,6 +749,16 @@ export default function App() {
             setStreamingContent(t.content);
             setStreamingEngine(t.engine);
             setThinking(!t.content);
+            const agent = agentsRef.current.find((a) => a.id === t.agentId);
+            setStreamingAgent(
+              t.agentId
+                ? {
+                    agentId: t.agentId,
+                    agentName: agent?.name || t.agentId,
+                    agentColor: agent?.color,
+                  }
+                : null,
+            );
           }
           break;
         }

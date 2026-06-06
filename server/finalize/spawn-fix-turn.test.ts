@@ -64,6 +64,29 @@ describe('createSpawnFinalizeFixTurn', () => {
     );
   });
 
+  it('targets the session owner agent when a reviewer is attached elsewhere in the roster', async () => {
+    const handleChat = vi.fn().mockResolvedValue(undefined);
+    const findAgent = vi.fn((id: string) => (id === 'lead-1' ? { agent: { id: 'lead-1' } } : null));
+    const spawn = createSpawnFinalizeFixTurn({
+      stmts: { getSession: { get: vi.fn(() => ({ agent_id: 'lead-1' })) } } as never,
+      findAgent,
+      handleChat,
+    });
+
+    const result = await spawn({ sessionId: 'sess-1', body: REVIEWER_BODY });
+
+    expect(result.spawned).toBe(true);
+    expect(findAgent).toHaveBeenCalledWith('lead-1');
+    expect(findAgent).not.toHaveBeenCalledWith('reviewer-1');
+    expect(handleChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        agentId: 'lead-1',
+        sessionId: 'sess-1',
+      }),
+    );
+  });
+
   it('composeFixTurnContent prefers the body, trims, and falls back when blank', () => {
     expect(composeFixTurnContent('  notes here  ')).toBe('notes here');
     expect(composeFixTurnContent('')).toBe(FINALIZE_FIX_TURN_USER_PROMPT);
