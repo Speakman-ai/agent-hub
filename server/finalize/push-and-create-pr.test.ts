@@ -65,6 +65,18 @@ describe('parsePrUrl', () => {
   });
 });
 
+describe('parsePrListUrl', () => {
+  it('extracts the first PR URL from gh pr list JSON', () => {
+    expect(__test.parsePrListUrl('[{"url":"https://github.com/acme/proj/pull/42"}]\n')).toBe(
+      'https://github.com/acme/proj/pull/42',
+    );
+  });
+
+  it('returns null when gh pr list finds no open PR', () => {
+    expect(__test.parsePrListUrl('[]\n')).toBeNull();
+  });
+});
+
 describe('createPushAndCreatePr', () => {
   beforeEach(() => {
     mockExecFile.mockReset();
@@ -75,14 +87,20 @@ describe('createPushAndCreatePr', () => {
     // implements the callback-style API that util.promisify wraps.
     mockExecFile.mockImplementation(
       (
-        _cmd,
-        _args,
+        cmd,
+        args,
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
-        // First call (git push) returns empty stdout; second call (gh pr create)
-        // returns a URL. We can distinguish by checking the second arg's first element.
-        cb(null, { stdout: 'https://github.com/acme/proj/pull/7\n', stderr: '' });
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, { stdout: '[]\n', stderr: '' });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'create') {
+          cb(null, { stdout: 'https://github.com/acme/proj/pull/7\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
       },
     );
 
@@ -100,8 +118,8 @@ describe('createPushAndCreatePr', () => {
     });
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/7' });
 
-    // Two execFile calls: git push, then gh pr create.
-    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    // Three execFile calls: git push, gh pr list, then gh pr create.
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
     const firstArgs = mockExecFile.mock.calls[0]!;
     expect(firstArgs[0]).toBe('git');
     expect(firstArgs[1]).toEqual(['push', '--force-with-lease', '-u', 'origin', 'feature/x']);
@@ -112,6 +130,19 @@ describe('createPushAndCreatePr', () => {
     const secondArgs = mockExecFile.mock.calls[1]!;
     expect(secondArgs[0]).toBe('gh');
     expect(secondArgs[1]).toEqual([
+      'pr',
+      'list',
+      '--head',
+      'feature/x',
+      '--json',
+      'url',
+      '--limit',
+      '1',
+    ]);
+
+    const thirdArgs = mockExecFile.mock.calls[2]!;
+    expect(thirdArgs[0]).toBe('gh');
+    expect(thirdArgs[1]).toEqual([
       'pr',
       'create',
       '--base',
@@ -125,14 +156,71 @@ describe('createPushAndCreatePr', () => {
     ]);
   });
 
-  it('throws when gh emits no parseable URL', async () => {
+  it('returns the open PR URL after pushing an existing PR branch without creating a duplicate PR', async () => {
     mockExecFile.mockImplementation(
       (
-        _cmd,
-        _args,
+        cmd,
+        args,
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, {
+            stdout: '[{"url":"https://github.com/acme/proj/pull/1241"}]\n',
+            stderr: '',
+          });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    const result = await push({
+      runId: 'run-1241',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/fix-reviewer-initial-reply-routing',
+      baseBranch: 'main',
+      headSha: '160cc09',
+      card: mkCard(),
+      project: mkProject(),
+    });
+
+    expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/1241' });
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'push',
+      '--force-with-lease',
+      '-u',
+      'origin',
+      'feature/fix-reviewer-initial-reply-routing',
+    ]);
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+      'pr',
+      'list',
+      '--head',
+      'feature/fix-reviewer-initial-reply-routing',
+      '--json',
+      'url',
+      '--limit',
+      '1',
+    ]);
+  });
+
+  it('throws when gh emits no parseable URL', async () => {
+    mockExecFile.mockImplementation(
+      (
+        cmd,
+        args,
+        _opts,
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, { stdout: '[]\n', stderr: '' });
+          return;
+        }
         cb(null, { stdout: 'boom no url here', stderr: '' });
       },
     );

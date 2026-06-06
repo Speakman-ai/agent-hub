@@ -10,6 +10,9 @@
  *   - Body is a single-line marker — full templating (rich PR body, footer,
  *     etc.) is a follow-up. The orchestrator's provenance helper
  *     (`./provenance.ts`) handles body-marker injection downstream.
+ *   - Existing PR branches are updated in place. After the push succeeds,
+ *     the helper asks `gh pr list --head <branch>` for an open PR and returns
+ *     that URL instead of trying to create a duplicate PR.
  *   - Throws on error — the orchestrator catches and maps to
  *     `infra_error / github_push_5xx` (see `terminate()` in `orchestrator.ts`).
  */
@@ -72,6 +75,17 @@ function parsePrUrl(stdout: string): string | null {
   return null;
 }
 
+function parsePrListUrl(stdout: string): string | null {
+  try {
+    const rows: unknown = JSON.parse(stdout);
+    if (!Array.isArray(rows)) return null;
+    const first = rows[0] as { url?: unknown } | undefined;
+    return typeof first?.url === 'string' && first.url.length > 0 ? first.url : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Build a real {@link PushAndCreatePrFn} bound to the supplied `AppConfig`.
  * The orchestrator calls the returned function once per finalize run.
@@ -90,6 +104,16 @@ export function createPushAndCreatePr(deps: {
       timeout: PUSH_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
     });
+
+    const { stdout: existingPrStdout } = await execGit(
+      'gh',
+      ['pr', 'list', '--head', args.branch, '--json', 'url', '--limit', '1'],
+      { cwd: args.worktreePath, env, timeout: PUSH_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+    );
+    const existingPrUrl = parsePrListUrl(existingPrStdout);
+    if (existingPrUrl) {
+      return { prUrl: existingPrUrl };
+    }
 
     // gh pr create --base <baseBranch> --head <branch> --title <card.title> --body <body>
     // v0: single-line body marker. Templating is a follow-up.
@@ -120,4 +144,4 @@ export function createPushAndCreatePr(deps: {
 }
 
 // Exported for tests.
-export const __test = { parsePrUrl };
+export const __test = { parsePrListUrl, parsePrUrl };
