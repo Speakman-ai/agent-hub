@@ -43,6 +43,7 @@ import type {
   KanbanCardRow,
   SkillInvocationRow,
   Project,
+  FinalizeRunRow,
 } from '../types.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
@@ -651,8 +652,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     const linkedCardPrUrl = linkedCard?.pr_url ?? null;
+    const latestFinalizeRun = stmts.getLatestFinalizeRunForSession.get(id) as
+      | FinalizeRunRow
+      | undefined;
+    const finalizePrUrl =
+      !linkedCardPrUrl && latestFinalizeRun?.pr_url?.trim()
+        ? latestFinalizeRun.pr_url.trim()
+        : null;
     const inferredTitlePr = inferPrUrlFromSessionTitle(session.name, githubRepo);
-    const sessionTitlePrUrl = !linkedCardPrUrl && inferredTitlePr ? inferredTitlePr : null;
+    const sessionTitlePrUrl =
+      !linkedCardPrUrl && !finalizePrUrl && inferredTitlePr ? inferredTitlePr : null;
 
     const countRow = stmts.countSessionEventsForSession.get(id) as { c: number } | undefined;
     const eventCount = countRow?.c ?? 0;
@@ -687,6 +696,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       projectId,
       projectGithubRepo: githubRepo,
       linkedCard,
+      finalizePrUrl,
       sessionTitlePrUrl,
       runSnapshot,
       skills,

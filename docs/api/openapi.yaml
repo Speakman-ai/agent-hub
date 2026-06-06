@@ -1680,6 +1680,104 @@ components:
         - omitted
         - total
       description: Truncated message list when the full transcript exceeds the JSON response budget. Oldest rows are omitted; `messages` is oldest-first within the returned slice.
+    SessionSummary:
+      type: object
+      properties:
+        session:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            engine:
+              type: string
+            model:
+              type: string
+            updatedAt:
+              type: string
+          required:
+            - id
+            - name
+            - engine
+            - model
+            - updatedAt
+        projectId:
+          type: string
+          nullable: true
+        projectGithubRepo:
+          type: string
+          nullable: true
+        linkedCard:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            pr_url:
+              type: string
+              nullable: true
+            review_status:
+              type: string
+              nullable: true
+            columnName:
+              type: string
+              nullable: true
+          required:
+            - id
+            - title
+            - pr_url
+            - review_status
+            - columnName
+        finalizePrUrl:
+          type: string
+          nullable: true
+          description: PR URL recorded by the latest Finalize run for this session when the linked kanban card does not already carry a PR URL.
+        sessionTitlePrUrl:
+          type: string
+          nullable: true
+          description: Best-effort PR URL inferred from Resolve/Review-style session titles when neither the linked card nor the latest Finalize run supplies a PR URL.
+        runSnapshot:
+          type: object
+          additionalProperties:
+            nullable: true
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              skillId:
+                type: string
+              status:
+                type: string
+              source:
+                type: string
+              injectedBytes:
+                type: number
+                nullable: true
+              createdAt:
+                type: string
+            required:
+              - id
+              - skillId
+              - status
+              - source
+              - injectedBytes
+              - createdAt
+      required:
+        - session
+        - projectId
+        - projectGithubRepo
+        - linkedCard
+        - finalizePrUrl
+        - sessionTitlePrUrl
+        - runSnapshot
+        - skills
+      description: "Session summary metadata used by the chat header and orchestration panels: linked PR, run snapshot, and loaded skills."
     SessionErrorResponse:
       type: object
       properties:
@@ -7753,6 +7851,33 @@ paths:
                   - $ref: "#/components/schemas/SessionMessagesList"
         "404":
           description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/summary:
+    get:
+      tags:
+        - Sessions
+      summary: Get session summary metadata
+      description: "Returns the compact metadata used by the chat header: linked kanban-card PR, latest Finalize PR fallback, title-inferred PR fallback, run snapshot, and loaded skills."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Session summary metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+        "404":
+          description: Session not found.
           content:
             application/json:
               schema:

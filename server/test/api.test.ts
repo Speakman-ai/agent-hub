@@ -1074,6 +1074,8 @@ describe('Sessions', () => {
       expect(res.body).toHaveProperty('projectId');
       expect(res.body).toHaveProperty('projectGithubRepo');
       expect(res.body).toHaveProperty('linkedCard');
+      expect(res.body).toHaveProperty('finalizePrUrl');
+      expect(res.body.finalizePrUrl).toBeNull();
       expect(res.body).toHaveProperty('sessionTitlePrUrl');
       expect(res.body.sessionTitlePrUrl).toBeNull();
       expect(res.body).toHaveProperty('runSnapshot');
@@ -1101,6 +1103,50 @@ describe('Sessions', () => {
       const res = await request.get(`/api/sessions/${session.id as string}/summary`).expect(200);
       expect(res.body.sessionTitlePrUrl).toBe('https://github.com/acme/widgets/pull/77');
       expect(res.body.projectGithubRepo).toBe('acme/widgets');
+      expect(res.body.linkedCard).toBeNull();
+    });
+
+    it('exposes finalizePrUrl from the latest pushed finalize run when card has no pr_url', async () => {
+      const project = await createProject();
+      await request
+        .patch(`/api/projects/${project.id as string}`)
+        .send({ githubRepo: 'acme/widgets' })
+        .expect(200);
+      const agent = await createAgent({ projectId: project.id as string });
+      const session = await createSession({
+        agentId: agent.id as string,
+        name: '[Resolve PR #77] Title fallback should lose to finalize',
+      });
+      const { randomUUID } = await import('node:crypto');
+      const { stmts } = await import('../db.js');
+      if (!stmts) throw new Error('Database not initialized');
+
+      const runId = randomUUID();
+      stmts.insertFinalizeRun.run(
+        runId,
+        'card-finalize-summary',
+        session.id,
+        project.id,
+        'feature/finalize-summary',
+        'abc123',
+        `summary-${runId}`,
+        'pushed',
+        'push',
+        'ui_button',
+        '/tmp/finalize-summary',
+        'owner-user',
+        'Agent Hub',
+        'agent@example.test',
+        null,
+        Date.now(),
+        'full',
+        null,
+      );
+      stmts.updateFinalizeRunPrUrl.run('https://github.com/acme/widgets/pull/1240', runId);
+
+      const res = await request.get(`/api/sessions/${session.id as string}/summary`).expect(200);
+      expect(res.body.finalizePrUrl).toBe('https://github.com/acme/widgets/pull/1240');
+      expect(res.body.sessionTitlePrUrl).toBeNull();
       expect(res.body.linkedCard).toBeNull();
     });
 

@@ -87,8 +87,9 @@ export default function OrchestrationTimelinePanel({ entries, sessionId, compact
       .then((data) => {
         if (cancelled) return;
         const linkedCard = data?.linkedCard ?? null;
+        const finalizePrUrl = data?.finalizePrUrl ?? null;
         const sessionTitlePrUrl = data?.sessionTitlePrUrl ?? null;
-        const linkedPrUrl = linkedCard?.pr_url ?? sessionTitlePrUrl ?? null;
+        const linkedPrUrl = linkedCard?.pr_url ?? finalizePrUrl ?? sessionTitlePrUrl ?? null;
         const reviewStatus = linkedCard?.review_status ?? null;
         const projectId = data?.projectId ?? null;
         const prNum = linkedPrUrl ? prNumberFromUrl(linkedPrUrl) : null;

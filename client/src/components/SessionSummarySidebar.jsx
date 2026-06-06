@@ -120,7 +120,8 @@ export default function SessionSummarySidebar({
     return () => clearInterval(t);
   }, [sessionId, isLive, loadSummary]);
 
-  const linkedPrUrl = summary?.linkedCard?.pr_url ?? summary?.sessionTitlePrUrl ?? null;
+  const linkedPrUrl =
+    summary?.linkedCard?.pr_url ?? summary?.finalizePrUrl ?? summary?.sessionTitlePrUrl ?? null;
 
   const prNum = useMemo(() => {
     return linkedPrUrl ? prNumberFromUrl(linkedPrUrl) : null;

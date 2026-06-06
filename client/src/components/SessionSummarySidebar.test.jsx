@@ -133,6 +133,33 @@ describe('<SessionSummarySidebar /> — linked PR', () => {
     expect(statusPill).toHaveTextContent('Pending review');
   });
 
+  it('shows the latest finalize PR in the linked PR section when the card has no PR URL', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: null,
+      finalizePrUrl: 'https://github.com/acme/widgets/pull/1240',
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'Finalize session' },
+      skills: [],
+    });
+    api.getProjectPullDetail.mockResolvedValue({
+      pr: { title: 'Show diff fallback correctly', state: 'open', merged_at: null },
+      reviews: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-finalize-pr" isLive={false} />);
+
+    await waitFor(() => {
+      expect(api.getProjectPullDetail).toHaveBeenCalledWith('proj-1', 1240);
+    });
+
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    expect(await screen.findByTestId('session-linked-pr')).toHaveTextContent('PR #1240');
+    expect(screen.getByText('Show diff fallback correctly')).toBeInTheDocument();
+    expect(screen.queryByText(/No PR linked/i)).toBeNull();
+  });
+
   it('renders each loaded skill once even when the server returns duplicate invocations', async () => {
     api.getSessionSummary.mockResolvedValue({
       projectId: 'proj-1',

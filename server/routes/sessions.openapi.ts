@@ -139,6 +139,54 @@ export const SessionMessagesListComponent = registerComponent(
     }),
 );
 
+export const SessionSummaryComponent = registerComponent(
+  'SessionSummary',
+  z
+    .object({
+      session: z.object({
+        id: z.string(),
+        name: z.string(),
+        engine: z.string(),
+        model: z.string(),
+        updatedAt: z.string(),
+      }),
+      projectId: z.string().nullable(),
+      projectGithubRepo: z.string().nullable(),
+      linkedCard: z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          pr_url: z.string().nullable(),
+          review_status: z.string().nullable(),
+          columnName: z.string().nullable(),
+        })
+        .nullable(),
+      finalizePrUrl: z.string().nullable().openapi({
+        description:
+          'PR URL recorded by the latest Finalize run for this session when the linked kanban card does not already carry a PR URL.',
+      }),
+      sessionTitlePrUrl: z.string().nullable().openapi({
+        description:
+          'Best-effort PR URL inferred from Resolve/Review-style session titles when neither the linked card nor the latest Finalize run supplies a PR URL.',
+      }),
+      runSnapshot: z.record(z.string(), z.unknown()),
+      skills: z.array(
+        z.object({
+          id: z.string(),
+          skillId: z.string(),
+          status: z.string(),
+          source: z.string(),
+          injectedBytes: z.number().nullable(),
+          createdAt: z.string(),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'Session summary metadata used by the chat header and orchestration panels: linked PR, run snapshot, and loaded skills.',
+    }),
+);
+
 export const SessionErrorResponseComponent = registerComponent(
   'SessionErrorResponse',
   z
@@ -348,6 +396,24 @@ registerPath({
       content: jsonContent(z.union([z.array(MessageComponent), SessionMessagesListComponent])),
     },
     404: errorResponse('Session not found (or hidden by ownership).'),
+  },
+});
+
+// GET /api/sessions/:sessionId/summary
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/summary',
+  tags: ['Sessions'],
+  summary: 'Get session summary metadata',
+  description:
+    'Returns the compact metadata used by the chat header: linked kanban-card PR, latest Finalize PR fallback, title-inferred PR fallback, run snapshot, and loaded skills.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Session summary metadata.',
+      content: jsonContent(SessionSummaryComponent),
+    },
+    404: errorResponse('Session not found.'),
   },
 });
 
