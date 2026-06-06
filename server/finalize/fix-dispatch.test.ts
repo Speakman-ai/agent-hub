@@ -424,6 +424,21 @@ describe('dispatchFixMessage — turn-end resolves the dispatch', () => {
     await promise;
   });
 
+  it('does not miss a turn-end emitted before spawnFixTurn resolves', async () => {
+    const { deps, turnEnd } = makeDeps();
+    const spawnFixTurn = vi.fn(async () => {
+      turnEnd.fireFor('sess-1');
+      return { spawned: true };
+    });
+    deps.spawnFixTurn = spawnFixTurn;
+
+    const result = await dispatchFixMessage(deps, baseOpts());
+
+    expect(result.outcome).toBe('turn_ended');
+    expect(spawnFixTurn).toHaveBeenCalledTimes(1);
+    expect(turnEnd.subscribers('sess-1')).toBe(0);
+  });
+
   it('returns spawn_failed when spawnFixTurn does not start the agent', async () => {
     const spawnFixTurn = vi.fn().mockResolvedValue({ spawned: false });
     const { deps, turnEnd } = makeDeps({ spawnFixTurn });

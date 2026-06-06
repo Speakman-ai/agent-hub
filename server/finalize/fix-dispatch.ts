@@ -280,7 +280,8 @@ export interface FixDispatchOptions {
  *      `addMessage` (role `'system'`); broadcast `{ type: 'message' }`.
  *   4. Subscribe to turn-end on the session.
  *   5. Arm the stall watchdog (live mode only).
- *   6. Await whichever resolves first.
+ *   6. Spawn the originating session agent.
+ *   7. Await whichever resolves first.
  *
  * Non-throwing: every failure becomes a tagged outcome. A DB write
  * failure on step 1 still attempts steps 2–3 (best-effort); a message
@@ -401,20 +402,6 @@ export async function dispatchFixMessage(
     );
   }
 
-  if (deps.spawnFixTurn) {
-    const spawnResult = await deps.spawnFixTurn({ sessionId: opts.sessionId, body });
-    if (!spawnResult.spawned) {
-      log(
-        `[finalize-fix-dispatch] agent spawn did not start for session=${opts.sessionId} run=${opts.runId}`,
-      );
-      return { outcome: 'spawn_failed', messageId, activeSecondsBilled };
-    }
-  } else {
-    log(
-      `[finalize-fix-dispatch] spawnFixTurn not wired — session ${opts.sessionId} will not auto-respond`,
-    );
-  }
-
   // Pre-cancel: caller already aborted before we set up the wait
   // primitives. Skip both watchdog and turn-end subscription.
   if (opts.signal?.aborted) {
@@ -499,6 +486,31 @@ export async function dispatchFixMessage(
       },
       () => finish('stalled_no_response'),
     );
+
+    if (deps.spawnFixTurn) {
+      void deps
+        .spawnFixTurn({ sessionId: opts.sessionId, body })
+        .then((spawnResult) => {
+          if (!spawnResult.spawned) {
+            log(
+              `[finalize-fix-dispatch] agent spawn did not start for session=${opts.sessionId} run=${opts.runId}`,
+            );
+            finish('spawn_failed');
+          }
+        })
+        .catch((err: unknown) => {
+          log(
+            `[finalize-fix-dispatch] spawnFixTurn failed for session=${opts.sessionId} run=${
+              opts.runId
+            }: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          finish('spawn_failed');
+        });
+    } else {
+      log(
+        `[finalize-fix-dispatch] spawnFixTurn not wired — session ${opts.sessionId} will not auto-respond`,
+      );
+    }
   });
 }
 
