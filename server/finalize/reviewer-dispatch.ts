@@ -294,12 +294,20 @@ export async function runReviewerDispatch(
     // Pre-setPhase guard rail. We still emit a phase-change event so a
     // UI subscriber that joined before this call observes the terminal
     // status (it would otherwise see no event at all for this run).
-    return terminate(stmts, broadcast, opts.runId, 'no_worktree', 'worktree path missing', 0);
+    return terminate(
+      stmts,
+      broadcast,
+      opts.runId,
+      opts.sessionId ?? null,
+      'no_worktree',
+      'worktree path missing',
+      0,
+    );
   }
 
   // Phase change is published BEFORE the (potentially slow) reviewer
   // turn so the UI's checks panel can render the spinner row.
-  setPhase(stmts, broadcast, opts.runId, 'review', 'reviewing');
+  setPhase(stmts, broadcast, opts.runId, opts.sessionId ?? null, 'review', 'reviewing');
 
   // Resolve local-diff inputs. Tests pass them pre-computed; production
   // collects them from the worktree.
@@ -312,6 +320,7 @@ export async function runReviewerDispatch(
         stmts,
         broadcast,
         opts.runId,
+        opts.sessionId ?? null,
         'no_diff_inputs',
         'baseBranch required when inputs not pre-computed',
         0,
@@ -330,6 +339,7 @@ export async function runReviewerDispatch(
         stmts,
         broadcast,
         opts.runId,
+        opts.sessionId ?? null,
         'no_diff_inputs',
         `git diff failed: ${msg}`,
         0,
@@ -357,6 +367,7 @@ export async function runReviewerDispatch(
       stmts,
       broadcast,
       opts.runId,
+      opts.sessionId ?? null,
       'review_failed',
       `reviewer agent failed: ${msg}`,
       0,
@@ -453,6 +464,7 @@ function setPhase(
   stmts: ReviewerDispatchDeps['stmts'],
   broadcast: BroadcastFn,
   runId: string,
+  sessionId: string | null,
   phase: FinalizeRunPhase,
   status: FinalizeRunStatus,
 ): void {
@@ -460,6 +472,7 @@ function setPhase(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(sessionId ? { session_id: sessionId } : {}),
     phase,
     status,
   });
@@ -469,6 +482,7 @@ function terminate(
   stmts: ReviewerDispatchDeps['stmts'],
   broadcast: BroadcastFn,
   runId: string,
+  sessionId: string | null,
   reason: 'review_failed' | 'no_worktree' | 'no_diff_inputs',
   detail: string,
   billedSeconds: number,
@@ -482,6 +496,7 @@ function terminate(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(sessionId ? { session_id: sessionId } : {}),
     phase: 'review',
     status: 'failed',
     failure_reason: reason,

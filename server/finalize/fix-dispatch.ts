@@ -316,6 +316,7 @@ export async function dispatchFixMessage(
     broadcast({
       type: 'finalize_run_phase_changed',
       run_id: opts.runId,
+      session_id: opts.sessionId,
       phase: 'dispatching',
       status: 'dispatching',
     });

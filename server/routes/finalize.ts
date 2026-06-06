@@ -411,6 +411,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     deps.broadcast({
       type: 'finalize_run_phase_changed',
       run_id: runId,
+      ...(run.session_id ? { session_id: run.session_id } : {}),
       phase: null,
       status: 'cancelled',
       failure_reason: 'cancelled',
@@ -418,6 +419,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     deps.broadcast({
       type: 'finalize_run_completed',
       run_id: runId,
+      ...(run.session_id ? { session_id: run.session_id } : {}),
       status: 'cancelled',
     });
     // Tell the session UI the agent turn was interrupted so it stops streaming

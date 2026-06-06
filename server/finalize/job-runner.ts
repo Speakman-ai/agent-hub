@@ -531,6 +531,7 @@ export async function runJobPhase(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: opts.runId,
+    session_id: opts.sessionId,
     phase: 'tasks',
     status: 'running',
   });
@@ -649,6 +650,7 @@ export async function runJobPhase(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: opts.runId,
+    session_id: opts.sessionId,
     phase: 'tasks',
     status: 'running',
   });

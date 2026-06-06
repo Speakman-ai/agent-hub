@@ -1058,7 +1058,7 @@ export async function runFinalize(
       if (!reviewerChangesRequested && checksRequired) {
         // Flip to tasks/running before the (potentially long) step phase so
         // the client shows "running checks" immediately after review completes.
-        setPhase(deps, runId, 'tasks', 'running', log);
+        setPhase(deps, runId, sessionId, 'tasks', 'running', log);
 
         // ── Phase 4: tasks ──────────────────────────────────────────────
         try {
@@ -1575,6 +1575,7 @@ function orchestratorTimelineDeps(deps: OrchestratorDeps): TimelineMessageDeps {
 function setPhase(
   deps: OrchestratorDeps,
   runId: string,
+  sessionId: string | null,
   phase: FinalizeRunPhase,
   status: FinalizeRunStatus,
   log: (msg: string) => void,
@@ -1591,6 +1592,7 @@ function setPhase(
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(sessionId ? { session_id: sessionId } : {}),
     phase,
     status,
   });
@@ -1614,9 +1616,11 @@ function terminate(
     );
   }
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
+  const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     phase: null,
     status,
     failure_reason: failureReason,
@@ -1624,11 +1628,11 @@ function terminate(
   deps.broadcast({
     type: 'finalize_run_completed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     status,
     failure_reason: failureReason,
   });
   try {
-    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
     writeFinalizeRunTerminalTimeline(orchestratorTimelineDeps(deps), {
       sessionId: row?.session_id,
       runId,
@@ -1656,9 +1660,11 @@ function cancelTerminal(
       }`,
     );
   }
+  const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     phase: null,
     status: 'cancelled',
     failure_reason: 'cancelled',
@@ -1666,10 +1672,10 @@ function cancelTerminal(
   deps.broadcast({
     type: 'finalize_run_completed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     status: 'cancelled',
   });
   try {
-    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
     writeFinalizeRunTerminalTimeline(orchestratorTimelineDeps(deps), {
       sessionId: row?.session_id,
       runId,
@@ -1825,6 +1831,7 @@ function outcomeFromFailed(
         ? 'infra_error'
         : 'failed';
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
+  const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
   // Mirror what `terminate()` emits so subscribers see the same shape on
   // every terminal path, regardless of which phase produced the failure.
   // The sub-phase already wrote the row's terminal status (status,
@@ -1832,6 +1839,7 @@ function outcomeFromFailed(
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     phase: null,
     status,
     failure_reason: failureReason,
@@ -1839,6 +1847,7 @@ function outcomeFromFailed(
   deps.broadcast({
     type: 'finalize_run_completed',
     run_id: runId,
+    ...(row?.session_id ? { session_id: row.session_id } : {}),
     status,
     failure_reason: failureReason,
   });

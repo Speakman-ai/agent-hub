@@ -27,6 +27,16 @@ function mergeStepsMaps(existing, incoming) {
       next.set(index, row);
       continue;
     }
+    if (isStaleStepSnapshot(prev, row)) {
+      next.set(index, {
+        ...prev,
+        name: row.name ?? prev.name,
+        startedAt: prev.startedAt ?? row.startedAt ?? null,
+        endedAt: prev.endedAt ?? row.endedAt ?? null,
+        exitCode: prev.exitCode ?? row.exitCode ?? null,
+      });
+      continue;
+    }
     const prevEnded = prev.endedAt ?? 0;
     const rowEnded = row.endedAt ?? 0;
     if (rowEnded >= prevEnded) {
@@ -34,6 +44,26 @@ function mergeStepsMaps(existing, incoming) {
     }
   }
   return next;
+}
+
+const STEP_STATE_RANK = {
+  queued: 0,
+  running: 1,
+  skipped: 2,
+  passed: 2,
+  failed: 2,
+};
+
+function stepStateRank(state) {
+  return STEP_STATE_RANK[state] ?? 0;
+}
+
+function isStaleStepSnapshot(prev, row) {
+  const prevEnded = prev.endedAt ?? 0;
+  const rowEnded = row.endedAt ?? 0;
+  if (rowEnded > prevEnded) return false;
+  if (rowEnded < prevEnded) return true;
+  return stepStateRank(row.state) < stepStateRank(prev.state);
 }
 
 /**
@@ -268,8 +298,29 @@ export function useFinalizeRun({
       if (!matchesRun(detail)) return;
       const stepIndex = detail.step_index;
       if (typeof stepIndex !== 'number') return;
+      const eventRunId = detail.run_id;
+      const switchesRun = Boolean(
+        eventRunId && runIdRef.current && eventRunId !== runIdRef.current,
+      );
+      if (eventRunId) {
+        if (switchesRun) runIdRef.current = eventRunId;
+        setRun((prev) => {
+          if (prev?.id === eventRunId) {
+            if (isTerminalStatus(prev.status)) return prev;
+            return prev.status === 'running' && prev.phase === 'tasks'
+              ? prev
+              : { ...prev, status: 'running', phase: 'tasks' };
+          }
+          return {
+            id: eventRunId,
+            session_id: detail.session_id ?? sessionIdRef.current,
+            phase: 'tasks',
+            status: 'running',
+          };
+        });
+      }
       setStepsByIndex((prev) => {
-        const next = new Map(prev);
+        const next = switchesRun ? new Map() : new Map(prev);
         const existing = next.get(stepIndex) || {
           index: stepIndex,
           name: detail.step_name || `Step ${stepIndex}`,

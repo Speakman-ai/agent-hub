@@ -427,7 +427,7 @@ export async function runStepsSequence(
   const spawnHardTimeoutMs = deps.spawnHardTimeoutMs ?? STEP_SPAWN_HARD_TIMEOUT_MS;
 
   if (!opts.skipPhaseInit) {
-    setPhase(stmts, broadcast, opts.runId, 'tasks', 'running');
+    setPhase(stmts, broadcast, opts.runId, opts.sessionId, 'tasks', 'running');
   }
 
   let activeSecondsBilled = opts.skipPhaseInit ? 0 : TASKS_PHASE_ENTRY_ACTIVE_SECONDS;
@@ -1044,6 +1044,7 @@ function setPhase(
   stmts: StepRunnerDeps['stmts'],
   broadcast: BroadcastFn,
   runId: string,
+  sessionId: string,
   phase: FinalizeRunPhase,
   status: FinalizeRunStatus,
 ): void {
@@ -1051,6 +1052,7 @@ function setPhase(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    session_id: sessionId,
     phase,
     status,
   });

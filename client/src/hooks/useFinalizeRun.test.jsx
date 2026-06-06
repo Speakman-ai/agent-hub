@@ -300,6 +300,83 @@ describe('useFinalizeRun — step state events', () => {
     expect(step?.exitCode).toBe(2);
   });
 
+  it('does not let a stale refetch demote a live running step back to queued', async () => {
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({ run: fakeRun() });
+    const ref = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.run?.id).toBe('run-1'));
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_step_state', {
+          detail: {
+            run_id: 'run-1',
+            session_id: 's1',
+            step_index: 1,
+            step_name: 'lint',
+            state: 'running',
+          },
+        }),
+      );
+    });
+    expect(ref.current?.steps?.[0]?.state).toBe('running');
+
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({ status: 'running', phase: 'tasks' }),
+      steps: [{ step_index: 1, name: 'lint', state: 'queued', started_at: null, ended_at: null }],
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_phase_changed', {
+          detail: { run_id: 'run-1', session_id: 's1', phase: 'tasks', status: 'running' },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledTimes(2));
+    expect(ref.current?.steps?.[0]?.state).toBe('running');
+  });
+
+  it('promotes a same-session step event for a newer run into the active run state', async () => {
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({ id: 'old-run', status: 'ready_to_push', phase: null }),
+      steps: [
+        {
+          step_index: 9,
+          name: 'old lint',
+          state: 'passed',
+          exit_code: 0,
+          started_at: 100,
+          ended_at: 200,
+        },
+      ],
+    });
+    const ref = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.run?.id).toBe('old-run'));
+    expect(ref.current?.steps?.map((s) => s.index)).toEqual([9]);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_step_state', {
+          detail: {
+            run_id: 'new-run',
+            session_id: 's1',
+            step_index: 1,
+            step_name: 'Install dependencies',
+            state: 'running',
+          },
+        }),
+      );
+    });
+
+    expect(ref.current?.run?.id).toBe('new-run');
+    expect(ref.current?.status).toBe('running');
+    expect(ref.current?.phase).toBe('tasks');
+    expect(ref.current?.steps?.[0]?.state).toBe('running');
+    expect(ref.current?.steps?.map((s) => s.index)).toEqual([1]);
+  });
+
   it('ignores step events for unrelated runs', async () => {
     api.getLatestFinalizeRunForSession.mockResolvedValue({ run: fakeRun() });
     const ref = { current: null };

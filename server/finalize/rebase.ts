@@ -209,7 +209,7 @@ export async function runRebasePhase(
 
   // Enter the rebase phase. Updates DB + broadcasts the phase change so the
   // UI checks panel can show the in-flight row before the first git spawn.
-  setPhase(stmts, broadcast, opts.runId, 'rebase', 'rebasing');
+  setPhase(stmts, broadcast, opts.runId, opts.card.session_id ?? null, 'rebase', 'rebasing');
 
   let billedSeconds = 0;
   let requiredFix = false;
@@ -296,7 +296,7 @@ export async function runRebasePhase(
     }
 
     // Non-trivial: dispatch to session, wait for turn-end, retry.
-    setPhase(stmts, broadcast, opts.runId, 'rebase', 'dispatching');
+    setPhase(stmts, broadcast, opts.runId, opts.card.session_id ?? null, 'rebase', 'dispatching');
     conflictsDispatchedCount += 1;
     const sessionId = await resolveSessionIdForRun(stmts, opts);
     if (!sessionId) {
@@ -329,7 +329,7 @@ export async function runRebasePhase(
     // orchestrator's session-event hook (phase 2+), not here. We move the
     // status back to `rebasing` so the next outer pass re-enters the
     // rebase path cleanly.
-    setPhase(stmts, broadcast, opts.runId, 'rebase', 'rebasing');
+    setPhase(stmts, broadcast, opts.runId, opts.card.session_id ?? null, 'rebase', 'rebasing');
   }
 
   return terminate(
@@ -348,6 +348,7 @@ function setPhase(
   stmts: RebasePhaseDeps['stmts'],
   broadcast: BroadcastFn,
   runId: string,
+  sessionId: string | null,
   phase: FinalizeRunPhase,
   status: FinalizeRunStatus,
 ): void {
@@ -355,6 +356,7 @@ function setPhase(
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
+    ...(sessionId ? { session_id: sessionId } : {}),
     phase,
     status,
   });
