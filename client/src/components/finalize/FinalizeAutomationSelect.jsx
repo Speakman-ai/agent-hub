@@ -11,37 +11,66 @@ export default function FinalizeAutomationSelect({
   sessionId,
   session,
   disabled = false,
+  askMode = false,
+  onAskModeChange,
   onError,
   variant = 'default',
 }) {
   const level = finalizeAutomationFromSession(session);
   const [pending, setPending] = useState(false);
   const [open, setOpen] = useState(false);
+  const options = [
+    {
+      value: 'ask',
+      label: 'Ask',
+      description: 'Read-only planning mode, using the selected CLI engine ask mode',
+    },
+    ...FINALIZE_AUTOMATION_OPTIONS,
+  ];
 
   const handleSelect = useCallback(
     async (nextValue) => {
-      if (!sessionId || pending || nextValue === level) {
+      const selectingAsk = nextValue === 'ask';
+      const selectedValue = askMode ? 'ask' : level;
+      if (!sessionId || pending || nextValue === selectedValue) {
         setOpen(false);
         return;
       }
       setPending(true);
       try {
-        await api.updateSession(sessionId, { finalize_automation: nextValue });
+        const setAskMode = async (enabled) => {
+          if (onAskModeChange) {
+            await onAskModeChange(enabled);
+          } else {
+            await api.setSessionAskMode(sessionId, enabled);
+          }
+        };
+        if (selectingAsk) {
+          await setAskMode(true);
+        } else {
+          if (askMode) {
+            await setAskMode(false);
+          }
+          if (nextValue !== level) {
+            await api.updateSession(sessionId, { finalize_automation: nextValue });
+          }
+        }
       } catch (err) {
-        onError?.(err?.message || 'Failed to update runner automation');
+        onError?.(err?.message || 'Failed to update session mode');
       } finally {
         setPending(false);
         setOpen(false);
       }
     },
-    [sessionId, pending, level, onError],
+    [sessionId, pending, askMode, level, onAskModeChange, onError],
   );
 
   if (!sessionId) return null;
 
   const compact = variant === 'compact';
   const selected =
-    FINALIZE_AUTOMATION_OPTIONS.find((o) => o.value === level) ?? FINALIZE_AUTOMATION_OPTIONS[0];
+    (askMode ? options[0] : FINALIZE_AUTOMATION_OPTIONS.find((o) => o.value === level)) ??
+    FINALIZE_AUTOMATION_OPTIONS[0];
 
   return (
     <div className="relative inline-flex">
@@ -76,8 +105,10 @@ export default function FinalizeAutomationSelect({
             aria-label="Runner automation"
             className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
           >
-            {FINALIZE_AUTOMATION_OPTIONS.map((option) => {
-              const active = option.value === parseFinalizeAutomation(level);
+            {options.map((option) => {
+              const active = askMode
+                ? option.value === 'ask'
+                : option.value === parseFinalizeAutomation(level);
               return (
                 <li key={option.value}>
                   <button

@@ -4435,6 +4435,8 @@ export default function App() {
                                 sessionId={activeSessionId}
                                 session={activeSession}
                                 disabled={!connected}
+                                askMode={sessionAskMode}
+                                onAskModeChange={handleAskModeChange}
                                 onError={(msg) => showToast(msg, 'error', 8000)}
                               />
                               <FinalizeButton

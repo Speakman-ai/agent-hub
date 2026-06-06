@@ -4,6 +4,7 @@ import FinalizeAutomationSelect from './FinalizeAutomationSelect.jsx';
 
 vi.mock('../../utils/api.js', () => ({
   api: {
+    setSessionAskMode: vi.fn(),
     updateSession: vi.fn(),
   },
 }));
@@ -53,6 +54,72 @@ describe('FinalizeAutomationSelect', () => {
     fireEvent.click(screen.getByTestId('finalize-automation-option-merge'));
     await waitFor(() => {
       expect(api.updateSession).toHaveBeenCalledWith('sess-1', { finalize_automation: 'merge' });
+    });
+  });
+
+  it('renders Ask when session ask mode is active', () => {
+    render(
+      <FinalizeAutomationSelect
+        sessionId="sess-1"
+        session={{ finalize_automation: 'push' }}
+        askMode={true}
+      />,
+    );
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Ask');
+  });
+
+  it('enables ask mode from the build selector', async () => {
+    const onAskModeChange = vi.fn();
+    render(
+      <FinalizeAutomationSelect
+        sessionId="sess-1"
+        session={{ finalize_automation: 'manual' }}
+        askMode={false}
+        onAskModeChange={onAskModeChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('finalize-automation-select'));
+    fireEvent.click(screen.getByTestId('finalize-automation-option-ask'));
+    await waitFor(() => {
+      expect(onAskModeChange).toHaveBeenCalledWith(true);
+    });
+    expect(api.setSessionAskMode).not.toHaveBeenCalled();
+    expect(api.updateSession).not.toHaveBeenCalled();
+  });
+
+  it('clears ask mode before selecting a build automation level', async () => {
+    const onAskModeChange = vi.fn();
+    api.updateSession.mockResolvedValueOnce({});
+    render(
+      <FinalizeAutomationSelect
+        sessionId="sess-1"
+        session={{ finalize_automation: 'manual' }}
+        askMode={true}
+        onAskModeChange={onAskModeChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('finalize-automation-select'));
+    fireEvent.click(screen.getByTestId('finalize-automation-option-review'));
+    await waitFor(() => {
+      expect(onAskModeChange).toHaveBeenCalledWith(false);
+    });
+    expect(api.setSessionAskMode).not.toHaveBeenCalled();
+    expect(api.updateSession).toHaveBeenCalledWith('sess-1', { finalize_automation: 'review' });
+  });
+
+  it('falls back to the ask-mode API when no parent handler is provided', async () => {
+    api.setSessionAskMode.mockResolvedValueOnce({ id: 'sess-1', ask_mode: 1 });
+    render(
+      <FinalizeAutomationSelect
+        sessionId="sess-1"
+        session={{ finalize_automation: 'manual' }}
+        askMode={false}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('finalize-automation-select'));
+    fireEvent.click(screen.getByTestId('finalize-automation-option-ask'));
+    await waitFor(() => {
+      expect(api.setSessionAskMode).toHaveBeenCalledWith('sess-1', true);
     });
   });
 });
