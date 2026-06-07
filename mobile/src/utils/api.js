@@ -161,6 +161,10 @@ export const api = {
   getConfig: () => fetchJSON('/config'),
   getModelConfig: () => fetchJSON('/config/models'),
   updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+  getGeminiAuth: () => fetchJSON('/config/gemini-auth'),
+  setGeminiApiKey: (apiKey) =>
+    fetchJSON('/config/gemini-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  logoutGemini: () => fetchJSON('/config/gemini-auth', { method: 'DELETE' }),
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data) =>
     fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),

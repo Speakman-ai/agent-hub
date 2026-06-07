@@ -238,7 +238,7 @@ export default function AccountSection() {
         />
       )}
 
-      {me && isAdminPlus && <HostOpenAIKeySection />}
+      {me && isAdminPlus && <PluginApiKeysSection />}
 
       {me && <ApiKeysSection />}
 
@@ -334,7 +334,32 @@ export default function AccountSection() {
   );
 }
 
-export function HostOpenAIKeySection() {
+const PLUGIN_API_KEYS = [
+  {
+    id: 'gemini',
+    label: 'Gemini API key',
+    placeholder: 'AIza...',
+    description: 'Used for voice transcription and wiki RAG.',
+    loadConfigured: (body) => !!body?.apiKey?.configured,
+    load: () => api.getGeminiAuth(),
+    save: (value) => api.setGeminiApiKey(value),
+    clear: () => api.logoutGemini(),
+    savedConfigured: (body) => !!body?.configured,
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI API key',
+    placeholder: 'sk-...',
+    description: 'Plugin use: voice transcription only. Also used for generated session titles.',
+    loadConfigured: (body) => !!body.openaiApiKeySet || !!body.openaiApiKey,
+    load: () => api.getConfig(),
+    save: (value) => api.updateConfig({ openaiApiKey: value }),
+    clear: () => api.updateConfig({ openaiApiKey: '' }),
+    savedConfigured: (body) => !!body?.updated?.openaiApiKey,
+  },
+];
+
+function PluginApiKeyRow({ item }) {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState('');
@@ -345,14 +370,14 @@ export function HostOpenAIKeySection() {
   const load = useCallback(async () => {
     setStatus(null);
     try {
-      const body = await api.getConfig();
-      setConfigured(!!body.openaiApiKeySet || !!body.openaiApiKey);
+      const body = await item.load();
+      setConfigured(item.loadConfigured(body));
     } catch (err) {
       setStatus({ type: 'error', msg: err.message || String(err) });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [item]);
 
   useEffect(() => {
     load();
@@ -362,8 +387,8 @@ export function HostOpenAIKeySection() {
     setSaving(true);
     setStatus(null);
     try {
-      const body = await api.updateConfig({ openaiApiKey: value });
-      const nextConfigured = !!body?.updated?.openaiApiKey;
+      const body = value ? await item.save(value) : await item.clear();
+      const nextConfigured = item.savedConfigured(body);
       setConfigured(nextConfigured);
       setApiKeyInput('');
       setStatus({ type: 'success', msg: nextConfigured ? 'Saved' : 'Cleared' });
@@ -375,42 +400,27 @@ export function HostOpenAIKeySection() {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-      <div>
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Key size={14} /> OpenAI API key
-        </h4>
-        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-          Host key used for voice transcription and generated session titles.
-        </p>
+    <div className="border border-gray-700 rounded-lg p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h5 className="text-sm font-medium text-gray-300">{item.label}</h5>
+          <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{item.description}</p>
+        </div>
+        {!loading && (
+          <span
+            className={`text-[11px] mt-0.5 ${configured ? 'text-emerald-300' : 'text-gray-500'}`}
+          >
+            {configured ? 'Configured' : 'Not configured'}
+          </span>
+        )}
       </div>
 
       {loading ? (
         <div className="flex items-center gap-2 text-xs text-gray-500">
-          <Loader2 size={12} className="animate-spin" /> Loading OpenAI key status…
+          <Loader2 size={12} className="animate-spin" /> Loading key status…
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
-            <div className="text-sm text-gray-300">
-              Status:{' '}
-              <span className={configured ? 'text-emerald-300' : 'text-gray-500'}>
-                {configured ? 'Configured' : 'Not configured'}
-              </span>
-            </div>
-            {configured && (
-              <button
-                type="button"
-                onClick={() => save('')}
-                disabled={saving}
-                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
-                aria-label="Clear OpenAI API key"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-
           <div className="relative">
             <input
               type={showApiKey ? 'text' : 'password'}
@@ -424,27 +434,41 @@ export function HostOpenAIKeySection() {
               autoComplete="off"
               data-1p-ignore
               data-lpignore="true"
-              aria-label="OpenAI API key"
+              aria-label={item.label}
+              placeholder={item.placeholder}
             />
             <button
               type="button"
               onClick={() => setShowApiKey((value) => !value)}
               className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
-              aria-label={showApiKey ? 'Hide OpenAI API key' : 'Show OpenAI API key'}
+              aria-label={showApiKey ? `Hide ${item.label}` : `Show ${item.label}`}
             >
               {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => save(apiKeyInput.trim())}
-            disabled={!apiKeyInput.trim() || saving}
-            className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
-          >
-            {saving ? <Loader2 size={12} className="animate-spin" /> : null}
-            {saving ? 'Saving…' : 'Save API key'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => save(apiKeyInput.trim())}
+              disabled={!apiKeyInput.trim() || saving}
+              className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
+            >
+              {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+              {saving ? 'Saving…' : 'Save API key'}
+            </button>
+            {configured && (
+              <button
+                type="button"
+                onClick={() => save('')}
+                disabled={saving}
+                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+                aria-label={`Clear ${item.label}`}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </>
       )}
 
@@ -458,6 +482,29 @@ export function HostOpenAIKeySection() {
       )}
     </div>
   );
+}
+
+export function PluginApiKeysSection() {
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+      <div>
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Key size={14} /> Plugin API keys
+        </h4>
+        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+          Host keys used by plugin features that call provider APIs directly.
+        </p>
+      </div>
+
+      {PLUGIN_API_KEYS.map((item) => (
+        <PluginApiKeyRow key={item.id} item={item} />
+      ))}
+    </div>
+  );
+}
+
+export function HostOpenAIKeySection() {
+  return <PluginApiKeysSection />;
 }
 
 function AddUserModal({ callerRole, onClose, onCreated }) {

@@ -15,7 +15,7 @@ vi.mock('../utils/connection.js', () => ({
   getAuthHeaders: vi.fn(() => ({})),
 }));
 
-import AccountSection, { HostOpenAIKeySection, roleOptionsFor } from './AccountSection.jsx';
+import AccountSection, { PluginApiKeysSection, roleOptionsFor } from './AccountSection.jsx';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
 beforeEach(() => {
@@ -146,21 +146,49 @@ describe('AccountSection — Add user button visibility', () => {
   });
 });
 
-describe('HostOpenAIKeySection', () => {
+describe('PluginApiKeysSection', () => {
+  it('groups plugin API keys and describes what each provider powers', async () => {
+    mockFetchSequence([
+      jsonResponse({
+        apiKey: { configured: false, source: null, masked: null },
+        activeMethod: 'none',
+        oauth: { loggedIn: null },
+      }),
+      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
+    ]);
+
+    render(<PluginApiKeysSection />);
+
+    expect(screen.getByText('Plugin API keys')).toBeInTheDocument();
+    expect(await screen.findByText('Gemini API key')).toBeInTheDocument();
+    expect(screen.getByText('Used for voice transcription and wiki RAG.')).toBeInTheDocument();
+    expect(screen.getByText('OpenAI API key')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Plugin use: voice transcription only. Also used for generated session titles.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('saves the host OpenAI API key through PATCH /api/config', async () => {
     const fetchMock = mockFetchSequence([
+      jsonResponse({
+        apiKey: { configured: false, source: null, masked: null },
+        activeMethod: 'none',
+        oauth: { loggedIn: null },
+      }),
       jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
       jsonResponse({ ok: true, updated: { openaiApiKey: '••••••••' } }),
     ]);
 
-    render(<HostOpenAIKeySection />);
+    render(<PluginApiKeysSection />);
 
-    expect(await screen.findByText(/not configured/i)).toBeInTheDocument();
+    expect(await screen.findByText('OpenAI API key')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('OpenAI API key'), {
       target: { value: ' sk-test-openai ' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /save api key/i }));
+    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[1]);
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
@@ -168,6 +196,38 @@ describe('HostOpenAIKeySection', () => {
         expect.objectContaining({
           method: 'PATCH',
           body: JSON.stringify({ openaiApiKey: 'sk-test-openai' }),
+        }),
+      ),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved');
+  });
+
+  it('saves the host Gemini API key through the Gemini auth endpoint', async () => {
+    const fetchMock = mockFetchSequence([
+      jsonResponse({
+        apiKey: { configured: false, source: null, masked: null },
+        activeMethod: 'none',
+        oauth: { loggedIn: null },
+      }),
+      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
+      jsonResponse({ ok: true, configured: true, masked: '••••••••test' }),
+    ]);
+
+    render(<PluginApiKeysSection />);
+
+    expect(await screen.findByText('Gemini API key')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Gemini API key'), {
+      target: { value: ' AIza-test ' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[0]);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/config/gemini-auth/api-key',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ apiKey: 'AIza-test' }),
         }),
       ),
     );

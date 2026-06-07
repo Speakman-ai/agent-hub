@@ -177,6 +177,23 @@ describe('api updateProject — PATCH parity with web client', () => {
   });
 });
 
+describe('api plugin key helpers', () => {
+  it('setGeminiApiKey saves through the host Gemini auth endpoint', async () => {
+    await api.setGeminiApiKey('AIza-test');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/config/gemini-auth/api-key');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ apiKey: 'AIza-test' });
+  });
+
+  it('logoutGemini clears the host Gemini auth endpoint', async () => {
+    await api.logoutGemini();
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/config/gemini-auth');
+    expect(init.method).toBe('DELETE');
+  });
+});
+
 describe('api fetchJSON — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
     await api.getThreads('agent-hub');

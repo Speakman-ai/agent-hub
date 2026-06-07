@@ -269,7 +269,33 @@ function OrganizationsSection() {
   );
 }
 
-function AccountSection() {
+const PLUGIN_API_KEYS = [
+  {
+    id: 'gemini',
+    label: 'Gemini API key',
+    placeholder: 'AIza...',
+    description: 'Used for voice transcription and wiki RAG.',
+    load: () => api.getGeminiAuth(),
+    loadConfigured: (body) => !!body?.apiKey?.configured,
+    save: (value) => api.setGeminiApiKey(value),
+    clear: () => api.logoutGemini(),
+    savedConfigured: (body) => !!body?.configured,
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI API key',
+    placeholder: 'sk-...',
+    description:
+      'Plugin use: voice transcription only. Also used for generated session titles.',
+    load: () => api.getConfig(),
+    loadConfigured: (body) => !!body.openaiApiKeySet || !!body.openaiApiKey,
+    save: (value) => api.updateConfig({ openaiApiKey: value }),
+    clear: () => api.updateConfig({ openaiApiKey: '' }),
+    savedConfigured: (body) => !!body?.updated?.openaiApiKey,
+  },
+];
+
+function PluginApiKeyField({ item }) {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -281,8 +307,8 @@ function AccountSection() {
     setLoading(true);
     setStatus(null);
     try {
-      const body = await api.getConfig();
-      setConfigured(!!body.openaiApiKeySet || !!body.openaiApiKey);
+      const body = await item.load();
+      setConfigured(item.loadConfigured(body));
     } catch (err) {
       setStatus({ type: 'error', message: err.message || String(err) });
     } finally {
@@ -294,12 +320,13 @@ function AccountSection() {
     load();
   }, []);
 
-  const saveOpenAIKey = async (value) => {
+  const saveKey = async (value) => {
     setSaving(true);
     setStatus(null);
     try {
-      const body = await api.updateConfig({ openaiApiKey: value.trim() });
-      const nextConfigured = !!body?.updated?.openaiApiKey;
+      const trimmed = value.trim();
+      const body = trimmed ? await item.save(trimmed) : await item.clear();
+      const nextConfigured = item.savedConfigured(body);
       setConfigured(nextConfigured);
       setApiKey('');
       setStatus({ type: 'success', message: nextConfigured ? 'Saved' : 'Cleared' });
@@ -311,6 +338,85 @@ function AccountSection() {
   };
 
   return (
+    <View style={styles.pluginKeyCard}>
+      <View style={styles.pluginKeyHeaderRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.pluginKeyTitle}>{item.label}</Text>
+          <Text style={styles.sectionDesc}>{item.description}</Text>
+        </View>
+        {!loading && (
+          <Text style={[styles.accountStatusText, { color: configured ? colors.emerald400 : colors.gray500 }]}>
+            {configured ? 'Configured' : 'Not configured'}
+          </Text>
+        )}
+      </View>
+
+      {loading ? (
+        <ActivityIndicator color={colors.indigo500} style={{ marginTop: 12 }} />
+      ) : (
+        <>
+          <Text style={[styles.inputLabel, { marginTop: 12 }]}>{item.label}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TextInput
+              style={[styles.textInput, { flex: 1 }]}
+              value={apiKey}
+              onChangeText={(value) => {
+                setApiKey(value);
+                setStatus(null);
+              }}
+              placeholder={item.placeholder}
+              placeholderTextColor={colors.gray600}
+              secureTextEntry={!showApiKey}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              onPress={() => setShowApiKey((value) => !value)}
+              style={{ paddingHorizontal: 8, paddingVertical: 10 }}
+            >
+              <Text style={{ color: colors.gray400, fontSize: 13 }}>
+                {showApiKey ? 'Hide' : 'Show'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.accountActionRow}>
+            <TouchableOpacity
+              style={[styles.saveBtn, (!apiKey.trim() || saving) && { opacity: 0.4 }]}
+              onPress={() => saveKey(apiKey)}
+              disabled={!apiKey.trim() || saving}
+            >
+              <Text style={styles.saveBtnText}>{saving ? 'Saving...' : 'Save API Key'}</Text>
+            </TouchableOpacity>
+            {configured && (
+              <TouchableOpacity
+                style={[styles.accountDangerBtn, saving && { opacity: 0.4 }]}
+                onPress={() => saveKey('')}
+                disabled={saving}
+              >
+                <Text style={styles.accountDangerBtnText}>Clear</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </>
+      )}
+
+      {status && (
+        <Text
+          style={[
+            styles.accountStatusNote,
+            { color: status.type === 'success' ? colors.emerald400 : colors.red400 },
+          ]}
+        >
+          {status.message}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function AccountSection() {
+  return (
     <View>
       <Text style={styles.sectionTitle}>Account</Text>
       <Text style={styles.sectionDesc}>
@@ -318,83 +424,14 @@ function AccountSection() {
       </Text>
 
       <View style={styles.accountCard}>
-        <Text style={styles.accountCardTitle}>OpenAI API key</Text>
+        <Text style={styles.accountCardTitle}>Plugin API keys</Text>
         <Text style={styles.sectionDesc}>
-          Used for voice transcription and generated session titles.
+          Host keys used by plugin features that call provider APIs directly.
         </Text>
 
-        {loading ? (
-          <ActivityIndicator color={colors.indigo500} style={{ marginTop: 12 }} />
-        ) : (
-          <>
-            <View style={styles.accountStatusRow}>
-              <Text style={styles.accountMutedText}>Status</Text>
-              <Text
-                style={[
-                  styles.accountStatusText,
-                  { color: configured ? colors.emerald400 : colors.gray500 },
-                ]}
-              >
-                {configured ? 'Configured' : 'Not configured'}
-              </Text>
-            </View>
-
-            <Text style={[styles.inputLabel, { marginTop: 12 }]}>OpenAI API key</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TextInput
-                style={[styles.textInput, { flex: 1 }]}
-                value={apiKey}
-                onChangeText={(value) => {
-                  setApiKey(value);
-                  setStatus(null);
-                }}
-                placeholder="sk-..."
-                placeholderTextColor={colors.gray600}
-                secureTextEntry={!showApiKey}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                onPress={() => setShowApiKey((value) => !value)}
-                style={{ paddingHorizontal: 8, paddingVertical: 10 }}
-              >
-                <Text style={{ color: colors.gray400, fontSize: 13 }}>
-                  {showApiKey ? 'Hide' : 'Show'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.accountActionRow}>
-              <TouchableOpacity
-                style={[styles.saveBtn, (!apiKey.trim() || saving) && { opacity: 0.4 }]}
-                onPress={() => saveOpenAIKey(apiKey)}
-                disabled={!apiKey.trim() || saving}
-              >
-                <Text style={styles.saveBtnText}>{saving ? 'Saving...' : 'Save API Key'}</Text>
-              </TouchableOpacity>
-              {configured && (
-                <TouchableOpacity
-                  style={[styles.accountDangerBtn, saving && { opacity: 0.4 }]}
-                  onPress={() => saveOpenAIKey('')}
-                  disabled={saving}
-                >
-                  <Text style={styles.accountDangerBtnText}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </>
-        )}
-
-        {status && (
-          <Text
-            style={[
-              styles.accountStatusNote,
-              { color: status.type === 'success' ? colors.emerald400 : colors.red400 },
-            ]}
-          >
-            {status.message}
-          </Text>
-        )}
+        {PLUGIN_API_KEYS.map((item) => (
+          <PluginApiKeyField key={item.id} item={item} />
+        ))}
       </View>
     </View>
   );
@@ -2860,6 +2897,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.white,
     marginBottom: 8,
+  },
+  pluginKeyCard: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+  },
+  pluginKeyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  pluginKeyTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.gray200,
+    marginBottom: 4,
   },
   accountStatusRow: {
     flexDirection: 'row',
