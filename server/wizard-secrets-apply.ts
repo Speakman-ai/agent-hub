@@ -20,6 +20,27 @@ export type WizardSecretsApplyResult =
   | { ok: true; secretsImported: number }
   | { ok: false; statusCode: number; error: string };
 
+export function validateWizardSecrets(
+  secrets: WizardApplySecrets | undefined,
+): WizardSecretsApplyResult {
+  if (!secrets || typeof secrets.env !== 'string') {
+    return { ok: true, secretsImported: 0 };
+  }
+  const rawMode = secrets.mode;
+  if (rawMode !== undefined && rawMode !== 'merge' && rawMode !== 'replace') {
+    return { ok: false, statusCode: 400, error: 'secrets.mode must be "merge" or "replace"' };
+  }
+  try {
+    const parsed = parseDotEnv(secrets.env);
+    return { ok: true, secretsImported: parsed.length };
+  } catch (err) {
+    if (err instanceof PreviewSecretValidationError) {
+      return { ok: false, statusCode: err.statusCode, error: err.message };
+    }
+    throw err;
+  }
+}
+
 export function applyWizardSecrets(
   projectId: string,
   secrets: WizardApplySecrets | undefined,

@@ -103,6 +103,10 @@ registerPath({
 const PreviewSetupComposeBootstrapRequest = registerComponent(
   'PreviewSetupComposeBootstrapRequest',
   z.object({
+    session_id: z.string().optional().openapi({
+      description:
+        'Optional setup session id. When supplied, the compose file is written in that session worktree instead of the primary project checkout.',
+    }),
     file: z
       .enum(['docker-compose.yml', 'compose.yml', 'docker-compose.yaml', 'compose.yaml'])
       .optional(),
@@ -150,6 +154,10 @@ const PreviewSetupApplyRequest = registerComponent(
   'PreviewSetupApplyRequest',
   z
     .object({
+      session_id: z.string().optional().openapi({
+        description:
+          'Optional setup session id. When supplied, setup-apply writes and commits `.agent-hub/preview.json` in that session worktree so Finalize controls can run tests, review, and push the setup branch.',
+      }),
       enabled: z.boolean().optional(),
       preview: z.unknown().optional(),
       secrets: WizardSecrets.optional(),
@@ -177,6 +185,10 @@ registerPath({
         z.object({
           ok: z.literal(true),
           secretsImported: z.number().int(),
+          file: z.string().optional(),
+          commit_sha: z.string().optional(),
+          branch: z.string().optional(),
+          session_id: z.string().optional(),
         }),
       ),
     },

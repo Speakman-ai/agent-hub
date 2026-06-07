@@ -3687,6 +3687,9 @@ components:
     PreviewSetupComposeBootstrapRequest:
       type: object
       properties:
+        session_id:
+          type: string
+          description: Optional setup session id. When supplied, the compose file is written in that session worktree instead of the primary project checkout.
         file:
           type: string
           enum:
@@ -3703,6 +3706,9 @@ components:
     PreviewSetupApplyRequest:
       type: object
       properties:
+        session_id:
+          type: string
+          description: Optional setup session id. When supplied, setup-apply writes and commits `.agent-hub/preview.json` in that session worktree so Finalize controls can run tests, review, and push the setup branch.
         enabled:
           type: boolean
         preview:
@@ -12067,6 +12073,14 @@ paths:
                       - true
                   secretsImported:
                     type: integer
+                  file:
+                    type: string
+                  commit_sha:
+                    type: string
+                  branch:
+                    type: string
+                  session_id:
+                    type: string
                 required:
                   - ok
                   - secretsImported

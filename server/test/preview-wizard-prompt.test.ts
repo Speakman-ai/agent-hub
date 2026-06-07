@@ -42,6 +42,7 @@ describe('preview-wizard kickoff prompt', () => {
     '/srv/workspaces/demo',
     '/srv/skill-scripts/preview-setup',
     bootstrapDraft,
+    'session-preview-setup-1',
   );
 
   it('declares guided walkthrough and bound values', () => {
@@ -49,6 +50,7 @@ describe('preview-wizard kickoff prompt', () => {
     expect(prompt).toMatch(/Bound values/);
     expect(prompt).toMatch(/PROJECT_ID.*`demo-project-id`/);
     expect(prompt).toMatch(/PROJECT_CWD.*`\/srv\/workspaces\/demo`/);
+    expect(prompt).toMatch(/YOUR SESSION_ID.*`session-preview-setup-1`/);
   });
 
   it('documents monorepo and README steps', () => {
@@ -69,6 +71,7 @@ describe('preview-wizard kickoff prompt', () => {
   it('embeds draft JSON and setup-apply compose shape', () => {
     expect(prompt).toMatch(/Server-provided draft/);
     expect(prompt).toMatch(/setup-apply/);
+    expect(prompt).toMatch(/session_id: "<YOUR SESSION_ID above>"/);
     expect(prompt).toMatch(/"phase":\s*"bootstrap_compose"/);
     expect(prompt).toMatch(/preview\.compose\.healthPath/);
   });

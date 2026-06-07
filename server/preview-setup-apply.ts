@@ -15,6 +15,7 @@ export type { WizardApplySecrets } from './wizard-secrets-apply.js';
 export { applyWizardSecrets } from './wizard-secrets-apply.js';
 
 export interface PreviewSetupApplyBody {
+  session_id?: string;
   enabled?: boolean;
   preview?: Record<string, unknown>;
   healthPath?: string;
