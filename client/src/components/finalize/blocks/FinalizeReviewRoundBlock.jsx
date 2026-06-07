@@ -28,6 +28,10 @@ function VerdictPill({ verdict }) {
   );
 }
 
+function verdictLabel(verdict) {
+  return verdict === 'approved' ? 'approved' : 'changes requested';
+}
+
 function formatAnchor(thread) {
   const start = thread.line_start ?? thread.lineStart;
   const end = thread.line_end ?? thread.lineEnd;
@@ -66,9 +70,16 @@ export default function FinalizeReviewRoundBlock({ message }) {
   };
 
   const roundLabel = meta.round > 0 ? `Review · round ${meta.round}` : 'Review';
+  const accessibleLabel = meta.verdict
+    ? `${roundLabel} · ${verdictLabel(meta.verdict)}`
+    : roundLabel;
 
   return (
-    <div className="flex justify-center mb-4" data-testid="finalize-review-round-block">
+    <div
+      className="flex justify-center mb-4"
+      data-testid="finalize-review-round-block"
+      aria-label={accessibleLabel}
+    >
       <div className="max-w-[95%] sm:max-w-[90%] w-full bg-slate-900/50 border border-slate-700/60 rounded-xl px-4 py-3">
         <header className="flex items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-2 flex-wrap">

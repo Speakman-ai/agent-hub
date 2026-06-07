@@ -38,4 +38,27 @@ describe('ChatMessage finalize timeline routing', () => {
     );
     expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
   });
+
+  it('routes approved review rounds without exposing stale changes-requested content', () => {
+    render(
+      <ChatMessage
+        message={{
+          role: 'system',
+          metadata: JSON.stringify({
+            kind: 'finalize_review_round',
+            runId: 'run-1',
+            round: 1,
+            verdict: 'approved',
+            threads: [],
+          }),
+          content: 'Review · changes requested',
+        }}
+      />,
+    );
+
+    const block = screen.getByTestId('finalize-review-round-block');
+    expect(block).toHaveAttribute('aria-label', 'Review · round 1 · approved');
+    expect(block).toHaveTextContent('Approved');
+    expect(block).not.toHaveTextContent('Changes requested');
+  });
 });
