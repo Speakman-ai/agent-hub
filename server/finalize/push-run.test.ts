@@ -52,9 +52,11 @@ function makeDeps() {
     deps: {
       stmts: {
         updateFinalizeRunPhase: { run: vi.fn() },
+        claimFinalizeRunPush: { run: vi.fn(() => ({ changes: 1 })) },
         failFinalizeRun: { run: vi.fn() },
         markFinalizeRunPushed: { run: vi.fn() },
         updateFinalizeRunPrUrl: { run: vi.fn() },
+        getFinalizeRun: { get: vi.fn(() => ({ ...baseRun(), status: 'pushing' })) },
         // Timeline-message writes (terminal block) need these.
         addMessage,
         touchSession: { run: vi.fn() },
@@ -123,6 +125,64 @@ describe('runFinalizePush force', () => {
     if (!outcome.ok) {
       expect(outcome.error).toBe('not_ready_to_push');
     }
+  });
+
+  it('claims ready_to_push before GitHub work so duplicate push callers cannot create duplicate PRs', async () => {
+    const { deps } = makeDeps();
+    let releasePush: () => void = () => {};
+    let markStarted: () => void = () => {};
+    const firstPushStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const pushAndCreatePr = vi.fn(
+      () =>
+        new Promise<{ prUrl: string }>((resolvePush) => {
+          markStarted();
+          releasePush = () => resolvePush({ prUrl: 'https://github.com/o/r/pull/10' });
+        }),
+    );
+    (deps.stmts.claimFinalizeRunPush.run as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce({ changes: 1 })
+      .mockReturnValueOnce({ changes: 0 });
+    (deps.stmts.getFinalizeRun.get as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...baseRun(),
+      status: 'pushing',
+    });
+
+    const first = runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    await firstPushStarted;
+
+    const second = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error).toBe('push_in_flight');
+    }
+    expect(pushAndCreatePr).toHaveBeenCalledOnce();
+    releasePush();
+    await expect(first).resolves.toMatchObject({
+      ok: true,
+      prUrl: 'https://github.com/o/r/pull/10',
+    });
   });
 });
 

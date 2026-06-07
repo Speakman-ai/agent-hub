@@ -26,11 +26,7 @@ import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import { createPushAndCreatePr } from './push-and-create-pr.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
-import {
-  readFinalizeLoopRound,
-  writeFinalizeRunTerminalTimeline,
-  type TimelineMessageDeps,
-} from './timeline-message.js';
+import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timeline-message.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -360,6 +356,23 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
       };
     }
     validatedHeadSha = gate.validatedHeadSha;
+  }
+
+  if (run.status === 'ready_to_push') {
+    const claim = deps.stmts.claimFinalizeRunPush.run(run.id);
+    if (claim.changes === 0) {
+      const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;
+      const status = fresh?.status ?? 'unknown';
+      return {
+        ok: false,
+        httpStatus: 409,
+        error: status === 'pushed' ? 'already_pushed' : 'push_in_flight',
+        message:
+          status === 'pushed'
+            ? 'This run has already been pushed.'
+            : `Run is already being pushed (${status}).`,
+      };
+    }
   }
 
   const pushBranch = await resolvePushBranch(

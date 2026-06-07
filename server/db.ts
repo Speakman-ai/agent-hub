@@ -3503,6 +3503,13 @@ function initDb(dataDir: string): void {
          ) fr
         WHERE fr.rn = 1`,
     ),
+    claimFinalizeRunPush: db.prepare(
+      `UPDATE finalize_runs
+          SET phase = 'push',
+              status = 'pushing'
+        WHERE id = ?
+          AND status = 'ready_to_push'`,
+    ),
     updateFinalizeRunPhase: db.prepare(
       `UPDATE finalize_runs
           SET phase = ?,

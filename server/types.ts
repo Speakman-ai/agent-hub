@@ -1516,6 +1516,13 @@ export interface Stmts {
    * the v0 surface had. Bound by `(boardId)`.
    */
   listLatestFinalizeRunsForBoard: Stmt;
+  /**
+   * Atomically claim a ready-to-push run for the GitHub push phase. Returns
+   * changes=1 for the single caller that won the claim and changes=0 for
+   * duplicate clicks / automation races that arrived after another caller
+   * moved the row out of `ready_to_push`.
+   */
+  claimFinalizeRunPush: Stmt;
   updateFinalizeRunPhase: Stmt;
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;
