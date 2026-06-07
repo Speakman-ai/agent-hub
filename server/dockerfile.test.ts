@@ -39,4 +39,14 @@ describe('server/Dockerfile', () => {
       );
     }
   });
+
+  it('installs ripgrep in the runtime stage for agent searches', () => {
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+    expect(runtimeStage, 'expected runtime stage to install `ripgrep`').toMatch(
+      /(^|\s)ripgrep(\s|$|\\)/m,
+    );
+  });
 });

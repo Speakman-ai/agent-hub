@@ -64,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     bash \
     jq \
+    ripgrep \
     tini \
     gnupg \
     python3 \
