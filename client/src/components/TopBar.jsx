@@ -92,6 +92,14 @@ export default function TopBar({
     engineModels.find((m) => m.id === sessionModel) ||
     engineModels[0] ||
     modelDisplay(sessionModel || 'unknown-model');
+  const copyActiveSessionId = async () => {
+    if (!activeSessionId) return;
+    const ok = await copyToClipboard(activeSessionId);
+    showToast?.(
+      ok ? `Copied session id ${activeSessionId}` : 'Could not copy session id',
+      ok ? 'success' : 'error',
+    );
+  };
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -153,7 +161,22 @@ export default function TopBar({
               />
             )}
             <div className="min-w-0">
-              <h2 className="font-semibold truncate">{agent.name}</h2>
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="font-semibold truncate">{agent.name}</h2>
+                {activeSessionId && (
+                  <button
+                    type="button"
+                    onClick={copyActiveSessionId}
+                    className="inline-flex flex-shrink min-w-0 max-w-[7rem] items-center rounded-md border border-gray-700 bg-gray-800 px-2 py-0.5 font-mono text-[11px] text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-white sm:max-w-[18rem]"
+                    title={`Copy session id: ${activeSessionId}`}
+                    aria-label={`Copy session id ${activeSessionId}`}
+                    data-testid="topbar-session-id"
+                  >
+                    <span className="mr-1 text-gray-500">Session</span>
+                    <span className="truncate">{activeSessionId}</span>
+                  </button>
+                )}
+              </div>
               <p className="text-xs text-gray-500 font-mono truncate hidden sm:block">
                 {agent.cwd}
               </p>

@@ -81,6 +81,12 @@ export default function TopBar({ projectId, agentId } = {}) {
     }
   };
 
+  const handleCopySessionId = async () => {
+    if (!activeSessionId) return;
+    const copied = await copyToClipboard(activeSessionId);
+    Alert.alert(copied ? 'Session id copied' : 'Session id', activeSessionId);
+  };
+
   const engineOptions = engineOptionsFromConfig(modelConfig);
   const currentEngine = engineOptions.find((e) => e.id === sessionEngine) || engineOptions[0];
   const engineModels = modelsForEngine(sessionEngine, modelConfig);
@@ -112,9 +118,26 @@ export default function TopBar({ projectId, agentId } = {}) {
                 testID="topbar-session-state-icon"
               />
             ) : null}
-            <Text style={styles.agentName} numberOfLines={1}>
-              {activeAgent.name}
-            </Text>
+            <View style={styles.agentText}>
+              <Text style={styles.agentName} numberOfLines={1}>
+                {activeAgent.name}
+              </Text>
+              {activeSessionId ? (
+                <TouchableOpacity
+                  onPress={handleCopySessionId}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Copy session id ${activeSessionId}`}
+                  style={styles.sessionIdBadge}
+                >
+                  <Text style={styles.sessionIdLabel} numberOfLines={1}>
+                    Session
+                  </Text>
+                  <Text style={styles.sessionIdText} numberOfLines={1}>
+                    {activeSessionId}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
           </View>
         )}
       </View>
@@ -385,7 +408,36 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: colors.white,
+  },
+  agentText: {
     flex: 1,
+    minWidth: 0,
+  },
+  sessionIdBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: '100%',
+    marginTop: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  sessionIdLabel: {
+    flexShrink: 0,
+    marginRight: 4,
+    fontSize: 10,
+    color: colors.gray500,
+  },
+  sessionIdText: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 10,
+    color: colors.gray300,
+    fontFamily: 'monospace',
   },
   right: {
     flexDirection: 'row',

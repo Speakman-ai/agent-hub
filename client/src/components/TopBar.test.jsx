@@ -52,6 +52,14 @@ describe('<TopBar /> engine picker', () => {
     );
   });
 
+  it('renders the active session id in the header', () => {
+    renderTopBar({ activeSessionId: 'session-debug-123' });
+    const sessionId = screen.getByTestId('topbar-session-id');
+    expect(sessionId.textContent).toContain('Session');
+    expect(sessionId.textContent).toContain('session-debug-123');
+    expect(sessionId).toHaveAttribute('title', 'Copy session id: session-debug-123');
+  });
+
   it('hides the session lifecycle icon when no session is active', () => {
     renderTopBar({ activeSessionId: null });
     expect(screen.queryByTestId('topbar-session-state-icon')).toBeNull();
