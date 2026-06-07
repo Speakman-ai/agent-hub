@@ -86,6 +86,7 @@ import {
 } from '../session-checkpoint-rewind.js';
 import { maybeAutoStartFinalizeForSession } from '../finalize/automation-runner.js';
 import { shouldAutoStartFinalize } from '../finalize/automation.js';
+import { computeSessionState } from '../session-state.js';
 import { enrichSessionWithAgents } from '../session-agents.js';
 import { getDesign } from '../designs-store.js';
 import { getActiveOrgId } from '../orgs.js';
@@ -124,6 +125,14 @@ function parseBody<T extends z.ZodTypeAny>(
     return undefined;
   }
   return result.data;
+}
+
+function isSessionWaitingForUserInput(stmts: RouteDeps['stmts'], session: SessionRow): boolean {
+  try {
+    return computeSessionState(stmts, session.id) === 'waiting_for_user_input';
+  } catch {
+    return session.state === 'waiting_for_user_input';
+  }
 }
 
 function closeBrowserBestEffort(sessionId: string): void {
@@ -895,7 +904,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     if (parsed.finalize_automation !== undefined) {
       stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
-      if (shouldAutoStartFinalize(parsed.finalize_automation)) {
+      const updatedSession = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (
+        updatedSession &&
+        shouldAutoStartFinalize(parsed.finalize_automation) &&
+        isSessionWaitingForUserInput(stmts, updatedSession)
+      ) {
         void maybeAutoStartFinalizeForSession(sessionId).catch((err: unknown) => {
           console.warn(
             `[sessions] finalize automation trigger failed for session=${sessionId}: ${

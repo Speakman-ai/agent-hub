@@ -621,6 +621,61 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
     existsSyncMock.mockImplementation(() => false);
   });
 
+  it('auto-starts Finalize at turn end when automation was selected during the turn', async () => {
+    const existsSyncMock = existsSync as unknown as ReturnType<typeof vi.fn>;
+    existsSyncMock.mockImplementation((filePath: string) =>
+      filePath.endsWith('/.agent-hub/ci.yaml'),
+    );
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: {
+        get: vi.fn(() => ({
+          name: 'Active work session',
+          code_changed_at: null,
+          finalize_automation: 'merge',
+        })),
+      },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+    const broadcast = vi.fn();
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/deferred\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-deferred', 'agent-1', project, agent, '/worktree', '');
+
+    expect(broadcast.mock.calls.some((c) => c[0]?.type === 'changes_ready')).toBe(true);
+    await vi.waitFor(() => {
+      expect(maybeAutoStartFinalizeForSession).toHaveBeenCalledWith('sess-deferred');
+    });
+
+    existsSyncMock.mockImplementation(() => false);
+  });
+
   it('card-assignment session auto-triggers skill ship (no server push)', async () => {
     const execCalls: string[] = [];
     const mockBroadcast = vi.fn();

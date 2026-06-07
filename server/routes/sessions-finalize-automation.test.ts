@@ -37,13 +37,13 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     updated_at: '2026-06-07 17:00:00',
     deleted_at: null,
     finalize_automation: 'manual',
-    state: 'awaiting_input',
+    state: 'waiting_for_user_input',
     ...overrides,
   };
 }
 
-function makeApp() {
-  const session = makeSession();
+function makeApp(options: { session?: Partial<SessionRow>; activeTaskStatus?: string } = {}) {
+  const session = makeSession(options.session);
   const stmts = {
     updateSessionFinalizeAutomation: {
       run: vi.fn((level: string) => {
@@ -54,7 +54,11 @@ function makeApp() {
     getSessionAgents: { all: vi.fn(() => []) },
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
     getLatestFinalizeRunForSession: { get: vi.fn(() => undefined) },
-    getActiveTask: { get: vi.fn(() => undefined) },
+    getActiveTask: {
+      get: vi.fn(() =>
+        options.activeTaskStatus ? { status: options.activeTaskStatus } : undefined,
+      ),
+    },
     getKanbanColumn: { get: vi.fn(() => undefined) },
     updateSessionState: { run: vi.fn() },
   };
@@ -84,7 +88,7 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
   });
 
   it.each(['review', 'push', 'merge'] as const)(
-    'starts Finalize automation when selecting %s on an idle session',
+    'starts Finalize automation when selecting %s on a session waiting for user input',
     async (level) => {
       const { app } = makeApp();
 
@@ -97,6 +101,21 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
       expect(mocks.maybeAutoStartFinalizeForSession).toHaveBeenCalledWith('sess-1');
     },
   );
+
+  it('does not start Finalize automation when selecting Send It during an active turn', async () => {
+    const { app } = makeApp({
+      session: { state: 'working' },
+      activeTaskStatus: 'running',
+    });
+
+    const res = await request(app)
+      .patch('/api/sessions/sess-1')
+      .send({ finalize_automation: 'merge' })
+      .expect(200);
+
+    expect(res.body.finalize_automation).toBe('merge');
+    expect(mocks.maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
+  });
 
   it('does not start Finalize automation when selecting manual Build mode', async () => {
     const { app } = makeApp();
