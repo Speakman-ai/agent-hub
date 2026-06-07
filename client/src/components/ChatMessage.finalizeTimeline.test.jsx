@@ -39,6 +39,31 @@ describe('ChatMessage finalize timeline routing', () => {
     expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
   });
 
+  it('renders a raw reviewer verdict assistant message as a review round block', () => {
+    render(
+      <ChatMessage
+        message={{
+          role: 'assistant',
+          content: JSON.stringify({
+            verdict: 'changes_requested',
+            threads: [
+              {
+                file_path: 'client/src/components/AccountSection.jsx',
+                line_start: 352,
+                line_end: 353,
+                body: '**[4/10]** Fix the settings copy.',
+              },
+            ],
+          }),
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.getByText('**[4/10]** Fix the settings copy.')).toBeInTheDocument();
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
   it('routes approved review rounds without exposing stale changes-requested content', () => {
     render(
       <ChatMessage

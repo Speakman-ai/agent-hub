@@ -296,6 +296,31 @@ describe('detectReviewVerdictBlock — bare tail fallback (no agenthub tags)', (
     expect(result.task).toEqual({ verdict: 'approved', threads: [] });
   });
 
+  it('parses raw trailing JSON with nested thread objects', () => {
+    const text = `{
+  "verdict": "changes_requested",
+  "threads": [
+    {
+      "file_path": "client/src/components/AccountSection.jsx",
+      "line_start": 352,
+      "line_end": 353,
+      "body": "**[4/10]** OpenAI copy regressed generated title wording."
+    },
+    {
+      "file_path": "mobile/src/screens/SettingsScreen.js",
+      "line_start": 286,
+      "line_end": 287,
+      "body": "**[4/10]** Same issue on mobile."
+    }
+  ]
+}`;
+    const result = detectReviewVerdictBlock(text);
+    expect(result.present).toBe(true);
+    expect(result.task?.verdict).toBe('changes_requested');
+    expect(result.task?.threads).toHaveLength(2);
+    expect(result.task?.threads[0]?.file_path).toBe('client/src/components/AccountSection.jsx');
+  });
+
   it('does not treat mid-message JSON as a verdict tail', () => {
     const text = `Earlier we saw {"verdict":"approved"} in the docs. Still working.`;
     expect(detectReviewVerdictBlock(text).present).toBe(false);
@@ -323,6 +348,13 @@ describe('stripReviewVerdictBlock', () => {
 \`\`\`json
 {"verdict":"approved","threads":[]}
 \`\`\``;
+    expect(stripReviewVerdictBlock(text)).toBe('Review prose.');
+  });
+
+  it('strips a raw trailing JSON verdict with nested thread objects', () => {
+    const text = `Review prose.
+
+{"verdict":"changes_requested","threads":[{"file_path":"client/App.jsx","line_start":1,"line_end":2,"body":"Fix this."}]}`;
     expect(stripReviewVerdictBlock(text)).toBe('Review prose.');
   });
 

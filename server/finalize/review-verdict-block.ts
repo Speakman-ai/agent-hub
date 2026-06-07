@@ -179,16 +179,22 @@ function findBareReviewVerdictTail(text: string): { rawBody: string; startIndex:
     }
   }
 
-  const lastBrace = trimmed.lastIndexOf('{');
-  if (lastBrace < 0) return null;
-  const tailSlice = trimmed.slice(lastBrace);
-  const balanced = sliceFirstBalancedJson(tailSlice);
-  if (!balanced) return null;
-  const endPos = lastBrace + balanced.length;
-  if (trimmed.slice(endPos).trim() !== '') return null;
-  const normalized = normalizeControlCharsInsideStrings(balanced);
-  if (!hasVerdictField(normalized)) return null;
-  return { rawBody: balanced, startIndex: lastBrace };
+  for (
+    let brace = trimmed.lastIndexOf('{');
+    brace >= 0;
+    brace = trimmed.lastIndexOf('{', brace - 1)
+  ) {
+    const tailSlice = trimmed.slice(brace);
+    const balanced = sliceFirstBalancedJson(tailSlice);
+    if (!balanced) continue;
+    const endPos = brace + balanced.length;
+    if (trimmed.slice(endPos).trim() !== '') continue;
+    const normalized = normalizeControlCharsInsideStrings(balanced);
+    if (!hasVerdictField(normalized)) continue;
+    return { rawBody: balanced, startIndex: brace };
+  }
+
+  return null;
 }
 
 function hasVerdictField(jsonStr: string): boolean {

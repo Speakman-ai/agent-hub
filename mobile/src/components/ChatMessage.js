@@ -27,6 +27,7 @@ import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags.js';
+import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent.js';
 import HandoffCard from './HandoffCard';
 
 // Built once — overrides the Markdown library's default text/code rules so
@@ -359,6 +360,101 @@ const shipStyles = StyleSheet.create({
   },
 });
 
+function RawReviewVerdictCard({ verdict }) {
+  const approved = verdict.verdict === 'approved';
+  return (
+    <View style={reviewVerdictStyles.container}>
+      <View style={reviewVerdictStyles.card}>
+        <View style={reviewVerdictStyles.headerRow}>
+          <Ionicons
+            name={approved ? 'checkmark-circle-outline' : 'warning-outline'}
+            size={16}
+            color={approved ? colors.emerald400 : colors.amber400}
+          />
+          <Text
+            style={[
+              reviewVerdictStyles.headerText,
+              approved ? reviewVerdictStyles.approvedText : reviewVerdictStyles.changesText,
+            ]}
+          >
+            Review {approved ? 'approved' : 'changes requested'}
+          </Text>
+        </View>
+        {verdict.threads.length === 0 ? (
+          <Text style={reviewVerdictStyles.emptyText}>No findings on this pass.</Text>
+        ) : (
+          verdict.threads.map((thread, index) => (
+            <View
+              key={`${thread.file_path || 'file'}-${index}`}
+              style={reviewVerdictStyles.threadRow}
+            >
+              <Text style={reviewVerdictStyles.fileText}>
+                {thread.file_path || '(unknown file)'}
+                {thread.line_start ? `:${thread.line_start}` : ''}
+              </Text>
+              <Text style={reviewVerdictStyles.bodyText}>{thread.body || ''}</Text>
+            </View>
+          ))
+        )}
+      </View>
+    </View>
+  );
+}
+
+const reviewVerdictStyles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+  },
+  card: {
+    width: '95%',
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(51, 65, 85, 0.8)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  headerText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  approvedText: {
+    color: colors.emerald400,
+  },
+  changesText: {
+    color: colors.amber400,
+  },
+  emptyText: {
+    color: colors.gray500,
+    fontSize: 12,
+  },
+  threadRow: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(55, 65, 81, 0.6)',
+    paddingTop: 8,
+    marginTop: 8,
+  },
+  fileText: {
+    color: colors.gray500,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    marginBottom: 3,
+  },
+  bodyText: {
+    color: colors.gray300,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+});
+
 function SystemPrCreatedMessage({ message }) {
   const meta = parsePrCreatedMetadata(message.metadata);
   const handleOpenPr = useCallback(() => {
@@ -572,6 +668,11 @@ function ChatMessage({
     message.content.includes('agenthub:ask:answer')
   ) {
     return null;
+  }
+
+  const rawReviewVerdict = !isUser ? parseRawReviewVerdictContent(displayContent) : null;
+  if (rawReviewVerdict) {
+    return <RawReviewVerdictCard verdict={rawReviewVerdict} />;
   }
 
   return (

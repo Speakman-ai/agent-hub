@@ -121,3 +121,23 @@ export function parseFinalizeFixDispatchMetadata(metadataString) {
       typeof parsed.reviewerThreadCount === 'number' ? parsed.reviewerThreadCount : 0,
   };
 }
+
+export function parseRawReviewVerdictContent(content) {
+  if (typeof content !== 'string') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(content.trim());
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const verdict = parsed.verdict;
+  if (verdict !== 'approved' && verdict !== 'changes_requested') return null;
+  return {
+    kind: 'finalize_review_round',
+    runId: null,
+    round: 0,
+    verdict,
+    threads: Array.isArray(parsed.threads) ? parsed.threads : [],
+  };
+}

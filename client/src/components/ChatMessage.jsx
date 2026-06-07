@@ -16,6 +16,7 @@ import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage.js';
 import { stripAskAnswerBlocks } from '../utils/askAnswers.js';
 import {
   isFinalizeStepOutputMessage,
+  parseRawReviewVerdictContent,
   parseFinalizeTimelineKind,
 } from '../utils/finalizeTimeline.js';
 import FinalizeRunStartedBlock from './finalize/blocks/FinalizeRunStartedBlock.jsx';
@@ -451,6 +452,20 @@ function ChatMessage({
     message.content.includes('agenthub:ask:answer')
   ) {
     return null;
+  }
+
+  const rawReviewVerdict = !isUser ? parseRawReviewVerdictContent(displayContent) : null;
+  if (rawReviewVerdict) {
+    return (
+      <FinalizeReviewRoundBlock
+        message={{
+          ...message,
+          role: 'system',
+          metadata: JSON.stringify(rawReviewVerdict),
+          content: 'Review · changes requested',
+        }}
+      />
+    );
   }
 
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;

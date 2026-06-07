@@ -4,6 +4,7 @@ import {
   parseFinalizeReviewRoundMetadata,
   parseFinalizeTerminalMetadata,
   isFinalizeStepOutputMessage,
+  parseRawReviewVerdictContent,
 } from './finalizeTimeline.js';
 
 describe('finalizeTimeline utils', () => {
@@ -40,5 +41,24 @@ describe('finalizeTimeline utils', () => {
       true,
     );
     expect(parseFinalizeTimelineKind(JSON.stringify({ kind: 'pr_created' }))).toBeNull();
+  });
+
+  it('parses a raw reviewer verdict JSON message for legacy timeline rows', () => {
+    const meta = parseRawReviewVerdictContent(
+      JSON.stringify({
+        verdict: 'changes_requested',
+        threads: [{ file_path: 'client/App.jsx', line_start: 1, body: 'Fix this.' }],
+      }),
+    );
+
+    expect(meta).toMatchObject({
+      kind: 'finalize_review_round',
+      verdict: 'changes_requested',
+      threads: [{ file_path: 'client/App.jsx', line_start: 1, body: 'Fix this.' }],
+    });
+  });
+
+  it('ignores prose that merely mentions verdict JSON', () => {
+    expect(parseRawReviewVerdictContent('Earlier: {"verdict":"approved"}')).toBeNull();
   });
 });
