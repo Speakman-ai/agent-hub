@@ -1,8 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
-import config from '../config.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from '../per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from '../effective-model.js';
 import {
@@ -33,13 +32,10 @@ import type {
   AppConfig,
   MessageRow,
   SessionRow,
-  SessionAgentRow,
   BackgroundTaskRow,
   SessionEventRow,
   SessionProgressRow,
   CheckpointRow,
-  AgentLookup,
-  EnrichedAgent,
   KanbanCardRow,
   SkillInvocationRow,
   Project,
@@ -88,6 +84,8 @@ import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
 } from '../session-checkpoint-rewind.js';
+import { maybeAutoStartFinalizeForSession } from '../finalize/automation-runner.js';
+import { shouldAutoStartFinalize } from '../finalize/automation.js';
 import { enrichSessionWithAgents } from '../session-agents.js';
 import { getDesign } from '../designs-store.js';
 import { getActiveOrgId } from '../orgs.js';
@@ -888,16 +886,26 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.patch('/api/sessions/:sessionId', (req: Request, res: Response) => {
     const parsed = parseBody(PatchSessionRequestSchema, req, res);
     if (!parsed) return;
+    const sessionId = String(req.params.sessionId);
     if (parsed.name) {
-      stmts.updateSessionName.run(parsed.name, req.params.sessionId);
+      stmts.updateSessionName.run(parsed.name, sessionId);
     }
     if (parsed.max_turns !== undefined) {
-      stmts.updateSessionMaxTurns.run(parsed.max_turns, req.params.sessionId);
+      stmts.updateSessionMaxTurns.run(parsed.max_turns, sessionId);
     }
     if (parsed.finalize_automation !== undefined) {
-      stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, req.params.sessionId);
+      stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
+      if (shouldAutoStartFinalize(parsed.finalize_automation)) {
+        void maybeAutoStartFinalizeForSession(sessionId).catch((err: unknown) => {
+          console.warn(
+            `[sessions] finalize automation trigger failed for session=${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+      }
     }
-    const session = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    const session = stmts.getSession.get(sessionId) as SessionRow;
     const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
