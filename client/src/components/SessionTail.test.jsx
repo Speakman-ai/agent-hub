@@ -187,14 +187,14 @@ describe('eventsToBlocks — benign unknown stream events', () => {
   });
 });
 
-describe('SessionTail — reviewer verdict rendering', () => {
+describe('SessionTail reviewer verdict suppression', () => {
   const verdictJson = JSON.stringify({
     verdict: 'approved',
     threads: [],
   });
 
-  it('renders raw reviewer verdict assistant_text as a review block', () => {
-    render(
+  it('suppresses raw reviewer verdict assistant_text', () => {
+    const { container } = render(
       <SessionTail
         message={{
           id: 'm-review-events',
@@ -209,16 +209,13 @@ describe('SessionTail — reviewer verdict rendering', () => {
       />,
     );
 
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
-    expect(screen.getByTestId('finalize-review-verdict')).toHaveAttribute(
-      'data-verdict',
-      'approved',
-    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
     expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
   });
 
-  it('renders raw reviewer verdict live fallback content as a review block', () => {
-    render(
+  it('suppresses raw reviewer verdict live fallback content', () => {
+    const { container } = render(
       <SessionTail
         message={{
           id: 'm-review-streaming',
@@ -234,15 +231,16 @@ describe('SessionTail — reviewer verdict rendering', () => {
       />,
     );
 
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
     expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
   });
 
-  it('renders raw reviewer verdict legacy fallback content as a review block', () => {
-    render(
+  it('suppresses raw reviewer verdict stored fallback content', () => {
+    const { container } = render(
       <SessionTail
         message={{
-          id: 'm-review-legacy',
+          id: 'm-review-stored',
           role: 'assistant',
           content: verdictJson,
           engine: 'codex-cli',
@@ -255,7 +253,8 @@ describe('SessionTail — reviewer verdict rendering', () => {
       />,
     );
 
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
     expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
   });
 
@@ -284,7 +283,7 @@ describe('SessionTail — reviewer verdict rendering', () => {
     );
 
     expect(screen.getByText('No blocking findings remain after the fix.')).toBeInTheDocument();
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
     expect(screen.queryByText(/agenthub:review-verdict/)).not.toBeInTheDocument();
   });
 
@@ -314,17 +313,17 @@ describe('SessionTail — reviewer verdict rendering', () => {
     );
 
     expect(screen.getByText('No blocking findings remain after the fix.')).toBeInTheDocument();
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
     expect(screen.queryByText(/agenthub:review-verdict/)).not.toBeInTheDocument();
   });
 
-  it('preserves reviewer prose before trailing verdict JSON in legacy fallback content', () => {
+  it('preserves reviewer prose before trailing verdict JSON in stored fallback content', () => {
     const content = ['Review complete. This is ready to ship.', '', verdictJson].join('\n');
 
-    render(
+    const { container } = render(
       <SessionTail
         message={{
-          id: 'm-review-prose-legacy',
+          id: 'm-review-prose-stored',
           role: 'assistant',
           content,
           engine: 'codex-cli',
@@ -338,7 +337,83 @@ describe('SessionTail — reviewer verdict rendering', () => {
     );
 
     expect(screen.getByText('Review complete. This is ready to ship.')).toBeInTheDocument();
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Assistant')).toHaveLength(1);
+    expect(container.querySelectorAll('.rounded-bl-md')).toHaveLength(1);
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
+  it('suppresses raw approved reviewer verdicts with findings', () => {
+    const content = JSON.stringify({
+      verdict: 'approved',
+      threads: [
+        {
+          file_path: 'client/src/components/ChatMessage.jsx',
+          line_start: 461,
+          line_end: 464,
+          body: '**[2/10]** Non-blocking approval note.',
+        },
+      ],
+    });
+
+    const { container } = render(
+      <SessionTail
+        message={{
+          id: 'm-review-approved-note-stored',
+          role: 'assistant',
+          content,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
+    expect(screen.queryByText('**[2/10]** Non-blocking approval note.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
+    expect(container.querySelector('.rounded-bl-md')).toBeNull();
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
+  it('suppresses raw changes-requested reviewer verdicts with findings', () => {
+    const content = JSON.stringify({
+      verdict: 'changes_requested',
+      threads: [
+        {
+          file_path: 'client/src/components/ChatMessage.jsx',
+          line_start: 461,
+          line_end: 464,
+          body: '**[4/10]** Blocking requested-change note.',
+        },
+      ],
+    });
+
+    const { container } = render(
+      <SessionTail
+        message={{
+          id: 'm-review-changes-requested-note-stored',
+          role: 'assistant',
+          content,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('**[4/10]** Blocking requested-change note.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
+    expect(container.querySelector('.rounded-bl-md')).toBeNull();
     expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
   });
 });
@@ -417,7 +492,7 @@ describe('eventsToBlocks — progress_step handling', () => {
  *      raw).
  *   2. Crashed / cancelled sessions where the finalized assistant event
  *      never arrived, so only partials survive.
- *   3. Legacy persisted messages that pre-date the parser change.
+ *   3. Stored messages from before the parser change.
  *
  * `eventsToBlocks` routes the assistant text through
  * `stripAssistantControlBlocks`, so adding marker-stripping to the shared

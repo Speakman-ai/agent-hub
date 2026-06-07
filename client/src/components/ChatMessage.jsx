@@ -456,16 +456,7 @@ function ChatMessage({
 
   const rawReviewVerdict = !isUser ? parseRawReviewVerdictContent(displayContent) : null;
   if (rawReviewVerdict) {
-    return (
-      <FinalizeReviewRoundBlock
-        message={{
-          ...message,
-          role: 'system',
-          metadata: JSON.stringify(rawReviewVerdict),
-          content: 'Review · changes requested',
-        }}
-      />
-    );
+    return null;
   }
 
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;

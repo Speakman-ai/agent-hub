@@ -28,7 +28,6 @@ import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
 import BrowserActivityPanel from './BrowserActivityPanel.jsx';
-import FinalizeReviewRoundBlock from './finalize/blocks/FinalizeReviewRoundBlock.jsx';
 import {
   Bot,
   Zap,
@@ -130,7 +129,7 @@ function SessionTail({
           setEventFetchState('error');
           // Do NOT call onEventsLoaded([]): once the parent caches any value
           // (including []), `events !== undefined` and the lazy effect skips
-          // refetch — trapping LegacyAssistantBubble while persisted assistant
+          // refetch, trapping StoredAssistantBubble while persisted assistant
           // content has ask fences stripped (bug: "question didn't generate").
         }
       });
@@ -162,9 +161,9 @@ function SessionTail({
     });
   }, [timelineFetchPending, timelineFetchFailed, streaming, effectiveEvents, message?.content]);
 
-  // While we are fetching the event timeline, avoid LegacyAssistantBubble: it
+  // While we are fetching the event timeline, avoid StoredAssistantBubble: it
   // cannot render ask_user_question pickers, but persisted message.content has
-  // ask fences stripped — a failed fetch used to cache [] and trap us there.
+  // ask fences stripped. A failed fetch used to cache [] and trap us there.
   if (timelineFetchPending) {
     return (
       <div className="flex justify-start mb-4 min-w-0">
@@ -204,14 +203,14 @@ function SessionTail({
 
   if (timelineFetchFailed) {
     // If the message has persisted content, the rich timeline is just a
-    // nice-to-have — the user should still be able to read what the model
-    // said. Render the legacy bubble (markdown content) plus a small inline
+    // nice-to-have, the user should still be able to read what the model
+    // said. Render the stored bubble (markdown content) plus a small inline
     // banner explaining the gap. Without this fallback the user is locked
     // out of their own reply for every transient fetch hiccup.
     if (message?.content) {
       return (
         <div data-testid="session-tail-events-error-with-content">
-          <LegacyAssistantBubble
+          <StoredAssistantBubble
             message={message}
             agentColor={agentColor}
             fromAgent={fromAgent}
@@ -284,9 +283,8 @@ function SessionTail({
     );
   }
 
-  // Fallback: when there are no events to render (either truly legacy, or
-  // fetch completed with an empty timeline) but we have saved message content,
-  // render the legacy bubble. Pre-stream-json messages only.
+  // Fallback: when there are no events to render, but we have saved message
+  // content, render the stored assistant bubble.
   if (
     !streaming &&
     !hasEvents &&
@@ -294,7 +292,7 @@ function SessionTail({
     (events !== undefined || eventFetchState === 'ok')
   ) {
     return (
-      <LegacyAssistantBubble
+      <StoredAssistantBubble
         message={message}
         agentColor={agentColor}
         fromAgent={fromAgent}
@@ -305,6 +303,23 @@ function SessionTail({
         onOpenSession={onOpenSession}
       />
     );
+  }
+
+  const streamingFallbackReview =
+    streaming && blocks.length === 0 && message?.content
+      ? extractReviewVerdictContent(stripAssistantControlBlocks(message.content))
+      : null;
+  const streamingFallbackText = streamingFallbackReview?.prose?.trim() || '';
+  const hasBrowserActivity = (effectiveEvents ?? []).some(
+    ({ event }) => event?.type === 'browser_tool_activity',
+  );
+  if (
+    blocks.length === 0 &&
+    !streamingFallbackText &&
+    !hasBrowserActivity &&
+    (!streaming || message?.content)
+  ) {
+    return null;
   }
 
   return (
@@ -333,14 +348,14 @@ function SessionTail({
           screenshots={browserScreenshots}
         />
 
-        {/* Streaming with no events yet — render the legacy `stream` content
-            if the server is still emitting the old shape, otherwise show a
+        {/* Streaming with no events yet, render the `stream` content
+            if the server is still emitting that shape, otherwise show a
             waiting indicator until the first session-event arrives. */}
         {streaming && blocks.length === 0 && (
           <div className="mt-2">
-            {message?.content ? (
+            {streamingFallbackText ? (
               <TextBubble
-                text={message.content}
+                text={streamingFallbackText}
                 fromAgent={fromAgent}
                 agents={agents}
                 sessionHandoffs={sessionHandoffs}
@@ -395,8 +410,6 @@ function SessionTail({
                     onOpenSession={onOpenSession}
                   />
                 );
-              case 'finalize_review_round':
-                return <ReviewVerdictBlock key={`b${i}`} meta={block.meta} />;
               case 'ask_question':
                 return (
                   <AskUserQuestion
@@ -509,7 +522,6 @@ export function eventsToBlocks(events) {
     const text = stripAssistantControlBlocks(prose);
     const review = extractReviewVerdictContent(text);
     if (review.prose && review.prose.trim()) blocks.push({ kind: 'text', text: review.prose });
-    if (review.verdict) blocks.push({ kind: 'finalize_review_round', meta: review.verdict });
     textBuf = null;
   };
 
@@ -1541,7 +1553,6 @@ function TextBubble({
           </ReactMarkdown>
         </div>
       ) : null}
-      {review.verdict ? <ReviewVerdictBlock meta={review.verdict} /> : null}
       {handoff && (
         <HandoffCard
           toAgentId={handoff.toAgent}
@@ -1575,19 +1586,6 @@ function TextBubble({
         />
       )}
     </>
-  );
-}
-
-function ReviewVerdictBlock({ meta, createdAt }) {
-  return (
-    <FinalizeReviewRoundBlock
-      message={{
-        role: 'system',
-        metadata: JSON.stringify(meta),
-        content: meta?.verdict === 'approved' ? 'Review · approved' : 'Review · changes requested',
-        created_at: createdAt,
-      }}
-    />
   );
 }
 
@@ -1726,10 +1724,9 @@ function UnknownBlock({ event }) {
 }
 
 /**
- * Fallback bubble for legacy assistant messages that pre-date stream-json
- * event capture. Same shape as the old ChatMessage assistant case.
+ * Fallback bubble for stored assistant messages when event rows are absent.
  */
-function LegacyAssistantBubble({
+function StoredAssistantBubble({
   message,
   agentColor,
   fromAgent,
@@ -1739,7 +1736,7 @@ function LegacyAssistantBubble({
   delegationDispatchError,
   onOpenSession,
 }) {
-  // Strip coordination blocks here too — legacy messages were saved with the
+  // Strip coordination blocks here too. Stored messages may include the
   // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
   // the same treatment: the message-anchored DelegateCard is the persistent
   // visual record even when live WebSocket events never arrived.
@@ -1759,6 +1756,14 @@ function LegacyAssistantBubble({
     events: [],
     messageContent: message.content,
   });
+  const hasAssistantBubbleContent =
+    Boolean(review.prose) ||
+    Boolean(handoff) ||
+    Boolean(malformedProps) ||
+    Boolean(delegate) ||
+    Boolean(delegateMalformed);
+  if (!hasAssistantBubbleContent) return null;
+
   return (
     <div className="flex justify-start mb-4 min-w-0">
       <div className="max-w-[95%] sm:max-w-[90%] min-w-0 bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
@@ -1780,9 +1785,6 @@ function LegacyAssistantBubble({
               {review.prose}
             </ReactMarkdown>
           </div>
-        ) : null}
-        {review.verdict ? (
-          <ReviewVerdictBlock meta={review.verdict} createdAt={message.created_at} />
         ) : null}
         {handoff && (
           <HandoffCard
@@ -1812,7 +1814,7 @@ function LegacyAssistantBubble({
             agents={agents}
             sessionDelegations={sessionDelegations}
             parentMessageId={message?.id}
-            // Legacy persisted messages are inherently historical — the turn
+            // Stored persisted messages are inherently historical. The turn
             // ended long ago, so an empty live snapshot here means dispatch
             // didn't happen (or the WS broadcast was never received). Default
             // to the historical branch so we render "Did not start" instead

@@ -39,8 +39,8 @@ describe('ChatMessage finalize timeline routing', () => {
     expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
   });
 
-  it('renders a raw reviewer verdict assistant message as a review round block', () => {
-    render(
+  it('suppresses a raw reviewer verdict assistant message', () => {
+    const { container } = render(
       <ChatMessage
         message={{
           role: 'assistant',
@@ -59,8 +59,9 @@ describe('ChatMessage finalize timeline routing', () => {
       />,
     );
 
-    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
-    expect(screen.getByText('**[4/10]** Fix the settings copy.')).toBeInTheDocument();
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId('finalize-review-round-block')).not.toBeInTheDocument();
+    expect(screen.queryByText('**[4/10]** Fix the settings copy.')).not.toBeInTheDocument();
     expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
   });
 
