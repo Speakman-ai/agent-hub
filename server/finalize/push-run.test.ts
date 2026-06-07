@@ -57,6 +57,7 @@ function makeDeps() {
         markFinalizeRunPushed: { run: vi.fn() },
         updateFinalizeRunPrUrl: { run: vi.fn() },
         getFinalizeRun: { get: vi.fn(() => ({ ...baseRun(), status: 'pushing' })) },
+        getFinalizePushPeerForSessionHead: { get: vi.fn(() => undefined) },
         // Timeline-message writes (terminal block) need these.
         addMessage,
         touchSession: { run: vi.fn() },
@@ -183,6 +184,77 @@ describe('runFinalizePush force', () => {
       ok: true,
       prUrl: 'https://github.com/o/r/pull/10',
     });
+  });
+
+  it('does not push a second finalize run while another push for the session is in flight', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+    (deps.stmts.claimFinalizeRunPush.run as ReturnType<typeof vi.fn>).mockReturnValue({
+      changes: 0,
+    });
+    (deps.stmts.getFinalizePushPeerForSessionHead.get as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...baseRun(),
+      id: 'run-peer',
+      status: 'pushing',
+      validated_head_sha: 'older-head',
+    });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), id: 'run-2', validated_head_sha: 'abc123' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe('push_in_flight');
+    }
+    expect(deps.stmts.claimFinalizeRunPush.run).toHaveBeenCalledWith('run-2', 'abc123');
+    expect(deps.stmts.getFinalizePushPeerForSessionHead.get).toHaveBeenCalledWith(
+      'run-2',
+      'sess-1',
+      'abc123',
+    );
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+  });
+
+  it('reuses an already pushed peer for the same session and validated head without pushing again', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+    (deps.stmts.claimFinalizeRunPush.run as ReturnType<typeof vi.fn>).mockReturnValue({
+      changes: 0,
+    });
+    (deps.stmts.getFinalizePushPeerForSessionHead.get as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...baseRun(),
+      id: 'run-peer',
+      status: 'pushed',
+      pr_url: 'https://github.com/o/r/pull/10',
+      validated_head_sha: 'abc123',
+    });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), id: 'run-2', validated_head_sha: 'abc123' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome).toEqual({ ok: true, prUrl: 'https://github.com/o/r/pull/10' });
+    expect(deps.stmts.updateFinalizeRunPrUrl.run).toHaveBeenCalledWith(
+      'https://github.com/o/r/pull/10',
+      'run-2',
+    );
+    expect(deps.stmts.markFinalizeRunPushed.run).toHaveBeenCalledWith('run-2');
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
   });
 });
 

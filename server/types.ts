@@ -1517,12 +1517,20 @@ export interface Stmts {
    */
   listLatestFinalizeRunsForBoard: Stmt;
   /**
-   * Atomically claim a ready-to-push run for the GitHub push phase. Returns
-   * changes=1 for the single caller that won the claim and changes=0 for
-   * duplicate clicks / automation races that arrived after another caller
-   * moved the row out of `ready_to_push`.
+   * Atomically claim a ready-to-push run for the GitHub push phase. The claim
+   * allows only one active push per session and only one completed push per
+   * validated head. Returns changes=1 for the single caller that won the claim
+   * and changes=0 for duplicate clicks / automation races / sibling rows for
+   * the same validated head.
    */
   claimFinalizeRunPush: Stmt;
+  /**
+   * Find another run for this session that already owns a push, or completed
+   * the push for the same validated head. Used after `claimFinalizeRunPush`
+   * returns changes=0 to decide whether to report an in-flight push or reuse
+   * the existing PR.
+   */
+  getFinalizePushPeerForSessionHead: Stmt;
   updateFinalizeRunPhase: Stmt;
   updateFinalizeRunActiveSeconds: Stmt;
   failFinalizeRun: Stmt;

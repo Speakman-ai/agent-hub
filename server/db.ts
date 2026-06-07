@@ -3508,7 +3508,38 @@ function initDb(dataDir: string): void {
           SET phase = 'push',
               status = 'pushing'
         WHERE id = ?
-          AND status = 'ready_to_push'`,
+          AND status = 'ready_to_push'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM finalize_runs peer
+             WHERE peer.id != finalize_runs.id
+               AND peer.session_id = finalize_runs.session_id
+               AND (
+                 peer.status = 'pushing'
+                 OR (
+                   peer.validated_head_sha = ?
+                   AND peer.status = 'pushed'
+                 )
+               )
+          )`,
+    ),
+    getFinalizePushPeerForSessionHead: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE id != ?
+          AND session_id = ?
+          AND (
+            status = 'pushing'
+            OR (
+              validated_head_sha = ?
+              AND status = 'pushed'
+            )
+          )
+        ORDER BY CASE status WHEN 'pushing' THEN 0 ELSE 1 END,
+                 ended_at DESC,
+                 started_at DESC,
+                 id DESC
+        LIMIT 1`,
     ),
     updateFinalizeRunPhase: db.prepare(
       `UPDATE finalize_runs

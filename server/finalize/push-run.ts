@@ -359,18 +359,56 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
   }
 
   if (run.status === 'ready_to_push') {
-    const claim = deps.stmts.claimFinalizeRunPush.run(run.id);
+    const claim = deps.stmts.claimFinalizeRunPush.run(run.id, validatedHeadSha);
     if (claim.changes === 0) {
       const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;
       const status = fresh?.status ?? 'unknown';
+      const peer = deps.stmts.getFinalizePushPeerForSessionHead.get(
+        run.id,
+        session.id,
+        validatedHeadSha,
+      ) as FinalizeRunRow | undefined;
+      if (peer?.status === 'pushed' && peer.pr_url) {
+        try {
+          writeFinalizeRunPrUrl(
+            { stmts: deps.stmts as Stmts },
+            { runId: run.id, prUrl: peer.pr_url },
+          );
+          deps.stmts.markFinalizeRunPushed.run(run.id);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            httpStatus: 500,
+            error: 'persist_failed',
+            message: msg,
+          };
+        }
+        deps.broadcast({
+          type: 'finalize_run_phase_changed',
+          run_id: run.id,
+          session_id: session.id,
+          phase: 'push',
+          status: 'pushed',
+        });
+        deps.broadcast({
+          type: 'finalize_run_completed',
+          run_id: run.id,
+          session_id: session.id,
+          status: 'pushed',
+          pr_url: peer.pr_url,
+        });
+        return { ok: true, prUrl: peer.pr_url };
+      }
       return {
         ok: false,
         httpStatus: 409,
-        error: status === 'pushed' ? 'already_pushed' : 'push_in_flight',
+        error:
+          status === 'pushed' || peer?.status === 'pushed' ? 'already_pushed' : 'push_in_flight',
         message:
-          status === 'pushed'
-            ? 'This run has already been pushed.'
-            : `Run is already being pushed (${status}).`,
+          status === 'pushed' || peer?.status === 'pushed'
+            ? 'This validated head has already been pushed.'
+            : `Run is already being pushed (${peer?.status ?? status}).`,
       };
     }
   }
