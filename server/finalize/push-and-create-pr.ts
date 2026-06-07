@@ -7,9 +7,8 @@
  * v0 contract (intentionally minimal):
  *   - Auth via {@link resolveOrgOwnerGithubToken}, shaped with
  *     {@link autoGitChildEnv} (token scrub + helper isolation, see auto-git.ts).
- *   - Body is a single-line marker — full templating (rich PR body, footer,
- *     etc.) is a follow-up. The orchestrator's provenance helper
- *     (`./provenance.ts`) handles body-marker injection downstream.
+ *   - Title and body are derived from the implementation commit(s), with the
+ *     owning kanban card preserved as original-task context.
  *   - Existing PR branches are updated in place. After the push succeeds,
  *     the helper asks `gh pr list --head <branch>` for an open PR and returns
  *     that URL instead of trying to create a duplicate PR.
@@ -86,6 +85,136 @@ function parsePrListUrl(stdout: string): string | null {
   }
 }
 
+interface CommitInfo {
+  subject: string;
+  body?: string;
+}
+
+function normalizeTitle(rawTitle: string): string {
+  const normalized = rawTitle.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled change';
+  const stripped = normalized.replace(/[.!?:;,\s]+$/, '');
+  return stripped.length > 70
+    ? `${stripped.slice(0, 67).replace(/[.!?:;,\s]+$/, '')}...`
+    : stripped;
+}
+
+async function collectPrCommits(
+  worktreePath: string,
+  baseBranch: string,
+  env: NodeJS.ProcessEnv,
+): Promise<CommitInfo[]> {
+  const refs = [baseBranch, `origin/${baseBranch}`];
+  for (const ref of refs) {
+    try {
+      const { stdout } = await execGit('git', ['log', `${ref}..HEAD`, '-z', '--format=%s%n%b'], {
+        cwd: worktreePath,
+        env,
+        timeout: 10_000,
+        maxBuffer: MAX_BUFFER,
+      });
+      const commits: CommitInfo[] = [];
+      for (const record of stdout.split('\0')) {
+        const trimmed = record.replace(/\n+$/, '');
+        if (!trimmed) continue;
+        const newlineIdx = trimmed.indexOf('\n');
+        const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
+        if (!subject) continue;
+        const body = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
+        commits.push(body ? { subject, body } : { subject });
+      }
+      return commits;
+    } catch {
+      // Try the next ref. If neither resolves, callers fall back to card data.
+    }
+  }
+  return [];
+}
+
+async function collectPrDiffStat(
+  worktreePath: string,
+  baseBranch: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const refs = [baseBranch, `origin/${baseBranch}`];
+  for (const ref of refs) {
+    try {
+      const { stdout } = await execGit('git', ['diff', '--stat', `${ref}...HEAD`], {
+        cwd: worktreePath,
+        env,
+        timeout: 10_000,
+        maxBuffer: MAX_BUFFER,
+      });
+      return stdout.trim();
+    } catch {
+      // Try the next ref. Missing diff stat should not block PR creation.
+    }
+  }
+  return '';
+}
+
+function buildPrDetails(args: PushAndCreatePrArgs, commits: CommitInfo[], diffStat: string) {
+  const firstCommit = commits[0];
+  const title = normalizeTitle(firstCommit?.subject ?? args.card.title);
+  const cardDescription = args.card.description?.trim() ?? '';
+  const sections: string[] = ['## Summary'];
+
+  if (firstCommit) {
+    sections.push(
+      firstCommit.body ? `${firstCommit.subject}\n\n${firstCommit.body}` : firstCommit.subject,
+    );
+  } else if (cardDescription) {
+    sections.push(cardDescription);
+  } else {
+    sections.push(`Completed ${args.card.title}.`);
+  }
+
+  if (commits.length > 1) {
+    sections.push('');
+    sections.push('## Commits');
+    for (const commit of commits.slice(0, 20)) {
+      sections.push(`- ${commit.subject}`);
+    }
+    if (commits.length > 20) {
+      sections.push(`- ...and ${commits.length - 20} more`);
+    }
+  }
+
+  if (firstCommit && cardDescription) {
+    sections.push('');
+    sections.push('## Original task');
+    sections.push(cardDescription);
+  }
+
+  const stat = diffStat.trim();
+  if (stat) {
+    sections.push('');
+    sections.push('## Files changed');
+    sections.push('```');
+    const lines = stat.split('\n');
+    sections.push(
+      lines.length > 20
+        ? [...lines.slice(0, 19), `...and ${lines.length - 19} more`].join('\n')
+        : stat,
+    );
+    sections.push('```');
+  }
+
+  sections.push('');
+  sections.push('---');
+  sections.push(
+    [
+      'Automated PR from Agent Hub Finalize Code Changes',
+      `Kanban card: ${args.card.id}`,
+      `Branch: ${args.branch}`,
+      `Base: ${args.baseBranch}`,
+      `Head: ${args.headSha.slice(0, 12)}`,
+    ].join('\n'),
+  );
+
+  return { title, body: sections.join('\n') };
+}
+
 /**
  * Build a real {@link PushAndCreatePrFn} bound to the supplied `AppConfig`.
  * The orchestrator calls the returned function once per finalize run.
@@ -115,9 +244,13 @@ export function createPushAndCreatePr(deps: {
       return { prUrl: existingPrUrl };
     }
 
-    // gh pr create --base <baseBranch> --head <branch> --title <card.title> --body <body>
-    // v0: single-line body marker. Templating is a follow-up.
-    const body = 'Auto-generated by Finalize Code Changes.';
+    const [commits, diffStat] = await Promise.all([
+      collectPrCommits(args.worktreePath, args.baseBranch, env),
+      collectPrDiffStat(args.worktreePath, args.baseBranch, env),
+    ]);
+    const { title, body } = buildPrDetails(args, commits, diffStat);
+
+    // gh pr create --base <baseBranch> --head <branch> --title <title> --body <body>
     const { stdout } = await execGit(
       'gh',
       [
@@ -128,7 +261,7 @@ export function createPushAndCreatePr(deps: {
         '--head',
         args.branch,
         '--title',
-        args.card.title,
+        title,
         '--body',
         body,
       ],
@@ -144,4 +277,4 @@ export function createPushAndCreatePr(deps: {
 }
 
 // Exported for tests.
-export const __test = { parsePrListUrl, parsePrUrl };
+export const __test = { buildPrDetails, parsePrListUrl, parsePrUrl };
