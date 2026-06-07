@@ -390,7 +390,7 @@ describe('FinalizeButton', () => {
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it('still confirms before pushing when only checks passed', async () => {
+  it('confirms and force-pushes when only checks passed', async () => {
     window.confirm = vi.fn(() => true);
     setHookState({
       run: { id: 'run-checks', status: 'ready_to_push', phase: null, mode: 'checks' },
@@ -415,7 +415,7 @@ describe('FinalizeButton', () => {
     await waitFor(() => {
       expect(window.confirm).toHaveBeenCalled();
     });
-    expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-checks');
+    expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-checks', { force: true });
   });
 
   it('confirms before pushing when the two phases validated different commits', async () => {

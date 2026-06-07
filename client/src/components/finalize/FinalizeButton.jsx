@@ -267,7 +267,7 @@ export default function FinalizeButton({
 
     setPushPending(true);
     try {
-      if (runId && readyToPush) {
+      if (runId && fullyValidated) {
         await api.pushFinalizeRun(projectId, runId);
       } else if (runId) {
         await api.pushFinalizeRun(projectId, runId, { force: true });
