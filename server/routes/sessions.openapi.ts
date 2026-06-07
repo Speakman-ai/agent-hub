@@ -22,8 +22,7 @@
  *   `{ enabled: boolean }` shape. The legacy `worktree` toggle was
  *   removed when Agent Hub locked to worktree-only sessions; the
  *   `use_worktree` column survives on rows for legacy data + internal
- *   shared-checkout callers (e.g., preview-wizard) but is no longer
- *   user-toggleable.
+ *   shared-checkout callers but is no longer user-toggleable.
  *
  * - **Engine / model coupling** is left in the handler: validating that
  *   `model` is in `engineValidModels[engine]` needs the request-time
@@ -103,7 +102,7 @@ export const SessionComponent = registerComponent(
     })
     .openapi({
       description:
-        'A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).',
+        'A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers.',
     }),
 );
 

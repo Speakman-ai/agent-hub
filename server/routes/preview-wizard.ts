@@ -2,9 +2,10 @@
  * AI-assisted preview setup wizard routes.
  *
  *   POST /api/projects/:projectId/preview/setup-wizard
- *     Admin+. Spawns a one-shot session with a server-precomputed draft
- *     (compose-only detect + env scan) embedded in the kickoff
- *     prompt. Returns `{ sessionId, agentId, draft, session }`.
+ *     Admin+. Spawns a worktree-backed setup session with a
+ *     server-precomputed draft (compose-only detect + env scan)
+ *     embedded in the kickoff prompt. Returns
+ *     `{ sessionId, agentId, draft, session }`.
  *
  *   POST /api/projects/:projectId/preview/setup-compose-bootstrap
  *     Admin+. Writes a starter docker-compose file when the draft is in
@@ -168,7 +169,10 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         ownerUserId: wizOwnerUid,
       });
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
-      const useWorktree = 0;
+      // Preview setup edits repo files such as compose YAML. Run the wizard
+      // like Finalize setup so the session has its own branch and can be
+      // finalized instead of mutating the primary checkout directly.
+      const useWorktree = 1;
       const askMode = 0;
       stmts.createSession.run(
         sessionId,

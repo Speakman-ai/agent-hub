@@ -58,7 +58,6 @@ import {
   getProjectMode,
   sessionUsesWorktree,
 } from '../project-mode.js';
-import { isPreviewSetupWizardSession } from './preview-wizard.js';
 import {
   resolveOwnerUserId,
   setSessionOwner,
@@ -426,7 +425,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
     // Agent Hub is worktree-only for user-facing session creation.
     // `defaultSessionUseWorktreeFlag` returns 1 unconditionally; internal
-    // callers that need a shared-checkout session (preview-wizard) bypass
+    // callers that need custom session names or kickoff prompts bypass
     // this route and write directly to `stmts.createSession`.
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     const askMode = parsed.ask_mode ? 1 : 0;
@@ -1059,8 +1058,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   // NOTE: `PUT /api/sessions/:sessionId/worktree` was removed when Agent
   // Hub locked to worktree-only sessions. The `use_worktree` column is
-  // kept on the row for legacy data + internal callers (preview-wizard
-  // spawns shared-checkout sessions) but is no longer user-toggleable.
+  // kept on the row for legacy data + internal callers but is no longer
+  // user-toggleable.
 
   router.put('/api/sessions/:sessionId/ask-mode', (req: Request, res: Response) => {
     const parsed = parseBody(ToggleEnabledRequestSchema, req, res);
@@ -1302,11 +1301,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           return res.status(404).json({ error: 'Agent not found' });
         }
         const { project } = found;
-        if (
-          isPreviewSetupWizardSession(session) ||
-          !sessionUsesWorktree(session) ||
-          getProjectMode(project) === 'workflow'
-        ) {
+        if (!sessionUsesWorktree(session) || getProjectMode(project) === 'workflow') {
           return res.json({
             ok: true,
             skipped: true,

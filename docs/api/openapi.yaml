@@ -1620,7 +1620,7 @@ components:
         - ask_mode
         - created_at
         - updated_at
-      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers (e.g., preview-wizard).
+      description: A chat session row. Booleans are stored as 0/1 SQLite ints for `use_worktree`, `ask_mode`, `react_loop_enabled`. `use_worktree` is always 1 for user-created sessions; the column is preserved for legacy rows and internal shared-checkout callers.
     Message:
       type: object
       properties:
@@ -3584,6 +3584,149 @@ components:
       required:
         - error
       description: Error envelope for preview-secrets routes.
+    PreviewWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for preview wizard routes.
+    PreviewSetupEnvVar:
+      type: object
+      properties:
+        key:
+          type: string
+        sources:
+          type: array
+          items:
+            type: string
+        required:
+          type: boolean
+      required:
+        - key
+        - sources
+        - required
+    PreviewSetupComposeCandidate:
+      type: object
+      properties:
+        file:
+          type: string
+        services:
+          type: array
+          items:
+            type: string
+        ports:
+          type: array
+          items:
+            type: integer
+      required:
+        - file
+        - services
+        - ports
+    PreviewSetupDraft:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum:
+            - bootstrap_compose
+            - confirm_compose
+        isMonorepo:
+          type: boolean
+        composeCandidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSetupComposeCandidate"
+        envVars:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewSetupEnvVar"
+        detected:
+          nullable: true
+        bootstrap:
+          nullable: true
+        readme:
+          nullable: true
+        scriptHints:
+          type: array
+          items:
+            nullable: true
+        composeChecklist:
+          type: array
+          items:
+            nullable: true
+      required:
+        - phase
+        - isMonorepo
+        - composeCandidates
+        - envVars
+        - scriptHints
+      additionalProperties:
+        nullable: true
+      description: Server-precomputed Preview setup scan. Extra fields are intentionally allowed because the draft is scanner-owned and grows with preview detection.
+    PreviewWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/PreviewSetupDraft"
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned wizard session. New Preview setup sessions are worktree-backed (`use_worktree=1`) so repo edits can be finalized like normal code changes.
+      required:
+        - sessionId
+        - agentId
+        - draft
+      description: Preview setup wizard session spawned successfully.
+    PreviewSetupComposeBootstrapRequest:
+      type: object
+      properties:
+        file:
+          type: string
+          enum:
+            - docker-compose.yml
+            - compose.yml
+            - docker-compose.yaml
+            - compose.yaml
+        content:
+          type: string
+        overwrite:
+          type: boolean
+      required:
+        - content
+    PreviewSetupApplyRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        preview:
+          nullable: true
+        secrets:
+          type: object
+          properties:
+            env:
+              type: string
+            mode:
+              type: string
+              enum:
+                - merge
+                - replace
+            defaultKind:
+              type: string
+              enum:
+                - plain
+                - secret
+          required:
+            - env
+      additionalProperties:
+        nullable: true
+      description: Apply payload for Preview setup. `preview.compose` is persisted into the project preview config; optional secrets are imported into project secrets.
     ProjectAwsSsoProfile:
       type: object
       properties:
@@ -11783,6 +11926,196 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PreviewSecretsErrorResponse"
+  /api/projects/{projectId}/preview/setup-wizard:
+    post:
+      tags:
+        - Preview
+      summary: Spawn the Preview setup wizard
+      description: Admin+. Scans the project for compose files, ports, README hints, and env vars, then spawns a worktree-backed chat session loaded with the `preview-setup` skill. The agent can author compose files on its branch and use Finalize Code Changes like any other coding session.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Body is empty.
+      responses:
+        "201":
+          description: Wizard session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardStartResponse"
+        "400":
+          description: Project has no cwd configured, or no agents to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "500":
+          description: Wizard agent could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+  /api/projects/{projectId}/preview/setup-compose-bootstrap:
+    post:
+      tags:
+        - Preview
+      summary: Write a starter compose file for Preview setup
+      description: Admin+. Writes one root-level compose file after user approval and returns a refreshed Preview setup draft.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSetupComposeBootstrapRequest"
+      responses:
+        "200":
+          description: Compose file written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  file:
+                    type: string
+                  draft:
+                    $ref: "#/components/schemas/PreviewSetupDraft"
+                required:
+                  - ok
+                  - file
+                  - draft
+        "400":
+          description: Invalid file name or empty compose YAML.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "409":
+          description: Compose file already exists and overwrite was not confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "500":
+          description: Compose file write failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+  /api/projects/{projectId}/preview/setup-apply:
+    post:
+      tags:
+        - Preview
+      summary: Persist Preview setup config and optional secrets
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewSetupApplyRequest"
+      responses:
+        "200":
+          description: Preview config persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  secretsImported:
+                    type: integer
+                required:
+                  - ok
+                  - secretsImported
+        "400":
+          description: Preview config or secrets payload is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+  /api/projects/{projectId}/preview/wizard-complete:
+    post:
+      tags:
+        - Preview
+      summary: Mark the Preview setup wizard complete
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Body is empty.
+      responses:
+        "200":
+          description: Completion event broadcast when the project exists.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
   /api/projects/{projectId}/aws-profiles:
     get:
       tags:

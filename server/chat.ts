@@ -2222,8 +2222,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           : null;
       if (pinnedSpawnCwd) {
         effectiveCwd = pinnedSpawnCwd;
-      } else if (isPreviewSetupWizardSession(session!)) {
-        // Preview setup wizard: read-only pass over project.cwd (use_worktree=0).
+      } else if (isPreviewSetupWizardSession(session!) && !sessionUsesWorktree(session!)) {
+        // Legacy Preview setup wizard rows were read-only over project.cwd.
+        // New rows are worktree-backed so they can be finalized like runner setup.
         effectiveCwd = project.cwd;
         msg._spawnCwd = project.cwd;
       } else if (

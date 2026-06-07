@@ -51,7 +51,6 @@ import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { sessionUsesWorktree } from './project-mode.js';
-import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers } from './process-groups.js';
@@ -333,7 +332,7 @@ function ensureWorktree(
    */
   githubRepo?: string | null,
 ): Promise<string> {
-  if (isPreviewSetupWizardSession(session) || !sessionUsesWorktree(session)) {
+  if (!sessionUsesWorktree(session)) {
     return Promise.resolve(projectCwd);
   }
   return ensureSessionWorkspace(

@@ -21,7 +21,7 @@
  * test caller for `handleChat` is captured so we can assert the
  * kickoff prompt shape.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -43,6 +43,7 @@ import { signJwt } from '../jwt.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
+import { routeDeps } from '../index.js';
 
 let request: supertest.Agent;
 let userJwt: string;
@@ -83,6 +84,10 @@ beforeAll(async () => {
     claims: { role: 'Admin', uid: adminRow.id },
   });
 }, 60_000);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 let _counter = 0;
 function uid(prefix = 'preview-wizard'): string {
@@ -161,8 +166,9 @@ describe('POST /api/projects/:projectId/preview/setup-wizard', () => {
     expect(res.body.agentId).toBe(agentId);
     expect(res.body.session).toBeDefined();
     expect(res.body.session.id).toBe(res.body.sessionId);
-    // Wizards never use a worktree (they only read source).
-    expect(res.body.session.use_worktree).toBe(0);
+    // Preview setup authors compose files on a branch, then uses normal
+    // Finalize path for review and push.
+    expect(res.body.session.use_worktree).toBe(1);
     expect(res.body.session.ask_mode).toBe(0);
     // Session name carries the project label so it's distinguishable
     // in the sidebar.
@@ -170,6 +176,37 @@ describe('POST /api/projects/:projectId/preview/setup-wizard', () => {
     expect(res.body.draft).toBeDefined();
     expect(Array.isArray(res.body.draft.envVars)).toBe(true);
     expect(['bootstrap_compose', 'confirm_compose']).toContain(res.body.draft.phase);
+  });
+
+  it('new wizard sessions are eligible for workspace provisioning', async () => {
+    const projectId = await makeProject();
+    await makeAgent(projectId);
+    const worktreePath = `/tmp/preview-setup-wt-${Date.now()}`;
+    const spy = vi.spyOn(routeDeps, 'provisionSessionWorkspace').mockImplementation(async (sid) => {
+      routeDeps.stmts.updateSessionWorktreePath.run(
+        worktreePath,
+        `agent-hub/preview-setup/session-${sid.slice(0, 8)}`,
+        sid,
+      );
+      return worktreePath;
+    });
+
+    const startRes = await request
+      .post(`/api/projects/${projectId}/preview/setup-wizard`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({})
+      .expect(201);
+
+    const ensureRes = await request
+      .post(`/api/sessions/${startRes.body.sessionId}/workspace/ensure`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({})
+      .expect(200);
+
+    expect(spy).toHaveBeenCalledWith(startRes.body.sessionId);
+    expect(ensureRes.body.skipped).toBe(false);
+    expect(ensureRes.body.worktreePath).toBe(worktreePath);
+    expect(ensureRes.body.session.worktree_path).toBe(worktreePath);
   });
 });
 
