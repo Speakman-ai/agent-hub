@@ -334,6 +334,41 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(result.threads).toHaveLength(1);
     expect(messages[0]?.content).toBe('The change is clean overall.');
   });
+
+  it('accepts raw JSON-only verdicts without persisting the machine payload', async () => {
+    const assistantText = JSON.stringify({
+      verdict: 'changes_requested',
+      threads: [
+        {
+          file_path: 'server/foo.ts',
+          line_start: 10,
+          line_end: 12,
+          body: '**[7/10]** Real issue.',
+        },
+        {
+          file_path: 'server/bar.ts',
+          line_start: 3,
+          line_end: 3,
+          body: '**[5/10]** Another issue.',
+        },
+      ],
+    });
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps, messages } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-json-only',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('changes_requested');
+    expect(result.threads).toHaveLength(2);
+    expect(messages[0]?.content).toBe('Review verdict: changes_requested (2 findings).');
+  });
 });
 
 describe('runReviewerTurn — changes_requested with threads', () => {

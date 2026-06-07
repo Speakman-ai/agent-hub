@@ -398,8 +398,21 @@ describe('runReviewerDispatch — re-entry wipes previous threads', () => {
 });
 
 describe('runReviewerDispatch — driver failure', () => {
-  it('surfaces review_failed when the reviewer driver throws', async () => {
-    const store: ThreadStoreState = { rows: [] };
+  it('surfaces review_failed and clears stale reviewer state when the reviewer driver throws', async () => {
+    const store: ThreadStoreState = {
+      rows: [
+        {
+          id: 'old-thread',
+          run_id: 'run-4',
+          file_path: 'server/old.ts',
+          line_start: 1,
+          line_end: 1,
+          body: 'stale finding',
+          author: 'reviewer-agent',
+          created_at: 1,
+        },
+      ],
+    };
     const runner = vi
       .fn<ReviewerDispatchDeps['runReviewer']>()
       .mockRejectedValue(new Error('engine refused: model overloaded'));
@@ -420,7 +433,9 @@ describe('runReviewerDispatch — driver failure', () => {
     expect(outcome.detail).toContain('engine refused');
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'review_failed', 'run-4');
     expect(stmts.insertReviewerThread.run).not.toHaveBeenCalled();
-    expect(stmts.updateFinalizeRunReviewerVerdict.run).not.toHaveBeenCalled();
+    expect(stmts.deleteReviewerThreadsForRun.run).toHaveBeenCalledWith('run-4');
+    expect(stmts.updateFinalizeRunReviewerVerdict.run).toHaveBeenCalledWith(null, 'run-4');
+    expect(store.rows).toEqual([]);
 
     // The reviewer-failure path fires AFTER setPhase has emitted
     // `reviewing`; subscribers must also see the corrective `failed`

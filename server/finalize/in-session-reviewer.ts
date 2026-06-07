@@ -340,10 +340,15 @@ export async function runReviewerTurn(
       assistantMsgId,
     });
 
+    // Parse the tail before persisting so JSON-only reviewer replies do
+    // not leak the machine payload into chat. Missing or malformed tails
+    // still persist the original text below, then throw after broadcast.
+    const parsed = detectReviewVerdictBlock(rawText);
+    const visibleText = buildVisibleReviewerText(rawText, parsed.task);
+
     // Persist the assistant message into the session timeline. Use the
     // SAME id we used for the streaming events so subscribers can join
     // partial-text events to the final row without re-keying.
-    const visibleText = stripReviewVerdictBlock(rawText) || rawText;
     try {
       deps.stmts.addMessage.run(
         assistantMsgId,
@@ -389,11 +394,10 @@ export async function runReviewerTurn(
       agentName: reviewer.name,
     });
 
-    // Parse the tail. Missing or malformed tail produces a deliberate
-    // throw — the reviewer-dispatch helper turns this into a
-    // `review_failed` outcome so the orchestrator does not silently treat
-    // a blank reviewer message as "approved".
-    const parsed = detectReviewVerdictBlock(rawText);
+    // Missing or malformed tail produces a deliberate throw — the
+    // reviewer-dispatch helper turns this into a `review_failed` outcome
+    // so the orchestrator does not silently treat a blank reviewer
+    // message as "approved".
     if (!parsed.present) {
       throw new Error(
         `reviewer turn ended without a parseable review verdict (run=${runId}) — expected a <agenthub:review-verdict> block or trailing {"verdict":...} JSON`,
@@ -429,6 +433,19 @@ export function pickReviewerAgentId(project: Project): string | null {
     }
   }
   return null;
+}
+
+function buildVisibleReviewerText(
+  rawText: string,
+  parsedTask: ReturnType<typeof detectReviewVerdictBlock>['task'],
+): string {
+  const stripped = stripReviewVerdictBlock(rawText).trim();
+  if (stripped) return stripped;
+  if (parsedTask) {
+    const findingWord = parsedTask.threads.length === 1 ? 'finding' : 'findings';
+    return `Review verdict: ${parsedTask.verdict} (${parsedTask.threads.length} ${findingWord}).`;
+  }
+  return rawText;
 }
 
 /**

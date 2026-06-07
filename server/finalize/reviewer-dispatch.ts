@@ -363,6 +363,7 @@ export async function runReviewerDispatch(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    clearReviewerStateForFailedPass(stmts, opts.runId);
     return terminate(
       stmts,
       broadcast,
@@ -452,6 +453,25 @@ export async function runReviewerDispatch(
     threadCount: insertedRows.length,
     activeSecondsBilled: billed,
   };
+}
+
+function clearReviewerStateForFailedPass(
+  stmts: Pick<
+    ReviewerDispatchDeps['stmts'],
+    'deleteReviewerThreadsForRun' | 'updateFinalizeRunReviewerVerdict'
+  >,
+  runId: string,
+): void {
+  try {
+    stmts.deleteReviewerThreadsForRun.run(runId);
+  } catch {
+    /* best-effort: terminal failure write below is more important */
+  }
+  try {
+    stmts.updateFinalizeRunReviewerVerdict.run(null, runId);
+  } catch {
+    /* best-effort: terminal failure write below is more important */
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
