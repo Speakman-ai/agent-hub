@@ -141,3 +141,76 @@ export function parseRawReviewVerdictContent(content) {
     threads: Array.isArray(parsed.threads) ? parsed.threads : [],
   };
 }
+
+function reviewVerdictMetadata(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const verdict = parsed.verdict;
+  if (verdict !== 'approved' && verdict !== 'changes_requested') return null;
+  return {
+    kind: 'finalize_review_round',
+    runId: null,
+    round: 0,
+    verdict,
+    threads: Array.isArray(parsed.threads) ? parsed.threads : [],
+  };
+}
+
+function parseReviewVerdictPayload(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const body = fenced ? fenced[1] : trimmed;
+  try {
+    return reviewVerdictMetadata(JSON.parse(body));
+  } catch {
+    return null;
+  }
+}
+
+function findTrailingReviewVerdictJson(content) {
+  const trimmed = content.trimEnd();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```\s*$/i);
+  if (fenceMatch && fenceMatch.index != null) {
+    const meta = parseReviewVerdictPayload(fenceMatch[1] ?? '');
+    if (meta) return { meta, startIndex: fenceMatch.index };
+  }
+
+  for (
+    let brace = trimmed.lastIndexOf('{');
+    brace >= 0;
+    brace = trimmed.lastIndexOf('{', brace - 1)
+  ) {
+    const tail = trimmed.slice(brace);
+    const meta = parseReviewVerdictPayload(tail);
+    if (meta) return { meta, startIndex: brace };
+  }
+
+  return null;
+}
+
+export function extractReviewVerdictContent(content) {
+  if (typeof content !== 'string') return { prose: content, verdict: null };
+
+  const tagMatch = content.match(
+    /<agenthub:review-verdict>\s*([\s\S]*?)\s*<\/agenthub:review-verdict>/i,
+  );
+  if (tagMatch) {
+    const verdict = parseReviewVerdictPayload(tagMatch[1] ?? '');
+    if (verdict) {
+      return {
+        prose: content.replace(tagMatch[0], '').trim(),
+        verdict,
+      };
+    }
+  }
+
+  const trailing = findTrailingReviewVerdictJson(content);
+  if (trailing) {
+    return {
+      prose: content.trimEnd().slice(0, trailing.startIndex).trimEnd(),
+      verdict: trailing.meta,
+    };
+  }
+
+  return { prose: content, verdict: null };
+}

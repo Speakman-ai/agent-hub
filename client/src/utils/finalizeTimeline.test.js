@@ -5,6 +5,7 @@ import {
   parseFinalizeTerminalMetadata,
   isFinalizeStepOutputMessage,
   parseRawReviewVerdictContent,
+  extractReviewVerdictContent,
 } from './finalizeTimeline.js';
 
 describe('finalizeTimeline utils', () => {
@@ -60,5 +61,44 @@ describe('finalizeTimeline utils', () => {
 
   it('ignores prose that merely mentions verdict JSON', () => {
     expect(parseRawReviewVerdictContent('Earlier: {"verdict":"approved"}')).toBeNull();
+  });
+
+  it('extracts a tagged review verdict block while preserving prose', () => {
+    const extracted = extractReviewVerdictContent(
+      [
+        'The implementation looks good after the last fix.',
+        '',
+        '<agenthub:review-verdict>',
+        '{"verdict":"approved","threads":[]}',
+        '</agenthub:review-verdict>',
+      ].join('\n'),
+    );
+
+    expect(extracted.prose).toBe('The implementation looks good after the last fix.');
+    expect(extracted.verdict).toMatchObject({
+      kind: 'finalize_review_round',
+      verdict: 'approved',
+      threads: [],
+    });
+  });
+
+  it('extracts trailing review verdict JSON while preserving prose', () => {
+    const extracted = extractReviewVerdictContent(
+      [
+        'One issue remains in the renderer.',
+        '',
+        JSON.stringify({
+          verdict: 'changes_requested',
+          threads: [{ file_path: 'client/App.jsx', line_start: 1, body: 'Fix this.' }],
+        }),
+      ].join('\n'),
+    );
+
+    expect(extracted.prose).toBe('One issue remains in the renderer.');
+    expect(extracted.verdict).toMatchObject({
+      kind: 'finalize_review_round',
+      verdict: 'changes_requested',
+      threads: [{ file_path: 'client/App.jsx', line_start: 1, body: 'Fix this.' }],
+    });
   });
 });

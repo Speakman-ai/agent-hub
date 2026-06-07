@@ -187,6 +187,162 @@ describe('eventsToBlocks — benign unknown stream events', () => {
   });
 });
 
+describe('SessionTail — reviewer verdict rendering', () => {
+  const verdictJson = JSON.stringify({
+    verdict: 'approved',
+    threads: [],
+  });
+
+  it('renders raw reviewer verdict assistant_text as a review block', () => {
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-events',
+          role: 'assistant',
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[{ seq: 0, event: { type: 'assistant_text', text: verdictJson, partial: false } }]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.getByTestId('finalize-review-verdict')).toHaveAttribute(
+      'data-verdict',
+      'approved',
+    );
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
+  it('renders raw reviewer verdict live fallback content as a review block', () => {
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-streaming',
+          role: 'assistant',
+          content: verdictJson,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming
+      />,
+    );
+
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
+  it('renders raw reviewer verdict legacy fallback content as a review block', () => {
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-legacy',
+          role: 'assistant',
+          content: verdictJson,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+
+  it('preserves reviewer prose before a structured verdict block in assistant_text', () => {
+    const content = [
+      'No blocking findings remain after the fix.',
+      '',
+      '<agenthub:review-verdict>',
+      verdictJson,
+      '</agenthub:review-verdict>',
+    ].join('\n');
+
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-prose-events',
+          role: 'assistant',
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[{ seq: 0, event: { type: 'assistant_text', text: content, partial: false } }]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.getByText('No blocking findings remain after the fix.')).toBeInTheDocument();
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByText(/agenthub:review-verdict/)).not.toBeInTheDocument();
+  });
+
+  it('preserves reviewer prose before a structured verdict block in live fallback content', () => {
+    const content = [
+      'No blocking findings remain after the fix.',
+      '',
+      '<agenthub:review-verdict>',
+      verdictJson,
+      '</agenthub:review-verdict>',
+    ].join('\n');
+
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-prose-streaming',
+          role: 'assistant',
+          content,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming
+      />,
+    );
+
+    expect(screen.getByText('No blocking findings remain after the fix.')).toBeInTheDocument();
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByText(/agenthub:review-verdict/)).not.toBeInTheDocument();
+  });
+
+  it('preserves reviewer prose before trailing verdict JSON in legacy fallback content', () => {
+    const content = ['Review complete. This is ready to ship.', '', verdictJson].join('\n');
+
+    render(
+      <SessionTail
+        message={{
+          id: 'm-review-prose-legacy',
+          role: 'assistant',
+          content,
+          engine: 'codex-cli',
+          model: 'gpt-5.5',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#6366f1"
+        streaming={false}
+      />,
+    );
+
+    expect(screen.getByText('Review complete. This is ready to ship.')).toBeInTheDocument();
+    expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
+    expect(screen.queryByText(/"verdict"/)).not.toBeInTheDocument();
+  });
+});
+
 describe('eventsToBlocks — progress_step handling', () => {
   const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 

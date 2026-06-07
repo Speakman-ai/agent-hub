@@ -20,6 +20,7 @@ import {
 } from '../utils/coordinationBlocks.js';
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
+import { extractReviewVerdictContent } from '../utils/finalizeTimeline.js';
 import { extractAskBlocks } from '../../../shared/utils/extractAskBlocks.js';
 import { shouldSuppressStreamEvent } from '../../../shared/utils/benignStreamEvents.js';
 import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
@@ -27,6 +28,7 @@ import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
 import BrowserActivityPanel from './BrowserActivityPanel.jsx';
+import FinalizeReviewRoundBlock from './finalize/blocks/FinalizeReviewRoundBlock.jsx';
 import {
   Bot,
   Zap,
@@ -393,6 +395,8 @@ function SessionTail({
                     onOpenSession={onOpenSession}
                   />
                 );
+              case 'finalize_review_round':
+                return <ReviewVerdictBlock key={`b${i}`} meta={block.meta} />;
               case 'ask_question':
                 return (
                   <AskUserQuestion
@@ -503,7 +507,9 @@ export function eventsToBlocks(events) {
     }
     // Strip skill/react/close-card tags from prose (not ask — handled above).
     const text = stripAssistantControlBlocks(prose);
-    if (text && text.trim()) blocks.push({ kind: 'text', text });
+    const review = extractReviewVerdictContent(text);
+    if (review.prose && review.prose.trim()) blocks.push({ kind: 'text', text: review.prose });
+    if (review.verdict) blocks.push({ kind: 'finalize_review_round', meta: review.verdict });
     textBuf = null;
   };
 
@@ -1514,6 +1520,7 @@ function TextBubble({
   // sessions, so the message-anchored card is the reliable visual signal.
   const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
     extractCoordinationBlocks(scrubbed);
+  const review = extractReviewVerdictContent(stripped);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
@@ -1523,17 +1530,18 @@ function TextBubble({
     : null;
   return (
     <>
-      {stripped && (
+      {review.prose ? (
         <div className="markdown-content text-gray-200 text-sm leading-relaxed">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeHighlight]}
             components={MARKDOWN_COMPONENTS}
           >
-            {stripped}
+            {review.prose}
           </ReactMarkdown>
         </div>
-      )}
+      ) : null}
+      {review.verdict ? <ReviewVerdictBlock meta={review.verdict} /> : null}
       {handoff && (
         <HandoffCard
           toAgentId={handoff.toAgent}
@@ -1567,6 +1575,19 @@ function TextBubble({
         />
       )}
     </>
+  );
+}
+
+function ReviewVerdictBlock({ meta, createdAt }) {
+  return (
+    <FinalizeReviewRoundBlock
+      message={{
+        role: 'system',
+        metadata: JSON.stringify(meta),
+        content: meta?.verdict === 'approved' ? 'Review · approved' : 'Review · changes requested',
+        created_at: createdAt,
+      }}
+    />
   );
 }
 
@@ -1725,6 +1746,7 @@ function LegacyAssistantBubble({
   const scrubbed = stripAssistantControlBlocks(message.content);
   const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
     extractCoordinationBlocks(scrubbed);
+  const review = extractReviewVerdictContent(stripped);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
@@ -1748,17 +1770,20 @@ function LegacyAssistantBubble({
           createdAt={message.created_at}
           outcome={outcome}
         />
-        {stripped && (
+        {review.prose ? (
           <div className="markdown-content text-gray-200 mt-1">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
               components={MARKDOWN_COMPONENTS}
             >
-              {stripped}
+              {review.prose}
             </ReactMarkdown>
           </div>
-        )}
+        ) : null}
+        {review.verdict ? (
+          <ReviewVerdictBlock meta={review.verdict} createdAt={message.created_at} />
+        ) : null}
         {handoff && (
           <HandoffCard
             toAgentId={handoff.toAgent}
