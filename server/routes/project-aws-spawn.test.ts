@@ -56,6 +56,7 @@ process.env.AGENT_HUB_DATA_DIR = tmpDataDir;
 // Imported AFTER the env override + vi.mock calls above so the modules
 // pick up the mocked spawn and the test data dir.
 const { default: createProjectAwsRoutes } = await import('./project-aws.js');
+const { spawnAwsSsoLogin } = await import('../aws-sso-identity.js');
 
 interface FakeProc extends EventEmitter {
   stdout: EventEmitter;
@@ -167,6 +168,9 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
       account: '120569607241',
       arn: expect.stringContaining('AdministratorAccess'),
       userId: 'AROAEXAMPLE:test',
+      // The test app authenticates as a user → per-user HOME probed first and
+      // it authenticated, so the identity is attributed to the caller HOME.
+      homeSource: 'caller',
     });
 
     // Sanity: the spawn was the expected `aws sts` invocation.
@@ -270,9 +274,20 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
     const [bin, args] = spawnMock.mock.calls[0];
     expect(bin).toBe('aws');
     expect(args).toEqual(['sso', 'login', '--profile', 'dev', '--no-browser']);
-    const opts = spawnMock.mock.calls[0][2] as { env: NodeJS.ProcessEnv; detached: boolean };
+    const opts = spawnMock.mock.calls[0][2] as {
+      env: NodeJS.ProcessEnv;
+      detached: boolean;
+      cwd: string;
+    };
     expect(opts.env.AWS_CONFIG_FILE).toContain(`project-aws-config/${project.id}/config`);
     expect(opts.detached).toBe(true);
+    // Regression: cwd must be the always-existing server-process HOME, not the
+    // per-user env.HOME — which may not exist on disk yet and would ENOENT-fail
+    // the spawn before the device-code URL is ever printed.
+    expect(opts.cwd).toBe(process.env.HOME || '/');
+    if (opts.env.HOME && opts.env.HOME !== (process.env.HOME || '/')) {
+      expect(opts.cwd).not.toBe(opts.env.HOME);
+    }
   });
 
   it('returns loginUrl with user_code when CLI prints URL and code on separate lines', async () => {
@@ -418,5 +433,36 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
 
     expect(res.body.error).toMatch(/no AWS SSO profiles/i);
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('spawnAwsSsoLogin', () => {
+  it('uses the server-process HOME as cwd, never the (possibly missing) per-user env.HOME', () => {
+    spawnMock.mockReturnValue(makeFakeProc() as unknown as ChildProcess);
+
+    // A per-user HOME path that does not exist on disk. If the helper used
+    // this as cwd, spawn would throw ENOENT before the device-code URL prints.
+    const env = {
+      HOME: path.join(os.tmpdir(), 'nonexistent-per-user-home', 'never-created'),
+      AWS_CONFIG_FILE: '/tmp/whatever/config',
+    } as NodeJS.ProcessEnv;
+
+    const proc = spawnAwsSsoLogin(env, 'dev');
+    expect(proc).toBeTruthy();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [bin, args, opts] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { cwd: string; env: NodeJS.ProcessEnv; detached: boolean; stdio: unknown },
+    ];
+    expect(bin).toBe('aws');
+    expect(args).toEqual(['sso', 'login', '--profile', 'dev', '--no-browser']);
+    // The regression: cwd is the stable server-process HOME, NOT env.HOME.
+    expect(opts.cwd).toBe(process.env.HOME || '/');
+    expect(opts.cwd).not.toBe(env.HOME);
+    // env (and therefore the SSO token-cache HOME) is still threaded through.
+    expect(opts.env).toBe(env);
+    expect(opts.detached).toBe(true);
   });
 });

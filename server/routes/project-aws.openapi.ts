@@ -94,17 +94,25 @@ const SsoStatusResponse = registerComponent(
         account: z.string().optional(),
         arn: z.string().optional(),
         userId: z.string().optional(),
+        homeSource: z.enum(['caller', 'host', 'per-user']).openapi({
+          description:
+            "Which HOME's SSO token cache produced this identity: 'caller' (the requesting user's per-user HOME), 'host' (the shared break-glass/operator HOME), or 'per-user' (the caller's per-user HOME for a not-logged-in result).",
+        }),
       }),
       z.object({
         profile: z.string(),
         loggedIn: z.literal(false),
         error: z.string().optional(),
         needsLogin: z.boolean().optional(),
+        homeSource: z.enum(['caller', 'host', 'per-user']).openapi({
+          description:
+            "Which HOME the caller should log into to authenticate this profile: 'per-user' (the requesting user's own HOME) or 'host' (the shared break-glass/operator HOME). Run POST /aws-sso/login under that HOME. (Not the last-probed HOME — both caller and host caches were checked and neither held a valid token.)",
+        }),
       }),
     ])
     .openapi({
       description:
-        '`aws sts get-caller-identity` result for the named profile. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login.',
+        '`aws sts get-caller-identity` result for the named profile. The caller HOME is probed first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). `homeSource` reports where the reported identity (or last failed probe) lives. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login.',
     }),
 );
 

@@ -3942,9 +3942,17 @@ components:
               type: string
             userId:
               type: string
+            homeSource:
+              type: string
+              enum:
+                - caller
+                - host
+                - per-user
+              description: "Which HOME's SSO token cache produced this identity: 'caller' (the requesting user's per-user HOME), 'host' (the shared break-glass/operator HOME), or 'per-user' (the caller's per-user HOME for a not-logged-in result)."
           required:
             - profile
             - loggedIn
+            - homeSource
         - type: object
           properties:
             profile:
@@ -3957,10 +3965,18 @@ components:
               type: string
             needsLogin:
               type: boolean
+            homeSource:
+              type: string
+              enum:
+                - caller
+                - host
+                - per-user
+              description: "Which HOME the caller should log into to authenticate this profile: 'per-user' (the requesting user's own HOME) or 'host' (the shared break-glass/operator HOME). Run POST /aws-sso/login under that HOME. (Not the last-probed HOME — both caller and host caches were checked and neither held a valid token.)"
           required:
             - profile
             - loggedIn
-      description: "`aws sts get-caller-identity` result for the named profile. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login."
+            - homeSource
+      description: "`aws sts get-caller-identity` result for the named profile. The caller HOME is probed first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). `homeSource` reports where the reported identity (or last failed probe) lives. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login."
     ProjectAwsSsoLoginRequest:
       type: object
       properties:

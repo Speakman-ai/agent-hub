@@ -7,7 +7,6 @@
  *   POST /api/projects/:projectId/aws-sso/login  { profile }
  */
 import { Router, Request, Response } from 'express';
-import { spawn } from 'child_process';
 import { requireRole } from '../roles.js';
 import type { RouteDeps, Project } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -20,6 +19,7 @@ import {
 } from '../project-aws-profiles.js';
 import { writeProjectAwsConfigFile } from '../project-aws-config-file.js';
 import { getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
+import { checkAwsSsoStatusAcrossHomes, spawnAwsSsoLogin } from '../aws-sso-identity.js';
 import { extractAwsSsoLoginUrl } from '../aws-sso-login-parse.js';
 import {
   getActiveAwsSsoLogin,
@@ -121,8 +121,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         const profile = resolveProfileName(project, req.query.profile);
         const userId = (req as AuthenticatedRequest).authUserId ?? null;
         const configPath = writeProjectAwsConfigFile(project.id, profiles);
-        const env = awsSpawnEnv(userId, configPath);
-        const out = await runAwsStsIdentity(env, profile);
+        const out = await checkAwsSsoStatusAcrossHomes({ userId, configPath, profile });
         if (out.ok) {
           res.json({
             profile,
@@ -130,6 +129,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
             account: out.account,
             arn: out.arn,
             userId: out.userId,
+            homeSource: out.homeSource,
           });
           return;
         }
@@ -138,6 +138,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
           loggedIn: false,
           error: out.error,
           needsLogin: out.needsLogin,
+          homeSource: out.homeSource,
         });
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
@@ -194,12 +195,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       const env = awsSpawnEnv(userId, configPath);
       const loginId = Date.now().toString(36);
 
-      const proc = spawn('aws', ['sso', 'login', '--profile', profile, '--no-browser'], {
-        cwd: process.env.HOME || '/',
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
+      const proc = spawnAwsSsoLogin(env, profile);
       trackChild(proc);
 
       setActiveAwsSsoLogin({ loginId, proc, projectId: project.id, profile });
@@ -283,66 +279,4 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
   );
 
   return router;
-}
-
-function runAwsStsIdentity(
-  env: NodeJS.ProcessEnv,
-  profile: string,
-): Promise<{
-  ok: boolean;
-  account?: string;
-  arn?: string;
-  userId?: string;
-  error?: string;
-  needsLogin?: boolean;
-}> {
-  return new Promise((resolve) => {
-    const proc = spawn(
-      'aws',
-      ['sts', 'get-caller-identity', '--profile', profile, '--output', 'json'],
-      {
-        cwd: process.env.HOME || '/',
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    let stdout = '';
-    let stderr = '';
-    proc.stdout?.on('data', (c) => {
-      stdout += c.toString();
-    });
-    proc.stderr?.on('data', (c) => {
-      stderr += c.toString();
-    });
-    proc.on('close', (code) => {
-      if (code === 0) {
-        try {
-          const j = JSON.parse(stdout) as { Account?: string; Arn?: string; UserId?: string };
-          resolve({
-            ok: true,
-            account: j.Account,
-            arn: j.Arn,
-            userId: j.UserId,
-          });
-          return;
-        } catch {
-          resolve({ ok: false, error: 'Invalid JSON from sts get-caller-identity' });
-          return;
-        }
-      }
-      const combined = `${stdout}\n${stderr}`;
-      const needsLogin =
-        /ExpiredToken|expired|not logged in|sso login|Unable to locate credentials|NoCredentialProviders/i.test(
-          combined,
-        );
-      resolve({
-        ok: false,
-        error: combined.trim().slice(-400) || `exit ${code}`,
-        needsLogin,
-      });
-    });
-    proc.on('error', (err) => {
-      resolve({ ok: false, error: err.message, needsLogin: true });
-    });
-  });
 }
