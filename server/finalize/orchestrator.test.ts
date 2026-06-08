@@ -2314,3 +2314,182 @@ describe('runFinalize — §14 metric emission', () => {
     expect(counts('finalize_fix_dispatch_count')).toBe(1);
   });
 });
+
+// ─── §3 decision trace ───────────────────────────────────────────────
+// Regression for the "Finalize is acting funny and there's no way to see
+// which branch the state machine took" report (session fcc171ca). The
+// orchestrator emits one structured `[finalize-trace]` line per phase
+// decision so the implementation→test→review→push path is reconstructable
+// from PM2 logs without a debugger.
+
+/** Pull the `event=` token out of a `[finalize-trace] ...` line. */
+function traceEvents(log: ReturnType<typeof vi.fn>): string[] {
+  return log.mock.calls
+    .map((c) => String(c[0]))
+    .filter((line) => line.startsWith('[finalize-trace] '))
+    .map((line) => {
+      const m = line.match(/\bevent=(\S+)/);
+      return m ? m[1] : '';
+    })
+    .filter(Boolean);
+}
+
+describe('finalizeTraceEnabled', () => {
+  const original = process.env.FINALIZE_TRACE;
+  afterEach(() => {
+    if (original === undefined) delete process.env.FINALIZE_TRACE;
+    else process.env.FINALIZE_TRACE = original;
+  });
+
+  it('defaults ON when the env var is unset', () => {
+    delete process.env.FINALIZE_TRACE;
+    expect(__test.finalizeTraceEnabled()).toBe(true);
+  });
+
+  it('treats off / 0 / false (any case, padded) as disabled', () => {
+    for (const v of ['off', '0', 'false', 'OFF', ' Off ', 'False']) {
+      process.env.FINALIZE_TRACE = v;
+      expect(__test.finalizeTraceEnabled()).toBe(false);
+    }
+  });
+
+  it('treats any other value as enabled', () => {
+    for (const v of ['on', '1', 'true', 'yes', '']) {
+      process.env.FINALIZE_TRACE = v;
+      expect(__test.finalizeTraceEnabled()).toBe(true);
+    }
+  });
+});
+
+describe('formatTraceFields', () => {
+  it('renders key=value, dropping null/undefined and JSON-encoding non-strings', () => {
+    const line = __test.formatTraceFields({
+      event: 'rebase',
+      run: 'run-1',
+      round: 2,
+      ok: true,
+      head: 'deadbeef',
+      missing: null,
+      absent: undefined,
+    });
+    expect(line).toBe('event=rebase run=run-1 round=2 ok=true head=deadbeef');
+  });
+
+  it('quotes string values that contain whitespace so they stay one field', () => {
+    // A failedStep like `npm run test` must not spill into the next field.
+    const line = __test.formatTraceFields({
+      event: 'checks',
+      failedStep: 'npm run test',
+      decision: 'fix_dispatch',
+    });
+    expect(line).toBe('event=checks failedStep="npm run test" decision=fix_dispatch');
+    // A quote-aware tokenizer sees exactly three `key=value` fields — the
+    // spaces inside the quoted value did not open new fields.
+    const fields = line.match(/\w+=(?:"(?:[^"\\]|\\.)*"|[^\s]*)/g);
+    expect(fields).toEqual(['event=checks', 'failedStep="npm run test"', 'decision=fix_dispatch']);
+  });
+
+  it('escapes newlines, quotes, equals, and backslashes in string values', () => {
+    expect(__test.formatTraceFields({ reason: 'line1\nline2' })).toBe('reason="line1\\nline2"');
+    expect(__test.formatTraceFields({ name: 'a=b' })).toBe('name="a=b"');
+    expect(__test.formatTraceFields({ name: 'say "hi"' })).toBe('name="say \\"hi\\""');
+    expect(__test.formatTraceFields({ path: 'a\\b' })).toBe('path="a\\\\b"');
+    // An empty string is quoted rather than rendering a bare `key=`.
+    expect(__test.formatTraceFields({ empty: '' })).toBe('empty=""');
+  });
+});
+
+describe('runFinalize — decision trace', () => {
+  const original = process.env.FINALIZE_TRACE;
+  afterEach(() => {
+    if (original === undefined) delete process.env.FINALIZE_TRACE;
+    else process.env.FINALIZE_TRACE = original;
+  });
+
+  it('emits one trace line per phase decision across a happy-path run', async () => {
+    delete process.env.FINALIZE_TRACE;
+    const log = vi.fn();
+    const { deps } = makeDeps({ log });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+
+    const events = traceEvents(log);
+    // The full implementation→test→review→push path is reconstructable.
+    expect(events).toContain('attempt_start');
+    expect(events).toContain('loop_enter');
+    expect(events).toContain('rebase');
+    expect(events).toContain('ci_parsed');
+    expect(events).toContain('reviewer');
+    expect(events).toContain('checks');
+    expect(events).toContain('combined_gate');
+    expect(events).toContain('push_gate');
+    expect(events).toContain('ready_to_push');
+
+    // Every trace line carries the run id and mode for log correlation.
+    const traceLines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.startsWith('[finalize-trace] '));
+    expect(traceLines.length).toBeGreaterThan(0);
+    for (const line of traceLines) {
+      expect(line).toMatch(/\brun=run-1\b/);
+      expect(line).toMatch(/\bmode=full\b/);
+    }
+
+    // The combined gate records the actual decision it took.
+    const gateLine = traceLines.find((l) => l.includes('event=combined_gate'));
+    expect(gateLine).toMatch(/stepsGreen=true/);
+    expect(gateLine).toMatch(/reviewerApproved=true/);
+    expect(gateLine).toMatch(/decision=push_gate/);
+  });
+
+  it('emits nothing when FINALIZE_TRACE=off', async () => {
+    process.env.FINALIZE_TRACE = 'off';
+    const log = vi.fn();
+    const { deps } = makeDeps({ log });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+
+    const traceLines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.startsWith('[finalize-trace] '));
+    expect(traceLines).toHaveLength(0);
+  });
+
+  it('traces the reviewer-changes-requested → fix-dispatch branch', async () => {
+    delete process.env.FINALIZE_TRACE;
+    const log = vi.fn();
+    // First review pass requests changes, second approves; fix dispatch
+    // ends the turn so the loop re-enters.
+    const review = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'success',
+        verdict: 'changes_requested',
+        threadCount: 1,
+        activeSecondsBilled: 5,
+      } satisfies ReviewerDispatchOutcome)
+      .mockResolvedValueOnce({
+        kind: 'success',
+        verdict: 'approved',
+        threadCount: 0,
+        activeSecondsBilled: 5,
+      } satisfies ReviewerDispatchOutcome);
+    const { deps } = makeDeps({ runReviewerDispatch: review as never, log });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+
+    const events = traceEvents(log);
+    expect(events).toContain('fix_dispatch');
+    // Two loop iterations means two combined_gate decisions.
+    expect(events.filter((e) => e === 'combined_gate').length).toBeGreaterThanOrEqual(2);
+
+    const fixLines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('event=fix_dispatch'));
+    expect(fixLines.some((l) => l.includes('phase=dispatching'))).toBe(true);
+    expect(fixLines.some((l) => l.includes('phase=settled'))).toBe(true);
+  });
+});

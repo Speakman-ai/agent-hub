@@ -403,6 +403,12 @@ export async function runFinalize(
   opts: OrchestratorOptions,
 ): Promise<OrchestratorOutcome> {
   const log = deps.log ?? ((msg: string) => console.warn(msg));
+  // §3 decision trace gate. Default ON — one structured `[finalize-trace]`
+  // line per phase transition lands in the same sink as error lines (PM2
+  // logs in prod) so an operator debugging a "stuck" / "acting funny" run
+  // can reconstruct the exact implementation→test→review→push path without
+  // a debugger. Read once per run; FINALIZE_TRACE=off (or 0/false) silences.
+  const traceEnabled = finalizeTraceEnabled();
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
   // The cap is the lesser of the dep-injected budget (tests) and the
@@ -655,6 +661,14 @@ export async function runFinalize(
     // honest with this no-op reference.
     void retryOfRunId;
 
+    // Per-attempt decision tracer. Binds the attempt's `runId` + outer
+    // `mode` so call-sites only pass the event name and the fields that
+    // distinguish that decision. No-op when `traceEnabled` is false.
+    const trace = (event: string, fields: Record<string, unknown> = {}): void => {
+      if (!traceEnabled) return;
+      log(`[finalize-trace] ${formatTraceFields({ event, run: runId, mode, ...fields })}`);
+    };
+
     // Pre-cancel: caller already aborted before we wired anything up.
     if (opts.signal?.aborted) {
       return cancelTerminal(deps, runId, log);
@@ -731,6 +745,18 @@ export async function runFinalize(
       headSha: opts.headSha,
     });
 
+    trace('attempt_start', {
+      session: sessionId,
+      worktree: worktreePath,
+      head: opts.headSha,
+      trigger: opts.triggerSource,
+      retryOf: retryOfRunId,
+      budgetSeconds,
+      reviewRequired,
+      checksRequired,
+      jobFilter: jobFilter ? jobFilter.join(',') : null,
+    });
+
     const ciConfigPath = opts.ciConfigPath ?? `${worktreePath}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
 
     // ─── Main loop: rebase → parse → review → tasks → combined gate ─────
@@ -758,10 +784,14 @@ export async function runFinalize(
         );
       }
 
+      trace('loop_enter', { round: loopCount });
+
       if (opts.signal?.aborted) {
+        trace('cancelled', { round: loopCount, at: 'loop_top' });
         return cancelTerminal(deps, runId, log);
       }
       if (budgetExhausted(deps, runId, budgetSeconds, log)) {
+        trace('timeout', { round: loopCount, at: 'loop_top', budgetSeconds });
         return timeoutTerminal(deps, runId, opts, sessionId, budgetSeconds, lastStepOutcome, log);
       }
 
@@ -801,6 +831,11 @@ export async function runFinalize(
       // directly; we read back + broadcast.
       broadcastActiveSeconds(deps, runId);
       if (rebaseOutcome.kind === 'failed') {
+        trace('rebase', {
+          round: loopCount,
+          result: 'failed',
+          failureReason: rebaseOutcome.failureReason,
+        });
         writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
           sessionId,
           runId,
@@ -833,6 +868,7 @@ export async function runFinalize(
         return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
       }
       if (rebaseOutcome.rebaseKind === 'skipped') {
+        trace('rebase', { round: loopCount, result: 'skipped' });
         // Skipped rebases mean we cannot guarantee we're on top of origin/<base>.
         // The rebase phase already wrote `success` to its return value, but the
         // push gate would refuse anyway, so we surface this as failed early
@@ -899,6 +935,13 @@ export async function runFinalize(
         );
       }
 
+      trace('rebase', {
+        round: loopCount,
+        result: 'ok',
+        conflictsDispatched: rebaseOutcome.conflictsDispatchedCount ?? 0,
+        head: headValidatedAgainst,
+      });
+
       writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
         sessionId,
         runId,
@@ -952,6 +995,13 @@ export async function runFinalize(
         resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
       );
 
+      trace('ci_parsed', {
+        round: loopCount,
+        ciVersion: parsedCi.version,
+        timeoutMinutes: parsedCi.timeoutMinutes ?? null,
+        budgetSeconds,
+      });
+
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
       }
@@ -1003,6 +1053,11 @@ export async function runFinalize(
         // Emit active-seconds tick after review (success or fail).
         broadcastActiveSeconds(deps, runId);
         if (lastReviewerOutcome.kind === 'failed') {
+          trace('reviewer', {
+            round: loopCount,
+            result: 'failed',
+            failureReason: lastReviewerOutcome.failureReason,
+          });
           return outcomeFromFailed(
             deps,
             runId,
@@ -1010,6 +1065,12 @@ export async function runFinalize(
             lastReviewerOutcome.detail,
           );
         }
+        trace('reviewer', {
+          round: loopCount,
+          result: 'verdict',
+          verdict: lastReviewerOutcome.verdict,
+          threads: lastReviewerOutcome.threadCount,
+        });
         // Mirror the verdict onto the card. Fires on EVERY loop iteration,
         // not just the first — the user wants to see the back-and-forth when
         // a `changes_requested` verdict triggers a fix dispatch and the next
@@ -1037,6 +1098,7 @@ export async function runFinalize(
           threadCount: 0,
           activeSecondsBilled: 0,
         };
+        trace('reviewer', { round: loopCount, result: 'skipped', verdict: 'approved' });
       }
 
       if (opts.signal?.aborted) {
@@ -1138,6 +1200,14 @@ export async function runFinalize(
             });
           }
         }
+        trace('checks', {
+          round: loopCount,
+          engine: parsedCi.version === 2 ? 'jobs' : 'steps',
+          status: lastStepOutcome.status,
+          steps: lastStepOutcome.stepResults.length,
+          failedStep: lastStepOutcome.failedStep?.name ?? null,
+          exitCode: lastStepOutcome.failedStep?.exitCode ?? null,
+        });
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
@@ -1173,8 +1243,11 @@ export async function runFinalize(
           stepResults: [],
           activeSecondsBilled: 0,
         };
+        trace('checks', { round: loopCount, status: 'skipped' });
       } else {
+        // Reviewer requested changes — skip CI; fix dispatch comes next.
         lastStepOutcome = null;
+        trace('checks', { round: loopCount, status: 'skipped_changes_requested' });
       }
 
       // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
@@ -1187,6 +1260,12 @@ export async function runFinalize(
       // behavior the loop invariant guarantees is safe.
       const stepsGreen = lastStepOutcome?.status === 'success';
       const reviewerApproved = lastReviewerOutcome.verdict === 'approved';
+      trace('combined_gate', {
+        round: loopCount,
+        stepsGreen,
+        reviewerApproved,
+        decision: stepsGreen && reviewerApproved ? 'push_gate' : 'fix_dispatch',
+      });
       if (stepsGreen && reviewerApproved) {
         const stepOutcome = lastStepOutcome!;
         // ── Phase 7: push gate (§9) ─────────────────────────────────
@@ -1218,6 +1297,13 @@ export async function runFinalize(
           headAtPushGate: currentHead,
         });
         if (gateOutcome.kind === 'refuse') {
+          trace('push_gate', {
+            round: loopCount,
+            decision: 'refuse',
+            refusalCode: gateOutcome.refusalCode,
+            headBeforePhases: headValidatedAgainst,
+            headAtPushGate: currentHead,
+          });
           // The only refusal reachable in this branch is `head_sha_moved`
           // (the other two refusal codes are unreachable because we
           // already checked `stepsGreen && reviewerApproved`). Re-enter
@@ -1234,6 +1320,12 @@ export async function runFinalize(
           // budget for the new head.
           continue;
         }
+
+        trace('push_gate', {
+          round: loopCount,
+          decision: 'pass',
+          validatedHead: gateOutcome.validatedHeadSha,
+        });
 
         // ── Phase 8: park for human push ────────────────────────────
         // Review + checks passed. Stop before git push / gh pr create —
@@ -1271,6 +1363,11 @@ export async function runFinalize(
         const fullyValidated = jobFilter
           ? false
           : isBranchFullyValidated(deps, sessionId, mode, gateOutcome.validatedHeadSha, runId);
+        trace('ready_to_push', {
+          round: loopCount,
+          fullyValidated,
+          head: gateOutcome.validatedHeadSha,
+        });
         deps.broadcast({
           type: 'finalize_run_phase_changed',
           run_id: runId,
@@ -1344,6 +1441,14 @@ export async function runFinalize(
         );
       }
 
+      trace('fix_dispatch', {
+        round: loopCount,
+        phase: 'dispatching',
+        failedStep: trigger.failedStep?.name ?? null,
+        reviewerVerdict: trigger.reviewerVerdict ?? null,
+        reviewerThreads: trigger.reviewerThreads?.length ?? 0,
+      });
+
       // §14: count every fix dispatch the family produces. Incremented
       // BEFORE the await so cancellation / errors mid-dispatch still
       // contribute (the work was started, even if it didn't finish).
@@ -1388,6 +1493,7 @@ export async function runFinalize(
       // duration. Both writes have already landed by the time we're here;
       // this broadcast surfaces the combined running total.
       broadcastActiveSeconds(deps, runId);
+      trace('fix_dispatch', { round: loopCount, phase: 'settled', outcome: fix.outcome });
       if (fix.outcome === 'stalled_no_response') {
         // The watchdog already wrote the terminal status; just surface.
         // Mirror the stall onto the card — this is the "human walked away"
@@ -1422,6 +1528,7 @@ export async function runFinalize(
       // verdicts will be reproduced against the new HEAD.
     }
 
+    trace('terminal', { result: 'max_fix_iterations', loops: MAX_FIX_DISPATCH_LOOPS });
     return terminate(
       deps,
       runId,
@@ -1567,6 +1674,52 @@ export async function runFinalize(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * §3 decision-trace gate. Defaults ON so the implementation→test→review→push
+ * path is reconstructable from logs out of the box; the run is infrequent
+ * (human- or kanban-triggered) so the ~12-line-per-run volume is cheap.
+ * `FINALIZE_TRACE=off` (also `0` / `false`) silences it for a deploy that
+ * wants quieter logs.
+ */
+function finalizeTraceEnabled(): boolean {
+  const raw = process.env.FINALIZE_TRACE?.trim().toLowerCase();
+  return raw !== 'off' && raw !== '0' && raw !== 'false';
+}
+
+/**
+ * Render a decision record as a single space-delimited `key=value` line.
+ * `undefined` / `null` fields are dropped so optional signals don't render
+ * as noise.
+ *
+ * Value encoding keeps the line unambiguously parseable from PM2 logs while
+ * staying greppable for the common case:
+ *   - A "simple" string (no whitespace, quote, `=`, or backslash — e.g. a
+ *     sha, verdict, or single-token name) passes through verbatim.
+ *   - Any other string is JSON-encoded, so a value with spaces or newlines
+ *     (`failedStep`, `failureReason`, a job/filter name) becomes a quoted,
+ *     escaped token rather than spilling into the next field. Without this a
+ *     line like `failedStep=npm run test decision=fix_dispatch` would parse
+ *     as three bogus fields.
+ *   - Non-strings (booleans / numbers / arrays) are JSON-encoded so they're
+ *     type-unambiguous.
+ */
+function formatTraceFields(fields: Record<string, unknown>): string {
+  return Object.entries(fields)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}=${encodeTraceValue(v)}`)
+    .join(' ');
+}
+
+/** A string token safe to emit bare in a `key=value` trace line. */
+const SAFE_TRACE_TOKEN = /^[^\s"=\\]+$/;
+
+function encodeTraceValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return SAFE_TRACE_TOKEN.test(value) ? value : JSON.stringify(value);
+  }
+  return JSON.stringify(value);
+}
 
 function orchestratorTimelineDeps(deps: OrchestratorDeps): TimelineMessageDeps {
   return { stmts: deps.stmts, broadcast: deps.broadcast, log: undefined };
@@ -2021,6 +2174,8 @@ function identityTransactional<T>(fn: () => T): T {
 
 export const __test = {
   computeIdempotencyKey,
+  finalizeTraceEnabled,
+  formatTraceFields,
   buildFixTrigger,
   isTriggerEmpty,
   outcomeFromFailed,
