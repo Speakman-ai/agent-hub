@@ -230,6 +230,10 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       authRequired: !!config.apiKey,
       openaiApiKey: config.openaiApiKey ? '••••••••' : '',
       openaiApiKeySet: !!config.openaiApiKey,
+      // Voice-transcription provider selectable on the settings page. The two
+      // `*Set` flags let the UI warn when the chosen provider's key is missing.
+      transcriptionProvider: config.transcriptionProvider,
+      geminiApiKeySet: !!config.geminiApiKey,
       // Wildcard subdomain base for "subdomain preview" mode (Phase 4
       // of the session-previews RFC). When non-empty, the UI builds
       // iframe URLs as `<sessionId>.<base>` so the app sees itself at
@@ -300,6 +304,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'port',
       'apiKey',
       'openaiApiKey',
+      'transcriptionProvider',
       'publicUrl',
       'codexDangerBypass',
       'codexProfile',
@@ -322,6 +327,20 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         updates.openaiApiKey = trimmed.length > 0 ? trimmed : null;
       } else {
         delete updates.openaiApiKey;
+      }
+    }
+    if (updates.transcriptionProvider !== undefined) {
+      // Only 'openai' | 'gemini' are valid. Reject anything else with 400 so a
+      // bad value can't silently land in config.json.
+      const raw = updates.transcriptionProvider;
+      const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+      if (normalized === 'openai' || normalized === 'gemini') {
+        updates.transcriptionProvider = normalized;
+      } else {
+        return res.status(400).json({
+          error: 'Invalid transcriptionProvider',
+          accepted: ['openai', 'gemini'],
+        });
       }
     }
     if (updates.codexProfile !== undefined) {

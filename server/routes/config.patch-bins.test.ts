@@ -152,6 +152,45 @@ describe('PATCH /api/config — engine bin paths', () => {
     }
   });
 
+  it('persists transcriptionProvider and exposes it (plus key status) on GET', async () => {
+    // Defaults to 'openai'; the settings page surfaces it so the selector can
+    // render the current choice.
+    const initial = await request.get('/api/config').expect(200);
+    expect(['openai', 'gemini']).toContain(initial.body.transcriptionProvider);
+    expect(typeof initial.body.geminiApiKeySet).toBe('boolean');
+
+    const saved = await request
+      .patch('/api/config')
+      .send({ transcriptionProvider: 'gemini' })
+      .expect(200);
+    expect(saved.body.updated).toEqual({ transcriptionProvider: 'gemini' });
+    expect(readFileConfig().transcriptionProvider).toBe('gemini');
+
+    const after = await request.get('/api/config').expect(200);
+    expect(after.body.transcriptionProvider).toBe('gemini');
+
+    // Reset to the default so other tests aren't affected.
+    await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
+  });
+
+  it('normalizes transcriptionProvider casing/whitespace', async () => {
+    const res = await request
+      .patch('/api/config')
+      .send({ transcriptionProvider: '  GEMINI  ' })
+      .expect(200);
+    expect(res.body.updated).toEqual({ transcriptionProvider: 'gemini' });
+    await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
+  });
+
+  it('rejects an invalid transcriptionProvider with 400', async () => {
+    const res = await request
+      .patch('/api/config')
+      .send({ transcriptionProvider: 'deepgram' })
+      .expect(400);
+    expect(res.body.error).toMatch(/Invalid transcriptionProvider/i);
+    expect(res.body.accepted).toEqual(['openai', 'gemini']);
+  });
+
   it('still rejects updates with no allowlisted fields', async () => {
     const res = await request.patch('/api/config').send({ madeUpField: 'nope' }).expect(400);
     expect(res.body.error).toMatch(/No valid config fields/);

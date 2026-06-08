@@ -2220,6 +2220,15 @@ export interface PersonalOAuthConfig {
   clientSecret: string;
 }
 
+/**
+ * Voice-transcription providers selectable for `/api/transcribe`. `'openai'`
+ * uses OpenAI Whisper; `'gemini'` uses the Gemini audio-understanding path.
+ */
+export type TranscriptionProvider = 'openai' | 'gemini';
+
+/** Allowed transcription providers, exported for runtime validation. */
+export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = ['openai', 'gemini'];
+
 export interface AppConfig {
   port: number;
   host: string;
@@ -2296,6 +2305,17 @@ export interface AppConfig {
    * HOME OAuth caches); there is no host-wide key for those engines.
    */
   geminiApiKey: string | null;
+  /**
+   * Which provider `/api/transcribe` uses for chat-composer voice
+   * transcription. `'openai'` (the default) calls OpenAI Whisper with
+   * `openaiApiKey`; `'gemini'` calls the Gemini audio-understanding path with
+   * `geminiApiKey`. Selectable on the settings page (Account → Plugin API
+   * keys). The chosen provider's key must be configured or `/api/transcribe`
+   * returns 501 so clients fall back to on-device recognition. Configure via
+   * `transcriptionProvider` in config.json, `PATCH /api/config`, or env
+   * `TRANSCRIPTION_PROVIDER`.
+   */
+  transcriptionProvider: TranscriptionProvider;
   /**
    * Optional Codex CLI profile name. When set, every `codex exec` spawn
    * (chat, room, design, delegation) gets `--profile <name>` appended so

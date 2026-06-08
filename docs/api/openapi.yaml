@@ -2022,6 +2022,15 @@ components:
         openaiApiKeySet:
           type: boolean
           description: Whether the host OpenAI API key is configured.
+        transcriptionProvider:
+          type: string
+          enum:
+            - openai
+            - gemini
+          description: Provider used by /api/transcribe for chat voice transcription. `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.
+        geminiApiKeySet:
+          type: boolean
+          description: Whether the host Gemini API key is configured (used for Gemini transcription).
         personalOAuth:
           type: object
           properties:
@@ -2089,6 +2098,8 @@ components:
         - authRequired
         - openaiApiKey
         - openaiApiKeySet
+        - transcriptionProvider
+        - geminiApiKeySet
         - personalOAuth
         - botGithubToken
         - botGithubTokenSet
@@ -9119,6 +9130,12 @@ paths:
                   type: string
                   nullable: true
                   description: Host OpenAI API key for Whisper transcription and session titles. Empty string or null clears it.
+                transcriptionProvider:
+                  type: string
+                  enum:
+                    - openai
+                    - gemini
+                  description: Voice-transcription provider for /api/transcribe. Must be `openai` or `gemini`; any other value returns 400.
                 publicUrl:
                   type: string
                 botGithubToken:

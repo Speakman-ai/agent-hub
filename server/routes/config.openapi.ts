@@ -58,6 +58,14 @@ export const AppConfigComponent = registerComponent(
       openaiApiKeySet: z.boolean().openapi({
         description: 'Whether the host OpenAI API key is configured.',
       }),
+      transcriptionProvider: z.enum(['openai', 'gemini']).openapi({
+        description:
+          'Provider used by /api/transcribe for chat voice transcription. `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.',
+      }),
+      geminiApiKeySet: z.boolean().openapi({
+        description:
+          'Whether the host Gemini API key is configured (used for Gemini transcription).',
+      }),
       personalOAuth: z.object({
         configured: z.boolean(),
         clientId: z.string().nullable(),
@@ -245,6 +253,10 @@ export const PatchConfigRequestSchema = z
     openaiApiKey: z.string().nullable().optional().openapi({
       description:
         'Host OpenAI API key for Whisper transcription and session titles. Empty string or null clears it.',
+    }),
+    transcriptionProvider: z.enum(['openai', 'gemini']).optional().openapi({
+      description:
+        'Voice-transcription provider for /api/transcribe. Must be `openai` or `gemini`; any other value returns 400.',
     }),
     publicUrl: z.string().optional(),
     botGithubToken: z.string().nullable().optional(),

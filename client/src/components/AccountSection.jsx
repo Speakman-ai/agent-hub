@@ -6,6 +6,7 @@ import {
   Key,
   Loader2,
   LogOut,
+  Mic,
   Plus,
   Sparkles,
   SquareKanban,
@@ -484,6 +485,144 @@ function PluginApiKeyRow({ item }) {
   );
 }
 
+const TRANSCRIPTION_PROVIDERS = [
+  {
+    id: 'openai',
+    label: 'OpenAI Whisper',
+    description: 'Works in every browser and for all recorded formats. Recommended.',
+    keyField: 'openaiApiKeySet',
+    keyLabel: 'OpenAI API key',
+  },
+  {
+    id: 'gemini',
+    label: 'Google Gemini',
+    description:
+      'Uses the Gemini audio model. Requires OGG / MP3 / WAV / FLAC audio (Chrome records WebM, which Gemini cannot read).',
+    keyField: 'geminiApiKeySet',
+    keyLabel: 'Gemini API key',
+  },
+];
+
+/**
+ * Lets an admin choose which provider /api/transcribe uses for chat voice
+ * transcription. Persists to host config via PATCH /api/config and warns when
+ * the selected provider's API key is not configured.
+ */
+export function TranscriptionProviderRow() {
+  const [loading, setLoading] = useState(true);
+  const [provider, setProvider] = useState('openai');
+  const [keyStatus, setKeyStatus] = useState({ openaiApiKeySet: false, geminiApiKeySet: false });
+  const [saving, setSaving] = useState(null);
+  const [status, setStatus] = useState(null);
+
+  const load = useCallback(async () => {
+    setStatus(null);
+    try {
+      const cfg = await api.getConfig();
+      setProvider(cfg?.transcriptionProvider === 'gemini' ? 'gemini' : 'openai');
+      setKeyStatus({
+        openaiApiKeySet: !!cfg?.openaiApiKeySet || !!cfg?.openaiApiKey,
+        geminiApiKeySet: !!cfg?.geminiApiKeySet,
+      });
+    } catch (err) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const choose = async (next) => {
+    if (next === provider || saving) return;
+    setSaving(next);
+    setStatus(null);
+    const prev = provider;
+    setProvider(next);
+    try {
+      await api.updateConfig({ transcriptionProvider: next });
+      setStatus({ type: 'success', msg: 'Saved' });
+    } catch (err) {
+      setProvider(prev);
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="border border-gray-700 rounded-lg p-3 space-y-3">
+      <div>
+        <h5 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Mic size={13} /> Voice transcription provider
+        </h5>
+        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+          Which provider the chat microphone uses to turn recordings into text. The chosen
+          provider&apos;s API key (below) must be configured.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 size={12} className="animate-spin" /> Loading…
+        </div>
+      ) : (
+        <div className="space-y-2" role="radiogroup" aria-label="Voice transcription provider">
+          {TRANSCRIPTION_PROVIDERS.map((opt) => {
+            const selected = provider === opt.id;
+            const keyConfigured = !!keyStatus[opt.keyField];
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={!!saving}
+                onClick={() => choose(opt.id)}
+                className={`w-full text-left rounded-lg border px-3 py-2 transition-colors disabled:opacity-60 ${
+                  selected
+                    ? 'border-blue-500 bg-blue-500/10'
+                    : 'border-gray-700 hover:border-gray-600'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-200 flex items-center gap-2">
+                    <span
+                      className={`inline-block w-2.5 h-2.5 rounded-full border ${
+                        selected ? 'border-blue-400 bg-blue-400' : 'border-gray-500'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    {opt.label}
+                    {saving === opt.id && <Loader2 size={11} className="animate-spin" />}
+                  </span>
+                  <span
+                    className={`text-[10px] ${keyConfigured ? 'text-emerald-300' : 'text-amber-300'}`}
+                  >
+                    {keyConfigured ? `${opt.keyLabel} set` : `${opt.keyLabel} missing`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{opt.description}</p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {status && (
+        <div
+          role={status.type === 'success' ? 'status' : 'alert'}
+          className={`text-xs ${status.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+        >
+          {status.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PluginApiKeysSection() {
   return (
     <div className="bg-gray-800 rounded-xl p-4 space-y-3">
@@ -495,6 +634,8 @@ export function PluginApiKeysSection() {
           Host keys used by plugin features that call provider APIs directly.
         </p>
       </div>
+
+      <TranscriptionProviderRow />
 
       {PLUGIN_API_KEYS.map((item) => (
         <PluginApiKeyRow key={item.id} item={item} />

@@ -539,7 +539,28 @@ describe('MessageInput voice transcription', () => {
     });
 
     await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
-    expect(onFileError.mock.calls[0][0]).toMatch(/too long|25 ?mb/i);
+    expect(onFileError.mock.calls[0][0]).toMatch(/too long|too large/i);
+  });
+
+  it('surfaces the server hint on 415 (provider cannot read this format)', async () => {
+    ft = installFetchStatus(415, {
+      error: 'Gemini cannot transcribe audio/webm audio',
+      provider: 'gemini',
+      hint: 'Switch the transcription provider to OpenAI, or record in OGG / MP3 / WAV / FLAC.',
+    });
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
+    expect(onFileError.mock.calls[0][0]).toMatch(/switch the transcription provider/i);
+    expect(screen.getByRole('textbox').value).toBe('');
   });
 
   it('handles network errors with a retry-able toast', async () => {

@@ -370,13 +370,35 @@ export default function MessageInput({
           signal: controller.signal,
         });
         if (res.status === 501) {
+          let hint = '';
+          try {
+            hint = (await res.json())?.hint || '';
+          } catch {
+            /* non-JSON body */
+          }
           reportTranscribeError(
-            'Voice transcription not configured. Ask your admin to set the OpenAI API key in Account settings.',
+            hint ||
+              'Voice transcription not configured. Ask your admin to set the API key in Account settings.',
+          );
+          return;
+        }
+        if (res.status === 415) {
+          // Most common cause: the Gemini provider is selected but the browser
+          // recorded WebM/MP4, which Gemini can't read. Surface the server hint.
+          let hint = '';
+          try {
+            hint = (await res.json())?.hint || '';
+          } catch {
+            /* non-JSON body */
+          }
+          reportTranscribeError(
+            hint ||
+              "This audio format isn't supported by the selected transcription provider. Switch the provider in Settings → Account.",
           );
           return;
         }
         if (res.status === 413) {
-          reportTranscribeError('Recording is too long (max 25 MB). Try a shorter clip.');
+          reportTranscribeError('Recording is too long. Try a shorter clip.');
           return;
         }
         if (!res.ok) {

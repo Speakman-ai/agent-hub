@@ -15,7 +15,11 @@ vi.mock('../utils/connection.js', () => ({
   getAuthHeaders: vi.fn(() => ({})),
 }));
 
-import AccountSection, { PluginApiKeysSection, roleOptionsFor } from './AccountSection.jsx';
+import AccountSection, {
+  PluginApiKeysSection,
+  TranscriptionProviderRow,
+  roleOptionsFor,
+} from './AccountSection.jsx';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
 beforeEach(() => {
@@ -41,6 +45,21 @@ function jsonResponse(body, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+// URL+method-aware fetch mock. Order-independent so the several on-mount loads
+// inside PluginApiKeysSection (transcription provider, gemini auth, openai key)
+// can fire in any sequence without the test caring.
+function mockFetchByUrl(handlers) {
+  const fetchMock = vi.fn(async (url, init = {}) => {
+    const u = String(url);
+    const method = (init.method || 'GET').toUpperCase();
+    const handler = handlers.find((h) => h.match(u, method));
+    if (!handler) throw new Error(`unhandled fetch: ${method} ${u}`);
+    return typeof handler.response === 'function' ? handler.response(u, init) : handler.response;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
 }
 
 describe('roleOptionsFor', () => {
@@ -146,16 +165,35 @@ describe('AccountSection — Add user button visibility', () => {
   });
 });
 
+// Shared fetch handlers for the on-mount loads inside PluginApiKeysSection.
+function pluginSectionHandlers(extra = []) {
+  return [
+    {
+      match: (u, m) => u.endsWith('/api/config') && m === 'GET',
+      response: () =>
+        jsonResponse({
+          openaiApiKey: '',
+          openaiApiKeySet: false,
+          geminiApiKeySet: false,
+          transcriptionProvider: 'openai',
+        }),
+    },
+    {
+      match: (u, m) => u.includes('/api/config/gemini-auth') && m === 'GET',
+      response: () =>
+        jsonResponse({
+          apiKey: { configured: false, source: null, masked: null },
+          activeMethod: 'none',
+          oauth: { loggedIn: null },
+        }),
+    },
+    ...extra,
+  ];
+}
+
 describe('PluginApiKeysSection', () => {
   it('groups plugin API keys and describes what each provider powers', async () => {
-    mockFetchSequence([
-      jsonResponse({
-        apiKey: { configured: false, source: null, masked: null },
-        activeMethod: 'none',
-        oauth: { loggedIn: null },
-      }),
-      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
-    ]);
+    mockFetchByUrl(pluginSectionHandlers());
 
     render(<PluginApiKeysSection />);
 
@@ -168,18 +206,19 @@ describe('PluginApiKeysSection', () => {
         'Plugin use: voice transcription only. Also used for generated session titles.',
       ),
     ).toBeInTheDocument();
+    // The provider selector sits at the top of the section.
+    expect(screen.getByText('Voice transcription provider')).toBeInTheDocument();
   });
 
   it('saves the host OpenAI API key through PATCH /api/config', async () => {
-    const fetchMock = mockFetchSequence([
-      jsonResponse({
-        apiKey: { configured: false, source: null, masked: null },
-        activeMethod: 'none',
-        oauth: { loggedIn: null },
-      }),
-      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
-      jsonResponse({ ok: true, updated: { openaiApiKey: '••••••••' } }),
-    ]);
+    const fetchMock = mockFetchByUrl(
+      pluginSectionHandlers([
+        {
+          match: (u, m) => u.endsWith('/api/config') && m === 'PATCH',
+          response: () => jsonResponse({ ok: true, updated: { openaiApiKey: '••••••••' } }),
+        },
+      ]),
+    );
 
     render(<PluginApiKeysSection />);
 
@@ -203,15 +242,14 @@ describe('PluginApiKeysSection', () => {
   });
 
   it('saves the host Gemini API key through the Gemini auth endpoint', async () => {
-    const fetchMock = mockFetchSequence([
-      jsonResponse({
-        apiKey: { configured: false, source: null, masked: null },
-        activeMethod: 'none',
-        oauth: { loggedIn: null },
-      }),
-      jsonResponse({ openaiApiKey: '', openaiApiKeySet: false }),
-      jsonResponse({ ok: true, configured: true, masked: '••••••••test' }),
-    ]);
+    const fetchMock = mockFetchByUrl(
+      pluginSectionHandlers([
+        {
+          match: (u, m) => u.includes('/api/config/gemini-auth/api-key') && m === 'POST',
+          response: () => jsonResponse({ ok: true, configured: true, masked: '••••••••test' }),
+        },
+      ]),
+    );
 
     render(<PluginApiKeysSection />);
 
@@ -232,5 +270,95 @@ describe('PluginApiKeysSection', () => {
       ),
     );
     expect(await screen.findByRole('status')).toHaveTextContent('Saved');
+  });
+});
+
+describe('TranscriptionProviderRow', () => {
+  it('renders the current provider and per-provider key status from config', async () => {
+    mockFetchByUrl([
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'GET',
+        response: () =>
+          jsonResponse({
+            transcriptionProvider: 'gemini',
+            openaiApiKeySet: true,
+            geminiApiKeySet: false,
+          }),
+      },
+    ]);
+
+    render(<TranscriptionProviderRow />);
+
+    const geminiOption = await screen.findByRole('radio', { name: /Google Gemini/i });
+    expect(geminiOption).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /OpenAI Whisper/i })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    // Selected provider's key is missing → warn; the other is set.
+    expect(screen.getByText('Gemini API key missing')).toBeInTheDocument();
+    expect(screen.getByText('OpenAI API key set')).toBeInTheDocument();
+  });
+
+  it('persists a new provider choice through PATCH /api/config', async () => {
+    const fetchMock = mockFetchByUrl([
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'GET',
+        response: () =>
+          jsonResponse({
+            transcriptionProvider: 'openai',
+            openaiApiKeySet: true,
+            geminiApiKeySet: true,
+          }),
+      },
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'PATCH',
+        response: () => jsonResponse({ ok: true, updated: { transcriptionProvider: 'gemini' } }),
+      },
+    ]);
+
+    render(<TranscriptionProviderRow />);
+
+    const geminiOption = await screen.findByRole('radio', { name: /Google Gemini/i });
+    fireEvent.click(geminiOption);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/config',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ transcriptionProvider: 'gemini' }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(geminiOption).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('reverts the selection when the save fails', async () => {
+    mockFetchByUrl([
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'GET',
+        response: () =>
+          jsonResponse({
+            transcriptionProvider: 'openai',
+            openaiApiKeySet: true,
+            geminiApiKeySet: true,
+          }),
+      },
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'PATCH',
+        response: () => jsonResponse({ error: 'boom' }, 500),
+      },
+    ]);
+
+    render(<TranscriptionProviderRow />);
+
+    const openaiOption = await screen.findByRole('radio', { name: /OpenAI Whisper/i });
+    const geminiOption = screen.getByRole('radio', { name: /Google Gemini/i });
+    fireEvent.click(geminiOption);
+
+    await screen.findByRole('alert');
+    // Optimistic update rolled back to the original provider.
+    expect(openaiOption).toHaveAttribute('aria-checked', 'true');
   });
 });
