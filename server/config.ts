@@ -581,6 +581,14 @@ export function buildSpawnEnv(
   } else {
     delete env.GEMINI_API_KEY;
   }
+  // Recent Gemini CLI versions gate execution behind a "trusted folders" prompt
+  // that cannot render in our headless spawns, so every non-interactive run
+  // (chat, one-shot, cron, heartbeat, finalize) dies with
+  // "Gemini CLI is not running in a trusted directory". Auto-approve the
+  // workspace for the spawn the same way `--skip-trust` would. Only the gemini
+  // binary reads this var; other engines ignore it. See
+  // https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments
+  env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
   const codexApiKey = presentString(override?.codexApiKey);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the

@@ -163,6 +163,26 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     expect(env.GEMINI_API_KEY).toBe('gem-host-only');
   });
 
+  it('always sets GEMINI_CLI_TRUST_WORKSPACE=true so headless Gemini spawns clear the trusted-folder gate', () => {
+    // Regression: recent Gemini CLI versions refuse to run with
+    // "Gemini CLI is not running in a trusted directory" in non-interactive
+    // spawns (crons/heartbeats fired twice daily). The env var must be set
+    // regardless of whether a Gemini key is configured.
+    const withKey = buildSpawnEnv({ ...config, geminiApiKey: 'gem-host' });
+    expect(withKey.GEMINI_CLI_TRUST_WORKSPACE).toBe('true');
+
+    const prevGemini = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const noKey = buildSpawnEnv({ ...config, geminiApiKey: null });
+      expect(noKey.GEMINI_API_KEY).toBeUndefined();
+      expect(noKey.GEMINI_CLI_TRUST_WORKSPACE).toBe('true');
+    } finally {
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+    }
+  });
+
   it('user CODEX_API_KEY fans out to OPENAI_API_KEY + CODEX_API_KEY', () => {
     const env = buildSpawnEnv(config, { userOverride: { codexApiKey: 'sk-codex-user' } });
     expect(env.CODEX_API_KEY).toBe('sk-codex-user');
