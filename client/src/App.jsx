@@ -4246,63 +4246,44 @@ export default function App() {
                                     agentName={streamingAgent?.agentName}
                                   />
                                 )}
-                                {streamingMsgId &&
-                                streamingAgent &&
-                                streamingAgent.agentId !== activeAgentId ? (
-                                  <div className="flex justify-start mb-4">
-                                    <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
-                                      <div className="flex items-center gap-2 mb-1">
-                                        <span
-                                          className="w-2 h-2 rounded-full"
-                                          style={{ backgroundColor: streamingAgent.agentColor }}
-                                        />
-                                        <span className="text-xs text-gray-500 font-medium">
-                                          {streamingAgent.agentName}
-                                        </span>
-                                        <span className="text-xs text-gray-600 animate-pulse">
-                                          streaming…
-                                        </span>
-                                      </div>
-                                      <div className="text-sm text-gray-300 whitespace-pre-wrap">
-                                        {streamingContent}
-                                        <span className="inline-block w-2 h-4 bg-gray-500 animate-pulse ml-0.5" />
-                                      </div>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  streamingMsgId && (
-                                    <SessionTail
-                                      key={streamingMsgId}
-                                      message={{
-                                        id: streamingMsgId,
-                                        role: 'assistant',
-                                        engine: streamingEngine,
-                                        model: sessionModel,
-                                        content: streamingContent,
-                                      }}
-                                      events={eventsByMessage[streamingMsgId]}
-                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
-                                      streaming
-                                      onInterrupt={handleCancel}
-                                      onAskSubmit={handleAskSubmit}
-                                      askSubmittedIds={askSubmitted}
-                                      fromAgent={activeAgent}
-                                      agents={agents}
-                                      sessionHandoffs={sessionHandoffs}
-                                      sessionDelegations={delegations[activeSessionId]}
-                                      delegationDispatchError={
-                                        delegationDispatchErrors[activeSessionId]
-                                      }
-                                      onOpenSession={handleOpenHandoffSession}
-                                      browserScreenshots={
-                                        activeSessionId
-                                          ? (browserScreensBySession[activeSessionId]?.[
-                                              streamingMsgId
-                                            ] ?? {})
-                                          : {}
-                                      }
-                                    />
-                                  )
+                                {/* Streaming assistant turn — always render via
+                                    SessionTail (Cursor-style thin stripe). The legacy
+                                    heavy grey cross-agent bubble was removed from web:
+                                    it mistriggered whenever the streaming agent differed
+                                    from the active agent and dumped raw narration text.
+                                    Mobile keeps its own StreamingMessage bubble. */}
+                                {streamingMsgId && (
+                                  <SessionTail
+                                    key={streamingMsgId}
+                                    message={{
+                                      id: streamingMsgId,
+                                      role: 'assistant',
+                                      engine: streamingEngine,
+                                      model: sessionModel,
+                                      content: streamingContent,
+                                    }}
+                                    events={eventsByMessage[streamingMsgId]}
+                                    agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                    streaming
+                                    onInterrupt={handleCancel}
+                                    onAskSubmit={handleAskSubmit}
+                                    askSubmittedIds={askSubmitted}
+                                    fromAgent={activeAgent}
+                                    agents={agents}
+                                    sessionHandoffs={sessionHandoffs}
+                                    sessionDelegations={delegations[activeSessionId]}
+                                    delegationDispatchError={
+                                      delegationDispatchErrors[activeSessionId]
+                                    }
+                                    onOpenSession={handleOpenHandoffSession}
+                                    browserScreenshots={
+                                      activeSessionId
+                                        ? (browserScreensBySession[activeSessionId]?.[
+                                            streamingMsgId
+                                          ] ?? {})
+                                        : {}
+                                    }
+                                  />
                                 )}
                                 {doneVerifyLogBySession[activeSessionId] && (
                                   <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">

@@ -258,7 +258,14 @@ describe('App — interrupt queued message with persisted attachments', () => {
     expect(api.uploadFile).not.toHaveBeenCalled();
   });
 
-  it('replaces a stale reviewer streaming label from the active task snapshot', async () => {
+  // The legacy heavy grey "cross-agent" streaming bubble (which rendered the
+  // *other* agent's name as a `text-gray-500` label whenever the streaming
+  // agent differed from the active agent) was retired from the web client —
+  // it kept mistriggering. Web now always streams through <SessionTail/>, whose
+  // header is the generic "Assistant" identity. This guards that a cross-agent
+  // reviewer stream never resurrects a grey "Reviewer" streaming label, while
+  // the active-tasks-snapshot swap into the primary agent's output still works.
+  it('never renders a grey cross-agent streaming label (retired bubble)', async () => {
     localStorage.setItem('activeAgentId', 'agent-1');
 
     render(<App />);
@@ -277,6 +284,7 @@ describe('App — interrupt queued message with persisted attachments', () => {
     await screen.findByText('follow-up while streaming');
     await waitFor(() => expect(typeof ctl.onMessage).toBe('function'));
 
+    // A reviewer (cross-agent) begins streaming in the active session.
     await act(async () => {
       ctl.onMessage({
         type: 'thinking',
@@ -288,8 +296,10 @@ describe('App — interrupt queued message with persisted attachments', () => {
         engine: 'claude-code',
       });
     });
-    await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(1));
+    // No grey "Reviewer" streaming label — the bubble is gone.
+    await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(0));
 
+    // The active-tasks snapshot swaps in the primary agent's stream.
     await act(async () => {
       ctl.onMessage({
         type: 'active-tasks-snapshot',
