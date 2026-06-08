@@ -1853,6 +1853,122 @@ components:
       required:
         - title
       description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
+    CodeSearchResult:
+      type: object
+      properties:
+        filePath:
+          type: string
+        chunkIdx:
+          type: integer
+        startLine:
+          type: integer
+        endLine:
+          type: integer
+        text:
+          type: string
+        score:
+          type: number
+        ftsScore:
+          type: number
+        semanticScore:
+          type: number
+        snippet:
+          type: string
+      required:
+        - filePath
+        - chunkIdx
+        - startLine
+        - endLine
+        - text
+        - score
+      description: A single chunk-level code search hit with a citation range.
+    CodeSearchResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - hybrid
+            - semantic
+            - fts
+        query:
+          type: string
+        geminiConfigured:
+          type: boolean
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CodeSearchResult"
+      required:
+        - mode
+        - geminiConfigured
+        - results
+      description: Code search envelope.
+    CodeIndexResult:
+      type: object
+      properties:
+        projectId:
+          type: string
+        root:
+          type: string
+        scanned:
+          type: integer
+        indexed:
+          type: integer
+        skipped:
+          type: integer
+        removed:
+          type: integer
+        chunks:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              file:
+                type: string
+              error:
+                type: string
+            required:
+              - file
+              - error
+        geminiConfigured:
+          type: boolean
+        truncated:
+          type: boolean
+          description: True when the scan was capped by maxFiles; pruning was skipped.
+      required:
+        - projectId
+        - root
+        - scanned
+        - indexed
+        - skipped
+        - removed
+        - chunks
+        - errors
+        - geminiConfigured
+        - truncated
+      description: Per-run code indexing report.
+    CodeIndexStatus:
+      type: object
+      properties:
+        chunks:
+          type: integer
+        geminiConfigured:
+          type: boolean
+      required:
+        - chunks
+        - geminiConfigured
+      description: Code index status for a project.
+    CodeRagErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
     ConfigErrorResponse:
       type: object
       properties:
@@ -8816,6 +8932,149 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BugReportsErrorResponse"
+  /api/projects/{projectId}/code-index:
+    post:
+      tags:
+        - Code RAG
+      summary: Index (or incrementally re-index) the project source tree
+      description: "Walks the project checkout (`project.cwd`), embeds eligible source files into chunk-level vectors, and refreshes the FTS index. Idempotent: unchanged files (matched by content hash) are skipped and deleted files are pruned (pruning is skipped when the scan is capped by `maxFiles`, i.e. `truncated: true`). Invalid `maxFiles` (non-positive or > 20000) returns 400. Returns 503 when no Gemini embedding key is configured."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxFiles:
+                  type: integer
+                  minimum: 0
+                  exclusiveMinimum: true
+                  maximum: 20000
+      responses:
+        "200":
+          description: Indexing report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeIndexResult"
+        "400":
+          description: Request body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+        "500":
+          description: Indexing error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+        "503":
+          description: Gemini embedding key not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+  /api/projects/{projectId}/code-index/status:
+    get:
+      tags:
+        - Code RAG
+      summary: Code index status
+      description: Returns the number of indexed chunks for the project and whether Gemini is configured.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeIndexStatus"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+  /api/projects/{projectId}/code-search:
+    get:
+      tags:
+        - Code RAG
+      summary: Search indexed project code (hybrid / semantic / fts)
+      description: Defaults to hybrid mode. Falls back to pure FTS when the Gemini key is missing or the query embedding fails. Returns an empty `results` array for blank queries. Invalid `?limit=` (non-numeric) and unknown `?mode=` values return 400.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+            enum:
+              - hybrid
+              - semantic
+              - fts
+          required: false
+          name: mode
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Search envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeSearchResponse"
+        "400":
+          description: Query parameter validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
+        "500":
+          description: Underlying search or embedding error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeRagErrorResponse"
   /api/config:
     get:
       tags:

@@ -37,6 +37,8 @@ export interface SessionRow {
   wiki_hybrid_rag_budget_version?: number | null;
   /** Host ReAct `web` tool: number of Serper calls consumed this session. */
   web_search_calls_used?: number | null;
+  /** Number of code-RAG retrieval calls consumed this session (hard budget). */
+  code_rag_consumed?: number | null;
   cron_id: number | null;
   created_at: string;
   updated_at: string;
@@ -1003,6 +1005,7 @@ export interface Stmts {
   updateSessionWikiHybridRagConsumed: Stmt;
   updateSessionWikiHybridRagBudget: Stmt;
   updateSessionWebSearchCallsUsed: Stmt;
+  updateSessionCodeRagConsumed: Stmt;
   updateSessionTaskState: Stmt;
   updateSessionOrchestration: Stmt;
   clearSessionChangesReady: Stmt;
@@ -1273,6 +1276,17 @@ export interface Stmts {
   deleteWikiEmbeddingsByPage: Stmt;
   upsertWikiEmbedding: Stmt;
   countWikiEmbeddingsByPage: Stmt;
+
+  // Code embeddings (code-RAG)
+  getCodeChunkRowidsByFile: Stmt;
+  deleteCodeChunksByFile: Stmt;
+  deleteCodeFtsByRowid: Stmt;
+  insertCodeChunk: Stmt;
+  insertCodeFts: Stmt;
+  getCodeEmbeddingsByProject: Stmt;
+  getCodeFileHashes: Stmt;
+  getDistinctCodeFiles: Stmt;
+  countCodeChunksByProject: Stmt;
 
   // Threads
   getThreadsByProject: Stmt;

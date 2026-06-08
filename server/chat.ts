@@ -127,6 +127,7 @@ import {
   effectiveWikiHybridRagUsedCount,
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
+import { runCodeRagForUserTurn, MAX_CODE_RAG_CALLS_PER_SESSION } from './code-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
 import {
   pickTurnSessionTitle,
@@ -2194,6 +2195,36 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           } catch (err: unknown) {
             const m = err instanceof Error ? err.message : String(err);
             console.error(`[wiki-rag] failed to persist consumption flag: ${m}`);
+          }
+        }
+
+        // Code-RAG: hybrid retrieval over the project's indexed source. No-ops
+        // (no embedding call) unless the project has been indexed and budget
+        // remains. Mirrors the wiki-RAG consumption accounting.
+        const codeRag = await runCodeRagForUserTurn(projectId, content, {
+          codeRagUsedCount: session!.code_rag_consumed ?? 0,
+          maxCallsPerSession: MAX_CODE_RAG_CALLS_PER_SESSION,
+          slashSkillActive: !!slashResult,
+        });
+        if (codeRag.promptSuffix) {
+          enrichedPrompt += codeRag.promptSuffix;
+        }
+        if (codeRag.logWarning) {
+          console.warn(
+            `[code-rag] retrieval failed for session ${sessionId}: ${codeRag.logWarning}`,
+          );
+        }
+        if (codeRag.shouldIncrementCodeRagUsage) {
+          try {
+            const nextCount = Math.min(
+              (session!.code_rag_consumed ?? 0) + 1,
+              MAX_CODE_RAG_CALLS_PER_SESSION,
+            );
+            stmts.updateSessionCodeRagConsumed.run(nextCount, sessionId);
+            session!.code_rag_consumed = nextCount;
+          } catch (err: unknown) {
+            const m = err instanceof Error ? err.message : String(err);
+            console.error(`[code-rag] failed to persist consumption counter: ${m}`);
           }
         }
       }

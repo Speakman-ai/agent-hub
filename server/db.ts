@@ -1133,6 +1133,14 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN web_search_calls_used INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Monotonic per-session counter bounding code-RAG retrievals (each costs one
+  // embedding call). New column — no legacy gate to migrate.
+  try {
+    db.prepare('SELECT code_rag_consumed FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN code_rag_consumed INTEGER NOT NULL DEFAULT 0');
+  }
+
   // 0 = legacy wiki hybrid gate (consumed was 0/1); 1 = monotonic call counter per session.
   try {
     db.prepare('SELECT wiki_hybrid_rag_budget_version FROM sessions LIMIT 1').get();
@@ -1784,6 +1792,43 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_wiki_embeddings_project ON wiki_embeddings(project_id);
   `);
 
+  // Code embeddings — chunk-level vectors for semantic/hybrid search over a
+  // project's source tree (code-RAG). One row per (project, file, chunk). The
+  // `embedding` BLOB is a raw Float32Array; `file_hash` is the SHA-1 of the file
+  // content so re-indexing can skip unchanged files. `start_line`/`end_line`
+  // carry the 1-based citation range. Owned by `server/code-embeddings.ts`.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS code_chunks (
+      project_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      chunk_idx INTEGER NOT NULL,
+      chunk_text TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      file_hash TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (project_id, file_path, chunk_idx)
+    );
+    CREATE INDEX IF NOT EXISTS idx_code_chunks_project ON code_chunks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(project_id, file_path);
+  `);
+
+  // FTS5 keyword index for code chunks. Rowid is kept aligned with
+  // code_chunks.rowid (same trick as wiki_pages_fts) and maintained manually
+  // from `server/code-embeddings.ts` inside the per-file replace transaction.
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+        file_path, chunk_text, project_id UNINDEXED, chunk_idx UNINDEXED,
+        content_rowid='rowid'
+      );
+    `);
+  } catch (e: unknown) {
+    console.warn('[code-rag] FTS5 creation failed (may already exist):', (e as Error).message);
+  }
+
   // Workflow builder (MVP): definitions, steps, and execution rows. DDL is
   // shared with workflows-schema.test.ts via workflows-schema.ts.
   db.exec(WORKFLOWS_SCHEMA);
@@ -2169,6 +2214,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionWebSearchCallsUsed: db.prepare(
       "UPDATE sessions SET web_search_calls_used = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionCodeRagConsumed: db.prepare(
+      "UPDATE sessions SET code_rag_consumed = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionOrchestration: db.prepare(
       "UPDATE sessions SET orchestration_phase = ?, orchestration_meta = ?, updated_at = datetime('now') WHERE id = ?",
@@ -3006,6 +3054,37 @@ function initDb(dataDir: string): void {
     ),
     countWikiEmbeddingsByPage: db.prepare(
       'SELECT COUNT(*) as n FROM wiki_embeddings WHERE page_id = ?',
+    ),
+
+    // Code embeddings (code-RAG). Rowid alignment with code_chunks_fts is
+    // maintained in code-embeddings.ts via the rowids returned here.
+    getCodeChunkRowidsByFile: db.prepare(
+      'SELECT rowid FROM code_chunks WHERE project_id = ? AND file_path = ?',
+    ),
+    deleteCodeChunksByFile: db.prepare(
+      'DELETE FROM code_chunks WHERE project_id = ? AND file_path = ?',
+    ),
+    deleteCodeFtsByRowid: db.prepare('DELETE FROM code_chunks_fts WHERE rowid = ?'),
+    insertCodeChunk: db.prepare(
+      `INSERT INTO code_chunks
+         (project_id, file_path, chunk_idx, chunk_text, start_line, end_line, file_hash, embedding, model)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    insertCodeFts: db.prepare(
+      'INSERT INTO code_chunks_fts (rowid, file_path, chunk_text, project_id) VALUES (?, ?, ?, ?)',
+    ),
+    getCodeEmbeddingsByProject: db.prepare(
+      `SELECT rowid, file_path, chunk_idx, chunk_text, start_line, end_line, embedding, model
+       FROM code_chunks WHERE project_id = ?`,
+    ),
+    getCodeFileHashes: db.prepare(
+      'SELECT file_path, file_hash FROM code_chunks WHERE project_id = ? GROUP BY file_path',
+    ),
+    getDistinctCodeFiles: db.prepare(
+      'SELECT DISTINCT file_path FROM code_chunks WHERE project_id = ?',
+    ),
+    countCodeChunksByProject: db.prepare(
+      'SELECT COUNT(*) as n FROM code_chunks WHERE project_id = ?',
     ),
 
     // Threads
