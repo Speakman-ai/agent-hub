@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
+  describeWorktreeComposePaths,
   missingWorktreeComposePaths,
   parseComposeBuildContexts,
   waitForWorktreeComposeReady,
@@ -44,6 +45,22 @@ describe('missingWorktreeComposePaths', () => {
   });
 });
 
+describe('describeWorktreeComposePaths', () => {
+  it('reports the exact paths the Hub process checks', () => {
+    expect(
+      describeWorktreeComposePaths('/host/wt', 'compose.preview.yml', {
+        composeFileDir: '/container/wt',
+        buildContextDir: '/host/wt',
+      }),
+    ).toEqual({
+      composePath: '/container/wt/compose.preview.yml',
+      composeRoot: '/container/wt',
+      buildRoot: '/host/wt',
+      worktreeDir: '/host/wt',
+    });
+  });
+});
+
 describe('waitForWorktreeComposeReady', () => {
   it('resolves when paths appear during polling', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wt-ready-'));
@@ -78,6 +95,23 @@ describe('waitForWorktreeComposeReady', () => {
         pollIntervalMs: 10,
         sleep: async () => {},
       }),
-    ).rejects.toThrow(/missing: backend/);
+    ).rejects.toThrow(
+      /missing: backend\. Checked compose file at .*compose\.preview\.yml; build contexts under .*wt-miss-/,
+    );
+  });
+
+  it('names the checked compose path when the compose file is not visible', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wt-no-compose-'));
+    await expect(
+      waitForWorktreeComposeReady({
+        worktreeDir: dir,
+        composeFile: 'compose.preview.yml',
+        timeoutMs: 30,
+        pollIntervalMs: 10,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(
+      /missing: compose\.preview\.yml\. Checked compose file at .*compose\.preview\.yml/,
+    );
   });
 });

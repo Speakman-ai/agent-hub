@@ -85,4 +85,22 @@ describe('startSessionPreview', () => {
       }),
     );
   });
+
+  it('returns 409 instead of falling back to project cwd before worktree provisioning finishes', async () => {
+    const broadcast = vi.fn();
+    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast,
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getPreviewComposeRuntime: () => composeRuntime,
+      getSession: () => ({ ...session, worktree_path: null }),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'Session workspace is not ready yet. Wait for workspace provisioning to finish.',
+      statusCode: 409,
+    });
+    expect(handlePreviewBlock).not.toHaveBeenCalled();
+  });
 });

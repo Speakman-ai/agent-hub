@@ -767,6 +767,7 @@ registerPath({
       content: jsonContent(z.object({ ok: z.literal(true), started: z.literal(true) })),
     },
     404: errorResponse('Session not found.'),
+    409: errorResponse('Session workspace is not ready yet.'),
     500: errorResponse('Unexpected server error.'),
   },
 });

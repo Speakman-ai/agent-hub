@@ -50,6 +50,28 @@ export function missingWorktreeComposePaths(
   return missing;
 }
 
+export interface WorktreeComposePathDiagnostics {
+  composePath: string;
+  composeRoot: string;
+  buildRoot: string;
+  worktreeDir: string;
+}
+
+export function describeWorktreeComposePaths(
+  worktreeDir: string,
+  composeFile: string,
+  opts?: { buildContextDir?: string; composeFileDir?: string },
+): WorktreeComposePathDiagnostics {
+  const composeRoot = opts?.composeFileDir ?? worktreeDir;
+  const buildRoot = opts?.buildContextDir ?? worktreeDir;
+  return {
+    composePath: path.join(composeRoot, composeFile),
+    composeRoot,
+    buildRoot,
+    worktreeDir,
+  };
+}
+
 export interface WaitForWorktreeComposeReadyOpts {
   /** Host path passed to `docker compose --project-directory`. */
   worktreeDir: string;
@@ -89,6 +111,11 @@ export async function waitForWorktreeComposeReady(
       composeFileDir: opts.composeFileDir,
       buildContextDir: opts.buildContextDir ?? opts.worktreeDir,
     });
+  const diagnostics = () =>
+    describeWorktreeComposePaths(opts.worktreeDir, opts.composeFile, {
+      composeFileDir: opts.composeFileDir,
+      buildContextDir: opts.buildContextDir ?? opts.worktreeDir,
+    });
 
   while (Date.now() < deadline) {
     const missing = check();
@@ -99,8 +126,11 @@ export async function waitForWorktreeComposeReady(
 
   const missing = check();
   if (missing.length > 0) {
+    const paths = diagnostics();
     throw new Error(
       `Worktree is not ready for compose build — missing: ${missing.join(', ')}. ` +
+        `Checked compose file at ${paths.composePath}; build contexts under ${paths.buildRoot}; ` +
+        `worktreeDir=${paths.worktreeDir}. ` +
         'Wait for session workspace provisioning to finish, then try again.',
     );
   }

@@ -8744,6 +8744,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Session workspace is not ready yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
         "500":
           description: Unexpected server error.
           content:

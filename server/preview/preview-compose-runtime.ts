@@ -914,7 +914,8 @@ export class PreviewComposeRuntime {
         onWaiting: (missing) => {
           this.appendComposeLog(
             groupId,
-            `[preview-compose] Waiting for worktree paths: ${missing.join(', ')}…`,
+            `[preview-compose] Waiting for worktree paths in ${worktreePath} ` +
+              `(compose file ${cfg.file}): ${missing.join(', ')}…`,
             'stdout',
           );
         },

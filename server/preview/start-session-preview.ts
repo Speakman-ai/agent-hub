@@ -2,6 +2,7 @@
  * Start a worktree preview for a chat session (user toolbar / API only).
  */
 import config from '../config.js';
+import { sessionUsesWorktree } from '../project-mode.js';
 import { effectiveCwdForSession } from '../routes/hooks.js';
 import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
@@ -55,6 +56,13 @@ export async function startSessionPreview(
   }
 
   const { project } = found;
+  if (sessionUsesWorktree(session) && !session.worktree_path) {
+    return {
+      ok: false,
+      error: 'Session workspace is not ready yet. Wait for workspace provisioning to finish.',
+      statusCode: 409,
+    };
+  }
   const worktreePath = effectiveCwdForSession(project.cwd, session);
   const route =
     typeof body?.route === 'string' && body.route.trim().startsWith('/')
