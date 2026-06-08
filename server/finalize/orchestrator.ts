@@ -781,6 +781,19 @@ export async function runFinalize(
     let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
     let lastStepOutcome: StepRunResult | null = null;
     let parsedCi: AnyCiConfig | null = null;
+    // §6 no-progress guard: the post-rebase HEAD snapshot the PREVIOUS
+    // iteration validated against. A fix dispatch can only change the
+    // outcome of review/checks by landing a new commit on the feature
+    // branch — which moves this snapshot. If a round re-enters the loop
+    // after a fix dispatch with the SAME post-rebase HEAD, the fixer
+    // produced no new commit on `opts.branch` (it committed to a
+    // different branch, or did not commit at all), so re-running review +
+    // checks would reproduce the identical verdict forever. We fail fast
+    // here instead of spinning to MAX_FIX_DISPATCH_LOOPS and burning the
+    // active-time budget. The push-gate `continue` path never reaches
+    // this guard with an unchanged HEAD: it only fires when HEAD MOVED,
+    // so the next snapshot necessarily differs.
+    let prevValidatedHead: string | null = null;
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
@@ -961,6 +974,34 @@ export async function runFinalize(
         conflict: (rebaseOutcome.conflictsDispatchedCount ?? 0) > 0,
         headSha: headValidatedAgainst,
       });
+
+      // ── No-progress guard (§6) ──────────────────────────────────────
+      // If we re-entered the loop after a fix dispatch but the post-rebase
+      // HEAD did not advance, the fixer landed no new commit on the
+      // feature branch. Re-running review + checks would reproduce the
+      // identical failure every round until the backstop / budget trips.
+      // Fail fast with a dedicated, non-retryable reason that names the
+      // branch so the operator can see the fixer committed to the wrong
+      // branch (or not at all).
+      if (prevValidatedHead !== null && headValidatedAgainst === prevValidatedHead) {
+        trace('terminal', {
+          result: 'fix_no_progress',
+          round: loopCount,
+          head: headValidatedAgainst,
+        });
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'fix_no_progress',
+          `fix dispatch ended without advancing HEAD on '${opts.branch}' ` +
+            `(still ${headValidatedAgainst}) — re-running checks would reproduce ` +
+            `the same result. The fixer may have committed to a different branch ` +
+            `or made no commit.`,
+          log,
+        );
+      }
+      prevValidatedHead = headValidatedAgainst;
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);

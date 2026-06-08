@@ -759,8 +759,17 @@ describe('runFinalize — failed step triggers fix dispatch', () => {
       .mockResolvedValueOnce(failedSteps)
       .mockResolvedValueOnce(STEPS_OK);
 
+    // The fix dispatch lands a real commit, so the post-rebase HEAD
+    // advances on iteration 2 (otherwise the no-progress guard fires).
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-pre-fix') // iter 1 baseline
+      .mockResolvedValueOnce('sha-post-fix') // iter 2 baseline (fix landed)
+      .mockResolvedValueOnce('sha-post-fix'); // iter 2 push gate (stable)
+
     const { deps } = makeDeps({
       runStepPhase: runSteps as never,
+      resolveHeadSha: resolveHead,
     });
 
     const result = await runFinalize(deps, baseOpts());
@@ -795,9 +804,19 @@ describe('runFinalize — reviewer requests changes triggers fix dispatch', () =
       .fn<(...args: unknown[]) => Promise<StepRunResult>>()
       .mockResolvedValue(STEPS_OK);
 
+    // The fix dispatch for the changes_requested verdict lands a real
+    // commit, advancing the post-rebase HEAD on iteration 2 (otherwise
+    // the no-progress guard fires before the second review runs).
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-pre-fix') // iter 1 baseline
+      .mockResolvedValueOnce('sha-post-fix') // iter 2 baseline (fix landed)
+      .mockResolvedValueOnce('sha-post-fix'); // iter 2 push gate (stable)
+
     const { deps } = makeDeps({
       runReviewerDispatch: runReview as never,
       runStepPhase: runSteps as never,
+      resolveHeadSha: resolveHead,
     });
 
     const result = await runFinalize(deps, baseOpts());
@@ -1291,9 +1310,19 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
         outputTail: ['still failing'],
       },
     };
+    // The fixer commits SOMETHING every round (HEAD advances) but never
+    // actually goes green — this exercises the MAX_FIX_DISPATCH_LOOPS
+    // backstop rather than the no-progress guard, which only fires when
+    // HEAD does NOT advance between rounds.
+    let headCounter = 0;
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockImplementation(() => Promise.resolve(`sha-round-${++headCounter}`));
+
     const { deps } = makeDeps({
       // Always fail steps so the loop dispatches a fix forever.
       runStepPhase: fakeRunSteps(failedSteps),
+      resolveHeadSha: resolveHead,
       // Generous budget so the backstop fires before the budget guard.
       budgetSeconds: 999_999_999,
     });
@@ -1304,6 +1333,50 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
       expect(result.failureReason).toBe('max_fix_iterations');
       expect(result.failureReason).not.toBe('review_failed');
     }
+  });
+
+  it('fails fast with fix_no_progress when a fix dispatch does not advance HEAD', async () => {
+    // The exact production trap (session b8dc59b7): the fixer's commits
+    // land on a DIFFERENT branch than the one finalize tracks, so the
+    // post-rebase HEAD never moves. Every round reproduces the identical
+    // failure. The no-progress guard must catch this at round 2 instead
+    // of spinning to MAX_FIX_DISPATCH_LOOPS and burning the budget.
+    const failedSteps: StepRunResult = {
+      status: 'failure',
+      stepResults: [],
+      activeSecondsBilled: 1,
+      failedStep: {
+        index: 1,
+        name: 'Test',
+        run: 'npm test',
+        exitCode: 1,
+        outputTail: ['still failing'],
+      },
+    };
+    const runSteps = fakeRunSteps(failedSteps);
+    // resolveHead returns the SAME sha every call → HEAD never advances.
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValue('frozen-sha');
+
+    const { deps } = makeDeps({
+      runStepPhase: runSteps,
+      resolveHeadSha: resolveHead,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('fix_no_progress');
+      expect(result.failureReason).not.toBe('max_fix_iterations');
+      expect(result.detail).toContain(baseOpts().branch);
+    }
+    // Round 1: steps run + fix dispatched. Round 2: rebase runs, the
+    // guard fires BEFORE steps re-run. So exactly one of each.
+    expect(runSteps).toHaveBeenCalledTimes(1);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1441,9 +1514,17 @@ describe('runFinalize — card lifecycle integration', () => {
       })
       .mockResolvedValueOnce(REVIEW_OK);
 
+    // Fix dispatch lands a commit → HEAD advances on iteration 2.
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-pre-fix')
+      .mockResolvedValueOnce('sha-post-fix')
+      .mockResolvedValueOnce('sha-post-fix');
+
     const { deps } = makeDeps({
       cardLifecycle: lifecycle,
       runReviewerDispatch: runReview as never,
+      resolveHeadSha: resolveHead,
     });
 
     const result = await runFinalize(deps, baseOpts());
@@ -1477,9 +1558,17 @@ describe('runFinalize — card lifecycle integration', () => {
       .mockResolvedValueOnce(failedSteps)
       .mockResolvedValueOnce(STEPS_OK);
 
+    // Fix dispatch lands a commit → HEAD advances on iteration 2.
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-pre-fix')
+      .mockResolvedValueOnce('sha-post-fix')
+      .mockResolvedValueOnce('sha-post-fix');
+
     const { deps } = makeDeps({
       cardLifecycle: lifecycle,
       runStepPhase: runSteps as never,
+      resolveHeadSha: resolveHead,
     });
 
     const result = await runFinalize(deps, baseOpts());
@@ -2476,7 +2565,18 @@ describe('runFinalize — decision trace', () => {
         threadCount: 0,
         activeSecondsBilled: 5,
       } satisfies ReviewerDispatchOutcome);
-    const { deps } = makeDeps({ runReviewerDispatch: review as never, log });
+    // Fix dispatch lands a commit → HEAD advances on iteration 2 so the
+    // no-progress guard does not short-circuit the second review pass.
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-pre-fix')
+      .mockResolvedValueOnce('sha-post-fix')
+      .mockResolvedValueOnce('sha-post-fix');
+    const { deps } = makeDeps({
+      runReviewerDispatch: review as never,
+      resolveHeadSha: resolveHead,
+      log,
+    });
 
     const result = await runFinalize(deps, baseOpts());
     expect(result.kind).toBe('ready_to_push');

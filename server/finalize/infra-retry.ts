@@ -66,6 +66,7 @@ export const CI_FAILURE_REASONS = [
   'no_diff_inputs',
   // Orchestrator-only terminal codes
   'max_fix_iterations',
+  'fix_no_progress',
   'combined_gate_invariant_violated',
   'cancelled',
 ] as const;

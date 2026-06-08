@@ -1,11 +1,87 @@
 #!/bin/sh
-# Finalize spawn guard — blocks `git push` when direct ship is not allowed.
+# Agent Hub spawn guard — wraps `git` for spawned session agents to:
+#   1. block branch creation / switching inside a session worktree
+#      (the one-session-one-branch invariant), and
+#   2. block `git push` when Finalize disallows direct ship.
+# Transparent passthrough for every other invocation.
 GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$GUARD_DIR/_finalize-ship-gate.sh"
 
 REAL_GIT="${AGENT_HUB_REAL_GIT:-git}"
 
+# ── (1) One-session-one-branch invariant ────────────────────────────
+# A session worktree is created once on a dedicated branch and the
+# session record, Finalize, the changes_ready indicator, and the push
+# step all key off it. Creating or switching branches inside the
+# worktree strands commits where the platform can never see them.
+# Active for any worktree-backed session (AGENT_HUB_PROTECT_SESSION_BRANCH=1),
+# regardless of whether Finalize CI is configured. Operator override:
+# AGENT_HUB_ALLOW_BRANCH_OPS=1.
+if [ "${AGENT_HUB_PROTECT_SESSION_BRANCH:-}" = "1" ] && [ "${AGENT_HUB_ALLOW_BRANCH_OPS:-}" != "1" ]; then
+  _blocked=""
+  case "$1" in
+    checkout)
+      for _a in "$@"; do
+        case "$_a" in
+          -b | -B)
+            _blocked="git checkout $_a"
+            break
+            ;;
+        esac
+      done
+      ;;
+    switch)
+      for _a in "$@"; do
+        case "$_a" in
+          -c | -C | --create | --force-create)
+            _blocked="git switch $_a"
+            break
+            ;;
+        esac
+      done
+      ;;
+    branch)
+      # `git branch <name>` creates a branch; read / delete / move / list
+      # / config forms are allowed. Detect a bare positional name with no
+      # management flag. (Do not `shift` — it would corrupt the exec below.)
+      _has_name=0
+      _is_mgmt=0
+      _i=0
+      for _a in "$@"; do
+        _i=$((_i + 1))
+        [ "$_i" -eq 1 ] && continue # skip the "branch" token itself
+        case "$_a" in
+          -d | -D | --delete | -m | -M | --move | -c | -C | --copy | -l | --list | -a | --all | -r | --remotes | --show-current | --edit-description | --set-upstream-to=* | -u | --unset-upstream | --contains | --no-contains | --merged | --no-merged | -v | -vv | --verbose | --format=* | --sort=* | --color* | --column* | --no-column | --points-at*)
+            _is_mgmt=1
+            ;;
+          -*) : ;; # any other flag: ignore
+          *) _has_name=1 ;;
+        esac
+      done
+      if [ "$_is_mgmt" = "0" ] && [ "$_has_name" = "1" ]; then
+        _blocked="git branch <new-branch>"
+      fi
+      ;;
+  esac
+  if [ -n "$_blocked" ]; then
+    _cur=$("$REAL_GIT" symbolic-ref --short HEAD 2>/dev/null) || _cur="your session branch"
+    [ -n "$_cur" ] || _cur="your session branch"
+    cat >&2 <<BR
+error: ${_blocked} blocked — Agent Hub sessions use exactly one branch.
+
+You are already on '${_cur}', the branch this session owns. Creating or
+switching branches inside a session worktree strands your commits where
+Finalize / push can never see them. Commit to the current branch instead;
+the platform handles push / PR / merge.
+
+(Operator override: set AGENT_HUB_ALLOW_BRANCH_OPS=1.)
+BR
+    exit 3
+  fi
+fi
+
+# ── (2) Direct-ship gate ────────────────────────────────────────────
 if [ "$1" = "push" ]; then
   _finalize_direct_ship_gate "git push" "git_push" || exit $?
 fi

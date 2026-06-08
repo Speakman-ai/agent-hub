@@ -99,35 +99,49 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Slack Bot Framework**: `@slack/bolt` for multi-agent Slack integration
 - **Cron Scheduling**: `node-cron` for automated task execution
 
-## Git Workflow — Worktree-First Development
+## Git Workflow — One Session, One Branch
 
-**All feature work MUST happen in worktrees. Never commit directly to main.**
+**The platform already created your branch. Do not create another one.**
+
+Every Agent Hub session with a worktree is a dedicated clone checked out on
+exactly one deterministic branch — `agent-hub/<agentId>/session-<id>` —
+created once by the platform (`server/worktree.ts`) and never switched for
+the life of the session. The session record, the Finalize Code Changes
+flow, the `changes_ready` indicator, and the push/PR step all key off that
+single branch. **Switching or creating a branch inside the worktree breaks
+that invariant**: Finalize validates whatever branch is checked out but
+pushes the recorded session branch, so a second branch silently strands
+your commits where Finalize can never see them (it then re-runs the same
+checks forever / fails with `fix_no_progress`).
 
 ### Standard Flow
-1. **Pull from main** → `git checkout main && git pull origin main` to get the latest
-2. **Create a feature branch** → `git checkout -b feature/<short-description>`
-3. **Build the environment** → `npm install` (or equivalent) if needed
-4. **Implement** — all edits, builds, and tests happen on the feature branch
-5. **Commit** to the feature branch — not to main
-6. **Push** the branch: `git push -u origin <branch-name>`
-7. **Open a PR** via `gh pr create`
-8. **Wait for checks to pass** and for the lead agent to review
-9. **Resolve any review comments** — fix, commit, push, repeat until clean
-10. **Human merges** — do NOT merge PRs yourself. A human will merge once satisfied.
+1. **You are already on the right branch.** Do not run `git checkout main`,
+   `git checkout -b ...`, `git switch -c ...`, or `git branch <new>`.
+2. **Build the environment** → `npm install` (or equivalent) if needed.
+3. **Implement** — all edits, builds, and tests happen on the current
+   session branch.
+4. **Rebase on latest** → `git fetch origin && git rebase origin/main`
+   (rebases the current branch; do not switch branches to do it).
+5. **Commit** to the current session branch.
+6. **Stop there.** Pushing, opening the PR, and merging are handled by the
+   platform's **Finalize Code Changes** flow / per-session automation — not
+   by you. See the "Agent Hub — Shipping" contract.
 
 ### Rules
-- When the user says "commit and push", commit to the **current feature branch** and push it — do NOT push to main
-- When the user says "make a PR", push the feature branch and create a PR against main
-- If no worktree exists yet for the current task, create one before making changes
-- Sub-agents (delegated work) must edit files in the **worktree directory**, not the main repo
-- **Never merge your own PR** — only humans merge to main
-- If you are the lead implementing a change, start a **separate self-review session** to review your own PR
+- **Never create or switch branches** in a session worktree — commit to the
+  branch you are already on.
+- When the user says "commit", commit to the **current session branch**.
+- Never commit directly to `main`, and never `git push origin main`.
+- **Never merge your own PR** — only humans merge to main.
+- Formal GitHub PR review is owned by the project's Reviewer agent.
 
 ### What NOT to Do
-- `git push origin main` for feature work
-- Editing files in the main repo and copying them around
-- Committing directly to main (only merge commits from PRs)
-- Merging PRs — leave that for the human
+- `git checkout -b feature/...` / `git switch -c ...` / `git branch <name>`
+  inside the worktree — this is the exact action that breaks Finalize.
+- `git checkout main` to "start fresh" — the session branch IS your branch.
+- `git push origin main` for feature work.
+- Editing files in the main repo and copying them around.
+- Merging PRs — leave that for the human.
 
 ## Kanban Card Hygiene — Done-State Contract
 

@@ -115,7 +115,7 @@ import {
   notifyFinalizeSessionTurnEnd,
   notifyFinalizeSessionSpawnFailed,
 } from './finalize/turn-end.js';
-import { applyFinalizeSpawnShipGuards } from './finalize/spawn-ship-guards.js';
+import { applySessionGitGuards } from './finalize/spawn-ship-guards.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 import {
   detectWikiRequestBlock,
@@ -3071,7 +3071,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
         mergeProjectAwsSpawnEnv(base, project, { configPath: projectAwsConfigPath });
-        applyFinalizeSpawnShipGuards(base, session!.worktree_path);
+        applySessionGitGuards(base, session!.worktree_path);
         return base;
       })();
 
