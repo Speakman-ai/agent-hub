@@ -1508,6 +1508,20 @@ export interface Stmts {
    */
   getActiveFinalizeRunForSession: Stmt;
   /**
+   * Most-recent in-flight `finalize_runs` row for a session + branch +
+   * mode + job-filter tuple, regardless of head SHA. Used at kickoff time
+   * to prevent automation from starting a second full cycle while the
+   * previous cycle is waiting for the session turn-end that will re-enter
+   * the loop on the new commit.
+   */
+  getActiveFinalizeRunForSessionBranchMode: Stmt;
+  /** Claim a short-lived Finalize kickoff slot before async orchestration setup. */
+  insertFinalizeKickoffClaim: Stmt;
+  /** Release a short-lived Finalize kickoff slot after the row is visible or kickoff aborts. */
+  deleteFinalizeKickoffClaim: Stmt;
+  /** Remove abandoned kickoff claims from crashed or killed kickoff attempts. */
+  pruneStaleFinalizeKickoffClaims: Stmt;
+  /**
    * Latest `finalize_runs` row for every session referenced by cards on a
    * given kanban board. Returns 0..N rows (one per distinct
    * `session_id` that has any finalize history). The board route

@@ -85,6 +85,10 @@ function makeStmts() {
   return {
     getFinalizeRun: { get: vi.fn() },
     getFinalizeRunByIdempotencyKey: { get: vi.fn() },
+    getActiveFinalizeRunForSessionBranchMode: { get: vi.fn() },
+    insertFinalizeKickoffClaim: { run: vi.fn(() => ({ changes: 1 })) },
+    deleteFinalizeKickoffClaim: { run: vi.fn() },
+    pruneStaleFinalizeKickoffClaims: { run: vi.fn() },
     getLatestFinalizeRunForSession: { get: vi.fn() },
     getKanbanCard: { get: vi.fn() },
     getKanbanBoard: { get: vi.fn() },
@@ -258,6 +262,81 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     });
   });
 
+  it('409 in_flight when a same-session branch run is already active on a different head', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
+    stmts.getActiveFinalizeRunForSessionBranchMode.get.mockReturnValue({
+      id: 'run-active-old-head',
+      status: 'dispatching',
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .expect(409);
+
+    expect(res.body).toMatchObject({
+      error: 'in_flight',
+      run_id: 'run-active-old-head',
+      status: 'dispatching',
+    });
+    expect(stmts.getActiveFinalizeRunForSessionBranchMode.get).toHaveBeenCalledWith(
+      'sess-1',
+      'feature/x',
+      'full',
+      null,
+      null,
+    );
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
+  it('409 in_flight when another kickoff holds the branch claim before its row is visible', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
+    stmts.getActiveFinalizeRunForSessionBranchMode.get
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ id: 'run-created-by-racer', status: 'queued' });
+    stmts.insertFinalizeKickoffClaim.run.mockReturnValue({ changes: 0 });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .expect(409);
+
+    expect(res.body).toMatchObject({
+      error: 'in_flight',
+      run_id: 'run-created-by-racer',
+      status: 'queued',
+    });
+    expect(stmts.insertFinalizeKickoffClaim.run).toHaveBeenCalledOnce();
+    expect(stmts.deleteFinalizeKickoffClaim.run).not.toHaveBeenCalled();
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
   it('200 reused when an existing terminal row matches the idempotency key', async () => {
     const { app, findProject, stmts } = makeApp();
     findProject.mockReturnValue({ id: 'proj-1' });
@@ -325,6 +404,8 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       card_id: 'card-1',
     });
     expect(runFinalize).toHaveBeenCalledOnce();
+    expect(stmts.insertFinalizeKickoffClaim.run).toHaveBeenCalledOnce();
+    expect(stmts.deleteFinalizeKickoffClaim.run).toHaveBeenCalledOnce();
   });
 });
 

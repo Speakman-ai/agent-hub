@@ -1,6 +1,7 @@
 /**
  * trigger-run.ts — shared Finalize run kickoff for card and session routes.
  */
+import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -38,9 +39,27 @@ const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunSta
 
 const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
 const ROW_VISIBILITY_POLL_MAX_ATTEMPTS = 15;
+const KICKOFF_CLAIM_TTL_MS = 5 * 60 * 1000;
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function kickoffClaimKey(args: {
+  sessionId: string;
+  branch: string;
+  mode: FinalizeRunMode;
+  jobFilterJson: string | null;
+}): string {
+  return createHash('sha256')
+    .update(args.sessionId)
+    .update('\0')
+    .update(args.branch)
+    .update('\0')
+    .update(args.mode)
+    .update('\0')
+    .update(args.jobFilterJson ?? '')
+    .digest('hex');
 }
 
 export type TriggerFinalizeRunResult =
@@ -130,65 +149,113 @@ async function kickoffFinalizeRun(
     return { kind: 'reused', runId: existing.id, status: existing.status };
   }
 
-  const orchestratorDeps = buildOrchestratorDeps(deps, card, project.id);
-  const ownerId = args.triggeredByUserId;
-  const baseBranch = await resolveFinalizeBaseBranchForCard({
-    card,
-    worktreePath: session.worktree_path,
-    getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
-  });
-  // Cancellation handle: the orchestrator honors this signal at every
-  // awaitable boundary. We register it under the run's id (once visible)
-  // so the HTTP cancel route can trip it across call stacks, halting the
-  // fix-dispatch loop and any in-flight reviewer turn.
-  const { signal, abort } = createFinalizeRunSignal();
-  let registeredRunId: string | null = null;
-  let settled = false;
-  const orchestratorPromise = runFinalize(orchestratorDeps, {
-    card,
-    project,
-    branch: session.worktree_branch,
-    headSha,
-    baseBranch,
-    worktreePath: session.worktree_path,
-    sessionId: session.id,
-    triggerSource: args.triggerSource,
-    triggeredByUserId: ownerId,
-    authorName: ownerId,
-    authorEmail: `${ownerId}@local`,
+  const activeForBranch = stmts.getActiveFinalizeRunForSessionBranchMode.get(
+    session.id,
+    session.worktree_branch,
     mode,
-    jobFilter,
-    signal,
-  });
-  orchestratorPromise
-    .catch((err: unknown) => {
-      console.warn(
-        `[finalize] background runFinalize threw for card=${card.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    })
-    .finally(() => {
-      settled = true;
-      if (registeredRunId) unregisterFinalizeRunAbort(registeredRunId);
-    });
-
-  for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
-    const created = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
-      | FinalizeRunRow
-      | undefined;
-    if (created) {
-      registeredRunId = created.id;
-      // The run may have already settled within this poll window — register
-      // then immediately reconcile so we never leak a dead entry.
-      registerFinalizeRunAbort(created.id, abort);
-      if (settled) unregisterFinalizeRunAbort(created.id);
-      return { kind: 'started', runId: created.id, status: created.status };
-    }
-    await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
+    jobFilter ? JSON.stringify(jobFilter) : null,
+    jobFilter ? JSON.stringify(jobFilter) : null,
+  ) as FinalizeRunRow | undefined;
+  if (activeForBranch) {
+    return { kind: 'in_flight', runId: activeForBranch.id, status: activeForBranch.status };
   }
 
-  return { kind: 'started', runId: '', status: 'queued' };
+  const jobFilterJson = jobFilter ? JSON.stringify(jobFilter) : null;
+  const claimKey = kickoffClaimKey({
+    sessionId: session.id,
+    branch: session.worktree_branch,
+    mode,
+    jobFilterJson,
+  });
+  stmts.pruneStaleFinalizeKickoffClaims.run(Date.now() - KICKOFF_CLAIM_TTL_MS);
+  const claimResult = stmts.insertFinalizeKickoffClaim.run(
+    claimKey,
+    session.id,
+    session.worktree_branch,
+    mode,
+    jobFilterJson,
+    Date.now(),
+  ) as { changes?: number };
+  if ((claimResult.changes ?? 0) === 0) {
+    for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
+      const active = stmts.getActiveFinalizeRunForSessionBranchMode.get(
+        session.id,
+        session.worktree_branch,
+        mode,
+        jobFilterJson,
+        jobFilterJson,
+      ) as FinalizeRunRow | undefined;
+      if (active) {
+        return { kind: 'in_flight', runId: active.id, status: active.status };
+      }
+      await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
+    }
+    return { kind: 'in_flight', runId: '', status: 'queued' };
+  }
+
+  try {
+    const orchestratorDeps = buildOrchestratorDeps(deps, card, project.id);
+    const ownerId = args.triggeredByUserId;
+    const baseBranch = await resolveFinalizeBaseBranchForCard({
+      card,
+      worktreePath: session.worktree_path,
+      getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+    });
+    // Cancellation handle: the orchestrator honors this signal at every
+    // awaitable boundary. We register it under the run's id (once visible)
+    // so the HTTP cancel route can trip it across call stacks, halting the
+    // fix-dispatch loop and any in-flight reviewer turn.
+    const { signal, abort } = createFinalizeRunSignal();
+    let registeredRunId: string | null = null;
+    let settled = false;
+    const orchestratorPromise = runFinalize(orchestratorDeps, {
+      card,
+      project,
+      branch: session.worktree_branch,
+      headSha,
+      baseBranch,
+      worktreePath: session.worktree_path,
+      sessionId: session.id,
+      triggerSource: args.triggerSource,
+      triggeredByUserId: ownerId,
+      authorName: ownerId,
+      authorEmail: `${ownerId}@local`,
+      mode,
+      jobFilter,
+      signal,
+    });
+    orchestratorPromise
+      .catch((err: unknown) => {
+        console.warn(
+          `[finalize] background runFinalize threw for card=${card.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      })
+      .finally(() => {
+        settled = true;
+        if (registeredRunId) unregisterFinalizeRunAbort(registeredRunId);
+      });
+
+    for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
+      const created = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
+        | FinalizeRunRow
+        | undefined;
+      if (created) {
+        registeredRunId = created.id;
+        // The run may have already settled within this poll window — register
+        // then immediately reconcile so we never leak a dead entry.
+        registerFinalizeRunAbort(created.id, abort);
+        if (settled) unregisterFinalizeRunAbort(created.id);
+        return { kind: 'started', runId: created.id, status: created.status };
+      }
+      await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
+    }
+
+    return { kind: 'started', runId: '', status: 'queued' };
+  } finally {
+    stmts.deleteFinalizeKickoffClaim.run(claimKey);
+  }
 }
 
 /** Background Finalize kickoff for automation (no HTTP req). */

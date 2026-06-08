@@ -722,6 +722,14 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
+    CREATE TABLE IF NOT EXISTS finalize_kickoff_claims (
+      claim_key TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      job_filter TEXT,
+      created_at INTEGER NOT NULL
+    );
 
     -- Reviewer threads — diff-anchored cold-eye-reviewer comments produced
     -- during the review phase of a Finalize run. Read-only at v0: the UI
@@ -3450,6 +3458,31 @@ function initDb(dataDir: string): void {
           AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
+    ),
+    getActiveFinalizeRunForSessionBranchMode: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND branch = ?
+          AND mode = ?
+          AND (
+            (job_filter IS NULL AND ? IS NULL)
+            OR job_filter = ?
+          )
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
+    ),
+    insertFinalizeKickoffClaim: db.prepare(
+      `INSERT OR IGNORE INTO finalize_kickoff_claims
+        (claim_key, session_id, branch, mode, job_filter, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    deleteFinalizeKickoffClaim: db.prepare(
+      `DELETE FROM finalize_kickoff_claims WHERE claim_key = ?`,
+    ),
+    pruneStaleFinalizeKickoffClaims: db.prepare(
+      `DELETE FROM finalize_kickoff_claims WHERE created_at < ?`,
     ),
     // Latest finalize run per (board-scoped) session. Returns one row per
     // distinct `session_id` that any card on `boardId` references *and*
