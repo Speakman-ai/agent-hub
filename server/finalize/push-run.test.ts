@@ -58,6 +58,8 @@ function makeDeps() {
         updateFinalizeRunPrUrl: { run: vi.fn() },
         getFinalizeRun: { get: vi.fn(() => ({ ...baseRun(), status: 'pushing' })) },
         getFinalizePushPeerForSessionHead: { get: vi.fn(() => undefined) },
+        getLatestChecksRunForSession: { get: vi.fn(() => baseRun()) },
+        getLatestReviewRunForSession: { get: vi.fn(() => baseRun()) },
         // Timeline-message writes (terminal block) need these.
         addMessage,
         touchSession: { run: vi.fn() },
@@ -426,6 +428,85 @@ describe('runFinalizePush validated head', () => {
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) {
       expect(outcome.error).toBe('head_sha_moved');
+    }
+  });
+
+  it('allows push when split checks and review runs validated the same current HEAD', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+    const checksRun = {
+      ...baseRun(),
+      id: 'run-checks',
+      mode: 'checks' as const,
+      reviewer_verdict: null,
+      validated_head_sha: 'split-head',
+    };
+    const reviewRun = {
+      ...baseRun(),
+      id: 'run-review',
+      mode: 'review' as const,
+      reviewer_verdict: 'approved' as const,
+      validated_head_sha: 'split-head',
+    };
+    (deps.stmts.getLatestChecksRunForSession.get as ReturnType<typeof vi.fn>).mockReturnValue(
+      checksRun,
+    );
+    (deps.stmts.getLatestReviewRunForSession.get as ReturnType<typeof vi.fn>).mockReturnValue(
+      reviewRun,
+    );
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: checksRun,
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('split-head'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr).toHaveBeenCalledOnce();
+    expect(deps.stmts.claimFinalizeRunPush.run).toHaveBeenCalledWith('run-checks', 'split-head');
+  });
+
+  it('rejects split phase push when the reviewer run validated a different HEAD', async () => {
+    const { deps } = makeDeps();
+    const checksRun = {
+      ...baseRun(),
+      id: 'run-checks',
+      mode: 'checks' as const,
+      reviewer_verdict: null,
+      validated_head_sha: 'current-head',
+    };
+    const reviewRun = {
+      ...baseRun(),
+      id: 'run-review',
+      mode: 'review' as const,
+      reviewer_verdict: 'approved' as const,
+      validated_head_sha: 'old-reviewed-head',
+    };
+    (deps.stmts.getLatestChecksRunForSession.get as ReturnType<typeof vi.fn>).mockReturnValue(
+      checksRun,
+    );
+    (deps.stmts.getLatestReviewRunForSession.get as ReturnType<typeof vi.fn>).mockReturnValue(
+      reviewRun,
+    );
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: checksRun,
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('current-head'),
+      pushAndCreatePr: vi.fn(),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe('reviewer_not_approved');
     }
   });
 });

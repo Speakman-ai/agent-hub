@@ -27,6 +27,7 @@ import { createPushAndCreatePr } from './push-and-create-pr.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timeline-message.js';
+import type { ReviewerVerdict } from './reviewer-dispatch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +42,36 @@ export function resolvePushGateBaseline(run: FinalizeRunRow, currentHead: string
   // persisted: trust the orchestrator gate and accept current HEAD.
   if (run.status === 'ready_to_push') return currentHead;
   return run.head_sha;
+}
+
+function finalizePhasePassed(run: FinalizeRunRow | undefined): run is FinalizeRunRow {
+  return run?.status === 'ready_to_push' || run?.status === 'pushed';
+}
+
+function resolveSessionPushGateSignals(args: {
+  stmts: Stmts;
+  run: FinalizeRunRow;
+  sessionId: string;
+  currentHead: string;
+}): { baselineSha: string; reviewerVerdict: ReviewerVerdict | null } {
+  const { stmts, run, sessionId, currentHead } = args;
+  const checksRun = stmts.getLatestChecksRunForSession.get(sessionId) as FinalizeRunRow | undefined;
+  const reviewRun = stmts.getLatestReviewRunForSession.get(sessionId) as FinalizeRunRow | undefined;
+
+  if (
+    finalizePhasePassed(checksRun) &&
+    finalizePhasePassed(reviewRun) &&
+    checksRun.validated_head_sha &&
+    checksRun.validated_head_sha === reviewRun.validated_head_sha &&
+    reviewRun.reviewer_verdict === 'approved'
+  ) {
+    return { baselineSha: checksRun.validated_head_sha, reviewerVerdict: 'approved' };
+  }
+
+  return {
+    baselineSha: resolvePushGateBaseline(run, currentHead),
+    reviewerVerdict: run.reviewer_verdict ?? 'changes_requested',
+  };
 }
 
 async function defaultResolveHeadSha(worktreePath: string): Promise<string> {
@@ -337,10 +368,15 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
 
   let validatedHeadSha = currentHead;
   if (!force) {
-    const baselineSha = resolvePushGateBaseline(run, currentHead);
+    const { baselineSha, reviewerVerdict } = resolveSessionPushGateSignals({
+      stmts: deps.stmts as Stmts,
+      run,
+      sessionId: session.id,
+      currentHead,
+    });
     const gate = evaluatePushGate({
       stepStatus: 'success',
-      reviewerVerdict: run.reviewer_verdict ?? 'changes_requested',
+      reviewerVerdict,
       headBeforePhases: baselineSha,
       headAtPushGate: currentHead,
     });
