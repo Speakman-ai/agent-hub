@@ -36,6 +36,7 @@ ahw/
 # Uploaded files
 server/uploads/
 .agent-hub-images/
+.agent-hub-preview/
 
 # Claude Code local settings (session-specific, may contain hooks/keys)
 .claude/settings.json

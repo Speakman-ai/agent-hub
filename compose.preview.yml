@@ -1,0 +1,51 @@
+services:
+  server:
+    image: ${AGENT_HUB_SERVER_IMAGE:-public.ecr.aws/h9t4v7h0/agent-hub:main}
+    restart: unless-stopped
+    user: '0:0'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - ./.agent-hub-preview/data:/data
+      - ./.agent-hub-preview/uploads:/app/server/uploads
+    environment:
+      - NODE_ENV=production
+      - AGENT_HUB_DATA_DIR=/data
+      - AGENT_HUB_PORT=3051
+      - AGENT_HUB_HOST=0.0.0.0
+      - HOME=/data
+      - AGENT_HUB_PREVIEW_HEALTH_HOST=${AGENT_HUB_PREVIEW_HEALTH_HOST:-host.docker.internal}
+      - AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=${AGENT_HUB_PREVIEW_READY_TIMEOUT_MS:-600000}
+      - AGENT_HUB_CODEX_DANGER_BYPASS=${AGENT_HUB_CODEX_DANGER_BYPASS:-true}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://localhost:3050}
+    expose:
+      - '3051'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:3051/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  client:
+    image: ${AGENT_HUB_SERVER_IMAGE:-public.ecr.aws/h9t4v7h0/agent-hub:main}
+    command:
+      [
+        'node',
+        '-e',
+        "const http=require('http'),fs=require('fs'),path=require('path');const root='/app/client/dist';const types={'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.json':'application/json'};http.createServer((req,res)=>{const u=new URL(req.url,'http://preview.local');if(u.pathname.startsWith('/api/')||u.pathname.startsWith('/uploads/')){const p=http.request({hostname:'server',port:3051,path:req.url,method:req.method,headers:req.headers},r=>{res.writeHead(r.statusCode||502,r.headers);r.pipe(res);});p.on('error',e=>{res.writeHead(502);res.end(e.message);});req.pipe(p);return;}let file=path.join(root,u.pathname==='/'?'index.html':u.pathname);if(!file.startsWith(root)){res.writeHead(403);res.end();return;}fs.stat(file,(err,st)=>{if(err||!st.isFile())file=path.join(root,'index.html');fs.readFile(file,(readErr,body)=>{if(readErr){res.writeHead(404);res.end('not found');return;}res.writeHead(200,{'content-type':types[path.extname(file)]||'application/octet-stream'});res.end(body);});});}).listen(80,'0.0.0.0');",
+      ]
+    restart: unless-stopped
+    environment:
+      - FRONTEND_PORT=${FRONTEND_PORT:-80}
+    depends_on:
+      server:
+        condition: service_healthy
+    expose:
+      - '80'
