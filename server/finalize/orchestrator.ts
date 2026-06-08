@@ -341,6 +341,16 @@ export interface OrchestratorOptions {
    * idempotency key so it coexists with the full checks run on the same head.
    */
   jobFilter?: string[] | null;
+  /**
+   * Manual re-run discriminator. When a user explicitly re-triggers a
+   * Finalize phase against a head SHA whose previous run already reached a
+   * terminal state, the kickoff layer bumps this so the re-run gets its own
+   * idempotency key (and thus its own row + timeline bubble) instead of
+   * deduping ("Reused") onto the finished run. Defaults to 1, which keeps
+   * the historical idempotency key byte-identical for first runs and every
+   * automated trigger.
+   */
+  attempt?: number;
   /** Acting user id (clicker or autonomous owner). */
   triggeredByUserId: string;
   /** Git identity snapshot at start time — locked into the row. */
@@ -478,6 +488,7 @@ export async function runFinalize(
     headSha: opts.headSha,
     mode,
     jobFilter,
+    attempt: opts.attempt,
   });
   const existing = deps.stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
     | FinalizeRunRow

@@ -27,6 +27,16 @@ export const DEFAULT_CI_CONFIG_RELATIVE_PATH = '.agent-hub/ci.yaml';
  * two different single-job runs don't dedup onto each other. The segment
  * is omitted entirely for unfiltered runs, keeping every historical key
  * byte-identical.
+ *
+ * `attempt` is the manual re-run discriminator. The Finalize strip is an
+ * append-only timeline of reviews/tests/code-changes — when a user
+ * explicitly re-triggers a phase against a head whose previous run already
+ * finished (terminal), the kickoff layer bumps `attempt` so the re-run
+ * gets its OWN idempotency key, `finalize_runs` row, and timeline bubble
+ * instead of deduping ("Reused") onto the finished run. Folded in as a
+ * trailing `|attempt=<n>` segment ONLY for attempt > 1, so attempt 1 (the
+ * first run, and all automated runs) keeps every historical key
+ * byte-identical.
  */
 export function computeIdempotencyKey(args: {
   projectId: string;
@@ -34,12 +44,17 @@ export function computeIdempotencyKey(args: {
   headSha: string;
   mode?: FinalizeRunMode;
   jobFilter?: string[] | null;
+  attempt?: number;
 }): string {
   const mode = args.mode ?? 'full';
   let base = `${args.projectId}|${args.branch}|${args.headSha}|${mode}`;
   const jobs = normalizeJobFilter(args.jobFilter);
   if (jobs && jobs.length > 0) {
     base += `|jobs=${jobs.join(',')}`;
+  }
+  const attempt = args.attempt ?? 1;
+  if (attempt > 1) {
+    base += `|attempt=${attempt}`;
   }
   return createHash('sha256').update(base).digest('hex');
 }

@@ -19,6 +19,13 @@ const TERMINAL_STATUSES = new Set([
   'stalled_no_response',
 ]);
 
+/**
+ * Defensive ceiling on the attempt walk that finds the newest full-mode run
+ * for a head. Mirrors `MAX_FINALIZE_ATTEMPTS` in trigger-run.ts — attempts are
+ * created contiguously so the walk normally stops at the first gap.
+ */
+const SHIP_GATE_MAX_ATTEMPTS = 200;
+
 const IN_FLIGHT_STATUSES = new Set([
   'queued',
   'rebasing',
@@ -76,6 +83,42 @@ async function defaultCiConfigExists(worktreePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Find the newest full-mode Finalize run for a head SHA across manual re-run
+ * attempts.
+ *
+ * Each explicit user re-run bumps the kickoff `attempt`, opening its own
+ * idempotency-keyed row so the Finalize timeline stays append-only. Attempts
+ * are created contiguously from 1, so we walk attempt keys and return the
+ * HIGHEST attempt that has a row. The newest attempt is authoritative: an
+ * earlier attempt that reached `ready_to_push` does NOT win when a later
+ * attempt superseded it (a re-run that failed or is still in flight). The
+ * caller evaluates status only after this selection.
+ *
+ * Stops at the first attempt with no row. The cap and the same-row guard are
+ * defensive backstops (the latter against a lookup that ignores the attempt
+ * segment and returns the same row for every key).
+ */
+export function findLatestFinalizeRunForHead(
+  lookup: (idempotencyKey: string) => FinalizeRunRow | undefined,
+  args: { projectId: string; branch: string; headSha: string },
+): FinalizeRunRow | undefined {
+  let latest: FinalizeRunRow | undefined;
+  for (let attempt = 1; attempt <= SHIP_GATE_MAX_ATTEMPTS; attempt++) {
+    const idempotencyKey = computeIdempotencyKey({
+      projectId: args.projectId,
+      branch: args.branch,
+      headSha: args.headSha,
+      attempt,
+    });
+    const row = lookup(idempotencyKey);
+    if (!row) break;
+    if (latest && row.id === latest.id) break;
+    latest = row;
+  }
+  return latest;
 }
 
 /**
@@ -153,14 +196,17 @@ export async function evaluateFinalizeShipGate(
     };
   }
 
-  const idempotencyKey = computeIdempotencyKey({
-    projectId,
-    branch: session.worktree_branch,
-    headSha,
-  });
-  const existing = deps.stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
-    | FinalizeRunRow
-    | undefined;
+  // Select the NEWEST full-mode run for this head, then evaluate its status.
+  // A head can carry multiple runs once a user re-runs Finalize (each kickoff
+  // `attempt` bump opens its own idempotency-keyed row). The newest attempt is
+  // authoritative — gating on an earlier attempt would misreport the re-run's
+  // state, including the case the gate must never get wrong: attempt 1 reached
+  // `ready_to_push`, then a re-run (attempt 2) failed or is still in flight, so
+  // shipping must be gated on attempt 2, not the stale success.
+  const existing = findLatestFinalizeRunForHead(
+    (key) => deps.stmts.getFinalizeRunByIdempotencyKey.get(key) as FinalizeRunRow | undefined,
+    { projectId, branch: session.worktree_branch, headSha },
+  );
 
   if (!existing) {
     return {

@@ -41,6 +41,77 @@ const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
 const ROW_VISIBILITY_POLL_MAX_ATTEMPTS = 15;
 const KICKOFF_CLAIM_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Defensive ceiling on manual re-run attempts probed for a single head SHA.
+ * Each `attempt` produces a distinct idempotency key, so in practice the walk
+ * stops at the first unused slot; the cap only guards against a pathological
+ * lookup that never frees one. Far above any real usage — nobody re-runs one
+ * commit 200 times.
+ */
+const MAX_FINALIZE_ATTEMPTS = 200;
+
+export type ResolveFinalizeAttemptResult =
+  | { kind: 'start'; attempt: number; idempotencyKey: string }
+  | { kind: 'reused'; run: FinalizeRunRow }
+  | { kind: 'in_flight'; run: FinalizeRunRow }
+  | { kind: 'ready_to_push'; run: FinalizeRunRow };
+
+/**
+ * Decide which Finalize attempt a kickoff should open for a head SHA.
+ *
+ * The Finalize strip is an append-only timeline. Walking `attempt` from 1,
+ * we probe each attempt's idempotency key:
+ *
+ *   - no row at this attempt  → `start` here (a fresh run + bubble);
+ *   - row is `ready_to_push`  → short-circuit, tell the caller to push;
+ *   - row is non-terminal     → `in_flight`, never start a duplicate;
+ *   - row is terminal (done)  → an explicit user trigger (`ui_button`)
+ *     advances to the NEXT attempt so the re-run gets its own row/bubble;
+ *     an automated trigger (`agent_block`) dedups onto the finished run.
+ *
+ * Pure over the injected `lookup` so it can be unit-tested without the DB.
+ */
+export function resolveFinalizeAttempt(args: {
+  projectId: string;
+  branch: string;
+  headSha: string;
+  mode: FinalizeRunMode;
+  jobFilter: string[] | null;
+  triggerSource: 'ui_button' | 'agent_block';
+  lookup: (idempotencyKey: string) => FinalizeRunRow | undefined;
+}): ResolveFinalizeAttemptResult {
+  let lastTerminal: FinalizeRunRow | undefined;
+  for (let attempt = 1; attempt <= MAX_FINALIZE_ATTEMPTS; attempt++) {
+    const idempotencyKey = computeIdempotencyKey({
+      projectId: args.projectId,
+      branch: args.branch,
+      headSha: args.headSha,
+      mode: args.mode,
+      jobFilter: args.jobFilter,
+      attempt,
+    });
+    const existing = args.lookup(idempotencyKey);
+    if (!existing) {
+      return { kind: 'start', attempt, idempotencyKey };
+    }
+    if (existing.status === 'ready_to_push') {
+      return { kind: 'ready_to_push', run: existing };
+    }
+    if (!TERMINAL_STATUSES.has(existing.status)) {
+      return { kind: 'in_flight', run: existing };
+    }
+    // Terminal (finished) run on this attempt. Automated triggers reuse it;
+    // an explicit user click advances to a fresh attempt for a new bubble.
+    if (args.triggerSource !== 'ui_button') {
+      return { kind: 'reused', run: existing };
+    }
+    lastTerminal = existing;
+  }
+  // Cap exhausted (pathological). Reuse the most recent terminal row rather
+  // than spinning forever — the caller surfaces it as a no-op reuse.
+  return { kind: 'reused', run: lastTerminal as FinalizeRunRow };
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -126,25 +197,31 @@ async function kickoffFinalizeRun(
     return { kind: 'error', error: 'no_head_sha', message: `Could not resolve HEAD: ${msg}` };
   }
 
-  const idempotencyKey = computeIdempotencyKey({
+  // Resolve which attempt this kickoff opens. Each explicit user click of
+  // "Run Tests" / "Reviewer" against a head whose previous run finished gets
+  // its own attempt number — and thus its own idempotency key, finalize_runs
+  // row, and timeline bubble. We never reuse a finished run for an explicit
+  // user trigger (the "Reused" complaint). In-flight runs still dedup, and
+  // automated triggers keep reusing a finished run.
+  const decision = resolveFinalizeAttempt({
     projectId: project.id,
     branch: session.worktree_branch,
     headSha,
     mode,
     jobFilter,
+    triggerSource: args.triggerSource,
+    lookup: (key) => stmts.getFinalizeRunByIdempotencyKey.get(key) as FinalizeRunRow | undefined,
   });
-  const existing = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
-    | FinalizeRunRow
-    | undefined;
-  if (existing) {
-    if (existing.status === 'ready_to_push') {
-      return { kind: 'ready_to_push', runId: existing.id };
-    }
-    if (!TERMINAL_STATUSES.has(existing.status)) {
-      return { kind: 'in_flight', runId: existing.id, status: existing.status };
-    }
-    return { kind: 'reused', runId: existing.id, status: existing.status };
+  if (decision.kind === 'ready_to_push') {
+    return { kind: 'ready_to_push', runId: decision.run.id };
   }
+  if (decision.kind === 'in_flight') {
+    return { kind: 'in_flight', runId: decision.run.id, status: decision.run.status };
+  }
+  if (decision.kind === 'reused') {
+    return { kind: 'reused', runId: decision.run.id, status: decision.run.status };
+  }
+  const { attempt, idempotencyKey } = decision;
 
   const activeForBranch = stmts.getActiveFinalizeRunForSessionBranch.get(
     session.id,
@@ -218,6 +295,7 @@ async function kickoffFinalizeRun(
       authorEmail: `${ownerId}@local`,
       mode,
       jobFilter,
+      attempt,
       signal,
     });
     runFinalizeStarted = true;

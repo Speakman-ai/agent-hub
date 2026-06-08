@@ -15,7 +15,7 @@ import supertest from 'supertest';
 
 const { runFinalize, computeIdempotencyKey, buildOrchestratorDeps } = vi.hoisted(() => ({
   runFinalize: vi.fn(),
-  computeIdempotencyKey: vi.fn(() => 'idem-key-FAKE'),
+  computeIdempotencyKey: vi.fn((..._args: unknown[]) => 'idem-key-FAKE'),
   buildOrchestratorDeps: vi.fn(() => ({})),
 }));
 
@@ -79,7 +79,8 @@ vi.mock('../db.js', () => ({
 
 // Import after all mocks so the route file binds to them.
 import createFinalizeRoutes from './finalize.js';
-import type { RouteDeps } from '../types.js';
+import { resolveFinalizeAttempt } from '../finalize/trigger-run.js';
+import type { FinalizeRunRow, RouteDeps } from '../types.js';
 
 function makeStmts() {
   return {
@@ -377,13 +378,15 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(runFinalize).not.toHaveBeenCalled();
   });
 
-  it('200 reused when an existing terminal row matches the idempotency key', async () => {
+  it('ui_button re-run starts a NEW attempt (new bubble) when the prior run on the head is terminal', async () => {
     const { app, findProject, stmts } = makeApp();
-    findProject.mockReturnValue({ id: 'proj-1' });
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
     stmts.getKanbanCard.get.mockReturnValue({
       id: 'card-1',
       board_id: 'board-1',
       session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
     });
     stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
     stmts.getSession.get.mockReturnValue({
@@ -391,20 +394,39 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       worktree_path: '/tmp/wt',
       worktree_branch: 'feature/x',
     });
-    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue({
-      id: 'run-old',
-      status: 'pushed',
+    // Distinct key per attempt so the kickoff walk advances past the finished
+    // attempt-1 run instead of reusing it.
+    computeIdempotencyKey.mockImplementation(
+      (a) => `idem-attempt-${(a as { attempt?: number })?.attempt ?? 1}`,
+    );
+    let attempt2Created = false;
+    stmts.getFinalizeRunByIdempotencyKey.get.mockImplementation((key: string) => {
+      if (key === 'idem-attempt-1') return { id: 'run-old', status: 'pushed' };
+      if (key === 'idem-attempt-2') {
+        return attempt2Created ? { id: 'run-new', status: 'queued' } : undefined;
+      }
+      return undefined;
     });
+    runFinalize.mockImplementation(async () => {
+      attempt2Created = true;
+      return { kind: 'started', runId: 'run-new', status: 'queued' };
+    });
+
     const res = await supertest(app)
       .post('/api/projects/proj-1/cards/card-1/finalize')
       .send({})
       .expect(200);
+
+    // A fresh run id with reused:false — the client renders a new timeline bubble.
     expect(res.body).toEqual({
-      run_id: 'run-old',
-      status: 'pushed',
-      reused: true,
+      run_id: 'run-new',
+      status: 'queued',
+      reused: false,
       card_id: 'card-1',
     });
+    expect(runFinalize).toHaveBeenCalledOnce();
+    // The orchestrator is told this is attempt 2 so it inserts under the new key.
+    expect(runFinalize.mock.calls[0][1]).toMatchObject({ attempt: 2 });
   });
 
   it('200 with run_id when runFinalize fires and the row becomes visible during the poll', async () => {
@@ -569,5 +591,108 @@ describe('POST /api/projects/:projectId/finalize/:runId/cancel', () => {
       .map((c) => c[0] as { type: string; sessionId?: string })
       .find((e) => e.type === 'interrupted');
     expect(interrupted).toMatchObject({ type: 'interrupted', sessionId: 'sess-1' });
+  });
+});
+
+describe('resolveFinalizeAttempt', () => {
+  const base = {
+    projectId: 'p',
+    branch: 'feature/x',
+    headSha: 'sha',
+    mode: 'checks' as const,
+    jobFilter: null,
+  };
+
+  // Distinct, attempt-aware fake key so the walk advances deterministically.
+  const keyOf = (attempt: number) => `k-${attempt}`;
+
+  beforeEach(() => {
+    computeIdempotencyKey.mockImplementation((a) =>
+      keyOf((a as { attempt?: number })?.attempt ?? 1),
+    );
+  });
+
+  /** lookup backed by an attempt→row map. */
+  const lookupFrom = (rows: Record<number, FinalizeRunRow>) => (key: string) => {
+    for (const [attempt, row] of Object.entries(rows)) {
+      if (key === keyOf(Number(attempt))) return row;
+    }
+    return undefined;
+  };
+
+  it('starts attempt 1 when no run exists for the head', () => {
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'ui_button',
+      lookup: lookupFrom({}),
+    });
+    expect(r).toEqual({ kind: 'start', attempt: 1, idempotencyKey: keyOf(1) });
+  });
+
+  it('ui_button advances past a terminal run to a fresh attempt (new bubble)', () => {
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'ui_button',
+      lookup: lookupFrom({ 1: { id: 'r1', status: 'failed' } as FinalizeRunRow }),
+    });
+    expect(r).toEqual({ kind: 'start', attempt: 2, idempotencyKey: keyOf(2) });
+  });
+
+  it('ui_button walks past multiple finished attempts to the next free slot', () => {
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'ui_button',
+      lookup: lookupFrom({
+        1: { id: 'r1', status: 'failed' } as FinalizeRunRow,
+        2: { id: 'r2', status: 'cancelled' } as FinalizeRunRow,
+      }),
+    });
+    expect(r).toEqual({ kind: 'start', attempt: 3, idempotencyKey: keyOf(3) });
+  });
+
+  it('agent_block reuses a finished run instead of starting a new attempt', () => {
+    const terminal = { id: 'r1', status: 'pushed' } as FinalizeRunRow;
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'agent_block',
+      lookup: lookupFrom({ 1: terminal }),
+    });
+    expect(r).toEqual({ kind: 'reused', run: terminal });
+  });
+
+  it('returns in_flight for a non-terminal run regardless of trigger (no duplicate)', () => {
+    const active = { id: 'r1', status: 'rebasing' } as FinalizeRunRow;
+    for (const triggerSource of ['ui_button', 'agent_block'] as const) {
+      const r = resolveFinalizeAttempt({
+        ...base,
+        triggerSource,
+        lookup: lookupFrom({ 1: active }),
+      });
+      expect(r).toEqual({ kind: 'in_flight', run: active });
+    }
+  });
+
+  it('short-circuits ready_to_push (push it, do not re-run)', () => {
+    const ready = { id: 'r1', status: 'ready_to_push' } as FinalizeRunRow;
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'ui_button',
+      lookup: lookupFrom({ 1: ready }),
+    });
+    expect(r).toEqual({ kind: 'ready_to_push', run: ready });
+  });
+
+  it('a later in-flight attempt blocks a new ui_button attempt', () => {
+    // attempt 1 finished, attempt 2 still running → re-click must not open #3.
+    const active = { id: 'r2', status: 'reviewing' } as FinalizeRunRow;
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'ui_button',
+      lookup: lookupFrom({
+        1: { id: 'r1', status: 'failed' } as FinalizeRunRow,
+        2: active,
+      }),
+    });
+    expect(r).toEqual({ kind: 'in_flight', run: active });
   });
 });
