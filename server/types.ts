@@ -842,6 +842,19 @@ export interface FinalizeRunRow {
    * a partial run can never flip the branch to ready-to-push.
    */
   job_filter: string | null;
+  /**
+   * Persisted flake-recovery gate result (see `server/finalize/flake-recovery.ts`,
+   * `serializeFlakeGate`/`parseFlakeGate`). NULL for a verified-`clean` run. For
+   * a non-clean run it is a JSON-encoded gate object
+   * `{ status: 'flake_recovered' | 'blocked', jobs: JobFlakeVerdict[], reason?: string }`
+   * — `flake_recovered` lists the jobs that passed only on retry with no fixer
+   * commit touching their code paths; `blocked` means the gate could not verify
+   * the run is clean (missing/unreadable history, unresolved diff range). A bare
+   * legacy verdict array is still accepted defensively on read. Any non-NULL
+   * value blocks auto-push / auto-merge — a human must push manually to
+   * acknowledge.
+   */
+  flake_recovered_jobs: string | null;
 }
 
 /**
@@ -913,6 +926,24 @@ export interface FinalizeRunJobRow {
   exit_code: number | null;
   started_at: number | null;
   ended_at: number | null;
+}
+
+/**
+ * Per-round job/matrix retry history. {@link FinalizeRunJobRow} keeps only the
+ * latest state per instance; this table appends one row per `loop_round` so
+ * the flake-recovery classifier can see "failed round N, passed round M".
+ */
+export interface FinalizeRunJobAttemptRow {
+  run_id: string;
+  job_id: string;
+  matrix_key: string;
+  /** 1-indexed loop_round the observation belongs to. */
+  round: number;
+  state: FinalizeRunJobState;
+  exit_code: number | null;
+  /** Post-rebase HEAD the round validated against. */
+  head_sha: string | null;
+  recorded_at: number | null;
 }
 
 /**
@@ -1593,6 +1624,9 @@ export interface Stmts {
   listFinalizeRunStepsForRun: Stmt;
   upsertFinalizeRunJob: Stmt;
   listFinalizeRunJobsForRun: Stmt;
+  upsertFinalizeRunJobAttempt: Stmt;
+  listFinalizeRunJobAttemptsForRun: Stmt;
+  setFinalizeRunFlakeRecoveredJobs: Stmt;
 
   // reviewer_threads — diff-anchored notes from the reviewer agent.
   // See wiki: finalize-code-changes-architecture-v0 (§8).

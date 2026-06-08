@@ -104,12 +104,15 @@ import {
 } from './metrics.js';
 import {
   readFinalizeLoopRound,
+  writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeReadyToPushTimeline,
   writeFinalizeRebaseResultTimeline,
   writeFinalizeRunStartedTimeline,
   writeFinalizeRunTerminalTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
+import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
+import { blockedGateResult, serializeFlakeGate, type FlakeGateResult } from './flake-recovery.js';
 import {
   computeIdempotencyKey,
   DEFAULT_CI_CONFIG_RELATIVE_PATH,
@@ -231,6 +234,9 @@ export interface OrchestratorDeps {
     | 'listFinalizeRunStepsForRun'
     | 'upsertFinalizeRunJob'
     | 'listFinalizeRunJobsForRun'
+    | 'upsertFinalizeRunJobAttempt'
+    | 'listFinalizeRunJobAttemptsForRun'
+    | 'setFinalizeRunFlakeRecoveredJobs'
     | 'listReviewerThreadsForRun'
     | 'insertFinalizeMetric'
   >;
@@ -794,6 +800,16 @@ export async function runFinalize(
     // this guard with an unchanged HEAD: it only fires when HEAD MOVED,
     // so the next snapshot necessarily differs.
     let prevValidatedHead: string | null = null;
+    // Flake gate (fail-closed): set to false the moment any round's per-round
+    // job-attempt history fails to persist. Without complete history, the
+    // classifier can't tell a real fix from a laundered flake, so the gate must
+    // block automation rather than read clean. Only flips false, never back.
+    let attemptHistoryPersisted = true;
+    // Whether the v2 jobs (tasks) phase actually ran at least once this run.
+    // Drives `expectAttempts`: a v2 run that ran jobs MUST have history, so its
+    // absence fails the gate closed; a review-only run never ran jobs and has
+    // nothing to classify.
+    let ranV2Jobs = false;
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
@@ -1260,6 +1276,19 @@ export async function runFinalize(
           failedStep: lastStepOutcome.failedStep?.name ?? null,
           exitCode: lastStepOutcome.failedStep?.exitCode ?? null,
         });
+        // Snapshot this round's per-job state into the retry-history table so
+        // the flake-recovery classifier can later see "failed round N, passed
+        // round M". finalize_run_jobs only keeps the latest state per instance;
+        // this append is what makes per-round history durable. v2 jobs only —
+        // v1 sequential steps have no job concept to track.
+        if (parsedCi.version === 2) {
+          ranV2Jobs = true;
+          const persisted = recordJobAttemptsForRound(
+            { stmts: deps.stmts, now, log },
+            { runId, round: loopCount, headSha: headValidatedAgainst },
+          );
+          if (!persisted) attemptHistoryPersisted = false;
+        }
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
@@ -1379,9 +1408,91 @@ export async function runFinalize(
           validatedHead: gateOutcome.validatedHeadSha,
         });
 
+        // ── Flake-recovery gate (§ retry-until-green) ───────────────
+        // Classify the run's per-job retry history: a job that failed an
+        // earlier round and passed a later one with no fixer commit touching
+        // its code paths laundered a flake into green. Reruns should DETECT
+        // flakes, not erase them.
+        //
+        // FAIL CLOSED: the gate's whole purpose is to stop a flake from being
+        // auto-merged, so anything short of a proven-clean classification —
+        // missing/failed per-round history, a failed history query, or a failed
+        // persist of the verdict — must withhold automation. A blocked or
+        // flake-recovered run still parks at ready_to_push so a human can push
+        // manually (the explicit acknowledgement); only the AUTOMATED
+        // push/merge is withheld.
+        //
+        // ORDERING IS LOAD-BEARING: the durable `finalize_runs.flake_recovered_jobs`
+        // column is what the in-process hook AND the separate automation-runner
+        // (which re-reads the row on session-end) both key off. We therefore
+        // classify and persist the verdict BEFORE marking the run
+        // `ready_to_push`. A run that is never `ready_to_push` is never
+        // auto-pushed, so if we cannot durably record a NON-clean gate we fail
+        // closed by terminating instead of parking an auto-pushable row whose
+        // column reads NULL-and-clean.
+        let gate: FlakeGateResult;
+        try {
+          gate = await classifyRunFlakeRecovery(
+            { stmts: deps.stmts, log },
+            {
+              runId,
+              worktreePath,
+              env: spawnEnv,
+              config: parsedCi,
+              expectAttempts: ranV2Jobs,
+              attemptsPersisted: attemptHistoryPersisted,
+            },
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[finalize-orchestrator] flake-recovery classification threw run=${runId}: ${msg}`);
+          gate = blockedGateResult(`flake classification threw: ${msg}`);
+        }
+        let gatePersisted = false;
+        try {
+          deps.stmts.setFinalizeRunFlakeRecoveredJobs.run(serializeFlakeGate(gate), runId);
+          gatePersisted = true;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[finalize-orchestrator] failed to persist flake gate state run=${runId}: ${msg}`);
+        }
+        // A non-clean gate that we could NOT durably record must not become an
+        // auto-pushable row: a later automation pass reading the NULL column
+        // would treat it as clean and auto-push the very flake we detected.
+        // Fail closed by terminating before ready_to_push. (A clean gate
+        // serializes to NULL — identical to the column's pre-write value — so a
+        // failed write there is a harmless no-op and we proceed.)
+        if (!gatePersisted && gate.status !== 'clean') {
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'container_unavailable',
+            `could not persist non-clean flake gate (status=${gate.status}); failing closed to ` +
+              `prevent auto-push of an unverified run`,
+            log,
+          );
+        }
+        const flakeRecovered = gate.jobs;
+        const gateBlocksAutomation = gate.status !== 'clean';
+        if (gateBlocksAutomation) {
+          trace('flake_gate', {
+            round: loopCount,
+            status: gate.status,
+            reason: gate.reason ?? null,
+            jobs: flakeRecovered.map((v) => ({
+              jobId: v.jobId,
+              matrixKey: v.matrixKey,
+              failureCount: v.failureCount,
+            })),
+          });
+        }
+
         // ── Phase 8: park for human push ────────────────────────────
         // Review + checks passed. Stop before git push / gh pr create —
-        // the operator confirms via POST .../finalize/:runId/push.
+        // the operator confirms via POST .../finalize/:runId/push. The flake
+        // gate verdict is already durably persisted above, so the moment this
+        // row becomes `ready_to_push` its automation-gate column is consistent.
         try {
           deps.stmts.markFinalizeRunReadyToPush.run(gateOutcome.validatedHeadSha, runId);
         } catch (err) {
@@ -1395,6 +1506,7 @@ export async function runFinalize(
             log,
           );
         }
+
         // A run only announces "ready to push to GitHub" once the branch is
         // FULLY validated — both the reviewer AND the CI checks passed on the
         // same commit. A `full` run does that in one pass. A manual
@@ -1435,6 +1547,20 @@ export async function runFinalize(
           status: 'ready_to_push',
           validated: fullyValidated,
         });
+        if (flakeRecovered.length > 0) {
+          writeFinalizeFlakeRecoveredTimeline(orchestratorTimelineDeps(deps), {
+            sessionId,
+            runId,
+            round: loopCount,
+            jobs: flakeRecovered.map((v) => ({
+              jobId: v.jobId,
+              matrixKey: v.matrixKey,
+              failureCount: v.failureCount,
+              failedRounds: v.failedRounds,
+              passedRound: v.passedRound,
+            })),
+          });
+        }
         if (fullyValidated) {
           lifecycle.onReadyToPush({ runId });
           writeFinalizeReadyToPushTimeline(orchestratorTimelineDeps(deps), {
@@ -1444,8 +1570,22 @@ export async function runFinalize(
             round: loopCount,
           });
           // Push/merge automation only fires on full validation — auto-pushing
-          // a single-phase run would ship code that skipped the other gate.
-          notifyReadyToPushAutomationHook(sessionId, runId);
+          // a single-phase run would ship code that skipped the other gate. The
+          // flake gate withholds automation for BOTH a flake-recovered run (a
+          // rerun laundered an earlier failure into green) and a `blocked` run
+          // (the gate could not prove the run is clean). Either way a human must
+          // push manually to acknowledge.
+          if (gateBlocksAutomation) {
+            log(
+              `[finalize-orchestrator] run=${runId} reached ready_to_push but flake gate ` +
+                `status=${gate.status}` +
+                (gate.reason ? ` (${gate.reason})` : '') +
+                (flakeRecovered.length > 0 ? ` [${flakeRecovered.length} job(s)]` : '') +
+                `; withholding push automation — human acknowledgement (manual push) required`,
+            );
+          } else {
+            notifyReadyToPushAutomationHook(sessionId, runId);
+          }
         } else {
           log(
             `[finalize-orchestrator] run=${runId} mode=${mode} passed its phase ` +

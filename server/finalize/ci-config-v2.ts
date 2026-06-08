@@ -43,6 +43,16 @@ export interface CiJobV2 {
   needs: string[];
   /** One entry per parallel matrix shard (GHA `matrix.include`). */
   matrixInclude: Array<Record<string, string>>;
+  /**
+   * Optional code-path globs this job covers (e.g. `['server/**', 'e2e/**']`).
+   * Used only by the flake-recovery classifier (see
+   * `server/finalize/flake-recovery.ts`): when a job fails on one fix-loop
+   * round and passes on a later round, the recovery is only treated as a real
+   * fix if an intervening commit touched one of these paths. A job that
+   * recovers with no matching change is flagged as a laundered flake. Omit to
+   * fall back to the coarse "any code change counts as a fix" heuristic.
+   */
+  paths?: string[];
   env?: Record<string, string>;
   steps: CiStepV2[];
 }
@@ -71,7 +81,16 @@ export interface JobInstance {
 }
 
 const V2_TOP_KEYS = new Set(['version', 'on', 'timeout_minutes', 'env', 'jobs']);
-const V2_JOB_KEYS = new Set(['runs-on', 'fail-fast', 'warmup', 'needs', 'matrix', 'env', 'steps']);
+const V2_JOB_KEYS = new Set([
+  'runs-on',
+  'fail-fast',
+  'warmup',
+  'needs',
+  'paths',
+  'matrix',
+  'env',
+  'steps',
+]);
 const V2_STEP_KEYS = new Set(['name', 'run', 'env']);
 
 export type CiConfigV2ErrorCode =
@@ -90,6 +109,7 @@ export type CiConfigV2ErrorCode =
   | 'invalid_fail_fast'
   | 'invalid_warmup'
   | 'invalid_needs'
+  | 'invalid_paths'
   | 'unknown_needs_job'
   | 'cyclic_needs'
   | 'unknown_top_level_key_v2'
@@ -340,6 +360,28 @@ function parseJob(
     }
     needs = [...new Set(list.map((d) => (d as string).trim()))];
   }
+  let paths: string[] | undefined;
+  if ('paths' in jobObj && jobObj.paths !== null && jobObj.paths !== undefined) {
+    const rawPaths = jobObj.paths;
+    if (!Array.isArray(rawPaths)) {
+      return err(
+        'invalid_paths',
+        `'${jobPath}.paths' must be a list of path globs.`,
+        `${jobPath}.paths`,
+      );
+    }
+    for (const p of rawPaths) {
+      if (typeof p !== 'string' || p.trim().length === 0) {
+        return err(
+          'invalid_paths',
+          `'${jobPath}.paths' entries must be non-empty strings.`,
+          `${jobPath}.paths`,
+        );
+      }
+    }
+    const cleaned = [...new Set(rawPaths.map((p) => (p as string).trim()))];
+    if (cleaned.length > 0) paths = cleaned;
+  }
   const matrixParsed = parseMatrixInclude(jobObj.matrix, jobPath);
   if (!matrixParsed.ok) return matrixParsed;
   let jobEnv: Record<string, string> | undefined;
@@ -361,6 +403,7 @@ function parseJob(
       warmup,
       needs,
       matrixInclude: matrixParsed.include,
+      ...(paths ? { paths } : {}),
       ...(jobEnv ? { env: jobEnv } : {}),
       steps: stepsParsed.steps,
     },

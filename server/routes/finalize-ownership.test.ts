@@ -77,6 +77,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      flakeRecovered: [],
+      flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
     expect(stmts.getLatestFinalizeRunForSession.get).toHaveBeenCalledWith('my-own-session');
@@ -108,6 +110,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
     expect(empty.body).toEqual({
       run: null,
       steps: [],
+      flakeRecovered: [],
+      flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
   });

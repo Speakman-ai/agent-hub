@@ -49,6 +49,55 @@ jobs:
     expect(instances[1].matrixKey).toBe('B');
   });
 
+  it('parses optional job paths globs', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    paths:
+      - "e2e/**"
+      - "client/**"
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    expect(parsed.config.jobs.e2e.paths).toEqual(['e2e/**', 'client/**']);
+  });
+
+  it('paths omitted leaves the field undefined', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    expect(parsed.config.jobs.e2e.paths).toBeUndefined();
+  });
+
+  it('rejects non-list paths', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    paths: "e2e/**"
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.error.code).toBe('invalid_paths');
+  });
+
   it('parses warmup job flag and carries it onto instances (default false)', () => {
     const parsed = parseCiConfig(`
 version: 2

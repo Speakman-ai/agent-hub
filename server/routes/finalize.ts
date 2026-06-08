@@ -61,6 +61,7 @@ import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js
 import { evaluateFinalizeShipGate, type FinalizeShipGateAction } from '../finalize/ship-gate.js';
 import { resolveSessionPrUrl } from '../session-title-pr.js';
 import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-output.js';
+import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import {
   aggregateMetrics,
   isMetricName,
@@ -194,9 +195,17 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     const reviewRun = stmts.getLatestReviewRunForSession.get(sessionId) as
       | FinalizeRunRow
       | undefined;
+    // Flake gate: `status` is 'clean' | 'flake_recovered' | 'blocked'. A
+    // non-clean status means auto-merge is withheld and a manual push is
+    // required — 'flake_recovered' lists the offending jobs, 'blocked' means
+    // the gate could not verify the run is clean. Parsed off
+    // run.flake_recovered_jobs for client convenience.
+    const flakeGate = parseFlakeGate(run?.flake_recovered_jobs);
     return res.json({
       run: run ?? null,
       steps,
+      flakeRecovered: flakeGate.jobs,
+      flakeGate: { status: flakeGate.status, reason: flakeGate.reason ?? null },
       phases: {
         checks: summarizeFinalizePhase(checksRun),
         review: summarizeFinalizePhase(reviewRun),

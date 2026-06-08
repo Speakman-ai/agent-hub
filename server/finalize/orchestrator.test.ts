@@ -303,6 +303,15 @@ function makeStmts(): {
     listFinalizeRunJobsForRun: {
       all: vi.fn(() => []),
     } as unknown as OrchestratorDeps['stmts']['listFinalizeRunJobsForRun'],
+    upsertFinalizeRunJobAttempt: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunJobAttempt'],
+    listFinalizeRunJobAttemptsForRun: {
+      all: vi.fn(() => []),
+    } as unknown as OrchestratorDeps['stmts']['listFinalizeRunJobAttemptsForRun'],
+    setFinalizeRunFlakeRecoveredJobs: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['setFinalizeRunFlakeRecoveredJobs'],
     listReviewerThreadsForRun: {
       all: vi.fn(() => threads),
     } as unknown as OrchestratorDeps['stmts']['listReviewerThreadsForRun'],
@@ -508,6 +517,52 @@ describe('runFinalize — split modes', () => {
     expect(review).toHaveBeenCalledTimes(1);
     expect(steps).not.toHaveBeenCalled();
     expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed (terminates) when a NON-clean flake gate cannot be persisted', async () => {
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: fakeRunReview(REVIEW_OK),
+      runStepPhase: fakeRunSteps(STEPS_OK),
+    });
+    // History query throws → classifyRunFlakeRecovery yields a `blocked` gate…
+    (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
+      () => {
+        throw new Error('attempts query down');
+      };
+    // …and persisting that blocked verdict also throws → it can't be durably
+    // recorded, so the run must NOT park as auto-pushable.
+    (stmts.stmts.setFinalizeRunFlakeRecoveredJobs as unknown as { run: () => unknown }).run =
+      () => {
+        throw new Error('gate write down');
+      };
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    // Terminate instead of ready_to_push: a later automation pass would
+    // otherwise read the NULL column as clean and auto-push the unverified run.
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.status).toBe('infra_error');
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).not.toHaveBeenCalled();
+  });
+
+  it('still parks (automation withheld) when a NON-clean gate IS persisted', async () => {
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: fakeRunReview(REVIEW_OK),
+      runStepPhase: fakeRunSteps(STEPS_OK),
+    });
+    // Blocked gate (history query throws) but the verdict persists fine.
+    (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
+      () => {
+        throw new Error('attempts query down');
+      };
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+    // The blocked verdict was durably written so the automation-runner can
+    // re-check it and withhold auto-push.
+    expect(stmts.stmts.setFinalizeRunFlakeRecoveredJobs.run).toHaveBeenCalled();
   });
 
   it('checks mode still dispatches a fix when the tasks phase fails', async () => {

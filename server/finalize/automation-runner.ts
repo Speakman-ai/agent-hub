@@ -17,6 +17,7 @@ import {
   shouldEnableAutoMergeForAutomation,
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -123,6 +124,22 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
 
   const run = routeDeps.stmts.getFinalizeRun.get(args.runId) as FinalizeRunRow | undefined;
   if (!run || run.status !== 'ready_to_push') return;
+
+  // Flake-recovery gate (fail-closed): block auto-push/auto-merge unless the
+  // run's flake gate is proven `clean`. A `flake_recovered` run laundered an
+  // earlier failure into green; a `blocked` run could not be classified (its
+  // per-round history failed to persist or was unreadable). Neither is
+  // auto-merge-safe — both require an explicit human push to acknowledge.
+  if (flakeGateBlocksAutoPush(run)) {
+    const gate = parseFlakeGate(run.flake_recovered_jobs);
+    console.warn(
+      `[finalize-automation] Skipping auto-push session=${args.sessionId} run=${args.runId}: ` +
+        `flake gate status=${gate.status}` +
+        (gate.reason ? ` (${gate.reason})` : '') +
+        ` requires explicit human acknowledgement (manual push)`,
+    );
+    return;
+  }
 
   const outcome = await runFinalizePush({
     deps: routeDeps,

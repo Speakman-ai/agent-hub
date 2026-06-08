@@ -4,6 +4,7 @@ import {
   parseFinalizeTimelineMetadata,
   readFinalizeLoopRound,
   writeFinalizeChecksRoundTimeline,
+  writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeReviewRoundTimeline,
   writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
@@ -84,6 +85,38 @@ describe('timeline-message', () => {
       const meta = parseFinalizeTimelineMetadata(JSON.stringify({ kind, runId: 'r' }));
       expect(meta?.kind).toBe(kind);
     }
+  });
+
+  it('writeFinalizeFlakeRecoveredTimeline summarizes laundered flakes', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeFlakeRecoveredTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm1' },
+      {
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        round: 3,
+        jobs: [
+          {
+            jobId: 'e2e',
+            matrixKey: 'shard-1',
+            failureCount: 2,
+            failedRounds: [1, 2],
+            passedRound: 3,
+          },
+        ],
+      },
+    );
+    const args = stmts.addMessage.run.mock.calls[0];
+    expect(args[3]).toContain('passed only on retry');
+    expect(args[3]).toContain('manual push required');
+    expect(args[3]).toContain('e2e [shard-1]');
+    const metadata = JSON.parse(args[7] as string);
+    expect(metadata.kind).toBe('finalize_flake_recovered');
+    expect(metadata.jobs[0].failureCount).toBe(2);
   });
 
   it('writeFinalizeChecksRoundTimeline summarizes failed step', () => {

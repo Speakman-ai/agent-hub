@@ -231,6 +231,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      flakeRecovered: [],
+      flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
   });
@@ -396,6 +398,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      flakeRecovered: [],
+      flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
   });

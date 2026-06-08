@@ -13,6 +13,7 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_rebase_result',
   'finalize_review_round',
   'finalize_checks_round',
+  'finalize_flake_recovered',
   'finalize_ready_to_push',
   'finalize_run_terminal',
 ] as const;
@@ -228,6 +229,51 @@ export function writeFinalizeChecksRoundTimeline(
       runId: args.runId,
       round: args.round,
       steps: args.steps,
+    },
+  });
+}
+
+export interface FlakeRecoveredJobSnapshot {
+  jobId: string;
+  matrixKey: string;
+  failureCount: number;
+  failedRounds: number[];
+  passedRound: number | null;
+}
+
+/**
+ * Surface "passed on retry after N failures" in the session timeline. Written
+ * when a run reaches ready_to_push with one or more jobs that recovered from
+ * an earlier failure with no relevant fixer commit — i.e. a laundered flake.
+ * Auto-push/merge is withheld for these runs; the message tells the human a
+ * manual push is required to acknowledge.
+ */
+export function writeFinalizeFlakeRecoveredTimeline(
+  deps: TimelineMessageDeps,
+  args: {
+    sessionId: string | null | undefined;
+    runId: string;
+    round: number;
+    jobs: FlakeRecoveredJobSnapshot[];
+  },
+): string | null {
+  const n = args.jobs.length;
+  const detail = args.jobs
+    .map((j) => {
+      const label = j.matrixKey ? `${j.jobId} [${j.matrixKey}]` : j.jobId;
+      return `${label} (${j.failureCount} failure${j.failureCount === 1 ? '' : 's'})`;
+    })
+    .join(', ');
+  return writeFinalizeTimelineMessage(deps, {
+    sessionId: args.sessionId,
+    kind: 'finalize_flake_recovered',
+    content:
+      `${n} job${n === 1 ? '' : 's'} passed only on retry — auto-merge blocked, ` +
+      `manual push required: ${detail}`,
+    payload: {
+      runId: args.runId,
+      round: args.round,
+      jobs: args.jobs,
     },
   });
 }

@@ -818,6 +818,17 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE finalize_runs ADD COLUMN job_filter TEXT');
   }
 
+  // flake_recovered_jobs: JSON array of per-job verdicts for jobs that passed
+  // only after retrying within the run, with no fixer commit touching their
+  // code paths (see server/finalize/flake-recovery.ts). NULL when the run had
+  // no laundered flakes. Non-NULL blocks auto-push/auto-merge — a human must
+  // push manually to acknowledge the flake recovery.
+  try {
+    db.prepare('SELECT flake_recovered_jobs FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN flake_recovered_jobs TEXT');
+  }
+
   try {
     db.prepare('SELECT job_id FROM finalize_run_steps LIMIT 1').get();
   } catch {
@@ -838,6 +849,28 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS finalize_run_jobs_run
       ON finalize_run_jobs(run_id, job_id);
+  `);
+
+  // Per-round job/matrix retry history. finalize_run_jobs holds only the
+  // LATEST state per instance (it upserts in place); this table appends one
+  // row per loop_round so the flake-recovery classifier can see "failed round
+  // N, passed round M". head_sha is the post-rebase HEAD the round validated
+  // against, which lets the classifier ask whether a fixer commit landed
+  // between the failing and passing rounds.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS finalize_run_job_attempts (
+      run_id TEXT NOT NULL REFERENCES finalize_runs(id),
+      job_id TEXT NOT NULL,
+      matrix_key TEXT NOT NULL DEFAULT '',
+      round INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      exit_code INTEGER,
+      head_sha TEXT,
+      recorded_at INTEGER,
+      PRIMARY KEY (run_id, job_id, matrix_key, round)
+    );
+    CREATE INDEX IF NOT EXISTS finalize_run_job_attempts_run
+      ON finalize_run_job_attempts(run_id);
   `);
 
   try {
@@ -3759,6 +3792,25 @@ function initDb(dataDir: string): void {
          FROM finalize_run_jobs
         WHERE run_id = ?
         ORDER BY job_id ASC, matrix_key ASC`,
+    ),
+    upsertFinalizeRunJobAttempt: db.prepare(
+      `INSERT INTO finalize_run_job_attempts (
+        run_id, job_id, matrix_key, round, state, exit_code, head_sha, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, job_id, matrix_key, round) DO UPDATE SET
+        state = excluded.state,
+        exit_code = excluded.exit_code,
+        head_sha = excluded.head_sha,
+        recorded_at = excluded.recorded_at`,
+    ),
+    listFinalizeRunJobAttemptsForRun: db.prepare(
+      `SELECT run_id, job_id, matrix_key, round, state, exit_code, head_sha, recorded_at
+         FROM finalize_run_job_attempts
+        WHERE run_id = ?
+        ORDER BY round ASC, job_id ASC, matrix_key ASC`,
+    ),
+    setFinalizeRunFlakeRecoveredJobs: db.prepare(
+      `UPDATE finalize_runs SET flake_recovered_jobs = ? WHERE id = ?`,
     ),
 
     // reviewer_threads — diff-anchored notes produced by the reviewer
