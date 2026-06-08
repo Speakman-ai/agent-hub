@@ -40,6 +40,7 @@ describe('DEFAULT_EPIC_FORM', () => {
       autonomous_interval: 5,
       autonomous_max_concurrent: 2,
       autonomous_model: '',
+      autonomous_send_it: 0,
     });
   });
 });
@@ -68,8 +69,14 @@ describe('epicFormFromRow', () => {
       autonomous_interval: 10,
       autonomous_max_concurrent: 4,
       autonomous_model: '',
+      autonomous_send_it: 0,
       pr_base_branch: '',
     });
+  });
+
+  it('maps autonomous_send_it from the server row', () => {
+    expect(epicFormFromRow({ name: 'x', autonomous_send_it: 1 }).autonomous_send_it).toBe(1);
+    expect(epicFormFromRow({ name: 'x' }).autonomous_send_it).toBe(0);
   });
 
   it('coerces truthy autonomous to 1', () => {
@@ -107,8 +114,18 @@ describe('epicFormToUpdateBody', () => {
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
       autonomousModel: null,
+      autonomousSendIt: 0,
       prBaseBranch: null,
     });
+  });
+
+  it('sends autonomousSendIt 1 when Send It is on (and 0 once autonomous is off)', () => {
+    expect(
+      epicFormToUpdateBody({ name: 'x', autonomous: 1, autonomous_send_it: 1 }).autonomousSendIt,
+    ).toBe(1);
+    expect(
+      epicFormToUpdateBody({ name: 'x', autonomous: 0, autonomous_send_it: 1 }).autonomousSendIt,
+    ).toBe(0);
   });
 
   it('coerces autonomous falsy values to 0', () => {

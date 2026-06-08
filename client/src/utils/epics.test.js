@@ -23,8 +23,27 @@ describe('epicFormToUpdateBody', () => {
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
       autonomousModel: null,
+      autonomousSendIt: 0,
       prBaseBranch: null,
     });
+  });
+
+  it('sends autonomousSendIt 1 when the Send It toggle is on and autonomous is on', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 1,
+      autonomous_send_it: 1,
+    });
+    expect(body.autonomousSendIt).toBe(1);
+  });
+
+  it('forces autonomousSendIt 0 when autonomous is off (clears the override)', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 0,
+      autonomous_send_it: 1,
+    });
+    expect(body.autonomousSendIt).toBe(0);
   });
 
   it('preserves user-supplied max_concurrent (not defaults)', () => {

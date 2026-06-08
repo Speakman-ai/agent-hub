@@ -1031,6 +1031,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousInterval,
       autonomousMaxConcurrent,
       autonomousModel,
+      autonomousSendIt,
       orchestrationBudgets,
     } = parsedEpic;
 
@@ -1119,6 +1120,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasEpicPrBasePut ? (nextEpicPrBaseField ?? null) : (epic.pr_base_branch ?? null),
       req.params.epicId,
     );
+
+    // "Send It" override is persisted via a standalone setter so the main
+    // updateKanbanEpic call sites stay untouched. Only write when the payload
+    // explicitly carried the field; omitting it preserves the stored value.
+    if (autonomousSendIt !== undefined) {
+      stmts.setEpicAutonomousSendIt.run(autonomousSendIt ? 1 : 0, req.params.epicId);
+    }
 
     const updatedEpic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow;
     scheduleAutonomousEpic(req.params.projectId as string, updatedEpic);

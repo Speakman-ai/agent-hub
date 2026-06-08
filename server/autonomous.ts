@@ -978,11 +978,14 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       markSessionAutoShipOnComplete(d.stmts, sessionId);
       // Autonomous cards run at least "Build and Push"; they escalate to
       // "Send It" (auto-merge) only when the project's auto-merge is enabled.
-      markSessionFinalizeAutomation(
-        d.stmts,
-        sessionId,
-        assignedFinalizeAutomationLevel(resolveShouldAutoMerge(undefined, projRow?.githubWorkflow)),
-      );
+      // The epic's "Send It" override forces `merge` regardless of project
+      // auto-merge config — operators opt into auto-merge per autonomous epic.
+      const finalizeLevel = epic.autonomous_send_it
+        ? 'merge'
+        : assignedFinalizeAutomationLevel(
+            resolveShouldAutoMerge(undefined, projRow?.githubWorkflow),
+          );
+      markSessionFinalizeAutomation(d.stmts, sessionId, finalizeLevel);
       // Autonomous-dispatch sessions are created by the system (no
       // human caller in scope), but we still want to attribute them to
       // the real human responsible so per-user GitHub tokens, CLI

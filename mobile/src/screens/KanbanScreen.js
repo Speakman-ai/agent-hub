@@ -1434,6 +1434,26 @@ export default function KanbanScreen({ route, navigation }) {
                       </TouchableOpacity>
                     </View>
                   )}
+                  {epicForm.autonomous === 1 && (
+                    <View style={[styles.autonomousModeCard, { marginTop: 10 }]}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={styles.autonomousModeTitle}>Send It</Text>
+                        <Text style={styles.autonomousModeHint}>
+                          Start each dispatched session with auto-merge enabled (Finalize "Send
+                          It"), even when the project's auto-merge is off.
+                        </Text>
+                      </View>
+                      <Switch
+                        value={epicForm.autonomous_send_it === 1}
+                        onValueChange={(on) =>
+                          setEpicForm((f) => ({ ...f, autonomous_send_it: on ? 1 : 0 }))
+                        }
+                        trackColor={{ false: colors.gray600, true: '#059669' }}
+                        thumbColor={Platform.OS === 'android' ? colors.white : undefined}
+                        ios_backgroundColor={colors.gray600}
+                      />
+                    </View>
+                  )}
                 </>
               )}
 

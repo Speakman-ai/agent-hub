@@ -550,6 +550,14 @@ export interface KanbanEpicRow {
    * Null on legacy rows / epics that have never had autonomous enabled.
    */
   autonomous_enabled_by?: string | null;
+  /**
+   * "Send It" override for autonomous dispatch. When 1, sessions spawned for
+   * cards under this epic start at finalize_automation `merge` ("Send It")
+   * regardless of the project's auto-merge config. When 0 (default / legacy),
+   * dispatch keeps the existing behavior (`merge` only when project auto-merge
+   * is on, else `push`).
+   */
+  autonomous_send_it?: number;
   position: number;
   created_at: string;
   updated_at: string;
@@ -1221,6 +1229,7 @@ export interface Stmts {
   createKanbanEpic: Stmt;
   updateKanbanEpic: Stmt;
   setEpicAutonomousEnabledBy: Stmt;
+  setEpicAutonomousSendIt: Stmt;
   deleteKanbanEpic: Stmt;
   getKanbanCardsByEpic: Stmt;
   updateKanbanCardEpic: Stmt;

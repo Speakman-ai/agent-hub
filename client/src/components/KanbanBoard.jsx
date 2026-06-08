@@ -669,6 +669,7 @@ export default function KanbanBoard({
       autonomous_interval: epic.autonomous_interval || 5,
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
       autonomous_model: epic.autonomous_model || '',
+      autonomous_send_it: epic.autonomous_send_it || 0,
     });
     setShowEpicForm(false);
   };
@@ -1106,6 +1107,36 @@ export default function KanbanBoard({
                             </optgroup>
                           ))}
                       </select>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 pt-2 border-t border-gray-700/50">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-200">Send It</div>
+                        <p className="text-[11px] text-gray-500 leading-snug mt-0.5">
+                          Start each dispatched session with auto-merge enabled (Finalize
+                          &ldquo;Send It&rdquo;), even when the project&apos;s auto-merge is off.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={epicForm.autonomous_send_it === 1}
+                        aria-label="Send It"
+                        onClick={() =>
+                          setEpicForm((f) => ({
+                            ...f,
+                            autonomous_send_it: f.autonomous_send_it ? 0 : 1,
+                          }))
+                        }
+                        className={`relative inline-flex h-7 w-11 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
+                          epicForm.autonomous_send_it ? 'bg-emerald-600' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 ease-out ${
+                            epicForm.autonomous_send_it ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
                     </div>
                   </div>
                 )}

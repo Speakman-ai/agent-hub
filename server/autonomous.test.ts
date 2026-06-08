@@ -62,6 +62,10 @@ const mockGetOrCreateBoard = getOrCreateBoard as Mock;
 const { getDevHubApiKey: mockGetDevHubApiKey } = await import('./secrets.js');
 const mockGetDevHubApiKeyFn = mockGetDevHubApiKey as Mock;
 
+const { markSessionFinalizeAutomation: mockMarkFinalizeAutomation } =
+  await import('./session-ship.js');
+const mockMarkFinalizeAutomationFn = mockMarkFinalizeAutomation as Mock;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 interface MockStmts {
@@ -213,6 +217,7 @@ const ACTIVE_EPIC: KanbanEpicRow = {
 
 beforeEach(() => {
   mockGetOrCreateBoard.mockReset();
+  mockMarkFinalizeAutomationFn.mockClear();
   autonomousProjects.clear();
   for (const t of autonomousCrons.values()) t.stop?.();
   autonomousCrons.clear();
@@ -353,6 +358,52 @@ describe('runAutonomousLoop — dispatch', () => {
       .filter((p) => p.type === 'session_created');
     expect(sessionCreated).toHaveLength(1);
     expect(sessionCreated[0]).toMatchObject({ type: 'session_created', agentId: 'dev-1' });
+  });
+
+  it('starts dispatched sessions at "Build and Push" when project auto-merge is off and epic Send It is off', async () => {
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    // Project with no githubWorkflow → resolveShouldAutoMerge() is false.
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const sessionId = stmts.createSession.run.mock.calls[0][0] as string;
+    expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(expect.anything(), sessionId, 'push');
+  });
+
+  it('forces "Send It" (merge) when the epic has autonomous_send_it set, even with project auto-merge off', async () => {
+    const card = makeCard();
+    const sendItEpic = { ...ACTIVE_EPIC, autonomous_send_it: 1 } as unknown as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => sendItEpic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const sessionId = stmts.createSession.run.mock.calls[0][0] as string;
+    expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(
+      expect.anything(),
+      sessionId,
+      'merge',
+    );
   });
 
   it('uses epic autonomous_model when it is valid for the assignee engine', async () => {

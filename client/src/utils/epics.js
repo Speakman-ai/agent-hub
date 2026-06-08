@@ -29,6 +29,7 @@ export function epicFormToUpdateBody(form) {
     autonomousInterval: form.autonomous_interval || 5,
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
     autonomousModel,
+    autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
     prBaseBranch: prTrim || null,
     ...(form.orchestrationBudgets !== undefined
       ? { orchestrationBudgets: form.orchestrationBudgets }

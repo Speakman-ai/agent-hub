@@ -331,6 +331,14 @@ export const UpdateEpicRequestSchema = z.preprocess(
     autonomousInterval: z.number().int().optional(),
     autonomousMaxConcurrent: z.number().int().optional(),
     autonomousModel: z.string().nullable().optional(),
+    // "Send It" override: when 1, autonomous-dispatched sessions for this epic
+    // start at finalize_automation `merge` regardless of project auto-merge.
+    // Constrained to 0 | 1 at the boundary — this flag forces auto-merge, so we
+    // reject arbitrary integers rather than truthiness-coercing them later.
+    autonomousSendIt: z
+      .union([z.literal(0), z.literal(1)])
+      .optional()
+      .openapi({ type: 'integer', enum: [0, 1] }),
     // Free-form object that's later run through `sanitizeOrchestrationBudgetsPartial`
     // — Zod just gates the top-level shape (object/null/missing) so the
     // OpenAPI doc stays valid (`additionalProperties: { nullable: true }`

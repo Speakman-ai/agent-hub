@@ -7602,6 +7602,11 @@ paths:
                 autonomousModel:
                   type: string
                   nullable: true
+                autonomousSendIt:
+                  type: integer
+                  enum:
+                    - 0
+                    - 1
                 orchestrationBudgets:
                   type: object
                   description: Optional partial overrides merged onto the project orchestrationBudgets at run time.
