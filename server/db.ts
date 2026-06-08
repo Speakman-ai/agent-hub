@@ -3471,12 +3471,11 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
-    getActiveFinalizeRunForSessionBranchMode: db.prepare(
+    getActiveFinalizeRunForSessionBranch: db.prepare(
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
           AND branch = ?
-          AND mode = ?
           AND (
             (job_filter IS NULL AND ? IS NULL)
             OR job_filter = ?

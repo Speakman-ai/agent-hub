@@ -48,15 +48,12 @@ async function sleep(ms: number): Promise<void> {
 function kickoffClaimKey(args: {
   sessionId: string;
   branch: string;
-  mode: FinalizeRunMode;
   jobFilterJson: string | null;
 }): string {
   return createHash('sha256')
     .update(args.sessionId)
     .update('\0')
     .update(args.branch)
-    .update('\0')
-    .update(args.mode)
     .update('\0')
     .update(args.jobFilterJson ?? '')
     .digest('hex');
@@ -149,10 +146,9 @@ async function kickoffFinalizeRun(
     return { kind: 'reused', runId: existing.id, status: existing.status };
   }
 
-  const activeForBranch = stmts.getActiveFinalizeRunForSessionBranchMode.get(
+  const activeForBranch = stmts.getActiveFinalizeRunForSessionBranch.get(
     session.id,
     session.worktree_branch,
-    mode,
     jobFilter ? JSON.stringify(jobFilter) : null,
     jobFilter ? JSON.stringify(jobFilter) : null,
   ) as FinalizeRunRow | undefined;
@@ -164,7 +160,6 @@ async function kickoffFinalizeRun(
   const claimKey = kickoffClaimKey({
     sessionId: session.id,
     branch: session.worktree_branch,
-    mode,
     jobFilterJson,
   });
   stmts.pruneStaleFinalizeKickoffClaims.run(Date.now() - KICKOFF_CLAIM_TTL_MS);
@@ -178,10 +173,9 @@ async function kickoffFinalizeRun(
   ) as { changes?: number };
   if ((claimResult.changes ?? 0) === 0) {
     for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
-      const active = stmts.getActiveFinalizeRunForSessionBranchMode.get(
+      const active = stmts.getActiveFinalizeRunForSessionBranch.get(
         session.id,
         session.worktree_branch,
-        mode,
         jobFilterJson,
         jobFilterJson,
       ) as FinalizeRunRow | undefined;
@@ -193,6 +187,8 @@ async function kickoffFinalizeRun(
     return { kind: 'in_flight', runId: '', status: 'queued' };
   }
 
+  let shouldReleaseClaim = true;
+  let runFinalizeStarted = false;
   try {
     const orchestratorDeps = buildOrchestratorDeps(deps, card, project.id);
     const ownerId = args.triggeredByUserId;
@@ -224,6 +220,7 @@ async function kickoffFinalizeRun(
       jobFilter,
       signal,
     });
+    runFinalizeStarted = true;
     orchestratorPromise
       .catch((err: unknown) => {
         console.warn(
@@ -243,6 +240,7 @@ async function kickoffFinalizeRun(
         | undefined;
       if (created) {
         registeredRunId = created.id;
+        shouldReleaseClaim = true;
         // The run may have already settled within this poll window — register
         // then immediately reconcile so we never leak a dead entry.
         registerFinalizeRunAbort(created.id, abort);
@@ -252,9 +250,12 @@ async function kickoffFinalizeRun(
       await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
     }
 
+    shouldReleaseClaim = false;
     return { kind: 'started', runId: '', status: 'queued' };
   } finally {
-    stmts.deleteFinalizeKickoffClaim.run(claimKey);
+    if (shouldReleaseClaim || !runFinalizeStarted) {
+      stmts.deleteFinalizeKickoffClaim.run(claimKey);
+    }
   }
 }
 

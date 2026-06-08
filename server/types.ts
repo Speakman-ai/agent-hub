@@ -1512,12 +1512,11 @@ export interface Stmts {
   getActiveFinalizeRunForSession: Stmt;
   /**
    * Most-recent in-flight `finalize_runs` row for a session + branch +
-   * mode + job-filter tuple, regardless of head SHA. Used at kickoff time
-   * to prevent automation from starting a second full cycle while the
-   * previous cycle is waiting for the session turn-end that will re-enter
-   * the loop on the new commit.
+   * job-filter tuple, regardless of head SHA or mode. Used at kickoff time
+   * to prevent review-only, checks-only, and full Finalize cycles from
+   * competing over the same worktree lane.
    */
-  getActiveFinalizeRunForSessionBranchMode: Stmt;
+  getActiveFinalizeRunForSessionBranch: Stmt;
   /** Claim a short-lived Finalize kickoff slot before async orchestration setup. */
   insertFinalizeKickoffClaim: Stmt;
   /** Release a short-lived Finalize kickoff slot after the row is visible or kickoff aborts. */
