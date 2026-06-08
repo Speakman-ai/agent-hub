@@ -128,7 +128,12 @@ import {
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
-import { pickInitialSessionTitle, scheduleTitleUpgrade } from './session-title.js';
+import {
+  pickTurnSessionTitle,
+  scheduleTitleUpgrade,
+  shouldPersistTurnSessionTitlePick,
+  titleSourceForPick,
+} from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
@@ -1924,15 +1929,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       );
       const isFirstMessage = priorMessages.length === 0;
 
-      // Early auto-rename. Previously the sidebar only got a real title after
-      // the assistant's first response stream completed — that meant tens of
-      // seconds of `Session 5/19/2026, 12:43 PM` for long first turns (and
-      // never, for runs that hang / fail / sit in plan mode). The heuristic
-      // is fully synchronous, so we do the rename + `session-updated`
-      // broadcast right when the first user message lands and kick off the
-      // LLM upgrade in the background. TOCTOU guard inside
-      // `scheduleTitleUpgrade` protects against a concurrent rename.
-      if (isFirstMessage && session && session.name.startsWith('Session ')) {
+      // Auto-rename on every user turn while the title is still owned by the
+      // automatic title flow. Manual/card/hook titles are not clobbered.
+      if (session) {
         let linkedCardTitle: string | null = null;
         try {
           const linkedCard = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
@@ -1943,56 +1942,71 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           /* table missing — ignore */
         }
 
-        const pick = pickInitialSessionTitle({
+        const priorUserMessages = priorMessages
+          .filter((m) => m.role === 'user')
+          .map((m) => m.content);
+        const pick = pickTurnSessionTitle({
+          currentTitle: session.name,
+          currentTitleSource: session.title_source ?? null,
           content,
+          priorUserMessages,
           explicitTitle: hookSpecificOutput?.sessionTitle ?? null,
           linkedCardTitle,
         });
 
-        stmts.updateSessionName.run(pick.title, sessionId);
-        // Refresh the local row so downstream consumers see the new name.
-        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-        if (session) {
-          broadcast({
-            type: 'session-updated',
-            session: enrichSessionForClient(session, stmts),
-          });
-        }
+        if (shouldPersistTurnSessionTitlePick(pick, session.name, session.title_source ?? null)) {
+          const titleSource = titleSourceForPick(pick.source);
+          stmts.updateSessionNameWithTitleSource.run(pick.title, titleSource, sessionId);
+          // Refresh the local row so downstream consumers see the new name.
+          session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          if (session) {
+            broadcast({
+              type: 'session-updated',
+              session: enrichSessionForClient(session, stmts),
+            });
+          }
 
-        if (pick.usedHeuristic) {
-          const sessSnapshot = session;
-          const heuristicTitle = pick.title;
-          void scheduleTitleUpgrade({
-            sessionId,
-            heuristicTitle,
-            content,
-            config: {
-              // No host Anthropic key — Claude auth is per-account. The
-              // LLM title upgrade uses the host OpenAI key when configured.
-              anthropicApiKey: null,
-              openaiApiKey: config.openaiApiKey ?? null,
-            },
-            getSessionName: (id) => {
-              const row = stmts.getSession.get(id) as SessionRow | undefined;
-              return row?.name ?? null;
-            },
-            updateSessionName: (title, id) => {
-              stmts.updateSessionName.run(title, id);
-            },
-            onUpgrade: (newTitle) => {
-              if (!sessSnapshot) return;
-              broadcast({
-                type: 'session-updated',
-                session: enrichSessionForClient(
-                  {
-                    ...sessSnapshot,
-                    name: newTitle,
-                  } as SessionRow,
-                  stmts,
-                ),
-              });
-            },
-          });
+          if (pick.usedHeuristic) {
+            const sessSnapshot = session;
+            const heuristicTitle = pick.title;
+            void scheduleTitleUpgrade({
+              sessionId,
+              heuristicTitle,
+              content,
+              config: {
+                // No host Anthropic key — Claude auth is per-account. The
+                // LLM title upgrade uses the host OpenAI key when configured.
+                anthropicApiKey: null,
+                openaiApiKey: config.openaiApiKey ?? null,
+              },
+              getSessionName: (id) =>
+                (stmts.getSession.get(id) as SessionRow | undefined)?.name ?? null,
+              getSessionTitleSource: (id) =>
+                (stmts.getSession.get(id) as SessionRow | undefined)?.title_source ?? null,
+              updateSessionName: (title, id, expectedCurrentTitle) => {
+                const result = stmts.updateAutoSessionNameIfCurrent.run(
+                  title,
+                  id,
+                  expectedCurrentTitle,
+                ) as { changes?: number };
+                return (result.changes ?? 0) > 0;
+              },
+              onUpgrade: (newTitle) => {
+                if (!sessSnapshot) return;
+                broadcast({
+                  type: 'session-updated',
+                  session: enrichSessionForClient(
+                    {
+                      ...sessSnapshot,
+                      name: newTitle,
+                      title_source: 'auto',
+                    } as SessionRow,
+                    stmts,
+                  ),
+                });
+              },
+            });
+          }
         }
       }
 

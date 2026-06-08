@@ -4,7 +4,10 @@ import {
   deriveHeuristicTitle,
   generateLlmTitle,
   pickInitialSessionTitle,
+  pickTurnSessionTitle,
   scheduleTitleUpgrade,
+  shouldPersistTurnSessionTitlePick,
+  titleSourceForPick,
   type LlmTitleOptions,
 } from './session-title.js';
 
@@ -163,6 +166,278 @@ describe('pickInitialSessionTitle', () => {
     expect(pick.title).toBe('New chat');
     expect(pick.source).toBe('heuristic');
     expect(pick.usedHeuristic).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('pickTurnSessionTitle', () => {
+  it('renames a placeholder title on the first user message', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Session 6/8/2026, 3:39 AM',
+      content: 'After each turn, rename sessions by subject',
+      priorUserMessages: [],
+    });
+
+    expect(pick).toEqual({
+      title: 'After each turn, rename sessions by subject',
+      source: 'heuristic',
+      usedHeuristic: true,
+    });
+  });
+
+  it('renames an auto title on a follow-up user turn', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Investigate webhook replay errors',
+      currentTitleSource: 'auto',
+      content: 'Now can we fix the mobile preview refresh button?',
+      priorUserMessages: ['Investigate webhook replay errors'],
+    });
+
+    expect(pick?.title).toBe('Fix the mobile preview refresh button?');
+    expect(pick?.source).toBe('heuristic');
+    expect(pick?.usedHeuristic).toBe(true);
+  });
+
+  it('does not rewrite an auto title to the same heuristic title', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Fix the mobile preview refresh button?',
+      currentTitleSource: 'auto',
+      content: 'Now can we fix the mobile preview refresh button?',
+      priorUserMessages: ['Can we fix the mobile preview refresh button?'],
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('keeps the current auto title for generic continuation prompts', () => {
+    for (const content of ['ok', 'continue', 'what about tests?', 'fix it']) {
+      expect(
+        pickTurnSessionTitle({
+          currentTitle: 'Fix the mobile preview refresh button?',
+          currentTitleSource: 'auto',
+          content,
+          priorUserMessages: ['Can we fix the mobile preview refresh button?'],
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('keeps renaming after an LLM-upgraded auto title', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Webhook Replay Failure Triage',
+      currentTitleSource: 'auto',
+      content: 'Switch the topic to the finalize checks panel',
+      priorUserMessages: ['why are webhook replays failing today'],
+    });
+
+    expect(pick?.title).toBe('Switch the topic to the finalize checks panel');
+  });
+
+  it('does not infer legacy LLM-upgraded titles from fuzzy overlap', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Webhook Replay Failure Triage',
+      currentTitleSource: null,
+      content: 'Switch the topic to the finalize checks panel',
+      priorUserMessages: ['why are webhook replays failing today'],
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('keeps legacy auto titles working when title_source is absent', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Investigate webhook replay errors',
+      currentTitleSource: null,
+      content: 'Switch the topic to release notes',
+      priorUserMessages: ['investigate webhook replay errors'],
+    });
+
+    expect(pick?.title).toBe('Switch the topic to release notes');
+  });
+
+  it('promotes auto titles to linked card titles on follow-up turns', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Investigate webhook replay errors',
+      currentTitleSource: 'auto',
+      content: 'Can we discuss something else?',
+      priorUserMessages: ['investigate webhook replay errors'],
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toEqual({
+      title: 'Rename session after each turn',
+      source: 'card',
+      usedHeuristic: false,
+    });
+  });
+
+  it('promotes same-text auto titles to linked card ownership', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Rename session after each turn',
+      currentTitleSource: 'auto',
+      content: 'Can we discuss something else?',
+      priorUserMessages: ['rename session after each turn'],
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toEqual({
+      title: 'Rename session after each turn',
+      source: 'card',
+      usedHeuristic: false,
+    });
+    expect(shouldPersistTurnSessionTitlePick(pick, 'Rename session after each turn', 'auto')).toBe(
+      true,
+    );
+  });
+
+  it('does not promote unrelated legacy manual titles to linked card titles', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Pinned planning title',
+      currentTitleSource: null,
+      content: 'Can we discuss something else?',
+      priorUserMessages: ['investigate webhook replay errors'],
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not clobber titles with unknown ownership values', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Imported title',
+      currentTitleSource: 'imported',
+      content: 'Can we discuss something else?',
+      priorUserMessages: ['investigate webhook replay errors'],
+      explicitTitle: 'Hook title for this turn',
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('honors hook-provided title hints on follow-up turns', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Investigate webhook replay errors',
+      currentTitleSource: 'auto',
+      content: 'raw content that should not become the title',
+      priorUserMessages: ['investigate webhook replay errors'],
+      explicitTitle: 'Hook title for this turn',
+    });
+
+    expect(pick).toEqual({
+      title: 'Hook title for this turn',
+      source: 'hint',
+      usedHeuristic: false,
+    });
+  });
+
+  it('persists same-text hook hints by changing ownership source', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Hook title for this turn',
+      currentTitleSource: 'auto',
+      content: 'raw content that should not become the title',
+      priorUserMessages: ['old raw content'],
+      explicitTitle: 'Hook title for this turn',
+    });
+
+    expect(pick).toEqual({
+      title: 'Hook title for this turn',
+      source: 'hint',
+      usedHeuristic: false,
+    });
+    expect(shouldPersistTurnSessionTitlePick(pick, 'Hook title for this turn', 'auto')).toBe(true);
+  });
+
+  it('does not promote unrelated legacy manual titles to hook hints', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Pinned planning title',
+      currentTitleSource: null,
+      content: 'raw content that should not become the title',
+      priorUserMessages: ['investigate webhook replay errors'],
+      explicitTitle: 'Hook title for this turn',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not replace an existing hook-pinned title with a later hook hint', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Pinned hook title',
+      currentTitleSource: 'hint',
+      content: 'raw content that should not become the title',
+      priorUserMessages: ['investigate webhook replay errors'],
+      explicitTitle: 'Later hook title',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not treat unrelated legacy manual titles as auto-owned', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Pinned planning title',
+      currentTitleSource: null,
+      content: 'Switch the topic to release notes',
+      priorUserMessages: ['investigate webhook replay errors'],
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not treat overlapping legacy manual titles as auto-owned', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Webhook investigation',
+      currentTitleSource: null,
+      content: 'Switch the topic to release notes',
+      priorUserMessages: ['why are webhook failures happening'],
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not clobber legacy manual titles that summarize prior content', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Release Notes',
+      currentTitleSource: null,
+      content: 'Now rename each session after the current turn subject',
+      priorUserMessages: ['Can we draft release notes for the new finalize workflow?'],
+      explicitTitle: 'Hook title for this turn',
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not treat manual Session-prefixed legacy titles as placeholders', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Session replay investigation',
+      currentTitleSource: null,
+      content: 'Switch the topic to release notes',
+      priorUserMessages: ['old subject'],
+      explicitTitle: 'Hook title for this turn',
+      linkedCardTitle: 'Rename session after each turn',
+    });
+
+    expect(pick).toBeNull();
+  });
+
+  it('does not clobber manual, card, or hook titles', () => {
+    for (const source of ['manual', 'card', 'hint']) {
+      expect(
+        pickTurnSessionTitle({
+          currentTitle: 'Pinned title',
+          currentTitleSource: source,
+          content: 'rename this',
+          priorUserMessages: ['old subject'],
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('maps heuristic picks to the auto title source', () => {
+    expect(titleSourceForPick('heuristic')).toBe('auto');
+    expect(titleSourceForPick('card')).toBe('card');
+    expect(titleSourceForPick('hint')).toBe('hint');
   });
 });
 
@@ -350,14 +625,24 @@ describe('generateLlmTitle', () => {
 // ---------------------------------------------------------------------------
 
 describe('scheduleTitleUpgrade', () => {
-  function makeHarness(initialName: string) {
-    const store = { name: initialName };
+  function makeHarness(initialName: string, initialTitleSource: string | null = 'auto') {
+    const store: { name: string | null; titleSource: string | null } = {
+      name: initialName,
+      titleSource: initialTitleSource,
+    };
+    const updateSessionName = vi.fn(
+      (title: string, _id: string, expectedCurrentTitle: string): boolean => {
+        if (store.name !== expectedCurrentTitle || store.titleSource !== 'auto') return false;
+        store.name = title;
+        store.titleSource = 'auto';
+        return true;
+      },
+    );
     return {
       store,
-      getSessionName: vi.fn((_id: string) => store.name),
-      updateSessionName: vi.fn((title: string, _id: string) => {
-        store.name = title;
-      }),
+      getSessionName: vi.fn((_id: string): string | null => store.name),
+      getSessionTitleSource: vi.fn((_id: string): string | null => store.titleSource),
+      updateSessionName,
       onUpgrade: vi.fn((_newTitle: string) => {}),
     };
   }
@@ -381,10 +666,63 @@ describe('scheduleTitleUpgrade', () => {
 
     expect(ok).toBe(true);
     expect(generate).toHaveBeenCalledTimes(1);
-    expect(h.updateSessionName).toHaveBeenCalledWith('Fix the streaming reconnect bug', 's1');
+    expect(h.updateSessionName).toHaveBeenCalledWith(
+      'Fix the streaming reconnect bug',
+      's1',
+      'Fix the bug',
+    );
     expect(h.onUpgrade).toHaveBeenCalledTimes(1);
     expect(h.onUpgrade).toHaveBeenCalledWith('Fix the streaming reconnect bug');
     expect(h.store.name).toBe('Fix the streaming reconnect bug');
+  });
+
+  it('renames when the title source is still auto-owned', async () => {
+    const h = makeHarness('Fix the bug', 'auto');
+    const generate = vi.fn(async () => 'Fix the streaming reconnect bug');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'Hey can you fix the streaming reconnect bug',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      getSessionTitleSource: h.getSessionTitleSource,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(true);
+    expect(h.updateSessionName).toHaveBeenCalledWith(
+      'Fix the streaming reconnect bug',
+      's1',
+      'Fix the bug',
+    );
+    expect(h.store.titleSource).toBe('auto');
+  });
+
+  it('does not clobber a manual rename to the same heuristic title while the upgrade is pending', async () => {
+    const h = makeHarness('Fix the bug', 'manual');
+    const generate = vi.fn(async () => 'Fix the streaming reconnect bug');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'Hey can you fix the streaming reconnect bug',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      getSessionTitleSource: h.getSessionTitleSource,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+    expect(h.store.name).toBe('Fix the bug');
+    expect(h.store.titleSource).toBe('manual');
   });
 
   it('short-circuits and never calls the generator when no API key is configured', async () => {
@@ -430,6 +768,78 @@ describe('scheduleTitleUpgrade', () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(h.updateSessionName).not.toHaveBeenCalled();
     expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not rename when storage refuses the TOCTOU match', async () => {
+    const h = makeHarness('Fix the bug');
+    h.getSessionName.mockImplementation(() => null);
+    const generate = vi.fn(async () => 'Some LLM title');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not rename when the matching title is no longer auto-owned', async () => {
+    const h = makeHarness('Fix the bug');
+    const getSessionTitleSource = vi.fn((_id: string) => 'manual');
+    const generate = vi.fn(async () => 'Some LLM title');
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      getSessionTitleSource,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(getSessionTitleSource).toHaveBeenCalledWith('s1');
+    expect(h.updateSessionName).not.toHaveBeenCalled();
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+  });
+
+  it('does not broadcast when the guarded write loses a concurrent manual rename race', async () => {
+    const h = makeHarness('Fix the bug', 'auto');
+    const generate = vi.fn(async () => 'Some LLM title');
+    h.updateSessionName.mockImplementation(
+      (_title: string, _id: string, _expectedCurrentTitle: string): boolean => {
+        h.store.titleSource = 'manual';
+        return false;
+      },
+    );
+
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'anything',
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      getSessionTitleSource: h.getSessionTitleSource,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(ok).toBe(false);
+    expect(h.updateSessionName).toHaveBeenCalledWith('Some LLM title', 's1', 'Fix the bug');
+    expect(h.onUpgrade).not.toHaveBeenCalled();
+    expect(h.store.titleSource).toBe('manual');
   });
 
   it('does not rename when the LLM returns null', async () => {

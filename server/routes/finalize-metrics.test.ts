@@ -9,10 +9,10 @@
  */
 import '../test/setup.js';
 import type supertest from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
-import { getDb, getStmts } from '../db.js';
+import { getStmts } from '../db.js';
 import {
   METRIC_NAMES,
   recordFixDispatchCount,
@@ -40,13 +40,6 @@ async function freshProject(): Promise<string> {
     .expect(201);
   return id;
 }
-
-beforeEach(() => {
-  // The vitest setupFiles creates a fresh per-file DB, so cross-test
-  // leakage is not the concern. Truncate the metrics table per test for
-  // determinism on the aggregation assertions.
-  getDb().exec('DELETE FROM finalize_metrics');
-});
 
 describe('GET /api/projects/:projectId/finalize/metrics', () => {
   it('404 when the project does not exist', async () => {

@@ -1,5 +1,5 @@
 /**
- * session-title.ts — derive a concise session name from the user's first message.
+ * session-title.ts — derive a concise session name from user messages.
  *
  * Three layers:
  *  1. `deriveHeuristicTitle(content)` — pure, synchronous. Strips conversational
@@ -12,10 +12,10 @@
  *  3. `scheduleTitleUpgrade(opts)` — orchestrator. Glues 2 onto a session-name
  *     store with a TOCTOU guard so a concurrent rename is never clobbered.
  *
- * The heuristic exists so the *initial* rename happens synchronously and the
+ * The heuristic exists so automatic renames happen synchronously and the
  * sidebar updates immediately. The LLM path is a deferred upgrade that fires
- * once the first turn has committed; if it succeeds, the caller broadcasts a
- * second `session-updated`.
+ * after an auto-generated heuristic title is written; if it succeeds, the
+ * caller broadcasts a second `session-updated`.
  */
 
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
@@ -60,7 +60,7 @@ const FILLER_PATTERNS: RegExp[] = [
   /^let'?s[,?\s:-]+/i,
   /^let\s+me[,?\s:-]+/i,
   // Lead-ins.
-  /^(?:just|quick(?:ly)?|maybe|perhaps)[,!?.\s:-]+/i,
+  /^(?:now|just|quick(?:ly)?|maybe|perhaps)[,!?.\s:-]+/i,
   // Question lead-ins.
   /^(?:do|does|did)\s+(?:you|we)[,?\s:-]+/i,
 ];
@@ -163,6 +163,117 @@ export function pickInitialSessionTitle(
   }
   return {
     title: deriveHeuristicTitle(input.content),
+    source: 'heuristic',
+    usedHeuristic: true,
+  };
+}
+
+export interface TurnSessionTitlePickInput {
+  /** Current persisted session name. */
+  currentTitle?: string | null;
+  /** `sessions.title_source`; null for legacy rows. */
+  currentTitleSource?: string | null;
+  /** Raw current user message. */
+  content: string;
+  /** Previous user messages, oldest first. */
+  priorUserMessages?: string[];
+  /** Optional explicit hint from the current turn. */
+  explicitTitle?: string | null;
+  /** Optional linked kanban card title. */
+  linkedCardTitle?: string | null;
+}
+
+const PLACEHOLDER_SESSION_TITLE_RE =
+  /^Session\s+\d{1,2}\/\d{1,2}\/\d{4},\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?$/i;
+
+export function isPlaceholderSessionTitle(title: string | null | undefined): boolean {
+  return PLACEHOLDER_SESSION_TITLE_RE.test((title ?? '').trim());
+}
+
+export function titleSourceForPick(source: InitialSessionTitlePick['source']): string {
+  return source === 'heuristic' ? 'auto' : source;
+}
+
+export function shouldPersistTurnSessionTitlePick(
+  pick: InitialSessionTitlePick | null,
+  currentTitle: string | null | undefined,
+  currentTitleSource: string | null | undefined,
+): pick is InitialSessionTitlePick {
+  if (!pick) return false;
+  const nextTitle = pick.title.trim();
+  const existingTitle = (currentTitle ?? '').trim();
+  const nextSource = titleSourceForPick(pick.source);
+  const existingSource = (currentTitleSource ?? '').trim();
+  return nextTitle !== existingTitle || nextSource !== existingSource;
+}
+
+function isAutoTitleForPriorUserMessage(title: string, priorUserMessages: string[]): boolean {
+  const current = title.trim();
+  if (!current) return false;
+  for (let i = priorUserMessages.length - 1; i >= 0; i -= 1) {
+    const prior = priorUserMessages[i];
+    if (!prior?.trim()) continue;
+    if (deriveHeuristicTitle(prior) === current) return true;
+  }
+  return false;
+}
+
+const GENERIC_FOLLOW_UP_TITLE_RE =
+  /^(?:ok(?:ay)?|continue|go on|keep going|next|fix it|do it|yes|no|yep|nope|what about .+)\??$/i;
+
+function isGenericFollowUpTitle(title: string): boolean {
+  return GENERIC_FOLLOW_UP_TITLE_RE.test(title.trim());
+}
+
+/**
+ * Decide whether the current user turn should automatically rename a session.
+ *
+ * Manual names are never clobbered. Hook/card names stay pinned once written,
+ * but the current turn may still promote an auto/legacy title to a hook/card
+ * title when those sources are present. Legacy rows have no `title_source`, so
+ * follow-up turns only treat titles as auto-owned when they still look like a
+ * placeholder or exactly match the deterministic title derived from a previous
+ * user message.
+ */
+export function pickTurnSessionTitle(
+  input: TurnSessionTitlePickInput,
+): InitialSessionTitlePick | null {
+  const currentTitle = (input.currentTitle ?? '').trim();
+  const currentTitleSource = (input.currentTitleSource ?? '').trim();
+  const priorUserMessages = input.priorUserMessages ?? [];
+  const isFirstUserMessage = priorUserMessages.length === 0;
+  if (currentTitleSource && currentTitleSource !== 'auto') {
+    return null;
+  }
+  const canAutoRename =
+    currentTitleSource === 'auto' ||
+    isPlaceholderSessionTitle(currentTitle) ||
+    isAutoTitleForPriorUserMessage(currentTitle, priorUserMessages);
+  if (!canAutoRename) return null;
+
+  const explicit = (input.explicitTitle ?? '').trim();
+  if (explicit) {
+    return { title: explicit, source: 'hint', usedHeuristic: false };
+  }
+  const card = (input.linkedCardTitle ?? '').trim();
+  if (card && currentTitle !== card) {
+    return { title: card, source: 'card', usedHeuristic: false };
+  }
+  if (card) return { title: card, source: 'card', usedHeuristic: false };
+
+  if (isFirstUserMessage) {
+    return pickInitialSessionTitle({
+      content: input.content,
+      explicitTitle: input.explicitTitle,
+      linkedCardTitle: input.linkedCardTitle,
+    });
+  }
+
+  const heuristicTitle = deriveHeuristicTitle(input.content);
+  if (heuristicTitle === currentTitle || isGenericFollowUpTitle(heuristicTitle)) return null;
+
+  return {
+    title: heuristicTitle,
     source: 'heuristic',
     usedHeuristic: true,
   };
@@ -356,8 +467,10 @@ export interface ScheduleTitleUpgradeOptions {
   };
   /** Read the session's current `name` from storage. Return null if missing. */
   getSessionName: (sessionId: string) => string | null;
-  /** Persist the new title to storage. */
-  updateSessionName: (title: string, sessionId: string) => void;
+  /** Read the session's current title ownership, when the caller stores it. */
+  getSessionTitleSource?: (sessionId: string) => string | null;
+  /** Persist the new title only if the current title still matches. */
+  updateSessionName: (title: string, sessionId: string, expectedCurrentTitle: string) => boolean;
   /** Called after a successful rename; the caller broadcasts `session-updated`. */
   onUpgrade: (newTitle: string) => void;
   /** Generator override for tests. Defaults to `generateLlmTitle`. */
@@ -385,7 +498,11 @@ export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): P
     if (!llmTitle || llmTitle === opts.heuristicTitle) return false;
     const currentName = opts.getSessionName(opts.sessionId);
     if (currentName !== opts.heuristicTitle) return false;
-    opts.updateSessionName(llmTitle, opts.sessionId);
+    if (opts.getSessionTitleSource && opts.getSessionTitleSource(opts.sessionId) !== 'auto') {
+      return false;
+    }
+    const updated = opts.updateSessionName(llmTitle, opts.sessionId, opts.heuristicTitle);
+    if (!updated) return false;
     opts.onUpgrade(llmTitle);
     return true;
   } catch {

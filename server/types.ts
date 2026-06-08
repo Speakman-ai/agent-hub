@@ -7,6 +7,7 @@ export interface SessionRow {
   id: string;
   agent_id: string;
   name: string;
+  title_source?: string | null;
   engine: string;
   model: string;
   engine_session_id: string | null;
@@ -973,6 +974,8 @@ export interface Stmts {
   getSession: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
+  updateSessionNameWithTitleSource: Stmt;
+  updateAutoSessionNameIfCurrent: Stmt;
   updateSessionMaxTurns: Stmt;
   updateSessionLinkedDesign: Stmt;
   deleteSession: Stmt;

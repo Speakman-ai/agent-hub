@@ -90,6 +90,7 @@ function initDb(dataDir: string): void {
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      title_source TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -922,6 +923,11 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT engine FROM sessions LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude-code'");
+  }
+  try {
+    db.prepare('SELECT title_source FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN title_source TEXT');
   }
   try {
     db.prepare('SELECT engine FROM messages LIMIT 1').get();
@@ -2048,7 +2054,13 @@ function initDb(dataDir: string): void {
        LIMIT 200`,
     ),
     updateSessionName: db.prepare(
-      "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?",
+      "UPDATE sessions SET name = ?, title_source = 'manual', updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionNameWithTitleSource: db.prepare(
+      "UPDATE sessions SET name = ?, title_source = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateAutoSessionNameIfCurrent: db.prepare(
+      "UPDATE sessions SET name = ?, title_source = 'auto', updated_at = datetime('now') WHERE id = ? AND name = ? AND title_source = 'auto'",
     ),
     updateSessionMaxTurns: db.prepare(
       "UPDATE sessions SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",
