@@ -1068,6 +1068,7 @@ components:
             - finalize_step_result
             - finalize_stalled_no_response_count
             - merged_pr_provenance
+            - finalize_github_parity
         kind:
           type: string
           enum:
@@ -1113,6 +1114,7 @@ components:
             - finalize_step_result
             - finalize_stalled_no_response_count
             - merged_pr_provenance
+            - finalize_github_parity
         kind:
           type: string
           enum:
@@ -2688,6 +2690,211 @@ components:
       additionalProperties:
         nullable: true
       description: A single escalation row.
+    ParityError:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+    ParityJob:
+      type: object
+      properties:
+        name:
+          type: string
+        state:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+            - skipped
+      required:
+        - name
+        - state
+      description: One CI job/check, normalized to a name + parity state.
+    ParityRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        pr_number:
+          type: integer
+          nullable: true
+        commit_sha:
+          type: string
+        run_id:
+          type: string
+          nullable: true
+        finalize_verdict:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+        finalize_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityJob"
+        github_verdict:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+        github_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityJob"
+        divergence_class:
+          type: string
+          enum:
+            - agree_green
+            - agree_red
+            - false_green
+            - false_red
+            - indeterminate
+        note:
+          type: string
+          nullable: true
+        observed_at:
+          type: integer
+      required:
+        - id
+        - project_id
+        - pr_number
+        - commit_sha
+        - run_id
+        - finalize_verdict
+        - finalize_jobs
+        - github_verdict
+        - github_jobs
+        - divergence_class
+        - note
+        - observed_at
+      description: "One per-commit parity observation: the Finalize verdict + per-job states vs the GitHub Actions verdict + per-job states, with the derived divergence class."
+    ParitySummary:
+      type: object
+      properties:
+        total:
+          type: integer
+        agree_green:
+          type: integer
+        agree_red:
+          type: integer
+        false_green:
+          type: integer
+        false_red:
+          type: integer
+        indeterminate:
+          type: integer
+      required:
+        - total
+        - agree_green
+        - agree_red
+        - false_green
+        - false_red
+        - indeterminate
+      description: Count of records per divergence class for the window.
+    ParityListResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        range:
+          type: object
+          properties:
+            from_ms:
+              type: integer
+            to_ms:
+              type: integer
+            from_iso:
+              type: string
+            to_iso:
+              type: string
+          required:
+            - from_ms
+            - to_ms
+            - from_iso
+            - to_iso
+        summary:
+          $ref: "#/components/schemas/ParitySummary"
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityRecord"
+      required:
+        - project_id
+        - range
+        - summary
+        - records
+    ParityRecordRequest:
+      type: object
+      properties:
+        commit_sha:
+          type: string
+        pr_number:
+          type: integer
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
+        run_id:
+          type: string
+          nullable: true
+        finalize_verdict:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+        finalize_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityJob"
+        github_verdict:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+        github_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityJob"
+        note:
+          type: string
+          nullable: true
+      required:
+        - commit_sha
+        - finalize_verdict
+        - github_verdict
+      description: Record (or update, idempotent on commit) one parity observation.
+    ParityRecordResponse:
+      type: object
+      properties:
+        record:
+          $ref: "#/components/schemas/ParityRecord"
+      required:
+        - record
+    ParitySeedResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        seeded:
+          type: integer
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParityRecord"
+      required:
+        - project_id
+        - seeded
+        - records
     FinalizeWizardErrorResponse:
       type: object
       properties:
@@ -6719,9 +6926,9 @@ paths:
           in: query
         - schema:
             type: string
-            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance."
+            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity."
           required: false
-          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance."
+          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity."
           name: metrics
           in: query
       responses:
@@ -10056,6 +10263,117 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EscalationsErrorResponse"
+  /api/projects/{projectId}/finalize/parity:
+    get:
+      tags:
+        - Finalize
+      summary: List Finalize↔GitHub parity records with a divergence breakdown
+      description: Returns per-commit parity observations for the window, newest first, plus a class summary. The summary always reflects the full window even when `class` filters the record list.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: "`<N><m|h|d>` (e.g. `7d`, `24h`) or `<isoFrom>..<isoTo>`. Defaults to 24h."
+          required: false
+          description: "`<N><m|h|d>` (e.g. `7d`, `24h`) or `<isoFrom>..<isoTo>`. Defaults to 24h."
+          name: range
+          in: query
+        - schema:
+            type: string
+            enum:
+              - agree_green
+              - agree_red
+              - false_green
+              - false_red
+              - indeterminate
+            description: Filter the record list to a single divergence class.
+          required: false
+          description: Filter the record list to a single divergence class.
+          name: class
+          in: query
+      responses:
+        "200":
+          description: Parity records + summary for the window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityListResponse"
+        "400":
+          description: Range or class filter could not be parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityError"
+    post:
+      tags:
+        - Finalize
+      summary: Record one Finalize↔GitHub parity observation
+      description: Idempotent on (project, commit_sha). Derives the divergence class, persists the record, emits the `finalize_github_parity` counter, and fires a false-green alert when Finalize is green but GitHub is red.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParityRecordRequest"
+      responses:
+        "201":
+          description: The stored parity record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityRecordResponse"
+        "400":
+          description: Missing commit_sha or invalid verdict / jobs / pr_number.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityError"
+  /api/projects/{projectId}/finalize/parity/seed:
+    post:
+      tags:
+        - Finalize
+      summary: Seed the parity dataset with known false-greens (PR#1001)
+      description: Idempotently seeds the project dataset with documented false-green observations, starting with PR surveytracker#1001 (commit 6ad87ec).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "201":
+          description: The seeded parity records.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParitySeedResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParityError"
   /api/projects/{projectId}/finalize/environment-draft:
     get:
       tags:

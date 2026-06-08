@@ -101,6 +101,7 @@ import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './wo
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createFinalizeRoutes from './routes/finalize.js';
+import createFinalizeParityRoutes from './routes/finalize-parity.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { startFleetScaler } from './finalize/runner-fleet-scaler.js';
@@ -832,6 +833,7 @@ app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
 app.use(createFinalizeRoutes(routeDeps));
+app.use(createFinalizeParityRoutes(routeDeps));
 app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));

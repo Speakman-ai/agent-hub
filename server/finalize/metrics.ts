@@ -87,6 +87,14 @@ export const METRIC_NAMES = [
    * Labels: `{ source: 'finalize' | 'external' }`.
    */
   'merged_pr_provenance',
+  /**
+   * One row per parity observation recorded by the Finalize↔GitHub parity
+   * harness (see `server/finalize/parity-store.ts`). Labels:
+   * `{ divergence_class }` — one of agree_green / agree_red / false_green /
+   * false_red / indeterminate. Aggregating this counter over a window gives
+   * the false-green rate the epic exit bar gates on (~0 over 200+ PRs).
+   */
+  'finalize_github_parity',
 ] as const;
 
 export type MetricName = (typeof METRIC_NAMES)[number];
@@ -111,6 +119,7 @@ const METRIC_KIND: Record<MetricName, MetricKind> = {
   finalize_step_result: 'counter',
   finalize_stalled_no_response_count: 'counter',
   merged_pr_provenance: 'counter',
+  finalize_github_parity: 'counter',
 };
 
 export function getMetricKind(name: MetricName): MetricKind {
@@ -343,6 +352,22 @@ export function recordMergedPrProvenance(
     projectId: args.projectId,
     name: 'merged_pr_provenance',
     labels: { source: args.source },
+    runId: args.runId ?? null,
+  });
+}
+
+export function recordGithubParity(
+  deps: MetricsDeps,
+  args: {
+    projectId: string;
+    runId?: string | null;
+    divergenceClass: string;
+  },
+): void {
+  recordMetric(deps, {
+    projectId: args.projectId,
+    name: 'finalize_github_parity',
+    labels: { divergence_class: args.divergenceClass },
     runId: args.runId ?? null,
   });
 }

@@ -9,6 +9,7 @@ import {
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
+import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -770,6 +771,11 @@ function initDb(dataDir: string): void {
   // See `server/finalize/metrics-schema.ts` for the column contract and
   // `server/finalize/metrics.ts` for the emitter / aggregation surface.
   db.exec(FINALIZE_METRICS_SCHEMA);
+
+  // Finalize↔GitHub parity harness — one row per (project, commit) recording
+  // the Finalize verdict vs the GitHub Actions verdict + divergence class. See
+  // `server/finalize/parity-store.ts`.
+  db.exec(FINALIZE_PARITY_SCHEMA);
 
   try {
     db.prepare('SELECT step_index FROM finalize_run_steps LIMIT 1').get();
@@ -3854,6 +3860,40 @@ function initDb(dataDir: string): void {
           AND observed_at >= ?
           AND observed_at < ?
         ORDER BY metric_name ASC, observed_at ASC`,
+    ),
+
+    // finalize_github_parity — Finalize↔GitHub parity harness. See
+    // `server/finalize/parity-store.ts`. Upsert keyed on (project, commit).
+    upsertFinalizeParity: db.prepare(
+      `INSERT INTO finalize_github_parity
+         (id, project_id, pr_number, commit_sha, run_id, finalize_verdict,
+          finalize_jobs, github_verdict, github_jobs, divergence_class, note, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, commit_sha) DO UPDATE SET
+         pr_number = excluded.pr_number,
+         run_id = excluded.run_id,
+         finalize_verdict = excluded.finalize_verdict,
+         finalize_jobs = excluded.finalize_jobs,
+         github_verdict = excluded.github_verdict,
+         github_jobs = excluded.github_jobs,
+         divergence_class = excluded.divergence_class,
+         note = excluded.note,
+         observed_at = excluded.observed_at`,
+    ),
+    getFinalizeParityByCommit: db.prepare(
+      `SELECT id, project_id, pr_number, commit_sha, run_id, finalize_verdict,
+              finalize_jobs, github_verdict, github_jobs, divergence_class, note, observed_at
+         FROM finalize_github_parity
+        WHERE project_id = ? AND commit_sha = ?`,
+    ),
+    listFinalizeParityInRange: db.prepare(
+      `SELECT id, project_id, pr_number, commit_sha, run_id, finalize_verdict,
+              finalize_jobs, github_verdict, github_jobs, divergence_class, note, observed_at
+         FROM finalize_github_parity
+        WHERE project_id = ?
+          AND observed_at >= ?
+          AND observed_at < ?
+        ORDER BY observed_at DESC`,
     ),
   } as Stmts;
 

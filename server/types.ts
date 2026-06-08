@@ -1651,6 +1651,21 @@ export interface Stmts {
    * keep the prepared-statement cache small.
    */
   listAllFinalizeMetricsInRange: Stmt;
+  /**
+   * Finalize↔GitHub parity harness — upsert one observation keyed on
+   * (project_id, commit_sha). Binds the full column tuple
+   * `(id, project_id, pr_number, commit_sha, run_id, finalize_verdict,
+   * finalize_jobs, github_verdict, github_jobs, divergence_class, note,
+   * observed_at)`. See `server/finalize/parity-store.ts`.
+   */
+  upsertFinalizeParity: Stmt;
+  /** Fetch a single parity row by `(project_id, commit_sha)`. */
+  getFinalizeParityByCommit: Stmt;
+  /**
+   * Range scan over parity rows in (project, window), newest first. Binds
+   * `(project_id, from_inclusive_ms, to_exclusive_ms)`.
+   */
+  listFinalizeParityInRange: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
