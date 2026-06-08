@@ -75,10 +75,10 @@ Bundle into `setup-apply`:
 ## Step 6 — Persist + validate
 
 ```bash
-curl -s -X POST .../preview/setup-apply -d '{ "enabled": true, "preview": { "compose": { ... } }, "secrets": { ... } }'
-curl -s -X POST .../preview/build -d '{ "compose": { ... }, "envVars": [...] }'
+curl -s -X POST .../preview/setup-apply -H "X-API-Key: $AGENT_HUB_API_KEY" -d '{ "enabled": true, "preview": { "compose": { ... } }, "secrets": { ... } }'
+curl -s -X POST .../preview/build -H "X-API-Key: $AGENT_HUB_API_KEY" -d '{ "compose": { ... }, "envVars": [...] }'
 # or preview/test when build is not suitable
-curl -s -X POST .../preview/wizard-complete
+curl -s -X POST .../preview/wizard-complete -H "X-API-Key: $AGENT_HUB_API_KEY"
 ```
 
 ```xml

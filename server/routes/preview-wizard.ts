@@ -105,6 +105,7 @@ export function buildKickoffPrompt(
     `- **PROJECT_ID**: \`${projectId}\``,
     `- **PROJECT_CWD**: \`${projectCwd}\``,
     `- **YOUR SESSION_ID** (pass this to setup-apply and setup-compose-bootstrap): \`${sessionId}\``,
+    '- **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`**: use these for every wizard API call. Send `-H "X-API-Key: $AGENT_HUB_API_KEY"` on `setup-compose-bootstrap`, `setup-apply`, `preview/build`, and `wizard-complete`. If any wizard call returns HTTP 401 or 403, halt and report the auth failure. Never ask the operator to paste a token into chat.',
     '',
     '## Server-provided draft (repo scan — do not re-run scanners)',
     '',

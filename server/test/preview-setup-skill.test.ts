@@ -45,6 +45,13 @@ describe('preview-setup default skill — SKILL.md frontmatter', () => {
     expect(body).toMatch(/guided walkthrough/i);
   });
 
+  it('sample wizard curls include the Hub API key header', () => {
+    const body = readFileSync(SKILL_MD, 'utf8');
+    expect(body).toMatch(/preview\/setup-apply[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
+    expect(body).toMatch(/preview\/build[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
+    expect(body).toMatch(/preview\/wizard-complete[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
+  });
+
   it('body uses PROJECT_ID placeholder (not undefined shell env vars)', () => {
     const body = readFileSync(SKILL_MD, 'utf8');
     expect(body).toMatch(/\*\*`PROJECT_ID`\*\*/);

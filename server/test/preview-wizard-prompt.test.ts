@@ -51,6 +51,18 @@ describe('preview-wizard kickoff prompt', () => {
     expect(prompt).toMatch(/PROJECT_ID.*`demo-project-id`/);
     expect(prompt).toMatch(/PROJECT_CWD.*`\/srv\/workspaces\/demo`/);
     expect(prompt).toMatch(/YOUR SESSION_ID.*`session-preview-setup-1`/);
+    expect(prompt).toMatch(/\$AGENT_HUB_URL/);
+    expect(prompt).toMatch(/\$AGENT_HUB_API_KEY/);
+  });
+
+  it('is self-contained about wizard API auth when skill loading fails', () => {
+    expect(prompt).toMatch(/X-API-Key: \$AGENT_HUB_API_KEY/);
+    expect(prompt).toMatch(/setup-compose-bootstrap/);
+    expect(prompt).toMatch(/setup-apply/);
+    expect(prompt).toMatch(/preview\/build/);
+    expect(prompt).toMatch(/wizard-complete/);
+    expect(prompt).toMatch(/401 or 403/);
+    expect(prompt).toMatch(/Never ask the operator to paste a token into chat/);
   });
 
   it('documents monorepo and README steps', () => {
