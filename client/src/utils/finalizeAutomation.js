@@ -19,7 +19,7 @@ export const FINALIZE_AUTOMATION_OPTIONS = [
   },
   {
     value: 'merge',
-    label: 'Send It',
+    label: 'Auto Merge',
     description: 'Build, review, test, push, and enable GitHub auto-merge if available',
   },
 ];

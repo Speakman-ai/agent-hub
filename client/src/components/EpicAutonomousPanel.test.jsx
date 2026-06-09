@@ -1,0 +1,21 @@
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import EpicAutonomousPanel, { epicToAutonomousForm } from './EpicAutonomousPanel.jsx';
+
+describe('EpicAutonomousPanel', () => {
+  it('edits PR base branch and toggles autonomous', () => {
+    const onChange = vi.fn();
+
+    render(
+      <EpicAutonomousPanel
+        form={epicToAutonomousForm({ id: 'e1', pr_base_branch: 'feature/x' })}
+        onChange={onChange}
+        modelConfig={null}
+      />,
+    );
+
+    expect(screen.getByTestId('autonomous-pr-base-input')).toHaveValue('feature/x');
+    fireEvent.click(screen.getByRole('switch', { name: 'Autonomous mode' }));
+    expect(onChange).toHaveBeenCalledWith({ autonomous: 1 });
+  });
+});

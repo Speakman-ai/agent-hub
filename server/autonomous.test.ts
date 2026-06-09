@@ -360,7 +360,7 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(sessionCreated[0]).toMatchObject({ type: 'session_created', agentId: 'dev-1' });
   });
 
-  it('starts dispatched sessions at "Build and Push" when project auto-merge is off and epic Send It is off', async () => {
+  it('starts dispatched sessions at "Build and Push" when project auto-merge is off and epic Auto Merge is off', async () => {
     const card = makeCard();
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -381,7 +381,7 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(expect.anything(), sessionId, 'push');
   });
 
-  it('forces "Send It" (merge) when the epic has autonomous_send_it set, even with project auto-merge off', async () => {
+  it('forces "Auto Merge" (merge) when the epic has autonomous_send_it set, even with project auto-merge off', async () => {
     const card = makeCard();
     const sendItEpic = { ...ACTIVE_EPIC, autonomous_send_it: 1 } as unknown as KanbanEpicRow;
     const stmts = makeStmts({

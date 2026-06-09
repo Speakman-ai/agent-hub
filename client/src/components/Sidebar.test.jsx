@@ -628,7 +628,8 @@ describe('Sidebar — reviewer agents are hidden from the agent list', () => {
     expect(screen.getByText('Primary Agent')).toBeInTheDocument();
     // The reviewer agent row is suppressed entirely (it runs as an in-session advisor).
     expect(screen.queryByText('PR Reviewer Bot')).not.toBeInTheDocument();
-    // The dedicated per-project Reviewer page link is shown instead.
+    // The dedicated per-project Reviewer page link lives in the project menu.
+    fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`));
     expect(screen.getByText('Reviewer')).toBeInTheDocument();
   });
 
@@ -833,19 +834,54 @@ describe('Sidebar — project reordering (drag & drop)', () => {
   });
 });
 
-describe('Sidebar — per-project Runners/Preview nav', () => {
-  it('renders Runners and Preview entries and routes to the project-scoped views', () => {
+describe('Sidebar — per-project settings menu', () => {
+  const expandMenu = () => {
+    fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`));
+  };
+
+  it('renders a collapsed project menu by default', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.getByRole('button', { name: 'Test Project Menu' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Agents' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Wiki' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Epics' })).toBeNull();
+  });
+
+  it('expands to show project navigation and settings links', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
+    expandMenu();
 
-    const runnersBtn = screen.getByRole('button', { name: 'Runners' });
-    const previewBtn = screen.getByRole('button', { name: 'Preview' });
+    fireEvent.click(screen.getByRole('button', { name: 'Wiki' }));
+    expect(onNavigate).toHaveBeenCalledWith('wiki', PROJECT_ID);
 
-    fireEvent.click(runnersBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'Epics' }));
+    expect(onNavigate).toHaveBeenCalledWith(`epics:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    expect(onNavigate).toHaveBeenCalledWith('notes', PROJECT_ID);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Threads' }));
+    expect(onNavigate).toHaveBeenCalledWith('threads', PROJECT_ID);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pulls' }));
+    expect(onNavigate).toHaveBeenCalledWith('pulls', PROJECT_ID);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Runners' }));
     expect(onNavigate).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
 
-    fireEvent.click(previewBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
     expect(onNavigate).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agents' }));
+    expect(onNavigate).toHaveBeenCalledWith(`project-agents:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project settings' }));
+    expect(onNavigate).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }));
+    expect(onNavigate).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);
   });
 
   it('does not render the Workflows entry (temporarily hidden)', () => {
@@ -853,12 +889,13 @@ describe('Sidebar — per-project Runners/Preview nav', () => {
     expect(screen.queryByRole('button', { name: 'Workflows' })).toBeNull();
   });
 
-  it('hides the AWS entry when the project has not enabled AWS', () => {
+  it('hides AWS inside the menu when the project has not enabled AWS', () => {
     render(<Sidebar {...buildProps()} />);
+    expandMenu();
     expect(screen.queryByRole('button', { name: 'AWS' })).toBeNull();
   });
 
-  it('renders the AWS entry and routes to the project-scoped view when awsEnabled', () => {
+  it('renders AWS inside the menu when awsEnabled', () => {
     const onNavigate = vi.fn();
     const projects = [
       {
@@ -870,9 +907,9 @@ describe('Sidebar — per-project Runners/Preview nav', () => {
       },
     ];
     render(<Sidebar {...buildProps({ projects, onNavigate })} />);
+    expandMenu();
 
-    const awsBtn = screen.getByRole('button', { name: 'AWS' });
-    fireEvent.click(awsBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'AWS' }));
     expect(onNavigate).toHaveBeenCalledWith(`aws:${PROJECT_ID}`);
   });
 });

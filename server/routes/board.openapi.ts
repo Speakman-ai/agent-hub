@@ -331,7 +331,7 @@ export const UpdateEpicRequestSchema = z.preprocess(
     autonomousInterval: z.number().int().optional(),
     autonomousMaxConcurrent: z.number().int().optional(),
     autonomousModel: z.string().nullable().optional(),
-    // "Send It" override: when 1, autonomous-dispatched sessions for this epic
+    // "Auto Merge" override: when 1, autonomous-dispatched sessions for this epic
     // start at finalize_automation `merge` regardless of project auto-merge.
     // Constrained to 0 | 1 at the boundary — this flag forces auto-merge, so we
     // reject arbitrary integers rather than truthiness-coercing them later.

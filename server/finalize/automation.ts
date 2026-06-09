@@ -5,7 +5,7 @@
  *   manual → "Build"          — everything runs manually; back-and-forth with the agent
  *   review → "Build and Review" — auto-run reviewer + checks after every turn; stop at ready_to_push
  *   push   → "Build and Push"   — auto build/review/test, then auto-push when gates pass (no GH auto-merge)
- *   merge  → "Send It"          — auto build/review/test/push, enable GitHub native auto-merge if available
+ *   merge  → "Auto Merge"          — auto build/review/test/push, enable GitHub native auto-merge if available
  */
 export const FINALIZE_AUTOMATION_LEVELS = ['manual', 'review', 'push', 'merge'] as const;
 
@@ -21,7 +21,7 @@ export const FINALIZE_AUTOMATION_ASSIGNED_DEFAULT: FinalizeAutomationLevel = 'me
 
 /**
  * The automation level an assigned / autonomous card should run under:
- *   - auto-merge ON  → `merge` ("Send It"): build, review, test, push, auto-merge
+ *   - auto-merge ON  → `merge` ("Auto Merge"): build, review, test, push, auto-merge
  *   - auto-merge OFF → `push`  ("Build and Push"): build, review, test, push
  */
 export function assignedFinalizeAutomationLevel(
@@ -64,7 +64,7 @@ export function finalizeAutomationLabel(level: FinalizeAutomationLevel): string 
     case 'push':
       return 'Build and Push';
     case 'merge':
-      return 'Send It';
+      return 'Auto Merge';
     default:
       return 'Build';
   }

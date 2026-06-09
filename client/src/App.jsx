@@ -17,6 +17,7 @@ import MessageInput from './components/MessageInput.jsx';
 import AgentSwitcher from './components/AgentSwitcher.jsx';
 import ForwardSessionModal, { filterForwardTargets } from './components/ForwardSessionModal.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
+import ProjectMenuPage from './components/ProjectMenuPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import ReviewerPage from './components/ReviewerPage.jsx';
 import SessionAgentsPanel from './components/SessionAgentsPanel.jsx';
@@ -54,6 +55,7 @@ import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow.jsx';
 import SetupWizard, { stepIndexForKey } from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
+import EpicView from './components/EpicView.jsx';
 import DashboardView from './components/DashboardView.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
@@ -513,6 +515,19 @@ export default function App() {
 
   const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
 
+  const projectMenuRoute = useMemo(() => {
+    if (currentView.startsWith('project-agents:')) {
+      return { tab: 'agents', projectId: currentView.slice('project-agents:'.length) };
+    }
+    if (currentView.startsWith('project-settings:')) {
+      return { tab: 'settings', projectId: currentView.slice('project-settings:'.length) };
+    }
+    if (currentView.startsWith('project-crons:')) {
+      return { tab: 'crons', projectId: currentView.slice('project-crons:'.length) };
+    }
+    return null;
+  }, [currentView]);
+
   useEffect(() => {
     const projectId = currentView.startsWith('workflows:')
       ? currentView.slice('workflows:'.length)
@@ -533,8 +548,9 @@ export default function App() {
   }, [currentView]);
 
   const navigateFromProjectWorkflows = useCallback((view, extra) => {
-    if (typeof view === 'string' && view.startsWith('settings') && extra?.expandProjectId) {
-      setSettingsGithubExpandProjectId(extra.expandProjectId);
+    if (extra?.expandProjectId) {
+      setCurrentView(`project-settings:${extra.expandProjectId}`);
+      return;
     }
     setCurrentView(view);
   }, []);
@@ -3764,7 +3780,13 @@ export default function App() {
   // project owning the active agent, then the first project.
   const currentProjectId = useMemo(() => {
     if (currentView.startsWith('kanban:')) return currentView.split(':')[1];
+    if (currentView.startsWith('epics:')) return currentView.slice('epics:'.length);
+    if (currentView.startsWith('epic:')) return currentView.split(':')[1] || null;
     if (currentView.startsWith('workflows:')) return currentView.slice('workflows:'.length);
+    if (projectMenuRoute) return projectMenuRoute.projectId;
+    if (currentView.startsWith('runners:')) return currentView.slice('runners:'.length);
+    if (currentView.startsWith('preview:')) return currentView.slice('preview:'.length);
+    if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
     if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
@@ -3775,6 +3797,7 @@ export default function App() {
   }, [
     currentView,
     workflowEditRoute,
+    projectMenuRoute,
     wikiProjectId,
     notesProjectId,
     pullsProjectId,
@@ -4128,6 +4151,46 @@ export default function App() {
                     setActiveSessionId(sessionId);
                     setCurrentView('chat');
                   }}
+                  onOpenEpics={() => {
+                    const projectId = currentView.split(':')[1];
+                    setCurrentView(`epics:${projectId}`);
+                    setSidebarOpen(false);
+                  }}
+                />
+              ) : currentView.startsWith('epics:') || currentView.startsWith('epic:') ? (
+                <EpicView
+                  projectId={
+                    currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1]
+                  }
+                  epicId={currentView.startsWith('epic:') ? currentView.split(':')[2] : null}
+                  project={projects.find(
+                    (p) =>
+                      p.id ===
+                      (currentView.startsWith('epics:')
+                        ? currentView.slice('epics:'.length)
+                        : currentView.split(':')[1]),
+                  )}
+                  refreshKey={kanbanRefreshKey}
+                  onBackToBoard={() => {
+                    const projectId = currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1];
+                    setCurrentView(`kanban:${projectId}`);
+                  }}
+                  onOpenEpicsList={() => {
+                    const projectId = currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1];
+                    setCurrentView(`epics:${projectId}`);
+                  }}
+                  onOpenEpic={(epicId) => {
+                    const projectId = currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1];
+                    setCurrentView(`epic:${projectId}:${epicId}`);
+                  }}
                 />
               ) : workflowEditRoute ? (
                 <ProjectWorkflowBuilder
@@ -4145,6 +4208,33 @@ export default function App() {
                   project={projects.find((p) => p.id === currentView.slice('workflows:'.length))}
                   onNavigate={navigateFromProjectWorkflows}
                   onSelectAgent={setActiveAgentId}
+                  showToast={showToast}
+                />
+              ) : projectMenuRoute ? (
+                <ProjectMenuPage
+                  projectId={projectMenuRoute.projectId}
+                  project={projects.find((p) => p.id === projectMenuRoute.projectId)}
+                  tab={projectMenuRoute.tab}
+                  projects={projects}
+                  agents={agents}
+                  onAgentsChange={refreshAgents}
+                  onProjectsChange={refreshProjects}
+                  onNavigate={(view, extra) => {
+                    setCurrentView(view);
+                    if (view === 'threads' && extra) {
+                      setThreadsProjectId(extra.projectId);
+                      if (extra.threadId) {
+                        setActiveThreadId(extra.threadId);
+                        setActiveThread(extra.thread || null);
+                      } else {
+                        setActiveThreadId(null);
+                        setActiveThread(null);
+                      }
+                    }
+                    if (view === 'chat' && extra) {
+                      focusAgentSession(extra.agentId, extra.sessionId);
+                    }
+                  }}
                   showToast={showToast}
                 />
               ) : currentView.startsWith('runners:') ? (

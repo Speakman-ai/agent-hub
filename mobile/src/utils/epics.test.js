@@ -119,7 +119,7 @@ describe('epicFormToUpdateBody', () => {
     });
   });
 
-  it('sends autonomousSendIt 1 when Send It is on (and 0 once autonomous is off)', () => {
+  it('sends autonomousSendIt 1 when Auto Merge is on (and 0 once autonomous is off)', () => {
     expect(
       epicFormToUpdateBody({ name: 'x', autonomous: 1, autonomous_send_it: 1 }).autonomousSendIt,
     ).toBe(1);

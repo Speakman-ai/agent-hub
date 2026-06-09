@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor, fireEvent } from '@testing-library/react';
+import { render, waitFor, fireEvent, within } from '@testing-library/react';
 import SettingsPage, {
   GeneralSection,
   OrganizationsSection,
   ProjectsSection,
+  AgentConfigSection,
 } from './SettingsPage.jsx';
 import { api } from '../utils/api.js';
 
@@ -136,7 +137,7 @@ describe('SettingsPage — tab labels', () => {
     expect(queryByRole('button', { name: /^Auth$/ })).toBeNull();
   });
 
-  it('hides reviewer-role agents from Settings Agents', async () => {
+  it('hides reviewer-role agents from project Agents settings', async () => {
     const agents = [
       {
         id: 'agent-dev',
@@ -146,6 +147,7 @@ describe('SettingsPage — tab labels', () => {
         model: 'claude-opus-4-8',
         color: '#22c55e',
         active: true,
+        projectId: 'p1',
       },
       {
         id: 'agent-reviewer',
@@ -155,11 +157,17 @@ describe('SettingsPage — tab labels', () => {
         model: 'claude-sonnet-4-20250514',
         color: '#a855f7',
         active: true,
+        projectId: 'p1',
       },
     ];
 
     const { findByText, queryByText } = render(
-      <SettingsPage projects={[]} agents={agents} onAgentsChange={() => {}} initialTab="agents" />,
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={agents}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
     );
 
     expect(await findByText('Agent Hub Dev')).toBeTruthy();
@@ -406,23 +414,25 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(getAllByLabelText('Settings sections').length).toBeGreaterThan(0);
   });
 
-  it('groups tabs into Workspace / Agents & Auth / Automation / Operations sections', () => {
-    const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
-    expect(getAllByText('Workspace').length).toBeGreaterThan(0);
-    expect(getAllByText('Agents & Auth').length).toBeGreaterThan(0);
-    expect(getAllByText('Automation').length).toBeGreaterThan(0);
-    expect(getAllByText('Operations').length).toBeGreaterThan(0);
+  it('renders a flat settings sidebar without section category headers', () => {
+    const { getAllByText, queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
+    expect(getAllByText('General').length).toBeGreaterThan(0);
+    expect(getAllByText('Account').length).toBeGreaterThan(0);
+    expect(getAllByText('GitHub').length).toBeGreaterThan(0);
+    expect(queryByText('Workspace')).toBeNull();
+    expect(queryByText('Agents & Auth')).toBeNull();
+    expect(queryByText('Automation')).toBeNull();
+    expect(queryByText('Operations')).toBeNull();
   });
 
   it('switches the active section when a sidebar item is clicked', async () => {
-    const { getAllByText, queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
-    // "Account" is the second sidebar entry. Click it and the Account section heading should appear.
+    const { getAllByText, getAllByLabelText } = render(<SettingsPage projects={[]} agents={[]} />);
     const accountButtons = getAllByText('Account');
     fireEvent.click(accountButtons[0]);
-    // The AccountSection renders its own UI; we don't need to assert its internals,
-    // only that the click handler updates state and re-renders without throwing.
     await waitFor(() => {
-      expect(queryByText('Workspace')).toBeTruthy();
+      const nav = getAllByLabelText('Settings sections')[0];
+      const active = within(nav).getByRole('button', { name: 'Account' });
+      expect(active).toHaveAttribute('aria-current', 'page');
     });
   });
 
@@ -474,25 +484,20 @@ describe('SettingsPage — sidebar navigation', () => {
   // Projects must have a dedicated sidebar entry rather than being crammed
   // under the GitHub tab. The GitHub tab now hosts the personal GitHub OAuth
   // connection + server OAuth App config — and nothing per-project.
-  it('exposes a "Projects" entry in the Workspace group', () => {
-    const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
-    expect(getAllByText('Projects').length).toBeGreaterThan(0);
+  it('does not expose a global Projects tab (moved to per-project sidebar menu)', () => {
+    const { queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
+    expect(queryByText('Projects')).toBeNull();
   });
 
-  it('renders the project list on the Projects tab (not the GitHub tab)', async () => {
+  it('renders project settings via ProjectsSection in single-project mode', async () => {
     const projects = [
       { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
     ];
-    const { getAllByText, queryByText } = render(
-      <SettingsPage projects={projects} agents={[]} initialTab="projects" />,
-    );
-    // The "Project Settings" subheading is the unique marker for the project
-    // list block we moved off the GitHub tab.
-    await waitFor(() => {
-      expect(queryByText('Project Settings')).toBeTruthy();
-    });
-    // The project name renders as a row under it.
-    expect(getAllByText('Acme').length).toBeGreaterThan(0);
+    const { findByText } = render(<ProjectsSection projects={projects} projectId="p1" />);
+    await findByText('Project settings');
+    expect(
+      await findByText('Configure secrets, visibility, and lifecycle settings for this project.'),
+    ).toBeTruthy();
   });
 
   it('no longer renders the Clone URL, GitHub Repository, PR toggles, or workflow runs', async () => {
@@ -507,10 +512,9 @@ describe('SettingsPage — sidebar navigation', () => {
       },
     ];
     const { queryByText, findByText } = render(
-      <SettingsPage projects={projects} agents={[]} initialTab="projects" />,
+      <ProjectsSection projects={projects} projectId="p1" />,
     );
-    // Expand the project card so all per-project controls mount.
-    fireEvent.click(await findByText('Acme'));
+    expect(await findByText('Project settings')).toBeTruthy();
     // Removed editing surfaces (repo is now set automatically).
     expect(queryByText(/GitHub Repository/)).toBeNull();
     expect(queryByText(/Clone URL/)).toBeNull();
@@ -529,15 +533,9 @@ describe('SettingsPage — sidebar navigation', () => {
     const projects = [
       { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
     ];
-    const { findByText, getByTestId } = render(
-      <SettingsPage
-        projects={projects}
-        agents={[]}
-        initialTab="projects"
-        onAgentsChange={onAgentsChange}
-      />,
+    const { getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" onProjectsChange={onAgentsChange} />,
     );
-    fireEvent.click(await findByText('Acme'));
     const toggle = getByTestId('project-aws-enabled-p1');
     fireEvent.click(toggle);
     await waitFor(() => {

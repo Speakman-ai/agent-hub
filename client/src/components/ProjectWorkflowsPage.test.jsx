@@ -97,7 +97,7 @@ describe('ProjectWorkflowsPage', () => {
     // The Settings → Projects tab now hosts per-project repo + workflow config
     // (split out of the GitHub tab so the connected GitHub account isn't
     // crowded by the project list).
-    expect(onNavigate).toHaveBeenCalledWith('settings:projects', { expandProjectId: 'p1' });
+    expect(onNavigate).toHaveBeenCalledWith('project-settings:p1');
   });
 
   it('Builder navigates to workflow editor view', async () => {

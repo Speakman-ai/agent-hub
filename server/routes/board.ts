@@ -1120,7 +1120,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       req.params.epicId,
     );
 
-    // "Send It" override is persisted via a standalone setter so the main
+    // "Auto Merge" override is persisted via a standalone setter so the main
     // updateKanbanEpic call sites stay untouched. Only write when the payload
     // explicitly carried the field; omitting it preserves the stored value.
     if (autonomousSendIt !== undefined) {

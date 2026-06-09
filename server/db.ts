@@ -1529,8 +1529,8 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_enabled_by TEXT DEFAULT NULL');
   }
 
-  // "Send It" override for autonomous dispatch. When 1, sessions spawned for
-  // cards under this epic start at finalize_automation `merge` ("Send It")
+  // "Auto Merge" override for autonomous dispatch. When 1, sessions spawned for
+  // cards under this epic start at finalize_automation `merge` ("Auto Merge")
   // regardless of the project's auto-merge config — see the dispatch path in
   // server/autonomous.ts. When 0 (default / legacy), dispatch keeps the
   // existing behavior: `merge` only when project auto-merge is on, else `push`.
@@ -2925,7 +2925,7 @@ function initDb(dataDir: string): void {
     setEpicAutonomousEnabledBy: db.prepare(
       `UPDATE kanban_epics SET autonomous_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
-    // Standalone setter for the "Send It" autonomous override. Kept separate
+    // Standalone setter for the "Auto Merge" autonomous override. Kept separate
     // from updateKanbanEpic (same rationale as setEpicAutonomousEnabledBy) so
     // the many existing updateKanbanEpic call sites don't have to thread an
     // extra arg.

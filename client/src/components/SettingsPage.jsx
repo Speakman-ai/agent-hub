@@ -975,7 +975,14 @@ export function ProjectsSection({
   showToast,
   /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
   initialExpandedProjectId = null,
+  /** When set, show only this project's settings (sidebar Project settings view). */
+  projectId = null,
 }) {
+  const visibleProjects = useMemo(
+    () => (projectId ? projects.filter((p) => p.id === projectId) : projects),
+    [projects, projectId],
+  );
+  const singleProjectMode = !!projectId;
   const [expandedProject, setExpandedProject] = useState(null);
   /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
   const lastDeepLinkExpandIdRef = useRef(null);
@@ -1072,33 +1079,190 @@ export function ProjectsSection({
     }
   };
 
+  const projectSettingsBody = (p) => (
+    <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
+      <ProjectSecretsEditor projectId={p.id} />
+
+      {/* AWS toggle — when enabled, an "AWS" entry appears in the
+                        per-project sidebar where SSO profiles are managed. */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">AWS</span>
+          <p className="text-xs text-gray-500">
+            Enable AWS IAM Identity Center (SSO) for this project. When on, an <strong>AWS</strong>{' '}
+            entry appears under the project in the sidebar for managing SSO profiles.
+          </p>
+        </div>
+        <button
+          onClick={() => toggleAwsEnabled(p)}
+          disabled={awsSaving[p.id]}
+          data-testid={`project-aws-enabled-${p.id}`}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            p.awsEnabled ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              p.awsEnabled ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
+        <label className={labelClass}>Visibility</label>
+        <p className="text-xs text-gray-500">
+          <strong>Shared</strong> (default): every member of your org can see and enter this
+          project. <strong>Private</strong>: visible only to you; org Owners retain a delete-only
+          kill switch from the admin list. Flipping a shared project private is restricted to org
+          Owners (it hides the project from collaborators); the current owner or any org Owner can
+          publish a private project back to shared.
+        </p>
+        <select
+          value={p.visibility === 'private' ? 'private' : 'shared'}
+          data-testid={`project-visibility-select-${p.id}`}
+          onChange={async (e) => {
+            const visibility = e.target.value;
+            try {
+              await api.updateProject(p.id, { visibility });
+              if (onProjectsChange) onProjectsChange();
+            } catch (err) {
+              const msg = String(err.message || err);
+              if (showToast) showToast(msg, 'error');
+              else alert(msg);
+            }
+          }}
+          className={inputClass}
+        >
+          <option value="shared">Shared (org-wide)</option>
+          <option value="private">Private (only me)</option>
+        </select>
+      </div>
+
+      <div className="space-y-2">
+        <label className={labelClass}>Project mode</label>
+        <p className="text-xs text-gray-500">
+          <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and GitHub PR
+          flows. <strong>Workflow</strong>: work in the project checkout; session PR flows stay off.
+          For a <strong>tasks-only project</strong> (just wiki, board, sessions, crons, heartbeats —
+          no git or GitHub), pick <em>Workflow</em>.
+        </p>
+        <select
+          value={isWorkflowProject(p) ? 'workflow' : 'dev'}
+          onChange={async (e) => {
+            const mode = e.target.value;
+            try {
+              await api.updateProject(p.id, { mode });
+              if (onProjectsChange) onProjectsChange();
+            } catch (err) {
+              const msg = String(err.message || err);
+              if (showToast) showToast(msg, 'error');
+              else alert(msg);
+            }
+          }}
+          className={inputClass}
+        >
+          <option value="dev">Dev (GitHub-connected)</option>
+          <option value="workflow">Workflow / Tasks-only (no PR automation)</option>
+        </select>
+      </div>
+
+      {/* Test Connection */}
+      <div className="pt-2 border-t border-gray-800">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => testProjectConnection(p)}
+            disabled={repoTesting[p.id]}
+            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            {repoTesting[p.id] ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Plug size={12} />
+            )}
+            {repoTesting[p.id] ? 'Testing...' : 'Test Connection'}
+          </button>
+          {repoTestResult[p.id] && (
+            <span
+              className={`text-xs ${repoTestResult[p.id].ok ? 'text-emerald-400' : 'text-red-400'}`}
+            >
+              {repoTestResult[p.id].ok
+                ? `Connected to ${repoTestResult[p.id].detail}`
+                : repoTestResult[p.id].error}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Delete Project */}
+      <div className="pt-2 border-t border-gray-800">
+        <button
+          onClick={() => handleDeleteProject(p.id)}
+          className={`text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+            confirmDeleteProject === p.id
+              ? 'bg-red-600 text-white'
+              : 'text-gray-500 hover:text-red-400 hover:bg-gray-800'
+          }`}
+          title={
+            confirmDeleteProject === p.id
+              ? 'Click again to confirm deletion'
+              : 'Delete this project and all associated data'
+          }
+        >
+          <Trash2 size={12} />
+          {confirmDeleteProject === p.id ? 'Confirm Delete Project' : 'Delete Project'}
+        </button>
+        {confirmDeleteProject === p.id && (
+          <p className="text-xs text-red-400 mt-1">
+            This will permanently delete all agents, sessions, board, wiki, and other data.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-semibold mb-1">Projects</h3>
+        <h3 className="text-lg font-semibold mb-1">
+          {singleProjectMode ? 'Project settings' : 'Projects'}
+        </h3>
         <p className="text-xs text-gray-500 mb-4">
-          Configure secrets, visibility, and lifecycle settings for each project.
+          {singleProjectMode
+            ? 'Configure secrets, visibility, and lifecycle settings for this project.'
+            : 'Configure secrets, visibility, and lifecycle settings for each project.'}
         </p>
       </div>
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">Project Settings</h4>
-        <p className="text-xs text-gray-500">
-          The GitHub repository is linked automatically when a project is created or connected.
-        </p>
+        {!singleProjectMode && (
+          <>
+            <h4 className="text-sm font-medium text-gray-300">Project Settings</h4>
+            <p className="text-xs text-gray-500">
+              The GitHub repository is linked automatically when a project is created or connected.
+            </p>
+          </>
+        )}
 
-        {projects.length === 0 && (
+        {visibleProjects.length === 0 && (
           <p className="text-xs text-gray-600 italic">No projects configured yet.</p>
         )}
 
         <div className="space-y-2">
-          {projects.map((p) => {
-            const isExpanded = expandedProject === p.id;
+          {visibleProjects.map((p) => {
+            const isExpanded = singleProjectMode || expandedProject === p.id;
             const repo = p.githubRepo || '';
+
+            if (singleProjectMode) {
+              return (
+                <div key={p.id} className="space-y-4">
+                  {projectSettingsBody(p)}
+                </div>
+              );
+            }
 
             return (
               <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
-                {/* Header row */}
                 <div
                   className="flex items-center gap-3 cursor-pointer"
                   onClick={() => setExpandedProject(isExpanded ? null : p.id)}
@@ -1124,155 +1288,7 @@ export function ProjectsSection({
                     )}
                   </span>
                 </div>
-
-                {/* Expanded content */}
-                {isExpanded && (
-                  <div className="pl-8 pt-3 space-y-4">
-                    <ProjectSecretsEditor projectId={p.id} />
-
-                    {/* AWS toggle — when enabled, an "AWS" entry appears in the
-                        per-project sidebar where SSO profiles are managed. */}
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm text-gray-200">AWS</span>
-                        <p className="text-xs text-gray-500">
-                          Enable AWS IAM Identity Center (SSO) for this project. When on, an{' '}
-                          <strong>AWS</strong> entry appears under the project in the sidebar for
-                          managing SSO profiles.
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => toggleAwsEnabled(p)}
-                        disabled={awsSaving[p.id]}
-                        data-testid={`project-aws-enabled-${p.id}`}
-                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
-                          p.awsEnabled ? 'bg-emerald-600' : 'bg-gray-600'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                            p.awsEnabled ? 'translate-x-4' : 'translate-x-0.5'
-                          }`}
-                        />
-                      </button>
-                    </div>
-
-                    <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
-                      <label className={labelClass}>Visibility</label>
-                      <p className="text-xs text-gray-500">
-                        <strong>Shared</strong> (default): every member of your org can see and
-                        enter this project. <strong>Private</strong>: visible only to you; org
-                        Owners retain a delete-only kill switch from the admin list. Flipping a
-                        shared project private is restricted to org Owners (it hides the project
-                        from collaborators); the current owner or any org Owner can publish a
-                        private project back to shared.
-                      </p>
-                      <select
-                        value={p.visibility === 'private' ? 'private' : 'shared'}
-                        data-testid={`project-visibility-select-${p.id}`}
-                        onChange={async (e) => {
-                          const visibility = e.target.value;
-                          try {
-                            await api.updateProject(p.id, { visibility });
-                            if (onProjectsChange) onProjectsChange();
-                          } catch (err) {
-                            const msg = String(err.message || err);
-                            if (showToast) showToast(msg, 'error');
-                            else alert(msg);
-                          }
-                        }}
-                        className={inputClass}
-                      >
-                        <option value="shared">Shared (org-wide)</option>
-                        <option value="private">Private (only me)</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className={labelClass}>Project mode</label>
-                      <p className="text-xs text-gray-500">
-                        <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and
-                        GitHub PR flows. <strong>Workflow</strong>: work in the project checkout;
-                        session PR flows stay off. For a <strong>tasks-only project</strong> (just
-                        wiki, board, sessions, crons, heartbeats — no git or GitHub), pick{' '}
-                        <em>Workflow</em>.
-                      </p>
-                      <select
-                        value={isWorkflowProject(p) ? 'workflow' : 'dev'}
-                        onChange={async (e) => {
-                          const mode = e.target.value;
-                          try {
-                            await api.updateProject(p.id, { mode });
-                            if (onProjectsChange) onProjectsChange();
-                          } catch (err) {
-                            const msg = String(err.message || err);
-                            if (showToast) showToast(msg, 'error');
-                            else alert(msg);
-                          }
-                        }}
-                        className={inputClass}
-                      >
-                        <option value="dev">Dev (GitHub-connected)</option>
-                        <option value="workflow">Workflow / Tasks-only (no PR automation)</option>
-                      </select>
-                    </div>
-
-                    {/* Test Connection */}
-                    <div className="pt-2 border-t border-gray-800">
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => testProjectConnection(p)}
-                          disabled={repoTesting[p.id]}
-                          className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                        >
-                          {repoTesting[p.id] ? (
-                            <Loader2 size={12} className="animate-spin" />
-                          ) : (
-                            <Plug size={12} />
-                          )}
-                          {repoTesting[p.id] ? 'Testing...' : 'Test Connection'}
-                        </button>
-                        {repoTestResult[p.id] && (
-                          <span
-                            className={`text-xs ${repoTestResult[p.id].ok ? 'text-emerald-400' : 'text-red-400'}`}
-                          >
-                            {repoTestResult[p.id].ok
-                              ? `Connected to ${repoTestResult[p.id].detail}`
-                              : repoTestResult[p.id].error}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Delete Project */}
-                    <div className="pt-2 border-t border-gray-800">
-                      <button
-                        onClick={() => handleDeleteProject(p.id)}
-                        className={`text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
-                          confirmDeleteProject === p.id
-                            ? 'bg-red-600 text-white'
-                            : 'text-gray-500 hover:text-red-400 hover:bg-gray-800'
-                        }`}
-                        title={
-                          confirmDeleteProject === p.id
-                            ? 'Click again to confirm deletion'
-                            : 'Delete this project and all associated data'
-                        }
-                      >
-                        <Trash2 size={12} />
-                        {confirmDeleteProject === p.id
-                          ? 'Confirm Delete Project'
-                          : 'Delete Project'}
-                      </button>
-                      {confirmDeleteProject === p.id && (
-                        <p className="text-xs text-red-400 mt-1">
-                          This will permanently delete all agents, sessions, board, wiki, and other
-                          data.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {isExpanded && projectSettingsBody(p)}
               </div>
             );
           })}
@@ -1614,8 +1630,12 @@ function HeartbeatSection({ onNavigate, showToast }) {
   );
 }
 
-export function CronSection({ projects = [], onNavigate, showToast }) {
-  const defaultCwd = projects[0]?.cwd || '';
+export function CronSection({ projects = [], onNavigate, showToast, projectId = null }) {
+  const scopedProjects = useMemo(
+    () => (projectId ? projects.filter((p) => p.id === projectId) : projects),
+    [projects, projectId],
+  );
+  const defaultCwd = scopedProjects[0]?.cwd || '';
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -1634,7 +1654,7 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
     schedule: '*/30 * * * *',
     prompt: '',
     cwd: defaultCwd,
-    project_id: projects[0]?.id || '',
+    project_id: projectId || scopedProjects[0]?.id || '',
     enabled: true,
     // Timeout expressed in minutes in the form; '' means "use server default".
     timeoutMinutes: '',
@@ -1654,6 +1674,11 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
     // historical claude-code default.
     engine: '',
   });
+
+  const visibleCrons = useMemo(
+    () => (projectId ? crons.filter((c) => c.project_id === projectId) : crons),
+    [crons, projectId],
+  );
 
   /** Fetch last-3 logs for every cron */
   const refreshLogs = async (cronList) => {
@@ -1865,7 +1890,7 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
       schedule: '*/30 * * * *',
       prompt: '',
       cwd: defaultCwd,
-      project_id: projects[0]?.id || '',
+      project_id: projectId || scopedProjects[0]?.id || '',
       enabled: true,
       timeoutMinutes: '',
       notify_on_run: false,
@@ -1948,17 +1973,17 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
             rows={3}
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
           />
-          {projects.length > 0 && (
+          {!projectId && scopedProjects.length > 0 && (
             <select
               value={form.project_id}
               onChange={(e) => {
-                const proj = projects.find((p) => p.id === e.target.value);
+                const proj = scopedProjects.find((p) => p.id === e.target.value);
                 setForm({ ...form, project_id: e.target.value, cwd: proj?.cwd || form.cwd });
               }}
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
             >
               <option value="">No project</option>
-              {projects.map((p) => (
+              {scopedProjects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -2078,7 +2103,7 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
       )}
 
       <div className="space-y-3">
-        {crons.map((cronJob) => (
+        {visibleCrons.map((cronJob) => (
           <div key={cronJob.id} className="bg-gray-800 rounded-xl p-4">
             {editingId === cronJob.id ? (
               <form onSubmit={saveEdit} className="space-y-3">
@@ -2101,11 +2126,11 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
                   rows={3}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
                 />
-                {projects.length > 0 && (
+                {!projectId && scopedProjects.length > 0 && (
                   <select
                     value={editForm.project_id}
                     onChange={(e) => {
-                      const proj = projects.find((p) => p.id === e.target.value);
+                      const proj = scopedProjects.find((p) => p.id === e.target.value);
                       setEditForm({
                         ...editForm,
                         project_id: e.target.value,
@@ -2115,7 +2140,7 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
                     className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                   >
                     <option value="">No project</option>
-                    {projects.map((p) => (
+                    {scopedProjects.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
                       </option>
@@ -3859,7 +3884,17 @@ function EditServerWrapper({
   );
 }
 
-function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChange, showToast }) {
+export function AgentConfigSection({
+  agents: initialAgents,
+  projects = [],
+  onAgentsChange,
+  showToast,
+  projectId = null,
+}) {
+  const scopedProjects = useMemo(
+    () => (projectId ? projects.filter((p) => p.id === projectId) : projects),
+    [projects, projectId],
+  );
   const [agents, setAgents] = useState(initialAgents);
   const [expanded, setExpanded] = useState(null);
   const [saving, setSaving] = useState({});
@@ -3876,7 +3911,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     name: '',
     engine: 'claude-code',
     model: '',
-    projectId: projects[0]?.id || '',
+    projectId: projectId || scopedProjects[0]?.id || '',
     color: '#6b7280',
     avatar: '',
     systemPrompt: '',
@@ -3887,10 +3922,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     setAgents(initialAgents);
   }, [initialAgents]);
 
-  const configurableAgents = useMemo(
-    () => agents.filter((agent) => agent.role !== 'reviewer'),
-    [agents],
-  );
+  const configurableAgents = useMemo(() => {
+    let list = agents.filter((agent) => agent.role !== 'reviewer');
+    if (projectId) list = list.filter((agent) => agent.projectId === projectId);
+    return list;
+  }, [agents, projectId]);
 
   useEffect(() => {
     api
@@ -4013,7 +4049,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         name: '',
         engine: 'claude-code',
         model: '',
-        projectId: projects[0]?.id || '',
+        projectId: projectId || scopedProjects[0]?.id || '',
         color: '#6b7280',
         avatar: '',
         systemPrompt: '',
@@ -4054,7 +4090,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
 
   const [projectCommands, setProjectCommands] = useState(() => {
     const map = {};
-    projects.forEach((p) => {
+    scopedProjects.forEach((p) => {
       map[p.id] = {
         install: p.commands?.install || '',
         build: p.commands?.build || '',
@@ -4343,11 +4379,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   return (
     <div>
       {/* Project-level settings */}
-      {projects.length > 0 && (
+      {scopedProjects.length > 0 && (
         <div className="mb-6">
           <h3 className="text-lg font-semibold mb-3">Project Settings</h3>
           <div className="space-y-2">
-            {projects.map((p) => (
+            {scopedProjects.map((p) => (
               <div key={p.id} className="bg-gray-800 rounded-xl p-3 space-y-2">
                 <div
                   className="flex items-center gap-3 cursor-pointer"
@@ -4801,24 +4837,26 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
               onSelect={(iconName) => setNewForm({ ...newForm, avatar: buildIconAvatar(iconName) })}
             />
           </div>
-          <div>
-            <label className={labelClass}>Project</label>
-            <select
-              value={newForm.projectId}
-              onChange={(e) => setNewForm({ ...newForm, projectId: e.target.value })}
-              className={inputClass}
-              required
-            >
-              <option value="" disabled>
-                Select a project...
-              </option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — {p.cwd}
+          {!projectId && (
+            <div>
+              <label className={labelClass}>Project</label>
+              <select
+                value={newForm.projectId}
+                onChange={(e) => setNewForm({ ...newForm, projectId: e.target.value })}
+                className={inputClass}
+                required
+              >
+                <option value="" disabled>
+                  Select a project...
                 </option>
-              ))}
-            </select>
-          </div>
+                {scopedProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {p.cwd}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className={labelClass}>System Prompt</label>
             <textarea
@@ -6442,59 +6480,24 @@ export function ToolErrorsSection({ projects }) {
 }
 
 /**
- * Settings tabs grouped into logical sections for the left sidebar.
- *
- * Grouping mirrors mental model rather than alphabetical order:
- *   - Workspace: org/account/general level config the user touches first
- *   - Agents & Auth: per-agent and per-engine credential surfaces
- *   - Automation: heartbeats, crons, Slack
- *   - Operations: observability & infra-adjacent panels
+ * Settings tabs for the left sidebar (flat list — no section groupings).
  */
-const SETTINGS_GROUPS = [
-  {
-    id: 'workspace',
-    label: 'Workspace',
-    tabs: [
-      { id: 'general', iconName: 'Settings', text: 'General' },
-      { id: 'account', iconName: 'UserCircle', text: 'Account' },
-      { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
-      { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
-      // Preview & Finalize moved to per-project sidebar (Preview / Runners).
-    ],
-  },
-  {
-    id: 'agents-auth',
-    label: 'Agents & Auth',
-    tabs: [
-      { id: 'agents', iconName: 'Bot', text: 'Agents' },
-      // Host-wide Gemini API key (used for wiki embeddings; managed in
-      // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
-      // on Settings → Account, so this tab is gated to Admin/Owner via
-      // `visibleSettingsGroups` below. Sole-source-of-truth for the tab id is
-      // `claude-auth` (historical — predates the renaming).
-      { id: 'claude-auth', iconName: 'Key', text: 'Global API Keys' },
-      { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
-    ],
-  },
-  {
-    id: 'automation',
-    label: 'Automation',
-    tabs: [
-      { id: 'heartbeats', iconName: 'HeartPulse', text: 'Heartbeats' },
-      { id: 'crons', iconName: 'Clock', text: 'Cron Jobs' },
-      { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
-    ],
-  },
-  {
-    id: 'operations',
-    label: 'Operations',
-    tabs: [
-      { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
-      { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
-      { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
-      { id: 'logs', iconName: 'FileText', text: 'Logs' },
-    ],
-  },
+const SETTINGS_TABS = [
+  { id: 'general', iconName: 'Settings', text: 'General' },
+  { id: 'account', iconName: 'UserCircle', text: 'Account' },
+  { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
+  // Host-wide Gemini API key (used for wiki embeddings; managed in
+  // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
+  // on Settings → Account, so this tab is gated to Admin/Owner via
+  // `visibleSettingsTabs` below. Sole-source-of-truth for the tab id is
+  // `claude-auth` (historical — predates the renaming).
+  { id: 'claude-auth', iconName: 'Key', text: 'Global API Keys' },
+  { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
+  { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
+  { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
+  { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
+  { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
+  { id: 'logs', iconName: 'FileText', text: 'Logs' },
 ];
 
 const SETTINGS_ICONS = {
@@ -6580,24 +6583,20 @@ export default function SettingsPage({
   // Role-gated tab visibility. The host-wide "Gemini API Key" panel writes
   // to `~/.agent-hub/data/config.json` and only Admin/Owner users have a
   // reason to touch it — regular users manage their own per-user creds on
-  // Settings → Account. Empty groups are dropped to keep the sidebar layout
-  // tidy when every tab in a group is hidden. The server still enforces the
-  // underlying permissions; this is a UX hint only.
+  // Settings → Account. The server still enforces the underlying permissions;
+  // this is a UX hint only.
   const electronShell = isElectron();
   // In local-bundled mode (Electron / single-user self-host) the server
   // short-circuits auth so no JWT is written and hasRole() returns false.
   // Treat local-mode sessions as Admin-equivalent so the host-wide Gemini
   // API key tab stays visible on every fresh install.
   const isAdminPlus = hasRole('Admin') || isLocalMode();
-  const visibleSettingsGroups = useMemo(() => {
-    return SETTINGS_GROUPS.map((group) => ({
-      ...group,
-      tabs: group.tabs.filter((t) => {
-        if (t.id === 'orgs' && !electronShell) return false;
-        if (t.id === 'claude-auth' && !isAdminPlus) return false;
-        return true;
-      }),
-    })).filter((group) => group.tabs.length > 0);
+  const visibleSettingsTabs = useMemo(() => {
+    return SETTINGS_TABS.filter((t) => {
+      if (t.id === 'orgs' && !electronShell) return false;
+      if (t.id === 'claude-auth' && !isAdminPlus) return false;
+      return true;
+    });
   }, [electronShell, isAdminPlus]);
 
   // If a non-Admin user lands on the hidden `claude-auth` tab via a deep
@@ -6609,22 +6608,27 @@ export default function SettingsPage({
   }, [tab, isAdminPlus]);
 
   // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
-  // Old `settings:preview` / `settings:finalize` deep links would otherwise
-  // resolve to a tab that no longer renders anything, so fall back to General.
+  // Agents, Project settings, Cron Jobs, and heartbeats moved to the
+  // per-project sidebar menu — fall back when old deep links land here.
   useEffect(() => {
-    if (tab === 'preview' || tab === 'finalize') {
+    if (
+      tab === 'preview' ||
+      tab === 'finalize' ||
+      tab === 'agents' ||
+      tab === 'projects' ||
+      tab === 'heartbeats' ||
+      tab === 'crons'
+    ) {
       setTab('general');
     }
   }, [tab]);
 
-  // Find the currently active tab metadata across all groups (for mobile header).
+  // Find the currently active tab metadata (for mobile header).
   const activeTab = useMemo(() => {
-    for (const group of visibleSettingsGroups) {
-      const found = group.tabs.find((t) => t.id === tab);
-      if (found) return found;
-    }
-    return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
-  }, [tab, visibleSettingsGroups]);
+    return (
+      visibleSettingsTabs.find((t) => t.id === tab) ?? visibleSettingsTabs[0] ?? SETTINGS_TABS[0]
+    );
+  }, [tab, visibleSettingsTabs]);
 
   // The previous tab-change guard existed solely for the Preview section's
   // unsaved-edit prompt. Preview moved to the per-project sidebar, so no
@@ -6639,23 +6643,9 @@ export default function SettingsPage({
   };
 
   const sidebar = (
-    <nav aria-label="Settings sections" className="space-y-5">
-      {visibleSettingsGroups.map((group) => (
-        <div key={group.id}>
-          <p className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold px-3 mb-1.5">
-            {group.label}
-          </p>
-          <div className="space-y-0.5">
-            {group.tabs.map((t) => (
-              <SettingsNavItem
-                key={t.id}
-                tab={t}
-                active={tab === t.id}
-                onSelect={handleSelectTab}
-              />
-            ))}
-          </div>
-        </div>
+    <nav aria-label="Settings sections" className="space-y-0.5">
+      {visibleSettingsTabs.map((t) => (
+        <SettingsNavItem key={t.id} tab={t} active={tab === t.id} onSelect={handleSelectTab} />
       ))}
     </nav>
   );
@@ -6723,31 +6713,9 @@ export default function SettingsPage({
               {tab === 'account' && <AccountSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
               {tab === 'github' && <GitHubSection onProjectsChange={onAgentsChange} />}
-              {tab === 'projects' && (
-                <ProjectsSection
-                  projects={projects}
-                  onProjectsChange={onAgentsChange}
-                  showToast={showToast}
-                  initialExpandedProjectId={initialGithubExpandedProjectId || null}
-                />
-              )}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
-              {tab === 'heartbeats' && (
-                <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
-              )}
-              {tab === 'crons' && (
-                <CronSection projects={projects} onNavigate={onNavigate} showToast={showToast} />
-              )}
 
               {tab === 'slack' && <SlackSection />}
-              {tab === 'agents' && (
-                <AgentConfigSection
-                  agents={agents}
-                  projects={projects}
-                  onAgentsChange={onAgentsChange}
-                  showToast={showToast}
-                />
-              )}
               {tab === 'usage' && <UsageSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'backup' && (

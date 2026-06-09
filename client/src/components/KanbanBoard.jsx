@@ -6,43 +6,38 @@ import {
   MessageSquare,
   ExternalLink,
   Trash2,
-  Zap,
-  Target,
-  ChevronDown,
-  Settings,
   Search,
   GitPullRequest,
-  Eye,
+  Target,
   Lock,
   AlertTriangle,
+  Zap,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
-import { epicFormToUpdateBody, epicFormToCreateBody } from '../utils/epics.js';
+import { epicFormToUpdateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
 import FinalizeCardBadge from './finalize/CardBadge.jsx';
+import EpicFilterDropdown from './EpicFilterDropdown.jsx';
+import EpicAutonomousDialog from './EpicAutonomousDialog.jsx';
+import { epicToAutonomousForm } from './EpicAutonomousPanel.jsx';
 
 const PRIORITY_STYLES = {
-  urgent: 'bg-red-500/20 text-red-400',
-  high: 'bg-orange-500/20 text-orange-400',
-  medium: 'bg-blue-500/20 text-blue-400',
-  low: 'bg-gray-500/20 text-gray-400',
+  urgent: 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25',
+  high: 'bg-orange-500/10 text-orange-300 ring-1 ring-inset ring-orange-500/25',
+  medium: 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25',
+  low: 'bg-gray-500/10 text-gray-400 ring-1 ring-inset ring-gray-500/20',
+};
+
+const PRIORITY_ACCENT = {
+  urgent: 'border-l-red-500',
+  high: 'border-l-orange-500',
+  medium: 'border-l-sky-500',
+  low: 'border-l-gray-600',
 };
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
-
-const EPIC_COLORS = [
-  '#6366F1', // indigo
-  '#8B5CF6', // violet
-  '#EC4899', // pink
-  '#EF4444', // red
-  '#F97316', // orange
-  '#EAB308', // yellow
-  '#22C55E', // green
-  '#06B6D4', // cyan
-  '#3B82F6', // blue
-];
 
 export default function KanbanBoard({
   projectId,
@@ -50,6 +45,7 @@ export default function KanbanBoard({
   agents = [],
   refreshKey,
   onNavigateToSession,
+  onOpenEpics,
 }) {
   const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
@@ -85,21 +81,12 @@ export default function KanbanBoard({
   // Search
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Review Activity
-  const [reviewLogs, setReviewLogs] = useState([]);
-  const [showReviewPanel, setShowReviewPanel] = useState(false);
-
-  // Epics
+  // Epics (filter, badges, autonomous dispatch)
   const [epics, setEpics] = useState([]);
   const [selectedEpicId, setSelectedEpicId] = useState(null);
-  const [showEpicForm, setShowEpicForm] = useState(false);
-  const [epicForm, setEpicForm] = useState({
-    name: '',
-    description: '',
-    color: '#6366F1',
-    pr_base_branch: '',
-  });
-  const [editingEpic, setEditingEpic] = useState(null);
+  const [showAutonomousDialog, setShowAutonomousDialog] = useState(false);
+  const [autonomousForm, setAutonomousForm] = useState(null);
+  const [autonomousSaving, setAutonomousSaving] = useState(false);
 
   // Blockers
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
@@ -114,21 +101,6 @@ export default function KanbanBoard({
   const [modelConfig, setModelConfig] = useState(null);
 
   const addTitleRef = useRef(null);
-  const reviewFetchGenRef = useRef(0);
-
-  const fetchReviewLogs = useCallback(() => {
-    if (!projectId) return;
-    const gen = ++reviewFetchGenRef.current;
-    api
-      .get(`/projects/${projectId}/reviews?limit=20`)
-      .then((rows) => {
-        if (gen !== reviewFetchGenRef.current) return;
-        setReviewLogs(rows);
-      })
-      .catch(() => {
-        if (gen !== reviewFetchGenRef.current) return;
-      });
-  }, [projectId]);
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -161,16 +133,7 @@ export default function KanbanBoard({
   useEffect(() => {
     setLoading(true);
     fetchBoard();
-    fetchReviewLogs();
-  }, [fetchBoard, projectId, fetchReviewLogs]);
-
-  // Opening the PR & reviews strip should always hit the server — the initial
-  // fetch can fail silently (e.g. first paint before auth) and left the panel
-  // empty until a full reload or unrelated kanban_refresh.
-  useEffect(() => {
-    if (!showReviewPanel) return;
-    fetchReviewLogs();
-  }, [showReviewPanel, fetchReviewLogs]);
+  }, [fetchBoard, projectId]);
 
   // Background refresh triggered by WebSocket events (card moves, updates,
   // comments, etc). Deliberately does NOT toggle `loading`, so the UI updates
@@ -184,8 +147,7 @@ export default function KanbanBoard({
     }
     if (!projectId) return;
     fetchBoard();
-    fetchReviewLogs();
-  }, [refreshKey, projectId, fetchBoard, fetchReviewLogs]);
+  }, [refreshKey, projectId, fetchBoard]);
 
   // WebSocket-driven `refreshKey` covers most edits; this catches long idle periods
   // or missed events without toggling `loading` (fetchBoard leaves loading false).
@@ -193,10 +155,6 @@ export default function KanbanBoard({
     () => {
       if (!projectId) return;
       void fetchBoard();
-      void api
-        .get(`/projects/${projectId}/reviews?limit=20`)
-        .then(setReviewLogs)
-        .catch(() => {});
     },
     180_000,
     { enabled: Boolean(projectId) },
@@ -596,56 +554,6 @@ export default function KanbanBoard({
     }
   };
 
-  // --- Epic CRUD ---
-  const handleCreateEpic = async () => {
-    if (!epicForm.name.trim()) return;
-    try {
-      await api.createEpic(projectId, epicFormToCreateBody(epicForm));
-      setEpicForm({
-        name: '',
-        description: '',
-        color: '#6366F1',
-        pr_base_branch: '',
-      });
-      setShowEpicForm(false);
-      fetchBoard();
-    } catch (err) {
-      console.error('Failed to create epic:', err);
-    }
-  };
-
-  const handleUpdateEpic = async () => {
-    if (!editingEpic) return;
-    try {
-      // The server's PUT /board/epics/:id destructures camelCase keys. Our
-      // form state uses snake_case (mirroring DB columns), so translate
-      // before sending — otherwise autonomous_max_concurrent silently falls
-      // through to undefined on the server and the old DB value is preserved.
-      await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
-      setEditingEpic(null);
-      setEpicForm({
-        name: '',
-        description: '',
-        color: '#6366F1',
-        pr_base_branch: '',
-      });
-      fetchBoard();
-    } catch (err) {
-      console.error('Failed to update epic:', err);
-    }
-  };
-
-  const handleDeleteEpic = async (epicId) => {
-    try {
-      await api.deleteEpic(projectId, epicId);
-      if (selectedEpicId === epicId) setSelectedEpicId(null);
-      setEditingEpic(null);
-      fetchBoard();
-    } catch (err) {
-      console.error('Failed to delete epic:', err);
-    }
-  };
-
   const handleLinkCardEpic = async (epicId) => {
     if (!selectedCard) return;
     try {
@@ -657,49 +565,75 @@ export default function KanbanBoard({
     }
   };
 
-  const openEpicEdit = (epic, e) => {
-    e.stopPropagation();
-    setEditingEpic(epic);
-    setEpicForm({
-      name: epic.name,
-      description: epic.description || '',
-      color: epic.color || '#6366F1',
-      pr_base_branch: epic.pr_base_branch || '',
-      autonomous: epic.autonomous || 0,
-      autonomous_interval: epic.autonomous_interval || 5,
-      autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
-      autonomous_model: epic.autonomous_model || '',
-      autonomous_send_it: epic.autonomous_send_it || 0,
-    });
-    setShowEpicForm(false);
-  };
-
   const doneColumnIds = new Set(
     columns.filter((c) => c.name.toLowerCase() === 'done').map((c) => c.id),
   );
   const epicCardCount = (epicId) =>
     cards.filter((c) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
 
+  const selectedEpic = selectedEpicId ? epics.find((e) => e.id === selectedEpicId) : null;
+
+  const openAutonomousDialog = () => {
+    if (!selectedEpic) return;
+    setAutonomousForm(epicToAutonomousForm(selectedEpic));
+    setShowAutonomousDialog(true);
+  };
+
+  const closeAutonomousDialog = () => {
+    if (autonomousSaving) return;
+    setShowAutonomousDialog(false);
+    setAutonomousForm(null);
+  };
+
+  const handleAutonomousFormChange = (patch) => {
+    setAutonomousForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleSaveAutonomous = async () => {
+    if (!selectedEpic || !autonomousForm || autonomousSaving) return;
+    setAutonomousSaving(true);
+    try {
+      await api.updateEpic(
+        projectId,
+        selectedEpic.id,
+        epicFormToUpdateBody({
+          name: selectedEpic.name,
+          description: selectedEpic.description || '',
+          color: selectedEpic.color,
+          ...autonomousForm,
+        }),
+      );
+      setShowAutonomousDialog(false);
+      setAutonomousForm(null);
+      fetchBoard();
+    } catch (err) {
+      console.error('Failed to save autonomous settings:', err);
+    } finally {
+      setAutonomousSaving(false);
+    }
+  };
+
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-gray-900 text-gray-400">
-        Loading board...
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-gray-950 text-gray-500">
+        <div className="h-8 w-8 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
+        <p className="text-sm">Loading board…</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-gray-900 text-gray-400">
-        <div className="text-center">
-          <p className="mb-2">Failed to load board</p>
-          <p className="text-sm text-gray-600">{error}</p>
+      <div className="flex-1 flex items-center justify-center bg-gray-950 text-gray-400">
+        <div className="text-center max-w-sm px-6">
+          <p className="mb-1 text-base font-medium text-gray-200">Failed to load board</p>
+          <p className="text-sm text-gray-500">{error}</p>
           <button
             onClick={() => {
               setLoading(true);
               fetchBoard();
             }}
-            className="mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition-colors"
+            className="mt-5 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-gray-200 transition-colors"
           >
             Retry
           </button>
@@ -709,172 +643,60 @@ export default function KanbanBoard({
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-900 min-h-0">
+    <div className="flex-1 flex flex-col bg-gray-950 min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.06] bg-gray-950/90 backdrop-blur-sm">
+        <div className="flex items-center gap-3 min-w-0">
           {project?.color && (
             <span
-              className="w-3 h-3 rounded-sm block flex-shrink-0"
+              className="w-2.5 h-2.5 rounded-full block flex-shrink-0 ring-2 ring-white/10"
               style={{ backgroundColor: project.color }}
             />
           )}
-          <h1 className="text-lg font-semibold text-white">{project?.name || 'Project'} Board</h1>
-          <span className="text-sm text-gray-500">
-            {cards.length} card{cards.length !== 1 ? 's' : ''}
-          </span>
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold text-gray-100 truncate">
+              {project?.name || 'Project'}
+            </h1>
+            <p className="text-xs text-gray-500">
+              {cards.length} card{cards.length !== 1 ? 's' : ''}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowReviewPanel(!showReviewPanel)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-              showReviewPanel
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white'
-            }`}
-          >
-            <Eye size={14} />
-            PR & reviews
-            {reviewLogs.length > 0 && (
-              <span className="text-xs bg-gray-700/50 px-1.5 py-0.5 rounded-full">
-                {reviewLogs.length}
-              </span>
-            )}
-          </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {onOpenEpics ? (
+            <button
+              type="button"
+              onClick={onOpenEpics}
+              className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors"
+              data-testid="open-epics-screen"
+            >
+              <Target size={14} />
+              Epics
+            </button>
+          ) : null}
           <button
             onClick={() => {
               const target = columns.find((c) => c.name.toLowerCase() !== 'backlog') || columns[0];
               if (target) setAddingInColumn(target.id);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg text-sm transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors shadow-sm shadow-indigo-900/30"
           >
             <Plus size={14} />
-            Add Card
+            Add card
           </button>
         </div>
       </div>
 
-      {/* Review Activity Panel */}
-      {showReviewPanel && (
-        <div className="px-6 py-3 border-b border-gray-800/50 bg-gray-850/50 space-y-2 max-h-48 overflow-y-auto">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-            Recent PR & review activity
-          </h4>
-          {reviewLogs.length === 0 ? (
-            <p className="text-xs text-gray-600">No PR or review activity yet.</p>
-          ) : (
-            <div className="space-y-1">
-              {reviewLogs.slice(0, 10).map((log) => {
-                const kind = log.event_kind || 'review';
-                if (kind === 'pr_created') {
-                  const n = log.pr_number ?? log.pr_url?.match(/\/pull\/(\d+)/)?.[1];
-                  const prHref =
-                    log.pr_url && String(log.pr_url).startsWith('http') ? String(log.pr_url) : null;
-                  return (
-                    <div
-                      key={log.id}
-                      className="flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50"
-                    >
-                      <GitPullRequest size={14} className="text-violet-400 flex-shrink-0" />
-                      {prHref ? (
-                        <a
-                          href={prHref}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-gray-300 truncate flex-1 hover:text-indigo-300"
-                          title={log.pr_title}
-                        >
-                          {n != null ? `PR #${n}` : 'PR'}
-                          {log.pr_title ? `: ${log.pr_title}` : ''}
-                        </a>
-                      ) : (
-                        <span className="text-gray-300 truncate flex-1" title={log.pr_title}>
-                          {n != null ? `PR #${n}` : 'PR'}
-                          {log.pr_title ? `: ${log.pr_title}` : ''}
-                        </span>
-                      )}
-                      <span className="text-gray-500 truncate max-w-[7rem]">
-                        {log.author_agent}
-                      </span>
-                      <span className="text-violet-300 font-medium flex-shrink-0">Opened</span>
-                      <span className="text-gray-600 flex-shrink-0">
-                        {new Date(log.completed_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                  );
-                }
-
-                const prHref = log.pr_url?.startsWith('http') ? log.pr_url : null;
-                const Row = prHref ? 'a' : 'div';
-                const rowProps = prHref
-                  ? { href: prHref, target: '_blank', rel: 'noopener noreferrer' }
-                  : {};
-                return (
-                  <Row
-                    key={log.id}
-                    {...rowProps}
-                    className={`flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50 ${
-                      prHref
-                        ? 'cursor-pointer hover:bg-gray-800 border border-transparent hover:border-gray-600'
-                        : ''
-                    }`}
-                  >
-                    <span
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        log.outcome === 'approved'
-                          ? 'bg-emerald-400'
-                          : log.outcome === 'changes_requested'
-                            ? 'bg-red-400'
-                            : log.outcome === 'merge_conflict'
-                              ? 'bg-amber-400'
-                              : 'bg-gray-400'
-                      }`}
-                    />
-                    <span className="text-gray-300 truncate flex-1">
-                      {log.pr_url?.match(/\d+$/)?.[0] ? `PR #${log.pr_url.match(/\d+$/)[0]}` : 'PR'}
-                    </span>
-                    <span className="text-gray-500">{log.reviewer_agent}</span>
-                    <span
-                      className={`font-medium ${
-                        log.outcome === 'approved'
-                          ? 'text-emerald-400'
-                          : log.outcome === 'changes_requested'
-                            ? 'text-red-400'
-                            : log.outcome === 'merge_conflict'
-                              ? 'text-amber-400'
-                              : 'text-gray-400'
-                      }`}
-                    >
-                      {log.outcome === 'approved'
-                        ? 'Approved'
-                        : log.outcome === 'changes_requested'
-                          ? 'Changes Requested'
-                          : log.outcome === 'merge_conflict'
-                            ? 'Merge Conflict'
-                            : 'Ambiguous'}
-                    </span>
-                    <span className="text-gray-600 flex-shrink-0">
-                      {new Date(log.completed_at).toLocaleDateString()}
-                    </span>
-                  </Row>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Epic Dropdown Bar + Search */}
-      <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-3">
-        {/* Search */}
-        <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+      {/* Search + epic filter */}
+      <div className="px-5 py-2.5 border-b border-white/[0.06] bg-gray-950/60 flex items-center gap-3 flex-wrap">
+        <div className="relative max-w-md">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search cards..."
-            className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-md pl-8 pr-3 py-1.5 w-48 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 placeholder-gray-500"
+            placeholder="Search cards…"
+            className="bg-white/[0.04] border border-white/[0.08] text-sm text-gray-100 rounded-lg pl-9 pr-8 h-9 w-52 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 placeholder-gray-500 transition-colors"
           />
           {searchQuery && (
             <button
@@ -886,330 +708,81 @@ export default function KanbanBoard({
           )}
         </div>
 
-        <div className="relative">
-          <select
-            value={selectedEpicId || ''}
-            onChange={(e) => setSelectedEpicId(e.target.value || null)}
-            className="appearance-none bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-md pl-3 pr-8 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
+        <EpicFilterDropdown
+          epics={epics}
+          selectedEpicId={selectedEpicId}
+          onSelect={setSelectedEpicId}
+          epicCardCount={epicCardCount}
+        />
+
+        {selectedEpic ? (
+          <button
+            type="button"
+            onClick={openAutonomousDialog}
+            data-testid="open-autonomous-dialog"
+            className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
+              selectedEpic.autonomous === 1
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                : 'border-white/[0.08] bg-white/[0.04] text-gray-400 hover:text-gray-200 hover:bg-white/[0.06]'
+            }`}
           >
-            <option value="">All Epics ({epics.length})</option>
-            {epics.map((epic) => {
-              const count = epicCardCount(epic.id);
-              return (
-                <option key={epic.id} value={epic.id}>
-                  {epic.autonomous === 1 ? '⚡ ' : ''}
-                  {epic.name}
-                  {count > 0 ? ` (${count})` : ''}
-                </option>
-              );
-            })}
-          </select>
-          <ChevronDown
-            size={14}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-          />
-        </div>
-
-        {/* Selected epic color dot + edit button */}
-        {selectedEpicId &&
-          (() => {
-            const epic = epics.find((e) => e.id === selectedEpicId);
-            return epic ? (
-              <div className="flex items-center gap-2">
-                <span
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ backgroundColor: epic.color }}
-                />
-                <button
-                  onClick={(e) => openEpicEdit(epic, e)}
-                  className="p-1 text-gray-500 hover:text-gray-300 rounded hover:bg-gray-800 transition-colors"
-                  title="Edit epic"
-                >
-                  <Settings size={14} />
-                </button>
-              </div>
-            ) : null;
-          })()}
-
-        {/* + Epic button */}
-        <button
-          onClick={() => {
-            setShowEpicForm(true);
-            setEditingEpic(null);
-            setEpicForm({
-              name: '',
-              description: '',
-              color: '#6366F1',
-              pr_base_branch: '',
-            });
-          }}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 whitespace-nowrap transition-colors"
-        >
-          <Plus size={12} />
-          New Epic
-        </button>
+            <Zap size={14} className={selectedEpic.autonomous === 1 ? 'text-emerald-400' : ''} />
+            Autonomous
+          </button>
+        ) : null}
       </div>
 
-      {/* Epic Create/Edit Form (inline dropdown) */}
-      {(showEpicForm || editingEpic) && (
-        <div className="px-6 py-3 border-b border-gray-800/50 bg-gray-850">
-          <div className="max-w-md space-y-3">
-            <div className="flex items-center gap-2 mb-1">
-              <Target size={14} className="text-gray-400" />
-              <span className="text-sm font-medium text-gray-300">
-                {editingEpic ? 'Edit Epic' : 'New Epic'}
-              </span>
-            </div>
-
-            <input
-              type="text"
-              value={epicForm.name}
-              onChange={(e) => setEpicForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Epic name..."
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500"
-              autoFocus
-            />
-
-            <input
-              type="text"
-              value={epicForm.description}
-              onChange={(e) => setEpicForm((f) => ({ ...f, description: e.target.value }))}
-              placeholder="Description (optional)"
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500"
-            />
-
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-0.5">
-                PR base branch (optional)
-              </label>
-              <input
-                type="text"
-                value={epicForm.pr_base_branch ?? ''}
-                onChange={(e) => setEpicForm((f) => ({ ...f, pr_base_branch: e.target.value }))}
-                placeholder="e.g. feature/epic-integration — default base for cards in this epic"
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 font-mono"
-              />
-              <p className="text-[10px] text-gray-600 mt-0.5">
-                Cards can still override with their own base branch. Leave empty to use the repo
-                default.
-              </p>
-            </div>
-
-            {/* Color picker */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-gray-500 mr-1">Color</span>
-              {EPIC_COLORS.map((color) => (
-                <button
-                  key={color}
-                  onClick={() => setEpicForm((f) => ({ ...f, color }))}
-                  className={`w-5 h-5 rounded-full transition-all ${
-                    epicForm.color === color
-                      ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900 scale-110'
-                      : 'hover:scale-110'
-                  }`}
-                  style={{ backgroundColor: color }}
-                />
-              ))}
-            </div>
-
-            {/* Autonomous — edit only */}
-            {editingEpic && (
-              <div className="rounded-lg border border-gray-700/80 bg-gray-800/40 p-3 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-start gap-2 min-w-0">
-                    <Zap
-                      size={16}
-                      className={`mt-0.5 shrink-0 ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'}`}
-                    />
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-gray-200">Autonomous mode</div>
-                      <p className="text-[11px] text-gray-500 leading-snug mt-0.5">
-                        Automatically assign backlog cards in this epic to agents when slots are
-                        free.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={epicForm.autonomous === 1}
-                    onClick={() => setEpicForm((f) => ({ ...f, autonomous: f.autonomous ? 0 : 1 }))}
-                    className={`relative inline-flex h-7 w-11 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
-                      epicForm.autonomous ? 'bg-emerald-600' : 'bg-gray-600'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 ease-out ${
-                        epicForm.autonomous ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {epicForm.autonomous === 1 && (
-                  <div className="space-y-3 pt-1 border-t border-gray-700/50">
-                    <div className="flex flex-wrap items-end gap-3">
-                      <div>
-                        <label
-                          className="block text-xs text-gray-500 mb-0.5"
-                          title="Limits cards in both In Progress and Review — new work won't start until PRs are merged"
-                        >
-                          Max concurrent
-                        </label>
-                        <input
-                          type="number"
-                          value={epicForm.autonomous_max_concurrent || 2}
-                          onChange={(e) =>
-                            setEpicForm((f) => ({
-                              ...f,
-                              autonomous_max_concurrent: parseInt(e.target.value, 10) || 2,
-                            }))
-                          }
-                          min={1}
-                          max={5}
-                          disabled={!!epicForm.pr_base_branch?.trim()}
-                          className={`w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50 ${
-                            epicForm.pr_base_branch?.trim() ? 'opacity-50 cursor-not-allowed' : ''
-                          }`}
-                        />
-                        {epicForm.pr_base_branch?.trim() ? (
-                          <p
-                            className="text-[10px] text-amber-400 mt-1 max-w-xs leading-snug"
-                            title="Integration branches require serial card landing — concurrent dispatch off a shared umbrella branch produces pairwise merge conflicts."
-                          >
-                            Effective max concurrent: <span className="font-mono">1</span>{' '}
-                            (integration branch enforces serial dispatch)
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-0.5">
-                        Session model (optional)
-                      </label>
-                      <select
-                        key={modelConfig ? 'models-loaded' : 'models-pending'}
-                        value={epicForm.autonomous_model ?? ''}
-                        onChange={(e) =>
-                          setEpicForm((f) => ({ ...f, autonomous_model: e.target.value }))
-                        }
-                        className="w-full max-w-sm bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
-                      >
-                        <option value="">Each agent&apos;s default</option>
-                        {modelConfig?.engineValidModels &&
-                          Object.entries(modelConfig.engineValidModels).map(([eng, models]) => (
-                            <optgroup key={eng} label={eng}>
-                              {(models || []).map((m) => (
-                                <option key={`${eng}:${m}`} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </optgroup>
-                          ))}
-                      </select>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 pt-2 border-t border-gray-700/50">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-gray-200">Send It</div>
-                        <p className="text-[11px] text-gray-500 leading-snug mt-0.5">
-                          Start each dispatched session with auto-merge enabled (Finalize
-                          &ldquo;Send It&rdquo;), even when the project&apos;s auto-merge is off.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={epicForm.autonomous_send_it === 1}
-                        aria-label="Send It"
-                        onClick={() =>
-                          setEpicForm((f) => ({
-                            ...f,
-                            autonomous_send_it: f.autonomous_send_it ? 0 : 1,
-                          }))
-                        }
-                        className={`relative inline-flex h-7 w-11 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
-                          epicForm.autonomous_send_it ? 'bg-emerald-600' : 'bg-gray-600'
-                        }`}
-                      >
-                        <span
-                          className={`pointer-events-none absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 ease-out ${
-                            epicForm.autonomous_send_it ? 'translate-x-4' : 'translate-x-0'
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={editingEpic ? handleUpdateEpic : handleCreateEpic}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition-colors"
-              >
-                {editingEpic ? 'Save' : 'Create'}
-              </button>
-              <button
-                onClick={() => {
-                  setShowEpicForm(false);
-                  setEditingEpic(null);
-                  setEpicForm({
-                    name: '',
-                    description: '',
-                    color: '#6366F1',
-                    pr_base_branch: '',
-                  });
-                }}
-                className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
-              >
-                Cancel
-              </button>
-              {editingEpic && (
-                <button
-                  onClick={() => handleDeleteEpic(editingEpic.id)}
-                  className="px-3 py-1.5 text-red-500 hover:text-red-400 text-xs transition-colors ml-auto"
-                >
-                  Delete Epic
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <EpicAutonomousDialog
+        open={showAutonomousDialog}
+        epic={selectedEpic}
+        form={autonomousForm || epicToAutonomousForm(selectedEpic || {})}
+        onChange={handleAutonomousFormChange}
+        modelConfig={modelConfig}
+        saving={autonomousSaving}
+        onSave={handleSaveAutonomous}
+        onClose={closeAutonomousDialog}
+      />
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
-        <div className="flex gap-4 h-full min-w-max">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-5 min-w-0">
+        <div className="flex gap-3.5 h-full w-full min-w-0 pb-1">
           {columns.map((col) => {
             const colCards = cardsForColumn(col.id);
             const isDragOver = dragOverColumn === col.id;
+            const columnColor = col.color || '#6b7280';
 
             return (
               <div
                 key={col.id}
-                className={`flex flex-col w-[280px] rounded-lg bg-gray-850 flex-shrink-0 ${
-                  isDragOver ? 'ring-2 ring-gray-600 bg-gray-700/30' : ''
+                className={`flex flex-col flex-1 min-w-[220px] h-full min-h-0 rounded-xl border transition-all duration-150 ${
+                  isDragOver
+                    ? 'border-indigo-500/40 bg-indigo-500/[0.06] ring-1 ring-indigo-500/30'
+                    : 'border-white/[0.06] bg-white/[0.02]'
                 }`}
-                style={{ minHeight: '200px' }}
                 onDragOver={(e) => handleColumnDragOver(e, col.id)}
                 onDragLeave={handleColumnDragLeave}
                 onDrop={(e) => handleColumnDrop(e, col.id)}
               >
                 {/* Column header */}
-                <div
-                  className="px-3 py-2.5 border-t-2 rounded-t-lg"
-                  style={{ borderColor: col.color || '#6b7280' }}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-gray-300">{col.name}</span>
-                    <span className="text-xs text-gray-500">({colCards.length})</span>
+                <div className="px-3.5 py-3 border-b border-white/[0.05]">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: columnColor }}
+                      />
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-300 truncate">
+                        {col.name}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
+                      {colCards.length}
+                    </span>
                   </div>
                 </div>
 
                 {/* Cards */}
-                <div className="flex-1 overflow-y-auto px-2 py-1 space-y-2">
+                <div className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2">
                   {colCards.map((card) => {
                     const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
                     const showTopIndicator =
@@ -1223,10 +796,10 @@ export default function KanbanBoard({
                       dropIndicator.half === 'bottom' &&
                       dragCardId !== card.id;
                     return (
-                      <div key={card.id} data-testid={`card-wrapper-${card.id}`}>
+                      <div key={card.id} data-testid={`card-wrapper-${card.id}`} className="w-full">
                         {showTopIndicator && (
                           <div
-                            className="h-0.5 bg-blue-500 rounded-full mb-1"
+                            className="h-0.5 bg-indigo-400 rounded-full mb-1.5 shadow-[0_0_8px_rgba(129,140,248,0.6)]"
                             data-testid={`drop-indicator-top-${card.id}`}
                           />
                         )}
@@ -1237,28 +810,26 @@ export default function KanbanBoard({
                           onDragOver={(e) => handleCardDragOver(e, card.id)}
                           onDrop={(e) => handleCardDrop(e, card.id)}
                           onClick={() => openDetail(card)}
-                          className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
-                            dragCardId === card.id ? 'opacity-50' : ''
-                          }`}
+                          className={`group w-full rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-all duration-150 border-l-[3px] ${
+                            PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
+                          } ${dragCardId === card.id ? 'opacity-40 scale-[0.98]' : ''}`}
                         >
-                          <div className="flex items-start gap-2">
+                          <div className="flex items-start gap-1.5 p-3">
                             <GripVertical
                               size={14}
-                              className="text-gray-600 mt-0.5 flex-shrink-0"
+                              className="text-gray-600 mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                             />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span
-                                  className="text-sm font-medium text-white break-words"
-                                  data-testid="card-title"
-                                >
-                                  {card.title}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                            <div className="flex-1 min-w-0 -ml-1 group-hover:ml-0 transition-all">
+                              <span
+                                className="block text-[13px] font-medium text-gray-100 leading-snug break-words"
+                                data-testid="card-title"
+                              >
+                                {card.title}
+                              </span>
+                              <div className="flex items-center gap-1 flex-wrap mt-2">
                                 {card.priority && (
                                   <span
-                                    className={`inline-block text-xs px-1.5 py-0.5 rounded-full ${
+                                    className={`inline-block text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-md ${
                                       PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
                                     }`}
                                   >
@@ -1267,7 +838,7 @@ export default function KanbanBoard({
                                 )}
                                 {hasUnresolvedBlockers(card) && (
                                   <span
-                                    className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-red-900/40 text-red-300"
+                                    className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/20"
                                     title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
                                     data-testid="card-blocker-badge"
                                   >
@@ -1277,56 +848,63 @@ export default function KanbanBoard({
                                 )}
                                 {cardEpic && (
                                   <span
-                                    className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
+                                    className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md max-w-full"
                                     style={{
-                                      backgroundColor: cardEpic.color + '20',
+                                      backgroundColor: `${cardEpic.color}18`,
                                       color: cardEpic.color,
+                                      boxShadow: `inset 0 0 0 1px ${cardEpic.color}30`,
                                     }}
                                   >
                                     <span
-                                      className="w-1.5 h-1.5 rounded-full"
+                                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                                       style={{ backgroundColor: cardEpic.color }}
                                     />
-                                    {cardEpic.name}
+                                    <span className="truncate">{cardEpic.name}</span>
                                   </span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                                {card.pr_url && (
-                                  <a
-                                    href={card.pr_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-xs text-gray-500 hover:text-indigo-400 flex items-center gap-1"
-                                    title={card.pr_url}
-                                  >
-                                    <GitPullRequest size={12} />#
-                                    {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                  </a>
-                                )}
-                                {card.review_status && (
-                                  <span
-                                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                                      card.review_status === 'approved'
-                                        ? 'bg-emerald-500/20 text-emerald-400'
+                              {(card.pr_url ||
+                                card.review_status ||
+                                card.session_id ||
+                                card.assignee ||
+                                (card.labels &&
+                                  card.labels.split(',').filter(Boolean).length > 0)) && (
+                                <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-white/[0.05] flex-wrap">
+                                  {card.pr_url && (
+                                    <a
+                                      href={card.pr_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                                      title={card.pr_url}
+                                    >
+                                      <GitPullRequest size={12} />#
+                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                    </a>
+                                  )}
+                                  {card.review_status && (
+                                    <span
+                                      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${
+                                        card.review_status === 'approved'
+                                          ? 'bg-emerald-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-500/25'
+                                          : card.review_status === 'reviewing'
+                                            ? 'bg-amber-500/10 text-amber-300 ring-1 ring-inset ring-amber-500/25 animate-pulse'
+                                            : card.review_status === 'changes_requested'
+                                              ? 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25'
+                                              : 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25'
+                                      }`}
+                                    >
+                                      {card.review_status === 'approved'
+                                        ? 'Approved'
                                         : card.review_status === 'reviewing'
-                                          ? 'bg-amber-500/20 text-amber-400 animate-pulse'
+                                          ? 'Reviewing...'
                                           : card.review_status === 'changes_requested'
-                                            ? 'bg-red-500/20 text-red-400'
-                                            : 'bg-blue-500/20 text-blue-400'
-                                    }`}
-                                  >
-                                    {card.review_status === 'approved'
-                                      ? 'Approved'
-                                      : card.review_status === 'reviewing'
-                                        ? 'Reviewing...'
-                                        : card.review_status === 'changes_requested'
-                                          ? 'Changes Requested'
-                                          : 'Awaiting Review'}
-                                  </span>
-                                )}
-                                {/* Finalize Code Changes status badge — renders only
+                                            ? 'Changes Requested'
+                                            : 'Awaiting Review'}
+                                    </span>
+                                  )}
+                                  {/* Finalize Code Changes status badge — renders only
                                     when the card's session has an active or recent
                                     Finalize run. The badge surfaces phase + active
                                     time (with wall-clock in the tooltip) so the
@@ -1344,39 +922,40 @@ export default function KanbanBoard({
                                     fan-out that PR #1169 reviewer flagged.
                                     Live updates still flow through the WebSocket
                                     bridge in App.jsx. */}
-                                {card.session_id && (
-                                  <FinalizeCardBadge
-                                    sessionId={card.session_id}
-                                    prefetchedRun={card.finalize_run ?? null}
-                                  />
-                                )}
-                                {card.assignee && (
-                                  <span
-                                    className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}
-                                  >
-                                    {card.session_id ? '● ' : ''}
-                                    {card.assignee}
-                                  </span>
-                                )}
-                                {card.labels &&
-                                  card.labels
-                                    .split(',')
-                                    .filter(Boolean)
-                                    .map((label) => (
-                                      <span
-                                        key={label}
-                                        className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
-                                      >
-                                        {label.trim()}
-                                      </span>
-                                    ))}
-                              </div>
+                                  {card.session_id && (
+                                    <FinalizeCardBadge
+                                      sessionId={card.session_id}
+                                      prefetchedRun={card.finalize_run ?? null}
+                                    />
+                                  )}
+                                  {card.assignee && (
+                                    <span
+                                      className={`text-[11px] font-medium ${card.session_id ? 'text-indigo-300' : 'text-gray-400'}`}
+                                    >
+                                      {card.session_id ? '● ' : ''}
+                                      {card.assignee}
+                                    </span>
+                                  )}
+                                  {card.labels &&
+                                    card.labels
+                                      .split(',')
+                                      .filter(Boolean)
+                                      .map((label) => (
+                                        <span
+                                          key={label}
+                                          className="text-[10px] font-medium bg-white/[0.06] text-gray-400 px-1.5 py-0.5 rounded-md"
+                                        >
+                                          {label.trim()}
+                                        </span>
+                                      ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
                         {showBottomIndicator && (
                           <div
-                            className="h-0.5 bg-blue-500 rounded-full mt-1"
+                            className="h-0.5 bg-indigo-400 rounded-full mt-1.5 shadow-[0_0_8px_rgba(129,140,248,0.6)]"
                             data-testid={`drop-indicator-bottom-${card.id}`}
                           />
                         )}
@@ -1386,7 +965,7 @@ export default function KanbanBoard({
 
                   {/* Inline add form */}
                   {addingInColumn === col.id && (
-                    <div className="rounded-lg p-3 bg-gray-800 border border-gray-600">
+                    <div className="w-full rounded-xl p-3 bg-white/[0.04] border border-indigo-500/30">
                       <input
                         ref={addTitleRef}
                         type="text"
@@ -1399,14 +978,14 @@ export default function KanbanBoard({
                             setNewCardTitle('');
                           }
                         }}
-                        placeholder="Card title..."
-                        className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500 mb-2"
+                        placeholder="Card title…"
+                        className="w-full bg-gray-950/80 border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 mb-2.5"
                       />
                       <div className="flex items-center gap-2">
                         <select
                           value={newCardPriority}
                           onChange={(e) => setNewCardPriority(e.target.value)}
-                          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none"
+                          className="bg-gray-950/80 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none"
                         >
                           {PRIORITIES.map((p) => (
                             <option key={p} value={p}>
@@ -1416,7 +995,7 @@ export default function KanbanBoard({
                         </select>
                         <button
                           onClick={() => handleAddCard(col.id)}
-                          className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition-colors"
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
                         >
                           Add
                         </button>
@@ -1425,7 +1004,7 @@ export default function KanbanBoard({
                             setAddingInColumn(null);
                             setNewCardTitle('');
                           }}
-                          className="text-gray-500 hover:text-gray-300"
+                          className="p-1.5 text-gray-500 hover:text-gray-200 rounded-md hover:bg-white/[0.06]"
                         >
                           <X size={14} />
                         </button>
@@ -1442,10 +1021,10 @@ export default function KanbanBoard({
                       setNewCardTitle('');
                       setNewCardPriority('medium');
                     }}
-                    className="flex items-center gap-1 px-3 py-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                    className="flex items-center gap-1.5 mx-2.5 mb-2.5 px-2.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] rounded-lg transition-colors"
                   >
                     <Plus size={12} />
-                    Add
+                    Add card
                   </button>
                 )}
               </div>
@@ -1461,15 +1040,18 @@ export default function KanbanBoard({
           data-testid="card-detail-modal"
         >
           {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedCard(null)} />
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => setSelectedCard(null)}
+          />
           {/* Panel */}
-          <div className="relative w-full max-w-6xl h-[85vh] bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden shadow-2xl">
+          <div className="relative w-full max-w-6xl h-[85vh] bg-gray-950 border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl shadow-black/50">
             {/* Header */}
-            <div className="shrink-0 flex items-center justify-between px-6 py-3 border-b border-gray-800">
+            <div className="shrink-0 flex items-center justify-between px-6 py-3.5 border-b border-white/[0.06] bg-gray-950/95">
               <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span>Card</span>
+                <span className="font-medium uppercase tracking-wide">Card</span>
                 {selectedCard?.id && (
-                  <span className="font-mono text-gray-600">
+                  <span className="font-mono text-gray-600 bg-white/[0.04] px-1.5 py-0.5 rounded">
                     #{String(selectedCard.id).slice(0, 8)}
                   </span>
                 )}
@@ -1478,13 +1060,13 @@ export default function KanbanBoard({
                 <button
                   onClick={handleSaveDetail}
                   disabled={saving}
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors"
+                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-lg text-sm font-medium transition-colors"
                 >
-                  {saving ? 'Saving...' : 'Save'}
+                  {saving ? 'Saving…' : 'Save'}
                 </button>
                 <button
                   onClick={() => setSelectedCard(null)}
-                  className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                  className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-white/[0.06] rounded-lg transition-colors"
                   aria-label="Close"
                 >
                   <X size={18} />
@@ -1569,7 +1151,7 @@ export default function KanbanBoard({
                 </div>
 
                 {/* Sidebar: metadata */}
-                <aside className="flex flex-col gap-5 lg:border-l lg:border-gray-800 lg:pl-6">
+                <aside className="flex flex-col gap-5 lg:border-l lg:border-white/[0.06] lg:pl-6">
                   {/* Priority */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">

@@ -24,6 +24,11 @@ import {
   Lock,
   GripVertical,
   ScanEye,
+  Target,
+  ChevronRight,
+  ChevronDown,
+  Bot,
+  FolderGit2,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -112,6 +117,8 @@ export default function Sidebar({
   const [hoveredSession, setHoveredSession] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
+  /** Per-project settings menu — default collapsed (`undefined` → collapsed). */
+  const [collapsedProjectMenus, setCollapsedProjectMenus] = useState({});
   // Project drag-and-drop state. `draggedProjectId` is the row the user
   // is currently dragging; `dragOverProjectId` is whichever other row has
   // a pending drop indicator. Both reset on dragend / drop / cancel.
@@ -168,6 +175,38 @@ export default function Sidebar({
     e.stopPropagation();
     setCollapsedAgents((prev) => ({ ...prev, [agentId]: !prev[agentId] }));
   };
+
+  const toggleProjectMenuCollapse = (projectId, e) => {
+    e.stopPropagation();
+    setCollapsedProjectMenus((prev) => ({
+      ...prev,
+      [projectId]: !(prev[projectId] ?? true),
+    }));
+  };
+
+  const expandProjectMenu = (projectId) => {
+    setCollapsedProjectMenus((prev) => ({ ...prev, [projectId]: false }));
+  };
+
+  const isProjectMenuRoute = (view, pid) =>
+    view === `project-agents:${pid}` ||
+    view === `project-settings:${pid}` ||
+    view === `project-crons:${pid}` ||
+    view === `runners:${pid}` ||
+    view === `preview:${pid}` ||
+    view === `aws:${pid}` ||
+    (view === 'wiki' && wikiProjectId === pid) ||
+    view === `epics:${pid}` ||
+    (typeof view === 'string' && view.startsWith(`epic:${pid}:`)) ||
+    (view === 'reviewer' && reviewerProjectId === pid) ||
+    (view === 'notes' && notesProjectId === pid) ||
+    (view.startsWith('threads') && threadsProjectId === pid) ||
+    (view === 'pulls' && pullsProjectId === pid);
+
+  const projectMenuLinkClass = (active) =>
+    `w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+      active ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+    }`;
 
   // Move `sourceId` into the slot currently occupied by `targetId`,
   // preserving the order of every other project. Hands the resulting
@@ -906,146 +945,223 @@ export default function Sidebar({
                       return topLevel.map((agent) => renderAgent(agent, 0));
                     })()}
 
-                    {/* Project wiki */}
-                    <button
-                      onClick={() => onNavigate('wiki', project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === 'wiki' && wikiProjectId === project.id
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <FileText size={14} className="flex-shrink-0" />
-                      <span className="truncate">Wiki</span>
-                    </button>
+                    {(() => {
+                      const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
+                      const menuActive = isProjectMenuRoute(currentView, project.id);
+                      return (
+                        <div
+                          className="mt-1 mb-1"
+                          data-testid={`sidebar-project-menu-${project.id}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => toggleProjectMenuCollapse(project.id, e)}
+                            data-testid={`sidebar-project-menu-toggle-${project.id}`}
+                            className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                              menuActive
+                                ? 'bg-gray-800/70 text-gray-200'
+                                : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                            }`}
+                          >
+                            {isMenuCollapsed ? (
+                              <ChevronRight size={14} className="flex-shrink-0" />
+                            ) : (
+                              <ChevronDown size={14} className="flex-shrink-0" />
+                            )}
+                            <Settings size={14} className="flex-shrink-0" />
+                            <span className="truncate">{project.name} Menu</span>
+                          </button>
 
-                    {/* Reviewer page — only when the project has a reviewer agent. */}
-                    {project.agents?.some((a) => a.role === 'reviewer') && (
-                      <button
-                        onClick={() => onNavigate('reviewer', project.id)}
-                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                          currentView === 'reviewer' && reviewerProjectId === project.id
-                            ? 'bg-gray-800 text-white'
-                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                        }`}
-                      >
-                        <ScanEye size={14} className="flex-shrink-0" />
-                        <span className="truncate">Reviewer</span>
-                      </button>
-                    )}
+                          {!isMenuCollapsed && (
+                            <div className="ml-3 pl-2 border-l border-gray-800/60">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate('wiki', project.id);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === 'wiki' && wikiProjectId === project.id,
+                                )}
+                              >
+                                <FileText size={14} className="flex-shrink-0" />
+                                <span className="truncate">Wiki</span>
+                              </button>
 
-                    {/* Workflows — temporarily hidden from the sidebar.
-                    <button
-                      onClick={() => onNavigate(`workflows:${project.id}`)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === `workflows:${project.id}` ||
-                        (typeof currentView === 'string' &&
-                          currentView.startsWith('workflow-edit:') &&
-                          currentView.startsWith(`workflow-edit:${project.id}/`))
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <ListOrdered size={14} className="flex-shrink-0" />
-                      <span className="truncate">Workflows</span>
-                      {workflowBadgeByProject[project.id] && (
-                        <span
-                          className="ml-auto flex-shrink-0 w-2 h-2 rounded-full bg-violet-500"
-                          title="Workflow activity"
-                        />
-                      )}
-                    </button>
-                    */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`epics:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `epics:${project.id}` ||
+                                    (typeof currentView === 'string' &&
+                                      currentView.startsWith(`epic:${project.id}:`)),
+                                )}
+                              >
+                                <Target size={14} className="flex-shrink-0" />
+                                <span className="truncate">Epics</span>
+                              </button>
 
-                    {/* Project runners (formerly Settings → Finalize) */}
-                    <button
-                      onClick={() => onNavigate(`runners:${project.id}`)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === `runners:${project.id}`
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <Play size={14} className="flex-shrink-0" />
-                      <span className="truncate">Runners</span>
-                    </button>
+                              {project.agents?.some((a) => a.role === 'reviewer') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate('reviewer', project.id);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === 'reviewer' && reviewerProjectId === project.id,
+                                  )}
+                                >
+                                  <ScanEye size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Reviewer</span>
+                                </button>
+                              )}
 
-                    {/* Project preview (formerly Settings → Preview) */}
-                    <button
-                      onClick={() => onNavigate(`preview:${project.id}`)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === `preview:${project.id}`
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <Monitor size={14} className="flex-shrink-0" />
-                      <span className="truncate">Preview</span>
-                    </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate('notes', project.id);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === 'notes' && notesProjectId === project.id,
+                                )}
+                              >
+                                <StickyNote size={14} className="flex-shrink-0" />
+                                <span className="truncate">Notes</span>
+                              </button>
 
-                    {/* Project AWS (SSO profiles) — only when AWS is enabled
-                        for the project (Settings → Projects → AWS toggle). */}
-                    {project.awsEnabled && (
-                      <button
-                        onClick={() => onNavigate(`aws:${project.id}`)}
-                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                          currentView === `aws:${project.id}`
-                            ? 'bg-gray-800 text-white'
-                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                        }`}
-                      >
-                        <Cloud size={14} className="flex-shrink-0" />
-                        <span className="truncate">AWS</span>
-                      </button>
-                    )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate('threads', project.id);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView.startsWith('threads') &&
+                                    threadsProjectId === project.id,
+                                )}
+                              >
+                                <List size={14} className="flex-shrink-0" />
+                                <span className="truncate">Threads</span>
+                                {unreadThreadCounts[project.id] > 0 && (
+                                  <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
+                                    {unreadThreadCounts[project.id] > 99
+                                      ? '99+'
+                                      : unreadThreadCounts[project.id]}
+                                  </span>
+                                )}
+                              </button>
 
-                    {/* Project notes */}
-                    <button
-                      onClick={() => onNavigate('notes', project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === 'notes' && notesProjectId === project.id
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <StickyNote size={14} className="flex-shrink-0" />
-                      <span className="truncate">Notes</span>
-                    </button>
+                              {project.mode !== 'workflow' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate('pulls', project.id);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === 'pulls' && pullsProjectId === project.id,
+                                  )}
+                                >
+                                  <ListOrdered size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Pulls</span>
+                                </button>
+                              )}
 
-                    {/* Project threads */}
-                    <button
-                      onClick={() => onNavigate('threads', project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView.startsWith('threads') && threadsProjectId === project.id
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <List size={14} className="flex-shrink-0" />
-                      <span className="truncate">Threads</span>
-                      {unreadThreadCounts[project.id] > 0 && (
-                        <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
-                          {unreadThreadCounts[project.id] > 99
-                            ? '99+'
-                            : unreadThreadCounts[project.id]}
-                        </span>
-                      )}
-                    </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`project-agents:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `project-agents:${project.id}`,
+                                )}
+                              >
+                                <Bot size={14} className="flex-shrink-0" />
+                                <span className="truncate">Agents</span>
+                              </button>
 
-                    {/* Pull Requests — hidden in workflow mode (no PR tracking UI) */}
-                    {project.mode !== 'workflow' && (
-                      <button
-                        onClick={() => onNavigate('pulls', project.id)}
-                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                          currentView === 'pulls' && pullsProjectId === project.id
-                            ? 'bg-gray-800 text-white'
-                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                        }`}
-                      >
-                        <ListOrdered size={14} className="flex-shrink-0" />
-                        <span className="truncate">Pulls</span>
-                      </button>
-                    )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`project-settings:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `project-settings:${project.id}`,
+                                )}
+                              >
+                                <FolderGit2 size={14} className="flex-shrink-0" />
+                                <span className="truncate">Project settings</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`project-crons:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `project-crons:${project.id}`,
+                                )}
+                              >
+                                <Clock size={14} className="flex-shrink-0" />
+                                <span className="truncate">Cron Jobs</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`runners:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `runners:${project.id}`,
+                                )}
+                              >
+                                <Play size={14} className="flex-shrink-0" />
+                                <span className="truncate">Runners</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`preview:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `preview:${project.id}`,
+                                )}
+                              >
+                                <Monitor size={14} className="flex-shrink-0" />
+                                <span className="truncate">Preview</span>
+                              </button>
+
+                              {project.awsEnabled && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate(`aws:${project.id}`);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === `aws:${project.id}`,
+                                  )}
+                                >
+                                  <Cloud size={14} className="flex-shrink-0" />
+                                  <span className="truncate">AWS</span>
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 

@@ -977,8 +977,8 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       markSessionAutoShipOnComplete(d.stmts, sessionId);
       // Autonomous cards run at least "Build and Push"; they escalate to
-      // "Send It" (auto-merge) only when the project's auto-merge is enabled.
-      // The epic's "Send It" override forces `merge` regardless of project
+      // "Auto Merge" (auto-merge) only when the project's auto-merge is enabled.
+      // The epic's "Auto Merge" override forces `merge` regardless of project
       // auto-merge config — operators opt into auto-merge per autonomous epic.
       const finalizeLevel = epic.autonomous_send_it
         ? 'merge'

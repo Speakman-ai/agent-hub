@@ -5,7 +5,13 @@ export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
   darkMode: 'class',
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        gray: {
+          850: '#1a1d27',
+        },
+      },
+    },
   },
   plugins: [typography],
 };

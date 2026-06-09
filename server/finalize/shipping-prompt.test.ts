@@ -22,7 +22,7 @@ describe('shipping-prompt', () => {
     const text = buildDevAgentShippingContract(project);
     expect(text).toContain('Finalize Code Changes');
     expect(text).toContain('git push');
-    expect(text).toContain('Send It');
+    expect(text).toContain('Auto Merge');
     expect(text).toContain('run only tests you added or changed');
     expect(text).toContain('Existing tests run in the Finalize runner/reviewer workflow');
   });

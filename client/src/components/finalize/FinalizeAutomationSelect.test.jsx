@@ -42,7 +42,7 @@ describe('FinalizeAutomationSelect', () => {
     rerender(
       <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'merge' }} />,
     );
-    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Send It');
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Auto Merge');
   });
 
   it('persists a new level via PATCH session', async () => {

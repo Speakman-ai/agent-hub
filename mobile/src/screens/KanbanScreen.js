@@ -1436,7 +1436,7 @@ export default function KanbanScreen({ route, navigation }) {
                   {epicForm.autonomous === 1 && (
                     <View style={[styles.autonomousModeCard, { marginTop: 10 }]}>
                       <View style={{ flex: 1, paddingRight: 8 }}>
-                        <Text style={styles.autonomousModeTitle}>Send It</Text>
+                        <Text style={styles.autonomousModeTitle}>Auto Merge</Text>
                         <Text style={styles.autonomousModeHint}>
                           Start each dispatched session with auto-merge enabled (Finalize "Send
                           It"), even when the project's auto-merge is off.

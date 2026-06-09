@@ -102,7 +102,7 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
     },
   );
 
-  it('does not start Finalize automation when selecting Send It during an active turn', async () => {
+  it('does not start Finalize automation when selecting Auto Merge during an active turn', async () => {
     const { app } = makeApp({
       session: { state: 'working' },
       activeTaskStatus: 'running',

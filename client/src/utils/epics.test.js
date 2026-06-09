@@ -28,7 +28,7 @@ describe('epicFormToUpdateBody', () => {
     });
   });
 
-  it('sends autonomousSendIt 1 when the Send It toggle is on and autonomous is on', () => {
+  it('sends autonomousSendIt 1 when the Auto Merge toggle is on and autonomous is on', () => {
     const body = epicFormToUpdateBody({
       name: 'x',
       autonomous: 1,

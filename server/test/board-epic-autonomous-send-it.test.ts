@@ -18,9 +18,9 @@ async function createEpic(name: string): Promise<string> {
   return (res.body as { id: string }).id;
 }
 
-describe('Epic autonomous Send It flag', () => {
+describe('Epic autonomous Auto Merge flag', () => {
   it('defaults autonomous_send_it to 0 for a freshly created epic', async () => {
-    const id = await createEpic('Send It Default');
+    const id = await createEpic('Auto Merge Default');
     const res = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const epic = (
       res.body as { epics: Array<{ id: string; autonomous_send_it?: number }> }
@@ -29,11 +29,11 @@ describe('Epic autonomous Send It flag', () => {
   });
 
   it('persists autonomousSendIt via PUT /board/epics/:id', async () => {
-    const id = await createEpic('Send It On');
+    const id = await createEpic('Auto Merge On');
     const res = await request
       .put(`/api/projects/${projectId}/board/epics/${id}`)
       .send({
-        name: 'Send It On',
+        name: 'Auto Merge On',
         autonomous: 1,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
@@ -46,7 +46,7 @@ describe('Epic autonomous Send It flag', () => {
     const cleared = await request
       .put(`/api/projects/${projectId}/board/epics/${id}`)
       .send({
-        name: 'Send It On',
+        name: 'Auto Merge On',
         autonomous: 1,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
@@ -57,11 +57,11 @@ describe('Epic autonomous Send It flag', () => {
   });
 
   it('preserves the stored autonomous_send_it when the PUT omits the field', async () => {
-    const id = await createEpic('Send It Preserve');
+    const id = await createEpic('Auto Merge Preserve');
     await request
       .put(`/api/projects/${projectId}/board/epics/${id}`)
       .send({
-        name: 'Send It Preserve',
+        name: 'Auto Merge Preserve',
         autonomous: 1,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
@@ -72,7 +72,7 @@ describe('Epic autonomous Send It flag', () => {
     const res = await request
       .put(`/api/projects/${projectId}/board/epics/${id}`)
       .send({
-        name: 'Send It Preserve (renamed)',
+        name: 'Auto Merge Preserve (renamed)',
         autonomous: 1,
         autonomousInterval: 5,
         autonomousMaxConcurrent: 2,
@@ -82,12 +82,12 @@ describe('Epic autonomous Send It flag', () => {
   });
 
   it('rejects out-of-range autonomousSendIt values (only 0 | 1 allowed)', async () => {
-    const id = await createEpic('Send It Range');
+    const id = await createEpic('Auto Merge Range');
     for (const bad of [2, -1]) {
       await request
         .put(`/api/projects/${projectId}/board/epics/${id}`)
         .send({
-          name: 'Send It Range',
+          name: 'Auto Merge Range',
           autonomous: 1,
           autonomousInterval: 5,
           autonomousMaxConcurrent: 2,

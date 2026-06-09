@@ -33,6 +33,7 @@ vi.mock('../utils/api.js', () => ({
     addCardComment: vi.fn(),
     linkCardToEpic: vi.fn(),
     assignCard: vi.fn(),
+    updateEpic: vi.fn().mockResolvedValue({}),
     // Cards now render <FinalizeCardBadge /> which calls this on mount
     // whenever the card has a session_id. Mocked to "no run" so the badge
     // is invisible in kanban-flow tests that don't care about finalize.
@@ -859,50 +860,42 @@ describe('KanbanBoard Session engine dropdown', () => {
   });
 });
 
-describe('KanbanBoard PR & reviews strip', () => {
+describe('KanbanBoard epic filter and autonomous dispatch', () => {
   beforeEach(() => {
     api.getBoard.mockReset();
     api.get.mockReset();
     api.get.mockResolvedValue([]);
-    api.getModelConfig.mockResolvedValue({
-      defaultModel: 'claude-opus-4-8',
-      engineDefaultModels: {},
-      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
-    });
+    api.updateEpic.mockReset();
+    api.updateEpic.mockResolvedValue({});
   });
 
-  it('refetches /reviews when the PR & reviews panel is opened', async () => {
-    api.getBoard.mockResolvedValue(
-      makeBoard([{ id: 1, title: 'Card C', column_id: 'col-todo', position: 0 }]),
-    );
-    const reviewLog = {
-      id: 'l1',
-      event_kind: 'pr_created',
-      pr_title: 'Fresh from server',
-      pr_url: 'https://github.com/o/r/pull/9',
-      author_agent: 'agent',
-      completed_at: new Date().toISOString(),
-    };
-    api.get.mockImplementation((path) => {
-      if (String(path).includes('/reviews')) {
-        return Promise.resolve([reviewLog]);
-      }
-      return Promise.resolve([]);
+  it('filters cards by selected epic and opens autonomous settings', async () => {
+    api.getBoard.mockResolvedValueOnce({
+      ...makeBoard([
+        { id: 'c1', title: 'Epic one card', column_id: 'col-todo', position: 0, epic_id: 'e1' },
+        { id: 'c2', title: 'Other epic card', column_id: 'col-todo', position: 1, epic_id: 'e2' },
+      ]),
+      epics: [
+        { id: 'e1', name: 'Platform', color: '#6366F1', autonomous: 0 },
+        { id: 'e2', name: 'Mobile', color: '#22C55E', autonomous: 0 },
+      ],
     });
 
     render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
-    await waitFor(() => expect(screen.getByText('Card C')).toBeInTheDocument());
 
-    const reviewCallsBefore = api.get.mock.calls.filter((c) =>
-      String(c[0]).includes('/reviews'),
-    ).length;
+    await waitFor(() => expect(screen.getByText('Epic one card')).toBeInTheDocument());
+    expect(screen.getByText('Other epic card')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /PR & reviews/i }));
+    fireEvent.click(screen.getByTestId('epic-filter-dropdown').querySelector('button'));
+    fireEvent.click(screen.getByRole('option', { name: /Platform/i }));
 
     await waitFor(() => {
-      const n = api.get.mock.calls.filter((c) => String(c[0]).includes('/reviews')).length;
-      expect(n).toBeGreaterThan(reviewCallsBefore);
+      expect(screen.getByText('Epic one card')).toBeInTheDocument();
+      expect(screen.queryByText('Other epic card')).not.toBeInTheDocument();
     });
-    await screen.findByText(/Fresh from server/i);
+
+    fireEvent.click(screen.getByTestId('open-autonomous-dialog'));
+    expect(screen.getByTestId('epic-autonomous-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('epic-autonomous-panel')).toBeInTheDocument();
   });
 });

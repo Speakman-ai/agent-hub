@@ -29,15 +29,15 @@ describe('finalize automation', () => {
     expect(shouldEnableAutoMergeForAutomation('merge')).toBe(true);
   });
 
-  it('labels levels with the Build / Send It scheme', () => {
+  it('labels levels with the Build / Auto Merge scheme', () => {
     expect(finalizeAutomationLabel('manual')).toBe('Build');
     expect(finalizeAutomationLabel('review')).toBe('Build and Review');
     expect(finalizeAutomationLabel('push')).toBe('Build and Push');
-    expect(finalizeAutomationLabel('merge')).toBe('Send It');
+    expect(finalizeAutomationLabel('merge')).toBe('Auto Merge');
   });
 
   it('picks the assigned-card level from the auto-merge decision', () => {
-    // Auto-merge off → "Build and Push"; on → "Send It".
+    // Auto-merge off → "Build and Push"; on → "Auto Merge".
     expect(assignedFinalizeAutomationLevel(false)).toBe('push');
     expect(assignedFinalizeAutomationLevel(true)).toBe('merge');
   });

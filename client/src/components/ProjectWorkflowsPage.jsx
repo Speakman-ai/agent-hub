@@ -205,12 +205,12 @@ export default function ProjectWorkflowsPage({
   };
 
   const openSettingsEdit = () => {
-    onNavigate('settings:projects', { expandProjectId: projectId });
+    onNavigate(`project-settings:${projectId}`);
     if (showToast) {
       const now = Date.now();
       if (now - lastEditToastAtRef.current > 10_000) {
         lastEditToastAtRef.current = now;
-        showToast('Opening Settings → Projects with this project expanded.', 'info', 4000);
+        showToast('Opening Project settings for this project.', 'info', 4000);
       }
     }
   };
