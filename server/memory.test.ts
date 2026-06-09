@@ -242,6 +242,57 @@ describe('reconcileMemoryAfterSession', () => {
       );
       consoleErrSpy.mockRestore();
     });
+
+    it('logs a transient quota 429 at warn level with a concise one-liner (not error)', async () => {
+      const original = '# Memory\n\nUntouched on a transient quota failure.';
+      writeFileSync(path.join(tmpDir, 'MEMORY.md'), original, 'utf-8');
+      // Mimic the real gemini-cli rejection: raw multi-line stderr + an
+      // `engine` tag (set by one-shot-spawn on the rejection Error).
+      runOneShotMock.mockImplementation(async () => {
+        throw Object.assign(
+          new Error(
+            'Warning: 256-color support not detected.\nTerminalQuotaError: You have exhausted your daily quota on this model.\n    at classifyGoogleError (chunk.js:1:1)\nAn unexpected critical error occurred:[object Object]',
+          ),
+          { engine: 'gemini-cli' },
+        );
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
+
+      expect(readFileSync(path.join(tmpDir, 'MEMORY.md'), 'utf-8')).toBe(original);
+      // Best-effort task: a transient quota error is a warn, never an error.
+      expect(errSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const line = (warnSpy.mock.calls[0] as string[]).join(' ');
+      expect(line).toContain('[Memory Reconciliation]');
+      expect(line).toContain('429');
+      // The noisy stderr never reaches the log line.
+      expect(line).not.toContain('[object Object]');
+      expect(line).not.toContain('256-color');
+      expect(line).not.toMatch(/\bat classifyGoogleError/);
+      warnSpy.mockRestore();
+      errSpy.mockRestore();
+    });
+
+    it('logs a generic spawn failure at error level with a concise summary', async () => {
+      writeFileSync(path.join(tmpDir, 'MEMORY.md'), '# Memory\n\nContent.', 'utf-8');
+      setupRunReject('Boom: the model returned a 500\n    at frame (x.js:1:1)');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await reconcileMemoryAfterSession(tmpDir, 'session summary', DEFAULT_OPTS);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      const line = (errSpy.mock.calls[0] as string[]).join(' ');
+      expect(line).toContain('[Memory Reconciliation] Failed:');
+      expect(line).toContain('Boom: the model returned a 500');
+      expect(line).not.toMatch(/\bat frame/);
+      warnSpy.mockRestore();
+      errSpy.mockRestore();
+    });
   });
 });
 

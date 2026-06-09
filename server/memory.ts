@@ -4,6 +4,31 @@ import type { AppConfig } from './types.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { runOneShotPrompt } from './one-shot-spawn.js';
 import type { SupportedEngine } from './engine-availability.js';
+import { summarizeCliError } from './cli-error-summary.js';
+
+/**
+ * Log a reconciliation failure concisely.
+ *
+ * Memory reconciliation is best-effort, so the raw multi-line CLI stderr
+ * (256-color warnings, stack frames, gemini-cli's own `[object Object]`)
+ * is never dumped. `NoEnginesAvailableError` keeps its distinct, ops-actionable
+ * message; a transient quota/rate-limit 429 logs at `warn` (not `error`) since
+ * there's nothing for the operator to fix; everything else logs a one-line
+ * classified summary at `error`.
+ */
+function logReconcileFailure(label: string, err: unknown): void {
+  if (err instanceof NoEnginesAvailableError) {
+    console.error(`${label} No AI engine credentials available — skipping.`, err.message);
+    return;
+  }
+  const engine = (err as { engine?: string } | undefined)?.engine;
+  const { kind, message } = summarizeCliError((err as Error | undefined)?.message, engine);
+  if (kind === 'rate_limit') {
+    console.warn(`${label} Skipped — ${message}`);
+    return;
+  }
+  console.error(`${label} Failed: ${message}`);
+}
 
 export function localDateStr(d = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -329,13 +354,7 @@ export function reconcileMemoryAfterSession(
       );
       console.log('[Memory Reconciliation] MEMORY.md updated after session.');
     } catch (err) {
-      // Distinguish "no engines configured" from generic spawn errors so
-      // ops can tell the user-actionable case apart from a CLI hiccup.
-      const isNoEngines = err instanceof NoEnginesAvailableError;
-      const prefix = isNoEngines
-        ? '[Memory Reconciliation] No AI engine credentials available — skipping reconciliation.'
-        : '[Memory Reconciliation] Failed:';
-      console.error(prefix, (err as Error).message);
+      logReconcileFailure('[Memory Reconciliation]', err);
     }
   });
 }
@@ -436,11 +455,7 @@ export function reconcileMemoryFromWiki(
       );
       console.log('[Wiki→Memory Sync] MEMORY.md updated from wiki.');
     } catch (err) {
-      const isNoEngines = err instanceof NoEnginesAvailableError;
-      const prefix = isNoEngines
-        ? '[Wiki→Memory Sync] No AI engine credentials available — skipping sync.'
-        : '[Wiki→Memory Sync] Failed:';
-      console.error(prefix, (err as Error).message);
+      logReconcileFailure('[Wiki→Memory Sync]', err);
     }
   });
 }
