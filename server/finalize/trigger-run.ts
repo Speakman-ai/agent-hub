@@ -16,7 +16,6 @@ import type {
   SessionRow,
 } from '../types.js';
 import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
-import { normalizeJobFilter } from './finalize-keys.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
@@ -76,7 +75,6 @@ export function resolveFinalizeAttempt(args: {
   branch: string;
   headSha: string;
   mode: FinalizeRunMode;
-  jobFilter: string[] | null;
   triggerSource: 'ui_button' | 'agent_block';
   lookup: (idempotencyKey: string) => FinalizeRunRow | undefined;
 }): ResolveFinalizeAttemptResult {
@@ -87,7 +85,6 @@ export function resolveFinalizeAttempt(args: {
       branch: args.branch,
       headSha: args.headSha,
       mode: args.mode,
-      jobFilter: args.jobFilter,
       attempt,
     });
     const existing = args.lookup(idempotencyKey);
@@ -116,18 +113,8 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function kickoffClaimKey(args: {
-  sessionId: string;
-  branch: string;
-  jobFilterJson: string | null;
-}): string {
-  return createHash('sha256')
-    .update(args.sessionId)
-    .update('\0')
-    .update(args.branch)
-    .update('\0')
-    .update(args.jobFilterJson ?? '')
-    .digest('hex');
+function kickoffClaimKey(args: { sessionId: string; branch: string }): string {
+  return createHash('sha256').update(args.sessionId).update('\0').update(args.branch).digest('hex');
 }
 
 export type TriggerFinalizeRunResult =
@@ -155,7 +142,6 @@ async function kickoffFinalizeRun(
     triggerSource: 'ui_button' | 'agent_block';
     triggeredByUserId: string;
     mode?: FinalizeRunMode;
-    jobFilter?: string[] | null;
   },
 ): Promise<
   | { kind: 'started'; runId: string; status: string }
@@ -166,10 +152,7 @@ async function kickoffFinalizeRun(
 > {
   const { project, card, session } = args;
   const { stmts } = deps;
-  // A job filter forces checks-scope (mirrors the orchestrator) so the early
-  // idempotency probe below computes the same key the orchestrator will.
-  const jobFilter = normalizeJobFilter(args.jobFilter);
-  const mode: FinalizeRunMode = jobFilter ? 'checks' : (args.mode ?? 'full');
+  const mode: FinalizeRunMode = args.mode ?? 'full';
 
   if (!session.worktree_path) {
     return { kind: 'error', error: 'no_worktree', message: 'Session has no worktree_path.' };
@@ -198,17 +181,16 @@ async function kickoffFinalizeRun(
   }
 
   // Resolve which attempt this kickoff opens. Each explicit user click of
-  // "Run Tests" / "Reviewer" against a head whose previous run finished gets
-  // its own attempt number — and thus its own idempotency key, finalize_runs
-  // row, and timeline bubble. We never reuse a finished run for an explicit
-  // user trigger (the "Reused" complaint). In-flight runs still dedup, and
+  // "Finalize" against a head whose previous run finished gets its own
+  // attempt number — and thus its own idempotency key, finalize_runs row,
+  // and timeline bubble. We never reuse a finished run for an explicit user
+  // trigger (the "Reused" complaint). In-flight runs still dedup, and
   // automated triggers keep reusing a finished run.
   const decision = resolveFinalizeAttempt({
     projectId: project.id,
     branch: session.worktree_branch,
     headSha,
     mode,
-    jobFilter,
     triggerSource: args.triggerSource,
     lookup: (key) => stmts.getFinalizeRunByIdempotencyKey.get(key) as FinalizeRunRow | undefined,
   });
@@ -223,21 +205,23 @@ async function kickoffFinalizeRun(
   }
   const { attempt, idempotencyKey } = decision;
 
+  // `job_filter` is retained as a nullable column for historical rows only;
+  // every new run is the full Finalize (checks + reviewer), so the filter is
+  // always null. The two trailing args match the `(job_filter IS NULL AND ?
+  // IS NULL) OR job_filter = ?` clause in the prepared statement.
   const activeForBranch = stmts.getActiveFinalizeRunForSessionBranch.get(
     session.id,
     session.worktree_branch,
-    jobFilter ? JSON.stringify(jobFilter) : null,
-    jobFilter ? JSON.stringify(jobFilter) : null,
+    null,
+    null,
   ) as FinalizeRunRow | undefined;
   if (activeForBranch) {
     return { kind: 'in_flight', runId: activeForBranch.id, status: activeForBranch.status };
   }
 
-  const jobFilterJson = jobFilter ? JSON.stringify(jobFilter) : null;
   const claimKey = kickoffClaimKey({
     sessionId: session.id,
     branch: session.worktree_branch,
-    jobFilterJson,
   });
   stmts.pruneStaleFinalizeKickoffClaims.run(Date.now() - KICKOFF_CLAIM_TTL_MS);
   const claimResult = stmts.insertFinalizeKickoffClaim.run(
@@ -245,7 +229,7 @@ async function kickoffFinalizeRun(
     session.id,
     session.worktree_branch,
     mode,
-    jobFilterJson,
+    null,
     Date.now(),
   ) as { changes?: number };
   if ((claimResult.changes ?? 0) === 0) {
@@ -253,8 +237,8 @@ async function kickoffFinalizeRun(
       const active = stmts.getActiveFinalizeRunForSessionBranch.get(
         session.id,
         session.worktree_branch,
-        jobFilterJson,
-        jobFilterJson,
+        null,
+        null,
       ) as FinalizeRunRow | undefined;
       if (active) {
         return { kind: 'in_flight', runId: active.id, status: active.status };
@@ -294,7 +278,6 @@ async function kickoffFinalizeRun(
       authorName: ownerId,
       authorEmail: `${ownerId}@local`,
       mode,
-      jobFilter,
       attempt,
       signal,
     });
@@ -381,7 +364,6 @@ export async function triggerFinalizeRun(
     card: KanbanCardRow;
     session: SessionRow;
     mode?: FinalizeRunMode;
-    jobFilter?: string[] | null;
   },
 ): Promise<TriggerFinalizeRunResult> {
   const { req, project, card, session } = args;
@@ -393,7 +375,6 @@ export async function triggerFinalizeRun(
     triggerSource: 'ui_button',
     triggeredByUserId: ownerId,
     mode: args.mode,
-    jobFilter: args.jobFilter,
   });
 
   switch (outcome.kind) {

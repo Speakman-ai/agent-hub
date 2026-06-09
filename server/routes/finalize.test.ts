@@ -9,9 +9,6 @@
  * route mounting is exercised exactly as production does it.
  */
 import '../test/setup.js';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import type supertest from 'supertest';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
@@ -339,10 +336,12 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body.phases.review?.validated_head_sha).toBe('sha-1');
   });
 
-  it('excludes a job-filtered debug run from the checks phase summary', async () => {
-    // A single-job "Run Tests" run must never flip the "Tested" badge: even
-    // when it parked at ready_to_push more recently than the full run, the
-    // phase picker has to keep returning the FULL run as the checks proof.
+  it('excludes a legacy job-filtered row from the checks phase summary', async () => {
+    // Back-compat: historical rows with a non-null `job_filter` (the removed
+    // single-job "Run Tests" debug runs) must never become a phase summary,
+    // even when parked at ready_to_push more recently than the full run. The
+    // `job_filter IS NULL` clause in the phase picker keeps the FULL run as
+    // the checks proof.
     const projectId = await freshProject();
     const sessionId = `sess-${uuidv4().slice(0, 8)}`;
     const fullRunId = seedFinalizeRun({
@@ -372,7 +371,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body.run?.validated_head_sha).toBe('sha-partial');
   });
 
-  it('returns no checks phase when only a job-filtered run exists', async () => {
+  it('returns no checks phase when only a legacy job-filtered row exists', async () => {
     const projectId = await freshProject();
     const sessionId = `sess-${uuidv4().slice(0, 8)}`;
     seedFinalizeRun({
@@ -402,72 +401,6 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
-  });
-});
-
-describe('GET /api/sessions/:sessionId/finalize/ci-jobs', () => {
-  function seedSessionWithWorktree(sessionId: string, worktreePath: string): void {
-    getDb()
-      .prepare(
-        `INSERT INTO sessions (id, agent_id, name, worktree_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`,
-      )
-      .run(sessionId, `agent-${uuidv4().slice(0, 8)}`, 'Test session', worktreePath);
-  }
-
-  function writeCiYaml(contents: string): string {
-    const dir = mkdtempSync(join(tmpdir(), 'finalize-cijobs-'));
-    mkdirSync(join(dir, '.agent-hub'), { recursive: true });
-    writeFileSync(join(dir, '.agent-hub', 'ci.yaml'), contents);
-    return dir;
-  }
-
-  it('returns no_worktree when the session has no worktree path', async () => {
-    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
-    seedSession(sessionId, await freshProject());
-    const res = await request.get(`/api/sessions/${sessionId}/finalize/ci-jobs`).expect(200);
-    expect(res.body).toEqual({ version: null, jobs: [], error: 'no_worktree' });
-  });
-
-  it('lists v2 jobs with their needs from the worktree ci.yaml', async () => {
-    const worktree = writeCiYaml(`
-version: 2
-on: [finalize]
-jobs:
-  build:
-    runs-on: host
-    steps:
-      - run: npm run build
-  test:
-    runs-on: host
-    needs: [build]
-    steps:
-      - run: npm test
-`);
-    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
-    seedSessionWithWorktree(sessionId, worktree);
-
-    const res = await request.get(`/api/sessions/${sessionId}/finalize/ci-jobs`).expect(200);
-    expect(res.body.version).toBe(2);
-    expect(res.body.error).toBeNull();
-    const byId = Object.fromEntries(res.body.jobs.map((j: { id: string }) => [j.id, j]));
-    expect(Object.keys(byId).sort()).toEqual(['build', 'test']);
-    expect(byId.test.needs).toEqual(['build']);
-    expect(byId.build.needs).toEqual([]);
-  });
-
-  it('returns an empty job list for a v1 (sequential-steps) config', async () => {
-    const worktree = writeCiYaml(`
-version: 1
-on: [finalize]
-steps:
-  - run: npm test
-`);
-    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
-    seedSessionWithWorktree(sessionId, worktree);
-
-    const res = await request.get(`/api/sessions/${sessionId}/finalize/ci-jobs`).expect(200);
-    expect(res.body).toEqual({ version: 1, jobs: [], error: null });
   });
 });
 

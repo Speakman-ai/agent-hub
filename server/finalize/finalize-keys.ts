@@ -15,18 +15,12 @@ export const DEFAULT_CI_CONFIG_RELATIVE_PATH = '.agent-hub/ci.yaml';
  * `<project_id>|<branch>|<head_sha>|<mode>` hex-encoded — matches the
  * design doc's §4 contract and the UNIQUE constraint on `finalize_runs`.
  *
- * `mode` is part of the key so the split manual buttons ("Run Tests" =
- * `checks`, "Reviewer" = `review`) can both run against the SAME head
- * SHA without the second click being deduped as a reuse of the first.
- * Omitting `mode` resolves to `'full'`, preserving the historical key
- * for the default pipeline (and any callers that pre-date the split).
- *
- * `jobFilter` (single-job "Run Tests" dropdown runs) is folded in as a
- * trailing `|jobs=<sorted,csv>` segment ONLY when non-empty, so a debug
- * run for one job coexists with the full checks run on the same head and
- * two different single-job runs don't dedup onto each other. The segment
- * is omitted entirely for unfiltered runs, keeping every historical key
- * byte-identical.
+ * `mode` is part of the key for back-compat with historical rows: a
+ * `'full'` run (the one Finalize button) exercises both checks and the
+ * reviewer, but legacy `'checks'` / `'review'` rows (and automation that
+ * still targets a single phase) keep their own keys. Omitting `mode`
+ * resolves to `'full'`, preserving the historical key for the default
+ * pipeline.
  *
  * `attempt` is the manual re-run discriminator. The Finalize strip is an
  * append-only timeline of reviews/tests/code-changes — when a user
@@ -43,30 +37,13 @@ export function computeIdempotencyKey(args: {
   branch: string;
   headSha: string;
   mode?: FinalizeRunMode;
-  jobFilter?: string[] | null;
   attempt?: number;
 }): string {
   const mode = args.mode ?? 'full';
   let base = `${args.projectId}|${args.branch}|${args.headSha}|${mode}`;
-  const jobs = normalizeJobFilter(args.jobFilter);
-  if (jobs && jobs.length > 0) {
-    base += `|jobs=${jobs.join(',')}`;
-  }
   const attempt = args.attempt ?? 1;
   if (attempt > 1) {
     base += `|attempt=${attempt}`;
   }
   return createHash('sha256').update(base).digest('hex');
-}
-
-/**
- * Canonicalize a job-filter list: trim, drop blanks, dedup, sort. Returns
- * `null` for nullish / empty input so callers treat "no filter" uniformly.
- * Sorting makes the idempotency key order-insensitive (selecting `[a,b]`
- * and `[b,a]` is the same run).
- */
-export function normalizeJobFilter(jobFilter: string[] | null | undefined): string[] | null {
-  if (!jobFilter || jobFilter.length === 0) return null;
-  const cleaned = [...new Set(jobFilter.map((j) => j.trim()).filter((j) => j.length > 0))].sort();
-  return cleaned.length > 0 ? cleaned : null;
 }

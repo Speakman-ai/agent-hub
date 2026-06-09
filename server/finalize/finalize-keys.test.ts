@@ -1,18 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeIdempotencyKey, normalizeJobFilter } from './finalize-keys.js';
-
-describe('normalizeJobFilter', () => {
-  it('returns null for nullish / empty input', () => {
-    expect(normalizeJobFilter(null)).toBeNull();
-    expect(normalizeJobFilter(undefined)).toBeNull();
-    expect(normalizeJobFilter([])).toBeNull();
-    expect(normalizeJobFilter(['', '  '])).toBeNull();
-  });
-
-  it('trims, drops blanks, dedups, and sorts', () => {
-    expect(normalizeJobFilter([' b ', 'a', 'b', ''])).toEqual(['a', 'b']);
-  });
-});
+import { computeIdempotencyKey } from './finalize-keys.js';
 
 describe('computeIdempotencyKey', () => {
   const base = { projectId: 'p', branch: 'feature/x', headSha: 'abc123' };
@@ -21,54 +8,41 @@ describe('computeIdempotencyKey', () => {
     expect(computeIdempotencyKey(base)).toBe(computeIdempotencyKey({ ...base, mode: 'full' }));
   });
 
-  it('an empty / absent job filter does not change the key', () => {
-    const noFilter = computeIdempotencyKey({ ...base, mode: 'checks' });
-    expect(computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: null })).toBe(noFilter);
-    expect(computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: [] })).toBe(noFilter);
+  it('distinct modes get distinct keys (back-compat with legacy single-phase rows)', () => {
+    const full = computeIdempotencyKey({ ...base, mode: 'full' });
+    const checks = computeIdempotencyKey({ ...base, mode: 'checks' });
+    const review = computeIdempotencyKey({ ...base, mode: 'review' });
+    expect(full).not.toBe(checks);
+    expect(full).not.toBe(review);
+    expect(checks).not.toBe(review);
   });
 
-  it('a job filter produces a distinct key from the full checks run', () => {
-    const full = computeIdempotencyKey({ ...base, mode: 'checks' });
-    const partial = computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: ['test'] });
-    expect(partial).not.toBe(full);
-  });
-
-  it('two different single-job runs get different keys (no cross-dedup)', () => {
-    const a = computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: ['test'] });
-    const b = computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: ['lint'] });
-    expect(a).not.toBe(b);
-  });
-
-  it('is insensitive to job-filter order and duplicates', () => {
-    const ab = computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: ['a', 'b'] });
-    const ba = computeIdempotencyKey({ ...base, mode: 'checks', jobFilter: ['b', 'a', 'a'] });
-    expect(ab).toBe(ba);
+  it('the key no longer varies by anything beyond project/branch/head/mode/attempt', () => {
+    // Regression guard for the single-Finalize-button collapse: there is no
+    // job-filter dimension left, so a given (project, branch, head, mode,
+    // attempt) tuple maps to exactly one key.
+    const a = computeIdempotencyKey({ ...base, mode: 'full' });
+    const b = computeIdempotencyKey({ ...base, mode: 'full' });
+    expect(a).toBe(b);
   });
 
   it('attempt 1 (and absent attempt) keeps the historical key byte-identical', () => {
-    const noAttempt = computeIdempotencyKey({ ...base, mode: 'checks' });
-    expect(computeIdempotencyKey({ ...base, mode: 'checks', attempt: 1 })).toBe(noAttempt);
+    const noAttempt = computeIdempotencyKey({ ...base, mode: 'full' });
+    expect(computeIdempotencyKey({ ...base, mode: 'full', attempt: 1 })).toBe(noAttempt);
   });
 
   it('a re-run attempt produces a distinct key so it gets its own row/bubble', () => {
-    const first = computeIdempotencyKey({ ...base, mode: 'checks' });
-    const second = computeIdempotencyKey({ ...base, mode: 'checks', attempt: 2 });
-    const third = computeIdempotencyKey({ ...base, mode: 'checks', attempt: 3 });
+    const first = computeIdempotencyKey({ ...base, mode: 'full' });
+    const second = computeIdempotencyKey({ ...base, mode: 'full', attempt: 2 });
+    const third = computeIdempotencyKey({ ...base, mode: 'full', attempt: 3 });
     expect(second).not.toBe(first);
     expect(third).not.toBe(first);
     expect(third).not.toBe(second);
   });
 
-  it('attempt composes with mode and job filter independently', () => {
+  it('attempt composes with mode independently', () => {
+    const fullA2 = computeIdempotencyKey({ ...base, mode: 'full', attempt: 2 });
     const checksA2 = computeIdempotencyKey({ ...base, mode: 'checks', attempt: 2 });
-    const reviewA2 = computeIdempotencyKey({ ...base, mode: 'review', attempt: 2 });
-    const checksJobA2 = computeIdempotencyKey({
-      ...base,
-      mode: 'checks',
-      jobFilter: ['test'],
-      attempt: 2,
-    });
-    expect(checksA2).not.toBe(reviewA2);
-    expect(checksA2).not.toBe(checksJobA2);
+    expect(fullA2).not.toBe(checksA2);
   });
 });

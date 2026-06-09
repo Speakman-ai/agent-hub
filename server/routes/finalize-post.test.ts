@@ -506,6 +506,63 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
   });
 });
 
+describe('Finalize trigger rejects the removed single-job `jobs` filter', () => {
+  it('410 jobs_unsupported when the card route is sent a real `jobs` filter', async () => {
+    const { app, findProject, stmts } = makeApp();
+    // The guard fires before any lookup — a fully-valid card never gets read.
+    findProject.mockReturnValue({ id: 'proj-1' });
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ jobs: ['e2e'] })
+      .expect(410);
+    expect(res.body.error).toBe('jobs_unsupported');
+    // No work was started and no lookups happened — the request short-circuits.
+    expect(runFinalize).not.toHaveBeenCalled();
+    expect(stmts.getKanbanCard.get).not.toHaveBeenCalled();
+  });
+
+  it('410 jobs_unsupported when the session route is sent a real `jobs` filter', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/sessions/sess-1/finalize')
+      .send({ jobs: ['lint', 'test'], mode: 'checks' })
+      .expect(410);
+    expect(res.body.error).toBe('jobs_unsupported');
+    expect(runFinalize).not.toHaveBeenCalled();
+    // No kanban card is auto-created for a rejected request.
+    expect(stmts.getSession.get).not.toHaveBeenCalled();
+  });
+
+  it('ignores an empty / blank `jobs` array and proceeds with the full run', async () => {
+    // Legacy semantics: an empty (or all-blank) `jobs` array meant "no filter"
+    // — a normal full run — and must still be accepted, not 410'd.
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
+    runFinalize.mockReturnValue(new Promise(() => {}));
+
+    await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ jobs: ['', '  '] })
+      .expect(202);
+    expect(runFinalize).toHaveBeenCalledOnce();
+  });
+});
+
 describe('POST /api/projects/:projectId/finalize/:runId/cancel', () => {
   it('404 when project is missing', async () => {
     const { app, findProject } = makeApp();
@@ -599,8 +656,7 @@ describe('resolveFinalizeAttempt', () => {
     projectId: 'p',
     branch: 'feature/x',
     headSha: 'sha',
-    mode: 'checks' as const,
-    jobFilter: null,
+    mode: 'full' as const,
   };
 
   // Distinct, attempt-aware fake key so the walk advances deterministically.

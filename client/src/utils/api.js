@@ -305,35 +305,25 @@ export const api = {
    *   - 409 `in_flight` — a non-terminal run already exists for the
    *     same (project, branch, head_sha, mode).
    *
-   * `mode` selects which phases run: `'full'` (default — rebase + review
-   * + checks), `'checks'` ("Run Tests" button — rebase + CI), or
-   * `'review'` ("Reviewer" button — rebase + reviewer).
+   * `mode` selects which phases run: `'full'` (default — the one Finalize
+   * button: rebase + reviewer + checks). `'checks'` / `'review'` are legacy
+   * single-phase modes kept for back-compat; the UI only sends `'full'`.
    */
-  startFinalizeRun: (projectId, cardId, { mode = 'full', jobs = null } = {}) =>
+  startFinalizeRun: (projectId, cardId, { mode = 'full' } = {}) =>
     fetchJSON(`/projects/${projectId}/cards/${cardId}/finalize`, {
       method: 'POST',
-      body: JSON.stringify(jobs && jobs.length ? { mode, jobs } : { mode }),
+      body: JSON.stringify({ mode }),
     }),
   /**
    * Kick off Finalize for an ad-hoc session. Creates a kanban card on first
    * use when the session is not already card-linked. See `startFinalizeRun`
-   * for the `mode` contract. Pass `jobs` (array of ci.yaml v2 job ids) for a
-   * single-job "Run Tests" debug run — those never flip the "Tested" badge.
+   * for the `mode` contract.
    */
-  startFinalizeRunForSession: (projectId, sessionId, { mode = 'full', jobs = null } = {}) =>
+  startFinalizeRunForSession: (projectId, sessionId, { mode = 'full' } = {}) =>
     fetchJSON(`/projects/${projectId}/sessions/${sessionId}/finalize`, {
       method: 'POST',
-      body: JSON.stringify(jobs && jobs.length ? { mode, jobs } : { mode }),
+      body: JSON.stringify({ mode }),
     }),
-  /**
-   * List the ci.yaml v2 jobs for a session worktree so the "Run Tests"
-   * dropdown can offer per-job debug runs. Returns
-   * `{ version, jobs: [{ id, needs, warmup }], error }`. `version` is `2` for
-   * GHA-parity configs, `1` for sequential steps (no jobs), `null` on
-   * missing/invalid config.
-   */
-  getFinalizeCiJobs: (sessionId, opts = {}) =>
-    fetchJSON(`/sessions/${sessionId}/finalize/ci-jobs`, { signal: opts.signal }),
   pushFinalizeRun: (projectId, runId, { force = false } = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/push`, {
       method: 'POST',

@@ -43,37 +43,6 @@ export interface JobRunnerOptions {
   /** Tenant identity for the remote runner queue (local backend ignores these). */
   orgId?: string;
   projectId?: string;
-  /**
-   * Single-job "Run Tests" dropdown scope. When set, only these job ids (plus
-   * their transitive `needs:` deps and any implicit warmup prereqs) run; all
-   * other jobs are dropped entirely (not even queued). `null`/empty runs every
-   * job. Unknown ids are ignored; if nothing matches the phase fails with an
-   * `infra_error` rather than silently passing a no-op.
-   */
-  jobFilter?: string[] | null;
-}
-
-/**
- * Transitive closure of `requested` over the `needsByJob` graph: the requested
- * jobs plus everything they (transitively) depend on. Unknown requested ids are
- * dropped. Used to scope a single-job debug run to "this job and the deps it
- * needs to run first".
- */
-export function resolveJobClosure(
-  requested: string[],
-  needsByJob: Map<string, string[]>,
-): Set<string> {
-  const closure = new Set<string>();
-  const stack = requested.filter((id) => needsByJob.has(id));
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    if (closure.has(id)) continue;
-    closure.add(id);
-    for (const dep of needsByJob.get(id) ?? []) {
-      if (!closure.has(dep)) stack.push(dep);
-    }
-  }
-  return closure;
 }
 
 interface PlannedStep {
@@ -540,12 +509,10 @@ export async function runJobPhase(
   stmts.updateFinalizeRunActiveSeconds.run(TASKS_PHASE_ENTRY_ACTIVE_SECONDS, opts.runId);
 
   const builtins = buildFinalizeBuiltinEnv({ branch: opts.branch, headSha: opts.headSha });
-  let instances = expandJobInstances(opts.config, builtins);
+  const instances = expandJobInstances(opts.config, builtins);
 
   // Dependency graph: each job's declared `needs` plus the implicit warmup
   // prereq (every warmup job must finish before any non-warmup job starts).
-  // Computed up-front so a single-job filter can resolve the transitive
-  // closure (selected jobs + the deps they need to run first).
   const warmupJobIds = new Set(instances.filter((i) => i.warmup).map((i) => i.jobId));
   const effectiveNeeds = new Map<string, string[]>();
   for (const instance of instances) {
@@ -555,37 +522,6 @@ export async function runJobPhase(
       instance.jobId,
       [...new Set([...instance.needs, ...implicit])].filter((d) => d !== instance.jobId),
     );
-  }
-
-  // Single-job debug scope: keep only the requested jobs and everything they
-  // transitively depend on (so deps still run first). Unknown ids are ignored;
-  // an empty closure (every requested id unknown — e.g. ci.yaml changed since
-  // the dropdown was opened) fails the phase loudly instead of passing a no-op.
-  const requestedJobs = opts.jobFilter?.map((j) => j.trim()).filter((j) => j.length > 0) ?? [];
-  if (requestedJobs.length > 0) {
-    const closure = resolveJobClosure(requestedJobs, effectiveNeeds);
-    if (closure.size === 0) {
-      return {
-        status: 'infra_error',
-        stepResults: [],
-        activeSecondsBilled,
-        infraErrorDetail: `none of the requested jobs exist in ci.yaml: ${requestedJobs.join(', ')}`,
-      };
-    }
-    instances = instances.filter((i) => closure.has(i.jobId));
-    // Drop dep edges that point at filtered-out jobs (defensive — the closure
-    // already contains every dep, so this is a no-op in practice, but it keeps
-    // `effectiveNeeds` consistent with the surviving instance set).
-    for (const jobId of [...effectiveNeeds.keys()]) {
-      if (!closure.has(jobId)) {
-        effectiveNeeds.delete(jobId);
-        continue;
-      }
-      effectiveNeeds.set(
-        jobId,
-        (effectiveNeeds.get(jobId) ?? []).filter((d) => closure.has(d)),
-      );
-    }
   }
 
   let stepIndex = 0;

@@ -221,77 +221,14 @@ const StartFinalizeRunRequest = registerComponent(
     .object({
       mode: z.enum(['full', 'checks', 'review']).optional().openapi({
         description:
-          'Which phases to run. `full` (default) = rebase + reviewer + checks; `checks` ("Run Tests") = rebase + CI only; `review` ("Reviewer") = rebase + reviewer only. Folded into the idempotency key so a checks-only and a review-only run can co-exist on one HEAD SHA.',
-      }),
-      jobs: z.array(z.string()).optional().openapi({
-        description:
-          'Single-job "Run Tests" dropdown scope: ci.yaml v2 job ids to run, plus their transitive `needs:` deps. When present the run is forced to `mode: checks`, is a DEBUG run that never flips the "Tested" badge or enables auto-push, and is folded into the idempotency key so it coexists with the full checks run on the same HEAD. Omit for a normal full-suite run.',
+          'Which phases to run. `full` (default — the one Finalize button) = rebase + reviewer + checks. `checks` / `review` are legacy single-phase modes retained for back-compat and automation; the UI only sends `full`. Folded into the idempotency key so historical single-phase rows keep their own keys.',
       }),
     })
     .openapi({
       description:
-        'Optional `mode` selects which phases run; optional `jobs` scopes a "Run Tests" run to specific ci.yaml v2 jobs. The rest of the run is keyed off the card, its linked session, and the resolved HEAD SHA.',
+        'Optional `mode` selects which phases run (defaults to `full`). The rest of the run is keyed off the card, its linked session, and the resolved HEAD SHA.',
     }),
 );
-
-// ─── GET /api/sessions/:sessionId/finalize/ci-jobs ────────────────────
-
-const FinalizeCiJobComponent = registerComponent(
-  'FinalizeCiJob',
-  z
-    .object({
-      id: z.string().openapi({ description: 'ci.yaml v2 job id.' }),
-      needs: z
-        .array(z.string())
-        .openapi({ description: 'Job ids this job depends on (`needs:`).' }),
-      warmup: z
-        .boolean()
-        .openapi({ description: 'True for a warmup/prepare job (implicit prereq of all jobs).' }),
-    })
-    .openapi({ description: 'One selectable ci.yaml v2 job for the Run Tests dropdown.' }),
-);
-
-const FinalizeCiJobsResponse = registerComponent(
-  'FinalizeCiJobsResponse',
-  z
-    .object({
-      version: z.number().int().nullable().openapi({
-        description:
-          'ci.yaml schema version: `2` for GHA-parity jobs, `1` for sequential steps (no selectable jobs), `null` when the config is missing or invalid.',
-      }),
-      jobs: z.array(FinalizeCiJobComponent).openapi({
-        description: 'Selectable jobs — only populated for v2 configs; empty for v1 / null.',
-      }),
-      error: z.string().nullable().openapi({
-        description:
-          'Non-null when the worktree or ci.yaml could not be read/parsed (e.g. `no_worktree`, a parse-error code). The dropdown renders a quiet empty state rather than failing.',
-      }),
-    })
-    .openapi({
-      description: 'ci.yaml jobs for a session worktree, powering the Run Tests dropdown.',
-    }),
-);
-
-registerPath({
-  method: 'get',
-  path: '/api/sessions/{sessionId}/finalize/ci-jobs',
-  tags: ['Finalize'],
-  summary: 'List selectable ci.yaml jobs for a session',
-  description:
-    'Returns the ci.yaml v2 jobs (with their `needs:` deps) for the session worktree so the "Run Tests" split-button dropdown can offer per-job debug runs. v1 configs return an empty `jobs` list. Never 404s on a missing/invalid config — returns `{ version: null, jobs: [], error }`.',
-  request: {
-    params: z.object({
-      sessionId: z.string().openapi({ description: 'sessions.id.' }),
-    }),
-  },
-  responses: {
-    200: {
-      description: 'ci.yaml jobs for the session worktree.',
-      content: jsonContent(FinalizeCiJobsResponse),
-    },
-    404: errorResponse('Session not found, or caller cannot read the session.'),
-  },
-});
 
 const StartFinalizeRunResponse = registerComponent(
   'StartFinalizeRunResponse',
@@ -392,6 +329,9 @@ registerPath({
       description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
+    410: errorResponse(
+      'The request body included a `jobs` filter. Single-job Finalize runs were removed — Finalize always runs the full pipeline. Resend without `jobs`. Error code: `jobs_unsupported`.',
+    ),
   },
 });
 
@@ -438,6 +378,9 @@ registerPath({
       description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
+    410: errorResponse(
+      'The request body included a `jobs` filter. Single-job Finalize runs were removed — Finalize always runs the full pipeline. Resend without `jobs`. Error code: `jobs_unsupported`.',
+    ),
   },
 });
 
@@ -715,6 +658,9 @@ registerPath({
       description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
+    410: errorResponse(
+      'The request body included a `jobs` filter. Single-job Finalize runs were removed — Finalize always runs the full pipeline. Resend without `jobs`. Error code: `jobs_unsupported`.',
+    ),
   },
 });
 
