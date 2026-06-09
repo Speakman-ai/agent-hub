@@ -173,6 +173,7 @@ export default function DashboardView({
         {data && (
           <>
             <HeadlineGrid headline={data.headline} />
+            <ActiveSessionsPanel sessions={data.activeSessions} onOpenSession={onOpenSession} />
             <KanbanBreakdown kanban={data.kanban} />
             <RecentActivity
               items={data.recentActivity}
@@ -219,6 +220,97 @@ function HeadlineGrid({ headline = {} }) {
           </div>
         </div>
       ))}
+    </section>
+  );
+}
+
+/**
+ * Live work feed: the sessions whose agent CLI is currently streaming.
+ * Sourced from `data.activeSessions` (running rows in `active_tasks`,
+ * enriched server-side with the session name + agent label/color). Each
+ * row deep-links into the chat via `onOpenSession(agentId, sessionId)`.
+ *
+ * @param {Array<{sessionId, sessionName, agentId, agentName, agentColor, engine, model, prompt, startedAt}>} [sessions]
+ * @param {(agentId: string, sessionId: string) => void} [onOpenSession]
+ */
+function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  return (
+    <section aria-label="Active sessions" className="mb-8">
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
+          Active sessions
+        </h2>
+        <div className="text-xs text-gray-500">{list.length} running now</div>
+      </div>
+      <div
+        data-testid="active-sessions"
+        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
+      >
+        {list.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">
+            No sessions are running right now.
+          </div>
+        ) : (
+          list.map((s) => {
+            const actionable = Boolean(s.agentId && s.sessionId && onOpenSession);
+            const rowClass = actionable
+              ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
+              : 'px-4 py-3 flex items-center gap-3';
+            const inner = (
+              <>
+                <span
+                  className="relative flex h-2.5 w-2.5 flex-shrink-0"
+                  aria-hidden
+                  title="Running"
+                >
+                  <span
+                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                    style={{ backgroundColor: s.agentColor || '#34D399' }}
+                  />
+                  <span
+                    className="relative inline-flex rounded-full h-2.5 w-2.5"
+                    style={{ backgroundColor: s.agentColor || '#34D399' }}
+                  />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-white truncate">
+                    {s.sessionName || 'Untitled session'}
+                  </div>
+                  <div className="text-[11px] text-gray-500 truncate">
+                    <span style={s.agentColor ? { color: s.agentColor } : undefined}>
+                      {s.agentName || s.agentId}
+                    </span>
+                    {s.engine ? ` · ${s.engine}` : ''}
+                    {s.model ? ` · ${s.model}` : ''}
+                    {s.prompt ? ` · ${s.prompt}` : ''}
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-500 flex-shrink-0">
+                  {s.startedAt ? relativeTime(s.startedAt) : ''}
+                </div>
+              </>
+            );
+            if (actionable) {
+              return (
+                <button
+                  key={s.sessionId}
+                  type="button"
+                  className={rowClass}
+                  onClick={() => onOpenSession(String(s.agentId), String(s.sessionId))}
+                >
+                  {inner}
+                </button>
+              );
+            }
+            return (
+              <div key={s.sessionId} className={rowClass}>
+                {inner}
+              </div>
+            );
+          })
+        )}
+      </div>
     </section>
   );
 }

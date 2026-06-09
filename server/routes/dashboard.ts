@@ -139,12 +139,61 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     // ── Headline counters ──────────────────────────────────────────
     const sessionsTotal =
       (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }).c || 0;
-    const activeSessions =
-      (
-        db.prepare("SELECT COUNT(*) as c FROM active_tasks WHERE status = 'running'").get() as {
-          c: number;
-        }
-      ).c || 0;
+
+    // ── Active sessions (detail + count) ───────────────────────────
+    // The panel wants per-session rows so it can list what each agent is
+    // working on and deep-link into the chat; the headline `activeSessions`
+    // counter is the same set, just counted.
+    //
+    // Org scoping: `getDb()` is the active org's database and the route has
+    // already 409'd any non-active org, so `active_tasks` here only contains
+    // this org's rows — the same hard boundary the kanban/recent-activity
+    // queries rely on. On top of that physical isolation we restrict to the
+    // org's *current* agent roster: `allAgents()` is reloaded per-org from
+    // this org's `projects.json`, so an `agent_id` it contains is by
+    // definition an agent in a project in this org. This walks the
+    // session → agent → project → org relationship explicitly (rather than
+    // leaning solely on the per-org DB handle), and as a bonus drops orphaned
+    // rows for deleted agents instead of surfacing a bare unknown id.
+    const agentsById = new Map(allAgents().map((a) => [a.id, a]));
+    const activeSessionRows = db
+      .prepare(
+        `SELECT t.session_id, t.agent_id, t.engine, t.model, t.prompt, t.started_at,
+                s.name as session_name
+         FROM active_tasks t
+         LEFT JOIN sessions s ON s.id = t.session_id
+         WHERE t.status = 'running'
+         ORDER BY t.started_at ASC`,
+      )
+      .all() as Array<{
+      session_id: string;
+      agent_id: string;
+      engine: string;
+      model: string | null;
+      prompt: string;
+      started_at: string;
+      session_name: string | null;
+    }>;
+
+    const activeSessionsList = activeSessionRows
+      .filter((r) => agentsById.has(r.agent_id))
+      .map((r) => {
+        const agent = agentsById.get(r.agent_id)!;
+        return {
+          sessionId: r.session_id,
+          sessionName: r.session_name || 'Untitled session',
+          agentId: r.agent_id,
+          agentName: agent.name || r.agent_id,
+          agentColor: agent.color ?? null,
+          engine: r.engine,
+          model: r.model,
+          prompt: r.prompt || '',
+          startedAt: r.started_at,
+        };
+      });
+
+    // Count and list are the same scoped set, so they can never disagree.
+    const activeSessions = activeSessionsList.length;
 
     // "Done" is identified by column name (see `isColumnDone` in kanban-blockers).
     // Must not require an exact spelling of "Done" — boards rename the lane to
@@ -347,6 +396,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         byColumn,
         byPriority,
       },
+      activeSessions: activeSessionsList,
       recentActivity,
     });
   });

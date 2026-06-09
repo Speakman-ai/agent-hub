@@ -25,6 +25,19 @@ const SAMPLE = {
     ],
     byPriority: { urgent: 2, high: 4, medium: 8, low: 3 },
   },
+  activeSessions: [
+    {
+      sessionId: 'sess-1',
+      sessionName: 'Refactor stream parser',
+      agentId: 'a1',
+      agentName: 'Hub Backend',
+      agentColor: '#22D3EE',
+      engine: 'claude-code',
+      model: 'claude-sonnet-4',
+      prompt: 'Split the parser into modules',
+      startedAt: new Date(Date.now() - 90_000).toISOString(),
+    },
+  ],
   recentActivity: [
     {
       type: 'card_created',
@@ -334,6 +347,51 @@ describe('DashboardView', () => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
     });
     expect(screen.getByRole('alert')).toHaveTextContent('Org not active.');
+  });
+
+  it('renders the active sessions panel with running session rows', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+    const panel = screen.getByTestId('active-sessions');
+    expect(panel).toHaveTextContent('Hub Backend');
+    expect(panel).toHaveTextContent('claude-code');
+    expect(panel).toHaveTextContent('Split the parser into modules');
+    // Header count reflects the number of running sessions.
+    expect(screen.getByText('1 running now')).toBeInTheDocument();
+  });
+
+  it('opens the session when an active session row is clicked', async () => {
+    const onOpenSession = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenSession={onOpenSession} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Refactor stream parser'));
+    expect(onOpenSession).toHaveBeenCalledWith('a1', 'sess-1');
+  });
+
+  it('shows an empty state when no sessions are running', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...SAMPLE, activeSessions: [] }),
+        }),
+      ),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('active-sessions')).toBeInTheDocument();
+    });
+    expect(screen.getByText('No sessions are running right now.')).toBeInTheDocument();
+    expect(screen.getByText('0 running now')).toBeInTheDocument();
   });
 });
 

@@ -163,6 +163,41 @@ export default function DashboardScreen() {
               ))}
             </View>
 
+            {/* Active sessions */}
+            <SectionHeader
+              title="Active sessions"
+              subtitle={`${(data.activeSessions || []).length} running now`}
+            />
+            <View style={styles.card} testID="active-sessions">
+              {(data.activeSessions || []).length === 0 ? (
+                <Text style={styles.muted}>No sessions are running right now.</Text>
+              ) : (
+                (data.activeSessions || []).map((s) => (
+                  <View key={s.sessionId} style={styles.activityRow}>
+                    <View
+                      style={[
+                        styles.activityDot,
+                        { backgroundColor: s.agentColor || colors.emerald400 },
+                      ]}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.activityTitle} numberOfLines={1}>
+                        {s.sessionName || 'Untitled session'}
+                      </Text>
+                      <Text style={styles.activityMeta} numberOfLines={1}>
+                        {[s.agentName || s.agentId, s.engine, s.model, s.prompt]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                    <Text style={styles.activityTime}>
+                      {s.startedAt ? relativeTime(s.startedAt) : ''}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </View>
+
             {/* Kanban — by column */}
             <SectionHeader
               title="Kanban"

@@ -2630,6 +2630,41 @@ components:
             - totalCards
             - byColumn
             - byPriority
+        activeSessions:
+          type: array
+          items:
+            type: object
+            properties:
+              sessionId:
+                type: string
+              sessionName:
+                type: string
+              agentId:
+                type: string
+              agentName:
+                type: string
+              agentColor:
+                type: string
+                nullable: true
+              engine:
+                type: string
+              model:
+                type: string
+                nullable: true
+              prompt:
+                type: string
+              startedAt:
+                type: string
+            required:
+              - sessionId
+              - sessionName
+              - agentId
+              - agentName
+              - agentColor
+              - engine
+              - model
+              - prompt
+              - startedAt
         recentActivity:
           type: array
           items:
@@ -2667,6 +2702,7 @@ components:
         - isActive
         - headline
         - kanban
+        - activeSessions
         - recentActivity
       description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
     EscalationsErrorResponse:

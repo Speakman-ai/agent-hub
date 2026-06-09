@@ -36,6 +36,17 @@ interface DashboardBody {
     byColumn: Array<{ columnName: string; count: number }>;
     byPriority: { urgent: number; high: number; medium: number; low: number };
   };
+  activeSessions: Array<{
+    sessionId: string;
+    sessionName: string;
+    agentId: string;
+    agentName: string;
+    agentColor: string | null;
+    engine: string;
+    model: string | null;
+    prompt: string;
+    startedAt: string;
+  }>;
   recentActivity: Array<{
     type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
     id: string;
@@ -131,6 +142,123 @@ describe('GET /api/orgs/:id/dashboard', () => {
         expect(entry.meta?.projectId).toBeTruthy();
       }
     }
+  });
+
+  it('lists running active_tasks rows in activeSessions, enriched with agent + session labels', async () => {
+    const project = await createProject({ name: 'Dashboard Active Sessions Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({
+      projectId,
+      name: 'Active Panel Agent',
+      color: '#FF8800',
+    });
+    const agentId = agent.id as string;
+    const session = await createSession({ agentId, name: 'Live Streaming Session' });
+    const sessionId = session.id as string;
+
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+    // Two rows for the same agent: one running (must appear) and one done
+    // (must NOT appear). Direct insert — tests never spawn a real CLI, so
+    // there's no streaming path to create these for us.
+    db.prepare(
+      `INSERT OR REPLACE INTO active_tasks
+         (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, 'running', ?)`,
+    ).run(
+      sessionId,
+      'msg-active-1',
+      agentId,
+      4242,
+      'Implement the active sessions panel',
+      'claude-code',
+      'claude-sonnet-4',
+      '2026-06-09 00:00:00',
+    );
+
+    const doneSession = await createSession({ agentId, name: 'Finished Session' });
+    db.prepare(
+      `INSERT OR REPLACE INTO active_tasks
+         (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, 'done', ?)`,
+    ).run(
+      doneSession.id as string,
+      'msg-done-1',
+      agentId,
+      0,
+      'Already finished',
+      'claude-code',
+      null,
+      '2026-06-09 00:00:01',
+    );
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(Array.isArray(body.activeSessions)).toBe(true);
+    const row = body.activeSessions.find((s) => s.sessionId === sessionId);
+    expect(row).toBeDefined();
+    expect(row!.sessionName).toBe('Live Streaming Session');
+    expect(row!.agentId).toBe(agentId);
+    expect(row!.agentName).toBe('Active Panel Agent');
+    expect(row!.agentColor).toBe('#FF8800');
+    expect(row!.engine).toBe('claude-code');
+    expect(row!.model).toBe('claude-sonnet-4');
+    expect(row!.prompt).toBe('Implement the active sessions panel');
+    expect(row!.startedAt).toBe('2026-06-09 00:00:00');
+
+    // The 'done' row is excluded from the list (only status='running').
+    expect(body.activeSessions.some((s) => s.sessionId === (doneSession.id as string))).toBe(false);
+
+    // The headline count is at least the one running row we inserted, and it
+    // never counts the 'done' row.
+    expect(body.headline.activeSessions).toBeGreaterThanOrEqual(1);
+  });
+
+  it('excludes running tasks whose agent is not in the org roster from activeSessions + count', async () => {
+    // Defense-in-depth: the per-org DB is the hard boundary, but the route
+    // additionally restricts the list/count to the org's current agent
+    // roster (session → agent → project → org). A running row whose agent
+    // belongs to no project in this org must not leak its session name /
+    // prompt, nor inflate the headline count. This is the regression guard
+    // for the cross-org-scoping review.
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+
+    const before = await request.get('/api/orgs/default/dashboard').expect(200);
+    const countBefore = (before.body as DashboardBody).headline.activeSessions;
+
+    // A session row + running task for an agent id that is NOT in any
+    // project (no createAgent call for it).
+    const ghostSessionId = `ghost-session-${Date.now()}`;
+    db.prepare(
+      `INSERT OR REPLACE INTO sessions (id, agent_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+    ).run(ghostSessionId, 'ghost-agent-not-in-org', 'Secret cross-org session');
+    db.prepare(
+      `INSERT OR REPLACE INTO active_tasks
+         (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, 'running', ?)`,
+    ).run(
+      ghostSessionId,
+      'msg-ghost-1',
+      'ghost-agent-not-in-org',
+      9999,
+      'Leaked prompt that must not appear',
+      'claude-code',
+      null,
+      '2026-06-09 00:00:05',
+    );
+
+    const after = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = after.body as DashboardBody;
+
+    // The orphaned row is absent from the list…
+    expect(body.activeSessions.some((s) => s.sessionId === ghostSessionId)).toBe(false);
+    expect(body.activeSessions.some((s) => s.agentId === 'ghost-agent-not-in-org')).toBe(false);
+    // …and never inflates the count (count stays consistent with the list).
+    expect(body.headline.activeSessions).toBe(countBefore);
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
   });
 
   it('surfaces prUrl on dashboard recent activity when a card has a PR link', async () => {

@@ -41,6 +41,18 @@ const KanbanBreakdown = z.object({
   byPriority: KanbanByPriority,
 });
 
+const ActiveSessionEntry = z.object({
+  sessionId: z.string(),
+  sessionName: z.string(),
+  agentId: z.string(),
+  agentName: z.string(),
+  agentColor: z.string().nullable(),
+  engine: z.string(),
+  model: z.string().nullable(),
+  prompt: z.string(),
+  startedAt: z.string(),
+});
+
 const ActivityEntry = z.object({
   type: z.enum(['card_created', 'card_updated', 'session_created', 'escalation', 'pr_created']),
   id: z.string(),
@@ -58,6 +70,7 @@ export const DashboardResponseComponent = registerComponent(
       isActive: z.boolean(),
       headline: HeadlineCounts,
       kanban: KanbanBreakdown,
+      activeSessions: z.array(ActiveSessionEntry),
       recentActivity: z.array(ActivityEntry),
     })
     .openapi({
