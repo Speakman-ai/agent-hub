@@ -9,6 +9,23 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV AGENT_HUB_RUNNER=1
 
+# ── Targeted GitHub ubuntu-24.04 image manifest versions ─────────────────────
+# SINGLE SOURCE OF TRUTH is server/finalize/runner-image-versions.ts; these ARG
+# defaults MUST match it (runner-image-versions.test.ts enforces no drift).
+# Bump cadence: when actions/runner-images updates the ubuntu-24.04 image, update
+# BOTH these ARGs and runner-image-versions.ts to the new manifest values, then
+# rebuild. See the runner-image-versions.ts header for the full procedure.
+#
+# These are applied as a SOFT pin: the build tries the exact version and, if it
+# has aged out of the upstream apt repo, falls back to the latest in the same
+# major channel with a loud warning. Set RUNNER_ENFORCE_VERSION_PINS=1 to make a
+# missing pin fatal instead (reproducible prod builds).
+ARG RUNNER_NODE_VERSION=22.22.3
+ARG RUNNER_DOCKER_VERSION=28.0.4
+ARG RUNNER_COMPOSE_VERSION=2.38.2
+ARG RUNNER_BUILDX_VERSION=0.34.1
+ARG RUNNER_ENFORCE_VERSION_PINS=0
+
 # Run apt's download/verify step as root instead of the unprivileged `_apt` user.
 # On Docker Desktop (Apple Silicon) the privilege-drop breaks file access in apt's
 # gpgv verify path, producing a spurious "At least one invalid signature was
@@ -40,24 +57,68 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker Engine + Compose plugin (inner dockerd for DinD — GHA parity)
-RUN install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-      > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-      docker-ce \
-      docker-ce-cli \
-      containerd.io \
-      docker-buildx-plugin \
-      docker-compose-plugin \
+# Soft-pinned to the targeted manifest versions: try the exact apt version; if it
+# has aged out, fall back to the newest patch WITHIN THE SAME MAJOR line (never
+# across majors — that would defeat the parity guard). If even the recorded major
+# is gone from the repo, the build fails asking you to bump (or set
+# RUNNER_ENFORCE_VERSION_PINS=1 to fail on any drift).
+RUN set -e; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    DOCKER_V="5:${RUNNER_DOCKER_VERSION}-1~ubuntu.24.04~${CODENAME}"; \
+    COMPOSE_V="${RUNNER_COMPOSE_VERSION}-1~ubuntu.24.04~${CODENAME}"; \
+    BUILDX_V="${RUNNER_BUILDX_VERSION}-1~ubuntu.24.04~${CODENAME}"; \
+    if apt-get install -y --no-install-recommends \
+         "docker-ce=${DOCKER_V}" "docker-ce-cli=${DOCKER_V}" containerd.io \
+         "docker-buildx-plugin=${BUILDX_V}" "docker-compose-plugin=${COMPOSE_V}"; then \
+       echo "Pinned docker-ce=${DOCKER_V} compose=${COMPOSE_V} buildx=${BUILDX_V}"; \
+    elif [ "${RUNNER_ENFORCE_VERSION_PINS}" = "1" ]; then \
+       echo "ERROR: pinned Docker versions unavailable and RUNNER_ENFORCE_VERSION_PINS=1" >&2; exit 1; \
+    else \
+       echo "WARN: exact Docker pins unavailable (aged out of repo?); resolving newest patch within the SAME major line. Bump RUNNER_DOCKER_VERSION/RUNNER_COMPOSE_VERSION/RUNNER_BUILDX_VERSION + runner-image-versions.ts." >&2; \
+       pick() { apt-cache madison "$1" | awk '{print $3}' | grep -E "$2" | sort -Vr | head -n1 || true; }; \
+       DOCKER_F="$(pick docker-ce "^5:${RUNNER_DOCKER_VERSION%%.*}\\.")"; \
+       COMPOSE_F="$(pick docker-compose-plugin "^${RUNNER_COMPOSE_VERSION%%.*}\\.")"; \
+       BUILDX_F="$(pick docker-buildx-plugin "^${RUNNER_BUILDX_VERSION%%.*}\\.")"; \
+       if [ -z "$DOCKER_F" ] || [ -z "$COMPOSE_F" ] || [ -z "$BUILDX_F" ]; then \
+         echo "ERROR: no same-major fallback for docker(${RUNNER_DOCKER_VERSION%%.*})/compose(${RUNNER_COMPOSE_VERSION%%.*})/buildx(${RUNNER_BUILDX_VERSION%%.*}) — the recorded major aged out of the repo. Refusing to cross majors silently (would break GitHub parity). Bump the targeted versions in runner-image-versions.ts + the Dockerfile ARGs." >&2; \
+         exit 1; \
+       fi; \
+       echo "WARN: same-major fallback docker-ce=${DOCKER_F} compose=${COMPOSE_F} buildx=${BUILDX_F}" >&2; \
+       apt-get install -y --no-install-recommends \
+         "docker-ce=${DOCKER_F}" "docker-ce-cli=${DOCKER_F}" containerd.io \
+         "docker-buildx-plugin=${BUILDX_F}" "docker-compose-plugin=${COMPOSE_F}"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+# Node.js LTS (via NodeSource). Major line tracks RUNNER_NODE_VERSION; the exact
+# patch is soft-pinned. The fallback installs latest within the same major because
+# NodeSource's setup_${NODE_MAJOR}.x configures ONLY that major's repo — plain
+# `nodejs` can't cross majors here, so no extra major guard is needed.
+RUN NODE_MAJOR="${RUNNER_NODE_VERSION%%.*}" \
+    && curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && NODE_V="${RUNNER_NODE_VERSION}-1nodesource1" \
+    && if apt-get install -y --no-install-recommends "nodejs=${NODE_V}"; then \
+         echo "Pinned nodejs=${NODE_V}"; \
+       elif [ "${RUNNER_ENFORCE_VERSION_PINS}" = "1" ]; then \
+         echo "ERROR: pinned nodejs=${NODE_V} unavailable and RUNNER_ENFORCE_VERSION_PINS=1" >&2; exit 1; \
+       else \
+         echo "WARN: pinned nodejs=${NODE_V} unavailable (aged out of repo?); installing latest ${NODE_MAJOR}.x. Bump RUNNER_NODE_VERSION + runner-image-versions.ts." >&2; \
+         apt-get install -y --no-install-recommends nodejs; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js LTS (via NodeSource)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Record targeted vs installed toolchain versions in the build log (parity audit).
+RUN echo "Runner toolchain (targeted -> installed):" \
+    && echo "  node:    ${RUNNER_NODE_VERSION} -> $(node --version 2>/dev/null || echo '?')" \
+    && echo "  docker:  ${RUNNER_DOCKER_VERSION} -> $(docker --version 2>/dev/null || echo '?')" \
+    && echo "  compose: ${RUNNER_COMPOSE_VERSION} -> $(docker compose version 2>/dev/null || echo '?')" \
+    && echo "  buildx:  ${RUNNER_BUILDX_VERSION} -> $(docker buildx version 2>/dev/null || echo '?')"
 
 # Cypress E2E browser.
 #   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo.

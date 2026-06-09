@@ -354,6 +354,7 @@ Config (env):
 - `server/finalize/job-container.ts` — job-scoped start / exec / stop
 - `server/finalize/runner-exec-args.ts` — shared pure `docker run` / `docker exec` argv builders (parity seam)
 - `server/finalize/runner-resource-profile.ts` — GitHub-parity CPU/memory cap resolution
+- `server/finalize/runner-image-versions.ts` — targeted Node/Docker/Compose/Buildx versions (mirrors the GitHub ubuntu-24.04 manifest; soft-pinned in the Dockerfile, drift-tested). Bump here + the Dockerfile ARGs together when GitHub updates the image.
 - `server/finalize/runner/entrypoint.sh` — starts inner dockerd
 - `server/finalize/runner-docker-mode.ts` — `dind` vs `host-socket`
 
