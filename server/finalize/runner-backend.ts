@@ -14,6 +14,7 @@
  * the scheduler, and all DB/broadcast persistence unchanged.
  */
 import type { SpawnStepFn } from './step-runner.js';
+import type { RepoVisibility } from './runner-resource-profile.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { LocalDirBundleStore, type BundleStore } from './worktree-bundle.js';
@@ -38,6 +39,13 @@ export interface JobClaimSpec {
   /** Merged job env (top + job + matrix + builtins + project secrets). */
   env: NodeJS.ProcessEnv;
   labels: Record<string, string>;
+  /**
+   * The gated repo's GitHub visibility, detected Hub-side from the worktree's
+   * origin remote. Selects the GitHub-parity resource tier when no explicit
+   * FINALIZE_RUNNER_RESOURCE_PROFILE override is in force. Omitted/`'unknown'`
+   * keeps the stricter default tier.
+   */
+  visibility?: RepoVisibility;
 }
 
 /** One job's runner, leased for the duration of its steps. */

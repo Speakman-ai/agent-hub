@@ -14,6 +14,7 @@ import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
 import { enqueueRunnerJob, reportRunnerJob } from './runner-queue.js';
 import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
+import type { RepoVisibility } from './runner-resource-profile.js';
 import type { SpawnStepArgs } from './step-runner.js';
 import {
   createWorktreeBundle,
@@ -45,6 +46,12 @@ export interface RunnerJobWireSpec {
   image: string;
   composeProjectName: string;
   env: Record<string, string>;
+  /**
+   * The gated repo's GitHub visibility, detected Hub-side. Carried over the wire
+   * so the fleet runner-agent caps the container to the same GitHub-parity tier
+   * the Hub would (parity seam). Omitted/`'unknown'` keeps the stricter default.
+   */
+  visibility?: RepoVisibility;
   /** Worktree bundle ref (git bundle in the shared store) the agent fetches. */
   worktreeRef?: WorktreeRef | null;
 }
@@ -96,6 +103,7 @@ export function createRemoteRunnerBackend(opts?: {
         image: spec.image,
         composeProjectName: spec.composeProjectName,
         env: toEnvRecord(spec.env),
+        visibility: spec.visibility,
         worktreeRef,
       };
       const queueJobId = enqueueRunnerJob({

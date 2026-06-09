@@ -159,6 +159,7 @@ export function realDockerOps(): AgentDocker {
         composeProjectName: spec.composeProjectName,
         env: spec.env,
         labels: JOB_LABELS(spec),
+        visibility: spec.visibility,
       });
       return containerName;
     },

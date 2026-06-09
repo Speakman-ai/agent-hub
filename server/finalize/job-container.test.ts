@@ -62,6 +62,33 @@ describe('buildStartJobContainerArgv', () => {
     expect(argv[argv.indexOf('--memory-swap') + 1]).toBe(String(8 * GiB));
   });
 
+  it('derives the GitHub-parity tier from repo visibility when no env override is set', () => {
+    const GiB = 1024 * 1024 * 1024;
+    const argv = buildStartJobContainerArgv({
+      containerName: 'finalize-run1-e2e-core',
+      image: 'agent-hub/finalize-runner:ubuntu-24.04',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'finalize-run1-e2e-core',
+      resourceEnv: {}, // no explicit FINALIZE_RUNNER_RESOURCE_PROFILE
+      visibility: 'public',
+    });
+    // public repo -> ubuntu-public (4 vCPU / 16 GB), exact GitHub parity.
+    expect(argv[argv.indexOf('--cpus') + 1]).toBe('4');
+    expect(argv[argv.indexOf('--memory') + 1]).toBe(String(16 * GiB));
+  });
+
+  it('lets an explicit env profile win over repo visibility', () => {
+    const argv = buildStartJobContainerArgv({
+      containerName: 'finalize-run1-e2e-core',
+      image: 'agent-hub/finalize-runner:ubuntu-24.04',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'finalize-run1-e2e-core',
+      resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'ubuntu-private' },
+      visibility: 'public', // would derive ubuntu-public, but env wins
+    });
+    expect(argv[argv.indexOf('--cpus') + 1]).toBe('2');
+  });
+
   it('omits resource flags when the unconstrained escape hatch is set', () => {
     const argv = buildStartJobContainerArgv({
       containerName: 'finalize-run1-e2e-core',

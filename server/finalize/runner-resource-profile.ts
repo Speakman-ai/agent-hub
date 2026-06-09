@@ -27,6 +27,13 @@ export type RunnerResourceProfileName =
   | 'ubuntu-slim'
   | 'unconstrained';
 
+/**
+ * The gated repo's GitHub visibility, detected from its `origin` remote (see
+ * runner-repo-visibility.ts). `'unknown'` means detection failed, the remote is
+ * not GitHub, or no token was available — we then keep the stricter default.
+ */
+export type RepoVisibility = 'public' | 'private' | 'unknown';
+
 export interface RunnerResourceProfile {
   name: RunnerResourceProfileName;
   /** CPU quota in cores (maps to `docker run --cpus`). null = uncapped. */
@@ -69,14 +76,46 @@ export const RUNNER_RESOURCE_PROFILES: Record<RunnerResourceProfileName, RunnerR
  * any gated *private* repo would run on a beefier-than-GitHub runner and could
  * reproduce the exact Finalize-green / GitHub-red class this module prevents.
  *
- * A future refinement could derive the default from the repo's actual GitHub
- * visibility; until then, stricter-by-default is the correctness-preserving
- * choice. Override per-deploy with FINALIZE_RUNNER_RESOURCE_PROFILE.
+ * When the gated repo's GitHub visibility is known (passed to
+ * `resolveRunnerResourceProfile`), we derive the matching tier instead of this
+ * blanket default — a public repo then gets exact GitHub parity (4 vCPU / 16 GB)
+ * automatically, without an operator setting FINALIZE_RUNNER_RESOURCE_PROFILE.
+ * This default still applies when visibility is unknown (detection failed /
+ * non-GitHub remote). Override per-deploy with FINALIZE_RUNNER_RESOURCE_PROFILE.
  */
 export const DEFAULT_RESOURCE_PROFILE_NAME: RunnerResourceProfileName = 'ubuntu-private';
 
 function isProfileName(value: string): value is RunnerResourceProfileName {
   return value in RUNNER_RESOURCE_PROFILES;
+}
+
+/**
+ * Map a detected repo visibility to the GitHub-parity profile name:
+ *   - public  -> ubuntu-public  (4 vCPU / 16 GB, exact GitHub parity)
+ *   - private -> ubuntu-private (2 vCPU /  8 GB, exact GitHub parity)
+ *   - unknown -> the stricter default (ubuntu-private)
+ *
+ * Note the safe direction: an unknown visibility never picks the beefier tier,
+ * so a detection miss can only run the gate at-or-slower-than GitHub, never
+ * faster (which would re-open the false-green hole).
+ */
+export function profileNameForVisibility(
+  visibility: RepoVisibility | undefined,
+): RunnerResourceProfileName {
+  if (visibility === 'public') return 'ubuntu-public';
+  if (visibility === 'private') return 'ubuntu-private';
+  return DEFAULT_RESOURCE_PROFILE_NAME;
+}
+
+/**
+ * True iff the operator pinned a VALID named profile via env. Callers use this
+ * to skip the (impure) visibility probe entirely when an explicit override is
+ * already in force — the override wins either way, so the gh call would be
+ * wasted. A typo (invalid name) is NOT an explicit override.
+ */
+export function hasExplicitResourceProfile(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.FINALIZE_RUNNER_RESOURCE_PROFILE?.trim().toLowerCase();
+  return !!raw && isProfileName(raw);
 }
 
 /** Parse a positive number from an env string, or null if absent/invalid. */
@@ -116,27 +155,41 @@ export function parseMemoryToBytes(raw: string | undefined): number | null {
   return Math.round(value * mult[unit]);
 }
 
+export interface ResolveResourceProfileOpts {
+  /**
+   * The gated repo's GitHub visibility. When no explicit (valid)
+   * FINALIZE_RUNNER_RESOURCE_PROFILE is set, a known visibility selects the
+   * matching GitHub-parity tier (public -> ubuntu-public, private ->
+   * ubuntu-private). An explicit valid env profile always wins over this.
+   */
+  visibility?: RepoVisibility;
+}
+
 /**
- * Resolve the effective resource profile from env.
+ * Resolve the effective resource profile from env (+ optional repo visibility).
  *
- * Precedence:
- *   1. Granular overrides FINALIZE_RUNNER_CPUS / FINALIZE_RUNNER_MEMORY layer on
- *      top of the base profile (either may be set independently).
- *   2. FINALIZE_RUNNER_RESOURCE_PROFILE selects a named base profile.
+ * Base-profile precedence:
+ *   1. An explicit, VALID FINALIZE_RUNNER_RESOURCE_PROFILE (operator override)
+ *      always wins.
+ *   2. Otherwise the gated repo's GitHub visibility, when known, selects the
+ *      matching tier (public -> ubuntu-public, private -> ubuntu-private) so a
+ *      public repo gets exact GitHub parity without manual config.
  *   3. Otherwise the default (ubuntu-private — the stricter tier; see
- *      DEFAULT_RESOURCE_PROFILE_NAME).
+ *      DEFAULT_RESOURCE_PROFILE_NAME). This also covers an unknown/typo'd env
+ *      name and an unknown visibility — a typo or a detection miss must never
+ *      silently remove the cap and re-open the faster-than-GitHub hole.
  *
- * An unknown profile name falls back to the default (a typo must not silently
- * remove the cap and re-open the faster-than-GitHub hole).
+ * Granular overrides FINALIZE_RUNNER_CPUS / FINALIZE_RUNNER_MEMORY then layer on
+ * top of whichever base profile was chosen (either may be set independently).
  */
 export function resolveRunnerResourceProfile(
   env: NodeJS.ProcessEnv = process.env,
+  opts: ResolveResourceProfileOpts = {},
 ): RunnerResourceProfile {
   const rawName = env.FINALIZE_RUNNER_RESOURCE_PROFILE?.trim().toLowerCase();
-  const base =
-    rawName && isProfileName(rawName)
-      ? RUNNER_RESOURCE_PROFILES[rawName]
-      : RUNNER_RESOURCE_PROFILES[DEFAULT_RESOURCE_PROFILE_NAME];
+  const baseName =
+    rawName && isProfileName(rawName) ? rawName : profileNameForVisibility(opts.visibility);
+  const base = RUNNER_RESOURCE_PROFILES[baseName];
 
   const cpuOverride = parsePositive(env.FINALIZE_RUNNER_CPUS);
   const memOverride = parseMemoryToBytes(env.FINALIZE_RUNNER_MEMORY);
@@ -171,7 +224,10 @@ export function buildRunnerResourceArgs(profile: RunnerResourceProfile): string[
   return args;
 }
 
-/** Convenience: resolve from env and build argv in one call. */
-export function resolveRunnerResourceArgs(env: NodeJS.ProcessEnv = process.env): string[] {
-  return buildRunnerResourceArgs(resolveRunnerResourceProfile(env));
+/** Convenience: resolve from env (+ optional visibility) and build argv in one call. */
+export function resolveRunnerResourceArgs(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: ResolveResourceProfileOpts = {},
+): string[] {
+  return buildRunnerResourceArgs(resolveRunnerResourceProfile(env, opts));
 }

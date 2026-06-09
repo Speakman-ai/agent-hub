@@ -26,6 +26,7 @@ export function createLocalRunnerBackend(): RunnerBackend {
         composeProjectName: spec.composeProjectName,
         env: spec.env,
         labels: spec.labels,
+        visibility: spec.visibility,
       });
       return {
         spawnStep: createJobScopedSpawnStep({ containerName, baseEnv: spec.env }),

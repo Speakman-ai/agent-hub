@@ -14,6 +14,8 @@ import {
 } from './ci-config-v2.js';
 import { createContainerSpawnStep } from './container-runner.js';
 import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
+import { detectRepoVisibility } from './runner-repo-visibility.js';
+import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
 import { isDindRunnerMode } from './runner-docker-mode.js';
 import { isContainerRunsOn, resolveRunsOnImage } from './runner-images.js';
 import {
@@ -368,6 +370,16 @@ async function runJobInstance(
 
     if (isDindRunnerMode()) {
       const backend = deps.runnerBackend ?? resolveRunnerBackend();
+      // Pick the GitHub-parity resource tier from the gated repo's visibility
+      // (public -> ubuntu-public, private -> ubuntu-private) so public repos get
+      // exact parity without manual config. Skip the probe entirely when an
+      // operator already pinned a valid profile — the override wins regardless,
+      // so the gh call would be wasted. Detection failures resolve to 'unknown',
+      // which keeps the stricter default tier (the safe direction).
+      let visibility: RepoVisibility | undefined;
+      if (!hasExplicitResourceProfile()) {
+        visibility = await detectRepoVisibility({ worktreePath, env: process.env });
+      }
       try {
         lease = await backend.acquire({
           orgId: opts.orgId ?? '',
@@ -380,6 +392,7 @@ async function runJobInstance(
           composeProjectName,
           env: mergedEnv,
           labels: jobLabels,
+          visibility,
         });
       } catch (err) {
         const endedAt = now();

@@ -14,7 +14,7 @@
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 import { resolveHostMountPath } from './container-runner.js';
-import { resolveRunnerResourceArgs } from './runner-resource-profile.js';
+import { resolveRunnerResourceArgs, type RepoVisibility } from './runner-resource-profile.js';
 
 const STEP_SHELL_ARGV = FINALIZE_STEP_SHELL.split(/\s+/u);
 export const RUNNER_USER = 'runner';
@@ -99,6 +99,13 @@ export interface JobContainerOptions {
    * fixed env to assert the resulting `--cpus` / `--memory` flags.
    */
   resourceEnv?: NodeJS.ProcessEnv;
+  /**
+   * The gated repo's GitHub visibility (detected Hub-side from the worktree's
+   * origin). Selects the GitHub-parity tier when no explicit
+   * FINALIZE_RUNNER_RESOURCE_PROFILE override is set: public -> ubuntu-public,
+   * private -> ubuntu-private. Omitted/`'unknown'` keeps the stricter default.
+   */
+  visibility?: RepoVisibility;
 }
 
 export interface ExecJobStepOptions {
@@ -133,7 +140,10 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
 
   // GitHub-parity CPU/memory caps: the gate runner must never be faster/beefier
   // than the GitHub-hosted runner it stands in for (see runner-resource-profile.ts).
-  args.push(...resolveRunnerResourceArgs(opts.resourceEnv ?? process.env));
+  // The repo's visibility picks the matching tier when no explicit override is set.
+  args.push(
+    ...resolveRunnerResourceArgs(opts.resourceEnv ?? process.env, { visibility: opts.visibility }),
+  );
 
   for (const [key, value] of Object.entries(opts.labels ?? {})) {
     args.push('--label', `${key}=${value}`);

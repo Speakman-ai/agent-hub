@@ -336,11 +336,11 @@ A correctness gate must **not** be faster or beefier than the GitHub-hosted runn
 
 GitHub-hosted standard Ubuntu runner specs (verified June 2026, [docs](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)): public repos 4 vCPU / 16 GB; private repos 2 vCPU / 8 GB; `ubuntu-slim` 1 vCPU / 5 GB.
 
-The **default is the stricter `ubuntu-private` tier (2 vCPU / 8 GB)**, chosen so the gate is never faster than GitHub without having to know each repo's visibility: a private repo gets exact parity, and a public repo runs *slower* than GitHub (the safe direction — a slower runner can't launder a timing failure into a false-green; at worst a conservative false-red, fixed by opting up to `ubuntu-public`). Defaulting to `ubuntu-public` would instead let any gated private repo run beefier than GitHub and re-open the false-green hole.
+The runner auto-derives the tier from the **gated repo's GitHub visibility** (detected Hub-side from the worktree's `origin` remote via `gh api repos/{owner}/{repo} --jq .visibility`, cached per slug in `server/finalize/runner-repo-visibility.ts`): a **public** repo gets `ubuntu-public` (4 vCPU / 16 GB) for exact parity, a **private**/**internal** repo gets `ubuntu-private` (2 vCPU / 8 GB). When visibility can't be resolved (no GitHub remote, no token, gh missing, network/timeout) it falls back to the **stricter `ubuntu-private` default** — the safe direction, since a detection miss can only run the gate at-or-slower-than GitHub, never faster. An explicit `FINALIZE_RUNNER_RESOURCE_PROFILE` always wins over the derived tier. The visibility flows through `JobClaimSpec` → both the local and remote (wire-spec) runner backends, so the fleet runner-agent caps identically.
 
 Config (env):
 
-- `FINALIZE_RUNNER_RESOURCE_PROFILE` — `ubuntu-private` (default), `ubuntu-public`, `ubuntu-slim`, or `unconstrained`. Unknown names fall back to the default (a typo must not silently uncap the gate). Set `ubuntu-public` for public-repo deploys that want exact GitHub parity.
+- `FINALIZE_RUNNER_RESOURCE_PROFILE` — explicit override that wins over visibility detection: `ubuntu-public`, `ubuntu-private`, `ubuntu-slim`, or `unconstrained`. When unset, the tier is auto-derived from repo visibility (default `ubuntu-private` when unknown). Unknown names fall back to the visibility-derived tier (else the stricter default) — a typo never silently uncaps the gate.
 - `FINALIZE_RUNNER_CPUS` — override CPU cores (layers on the base profile).
 - `FINALIZE_RUNNER_MEMORY` — override RAM, bytes or docker suffix (`16g`, `512m`, …).
 
