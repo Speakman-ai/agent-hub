@@ -1,0 +1,38 @@
+# Workflow-translation mirror manifest — consumed by `npm run check:workflow-drift`
+# (server/finalize/workflow-drift.ts). Maps the jobs in .agent-hub/ci.yaml to the
+# GitHub Actions jobs they stand in for, so the drift check can flag silent
+# divergence without false-positiving on the deliberate "GitHub gate =
+# build+typecheck, Finalize = full suite" split.
+#
+# This lives in a SIDECAR, NOT inside ci.yaml: the ci.yaml parser fails closed on
+# unknown keys and the Finalize orchestrator parses ci.yaml in-process with the
+# deployed server build, so adding drift metadata to ci.yaml would make the
+# execution config unparseable on any Hub that hasn't shipped the schema change.
+
+# GitHub workflow files in scope for drift.
+workflows:
+  - ci.yml
+  - main-checks.yml
+
+# In-scope GitHub jobs intentionally NOT mirrored by Finalize.
+ignore:
+  # ci.yml `ci` is the aggregator status check — runs no real work, just asserts
+  # the build job succeeded. Nothing to mirror.
+  - ci.yml:ci
+  # main-checks.yml jobs that are not code gates Finalize stands in for:
+  - main-checks.yml:terraform # infra fmt/init/validate
+  - main-checks.yml:skill-coupling # push-range changed-file coupling check
+
+# ci.yaml job id → mirror ref. A ref is a GitHub `<file>:<jobId>` (optionally
+# `<file>:<jobId> (loose)` to assert existence without comparing commands) or
+# the literal `finalize-only` (no GitHub counterpart).
+jobs:
+  build: ci.yml:build
+  # No GitHub counterpart: the PR gate runs build+typecheck only, the full test
+  # suite is Finalize-exclusive. This is the intentional divergence.
+  test: finalize-only
+  # Loose: assert the GHA lint job still exists, but don't compare commands.
+  # main-checks.yml `lint` also runs `npm run format:check`, which Finalize
+  # deliberately omits (format drift is a soft, post-merge signal, not a
+  # code-correctness gate). Drop `(loose)` to make that gap a warning.
+  lint: main-checks.yml:lint (loose)
