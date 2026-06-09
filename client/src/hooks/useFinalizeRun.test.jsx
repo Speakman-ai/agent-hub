@@ -458,6 +458,130 @@ describe('useFinalizeRun — active_seconds + paused/terminal classification', (
   });
 });
 
+describe('useFinalizeRun — re-trigger reuses the panel (no stale rows / timer carry-over)', () => {
+  it('replaces (not merges) step rows when a fresh run is created for the same session', async () => {
+    // A finished, failed run with two terminal step rows.
+    const oldStart = Date.now() - 600_000; // 10m ago
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({
+        id: 'run-A',
+        status: 'failed',
+        phase: 'tasks',
+        started_at: oldStart,
+        ended_at: oldStart + 360_000,
+      }),
+      steps: [
+        {
+          step_index: 1,
+          name: 'backend',
+          state: 'passed',
+          exit_code: 0,
+          started_at: oldStart,
+          ended_at: oldStart + 120_000,
+        },
+        {
+          step_index: 2,
+          name: 'e2e',
+          state: 'failed',
+          exit_code: 1,
+          started_at: oldStart + 120_000,
+          ended_at: oldStart + 360_000,
+        },
+      ],
+    });
+    const ref = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.run?.id).toBe('run-A'));
+    expect(ref.current.steps.map((s) => [s.index, s.state])).toEqual([
+      [1, 'passed'],
+      [2, 'failed'],
+    ]);
+
+    // User re-clicks Finalize → server opens a fresh attempt (run-B) with a
+    // new started_at and queued steps. The panel must reset to the fresh
+    // run instead of showing the prior run's passed/failed rows.
+    const freshStart = Date.now();
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({
+        id: 'run-B',
+        status: 'running',
+        phase: 'tasks',
+        started_at: freshStart,
+        ended_at: null,
+      }),
+      steps: [
+        { step_index: 1, name: 'backend', state: 'queued', started_at: null, ended_at: null },
+        { step_index: 2, name: 'e2e', state: 'queued', started_at: null, ended_at: null },
+      ],
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_created', {
+          detail: { run_id: 'run-B', session_id: 's1' },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(ref.current?.run?.id).toBe('run-B'));
+    // Rows reflect the FRESH run — no stale passed/failed carried over.
+    expect(ref.current.steps.map((s) => [s.index, s.state])).toEqual([
+      [1, 'queued'],
+      [2, 'queued'],
+    ]);
+    // No stale per-row durations leaking from the prior run.
+    expect(ref.current.steps.every((s) => s.startedAt == null && s.endedAt == null)).toBe(true);
+    // Wall clock keys off the fresh run's started_at, not the old run's —
+    // the timer resets instead of compounding across attempts.
+    expect(ref.current.wallSeconds).toBeLessThan(60);
+  });
+
+  it('clears prior rows even when the fresh run reports no steps yet', async () => {
+    const oldStart = Date.now() - 300_000;
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({
+        id: 'run-A',
+        status: 'failed',
+        started_at: oldStart,
+        ended_at: oldStart + 1000,
+      }),
+      steps: [
+        {
+          step_index: 1,
+          name: 'lint',
+          state: 'failed',
+          exit_code: 1,
+          started_at: oldStart,
+          ended_at: oldStart + 1000,
+        },
+      ],
+    });
+    const ref = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.steps?.length).toBe(1));
+
+    api.getLatestFinalizeRunForSession.mockResolvedValueOnce({
+      run: fakeRun({
+        id: 'run-B',
+        status: 'queued',
+        phase: null,
+        started_at: Date.now(),
+        ended_at: null,
+      }),
+      // No steps array — the run row exists before any step has been reported.
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_created', {
+          detail: { run_id: 'run-B', session_id: 's1' },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(ref.current?.run?.id).toBe('run-B'));
+    expect(ref.current.steps).toEqual([]);
+  });
+});
+
 describe('useFinalizeRun — created and completed events', () => {
   it('refetches on finalize_run_created when session matches', async () => {
     api.getLatestFinalizeRunForSession.mockResolvedValueOnce({ run: null });

@@ -174,13 +174,28 @@ export function useFinalizeRun({
         .getLatestFinalizeRunForSession(sessionId, { signal })
         .then((data) => {
           if (signal?.aborted) return null;
-          setRun(data?.run ?? null);
-          if (Array.isArray(data?.steps)) {
+          const nextRun = data?.run ?? null;
+          const nextRunId = nextRun?.id ?? null;
+          // A re-trigger opens a *fresh* run for the same session (the panel
+          // is reused, the run is not). When the fetched run id differs from
+          // the one we were watching, the prior run's step rows must be
+          // dropped wholesale — merging would keep the old run's terminal
+          // passed/failed rows (their `endedAt` outranks the fresh run's
+          // null), so the panel would show stale results and stale per-row
+          // durations until each live step event overwrote them one by one.
+          const runSwitched = Boolean(nextRunId) && nextRunId !== runIdRef.current;
+          setRun(nextRun);
+          // Keep the watched-run ref in lockstep so a step event that races
+          // this fetch doesn't mistake the same run for another switch.
+          if (nextRunId) runIdRef.current = nextRunId;
+          if (runSwitched) {
+            setStepsByIndex(stepsFromApiRows(data?.steps));
+          } else if (Array.isArray(data?.steps)) {
             setStepsByIndex((prev) => mergeStepsMaps(prev, stepsFromApiRows(data.steps)));
           }
           setPhases(data?.phases ?? null);
           setLoadError(null);
-          return data?.run ?? null;
+          return nextRun;
         })
         .catch((e) => {
           if (isAbortError(e) || signal?.aborted) return null;
