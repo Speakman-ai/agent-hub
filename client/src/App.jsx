@@ -113,6 +113,13 @@ import {
 import { getApiBase, getAuthHeaders, reloadForOrgSwitch } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 import {
+  applyDiffCountWsEffect,
+  createDiffFileCountRefresher,
+  fileCountFromChangesSummary,
+  isWorktreeSession,
+  setSessionFileCount,
+} from './utils/diffFileCount.js';
+import {
   applyAwaitingInputEvent,
   applyAwaitingInputSnapshot,
   clearAwaitingInputForSession,
@@ -757,6 +764,70 @@ export default function App() {
     enabled: projectDataReady,
   });
 
+  /**
+   * Order-safe refresher for the "Changes" toolbar badge. Refetches the
+   * changed-file count for a session and updates the badge independently of
+   * the diff pane being open, so the count stays live as the agent edits
+   * files — driven by `code_changed` (first dirty), turn-`done` (final
+   * tally), and session activation — instead of only appearing after a click.
+   *
+   * Built once via a ref so its per-session sequence guard (which discards
+   * out-of-order/stale responses so the badge can't regress) survives
+   * rerenders. It only touches module-level connection helpers and a state
+   * setter, so it is safe to call from the WS handler closure without
+   * staleness.
+   */
+  const diffFileCountRefresherRef = useRef(null);
+  if (!diffFileCountRefresherRef.current) {
+    diffFileCountRefresherRef.current = createDiffFileCountRefresher({
+      fetchCount: async (sessionId) => {
+        const res = await fetch(`${getApiBase()}/sessions/${sessionId}/changes`, {
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) return null;
+        const body = await res.json();
+        return fileCountFromChangesSummary(body);
+      },
+      applyCount: (sessionId, count) =>
+        setDiffFileCountBySession((prev) => setSessionFileCount(prev, sessionId, count)),
+    });
+  }
+  const refreshDiffFileCount = useCallback(
+    (sessionId) => diffFileCountRefresherRef.current(sessionId),
+    [],
+  );
+
+  /** Bump a session's diff-pane reload token so an open Changes pane refetches. */
+  const bumpDiffReloadToken = useCallback((sessionId) => {
+    if (!sessionId) return;
+    setCodeChangedTickBySession((prev) => ({ ...prev, [sessionId]: (prev[sessionId] || 0) + 1 }));
+  }, []);
+
+  /**
+   * On session activation (switch or page reload), seed the Changes badge for
+   * worktree sessions that may already have committed/uncommitted changes, so
+   * the count shows without first opening the diff pane. `lastCountedSessionRef`
+   * keeps this to one fetch per activation even though the effect re-runs as
+   * the `sessions` array mutates during streaming. The re-run also covers the
+   * race where `activeSessionId` resolves before `sessions` has loaded.
+   *
+   * The "already counted" mark is only set once we actually seed a count
+   * (i.e. after the worktree check passes). If the activated session is still
+   * a placeholder/stale row without worktree fields, we leave it unmarked so a
+   * later `sessions` update that fills in `use_worktree` / `worktree_branch`
+   * re-runs this effect and seeds the badge then.
+   */
+  const lastCountedSessionRef = useRef(null);
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (lastCountedSessionRef.current === activeSessionId) return;
+    const session = sessions.find((s) => s.id === activeSessionId);
+    if (!session) return; // sessions not loaded yet — effect re-runs when they are
+    if (!isWorktreeSession(session)) return; // not countable yet — re-check on later updates
+    lastCountedSessionRef.current = activeSessionId;
+    refreshDiffFileCount(activeSessionId);
+  }, [activeSessionId, sessions, refreshDiffFileCount]);
+
   // WebSocket handler
   const handleWsMessage = useCallback(
     (data) => {
@@ -1114,6 +1185,15 @@ export default function App() {
             ]);
             notify({ title, body, type: 'success' });
           }
+          // Re-tally the Changes badge at turn end (and refresh an open diff
+          // pane) so it reflects every file touched during the turn — the
+          // `code_changed` event only fires on the FIRST dirty transition.
+          // Gated to worktree sessions inside applyDiffCountWsEffect.
+          applyDiffCountWsEffect(data, {
+            sessions: sessionsRef.current,
+            refresh: refreshDiffFileCount,
+            bumpReloadToken: bumpDiffReloadToken,
+          });
           break;
         case 'changes_ready': {
           const alreadyPrompted = !!changesReadyRef.current[data.sessionId];
@@ -2098,8 +2178,14 @@ export default function App() {
         case 'code_changed': {
           const sid = data.sessionId;
           if (!sid || !sessionsRef.current.some((s) => s.id === sid)) break;
-          // Bump the per-session reload token so an open Changes pane refetches.
-          setCodeChangedTickBySession((prev) => ({ ...prev, [sid]: (prev[sid] || 0) + 1 }));
+          // Bump the open-pane reload token AND refresh the closed-pane badge
+          // count so it appears live (no click required) the moment files
+          // change on the first dirty transition.
+          applyDiffCountWsEffect(data, {
+            sessions: sessionsRef.current,
+            refresh: refreshDiffFileCount,
+            bumpReloadToken: bumpDiffReloadToken,
+          });
           const previewKind = previewEventBySessionRef.current[sid]?.kind;
           if (previewKind !== 'preview' && sid === activeSessionIdRef.current) {
             setPreviewPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
@@ -2231,7 +2317,7 @@ export default function App() {
         }
       }
     },
-    [notify, refreshAgents, showToast, pinChatTail],
+    [notify, refreshAgents, showToast, pinChatTail, refreshDiffFileCount, bumpDiffReloadToken],
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
@@ -4674,13 +4760,13 @@ export default function App() {
                             }))
                           }
                           onSummary={(s) =>
-                            setDiffFileCountBySession((prev) => {
-                              const next = Array.isArray(s?.files) ? s.files.length : 0;
-                              // Return the same reference when unchanged so React
-                              // bails out instead of rerendering on every refetch.
-                              if (prev[activeSessionId] === next) return prev;
-                              return { ...prev, [activeSessionId]: next };
-                            })
+                            setDiffFileCountBySession((prev) =>
+                              setSessionFileCount(
+                                prev,
+                                activeSessionId,
+                                fileCountFromChangesSummary(s),
+                              ),
+                            )
                           }
                         />
                       </Suspense>
