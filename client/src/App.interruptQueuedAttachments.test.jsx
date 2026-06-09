@@ -262,9 +262,10 @@ describe('App — interrupt queued message with persisted attachments', () => {
   // *other* agent's name as a `text-gray-500` label whenever the streaming
   // agent differed from the active agent) was retired from the web client —
   // it kept mistriggering. Web now always streams through <SessionTail/>, whose
-  // header is the generic "Assistant" identity. This guards that a cross-agent
-  // reviewer stream never resurrects a grey "Reviewer" streaming label, while
-  // the active-tasks-snapshot swap into the primary agent's output still works.
+  // header is labeled with the ACTIVE session's agent (never a cross-agent
+  // streamer). This guards that a cross-agent reviewer stream never resurrects a
+  // grey "Reviewer" streaming label, while the active-tasks-snapshot swap into
+  // the primary agent's output still works.
   it('never renders a grey cross-agent streaming label (retired bubble)', async () => {
     localStorage.setItem('activeAgentId', 'agent-1');
 
@@ -296,8 +297,15 @@ describe('App — interrupt queued message with persisted attachments', () => {
         engine: 'claude-code',
       });
     });
-    // No grey "Reviewer" streaming label — the bubble is gone.
+    // No grey "Reviewer" streaming label — the bubble is gone. The live tail is
+    // labeled with the active session's agent ("A1"), never the cross-agent
+    // streamer ("Reviewer").
     await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(0));
+    expect(
+      screen
+        .queryAllByText('A1')
+        .filter((el) => String(el.className || '').includes('text-gray-500')),
+    ).toHaveLength(1);
 
     // The active-tasks snapshot swaps in the primary agent's stream.
     await act(async () => {

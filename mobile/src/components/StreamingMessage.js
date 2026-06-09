@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
+import { resolveAgentDisplayName } from '../utils/agentDisplayName.js';
 
 const ENGINE_BADGES = {
   'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
@@ -51,7 +52,7 @@ const markdownStyles = {
   em: { color: colors.gray300, fontStyle: 'italic' },
 };
 
-function StreamingMessage({ content, agentColor, engine, onInterrupt }) {
+function StreamingMessage({ content, agentColor, agentName, engine, onInterrupt }) {
   const engineBadge = engine ? ENGINE_BADGES[engine] : null;
 
   return (
@@ -59,7 +60,7 @@ function StreamingMessage({ content, agentColor, engine, onInterrupt }) {
       <View style={styles.bubble}>
         <View style={styles.header}>
           <View style={[styles.headerDot, { backgroundColor: agentColor }]} />
-          <Text style={styles.headerLabel}>Assistant</Text>
+          <Text style={styles.headerLabel}>{resolveAgentDisplayName(null, agentName)}</Text>
           {engineBadge && (
             <View style={styles.engineBadgeRow}>
               <View style={[styles.engineDot, { backgroundColor: engineBadge.color }]} />

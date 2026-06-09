@@ -4444,6 +4444,7 @@ export default function App() {
                                       message={msg}
                                       events={eventsByMessage[msg.id]}
                                       agentColor={msg.agent_color || chatAccentColor}
+                                      agentName={activeAgent?.name}
                                       onEventsLoaded={handleEventsLoaded}
                                       onAskSubmit={handleAskSubmit}
                                       askSubmittedIds={askSubmitted}
@@ -4505,6 +4506,10 @@ export default function App() {
                                     }}
                                     events={eventsByMessage[streamingMsgId]}
                                     agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                    // Label the live tail with the active session's agent, not a
+                                    // cross-agent streamer (e.g. a Reviewer streaming in): the
+                                    // retired grey cross-agent bubble must not resurrect its label.
+                                    agentName={activeAgent?.name}
                                     streaming
                                     onInterrupt={handleCancel}
                                     onAskSubmit={handleAskSubmit}

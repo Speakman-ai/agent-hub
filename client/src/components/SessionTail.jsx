@@ -76,6 +76,7 @@ function SessionTail({
   message,
   events,
   agentColor,
+  agentName,
   streaming,
   onEventsLoaded,
   onAskSubmit,
@@ -95,6 +96,9 @@ function SessionTail({
   // "Queued forever" bug.
   const parentSessionActive = !!streaming;
   const messageId = message?.id;
+  // Prefer the name stored on the message (set per-agent at insert time), then
+  // the active agent's name passed by the parent, falling back to "Assistant".
+  const displayAgentName = message?.agent_name || agentName || undefined;
 
   /** Tracks lazy GET /messages/:id/events — must not conflate with "loaded empty". */
   const [eventFetchState, setEventFetchState] = useState('idle');
@@ -173,6 +177,7 @@ function SessionTail({
         >
           <Header
             agentColor={agentColor}
+            agentName={displayAgentName}
             engine={message?.engine}
             model={message?.model}
             streaming={false}
@@ -213,6 +218,7 @@ function SessionTail({
           <StoredAssistantBubble
             message={message}
             agentColor={agentColor}
+            agentName={agentName}
             fromAgent={fromAgent}
             agents={agents}
             sessionHandoffs={sessionHandoffs}
@@ -255,6 +261,7 @@ function SessionTail({
         >
           <Header
             agentColor={agentColor}
+            agentName={displayAgentName}
             engine={message?.engine}
             model={message?.model}
             streaming={false}
@@ -295,6 +302,7 @@ function SessionTail({
       <StoredAssistantBubble
         message={message}
         agentColor={agentColor}
+        agentName={agentName}
         fromAgent={fromAgent}
         agents={agents}
         sessionHandoffs={sessionHandoffs}
@@ -334,6 +342,7 @@ function SessionTail({
       >
         <Header
           agentColor={agentColor}
+          agentName={displayAgentName}
           engine={message?.engine}
           model={message?.model}
           streaming={streaming}
@@ -640,7 +649,16 @@ function truncateStatusDetail(s, max) {
   return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
 }
 
-function Header({ agentColor, engine, model, streaming, createdAt, outcome, onInterrupt }) {
+function Header({
+  agentColor,
+  agentName,
+  engine,
+  model,
+  streaming,
+  createdAt,
+  outcome,
+  onInterrupt,
+}) {
   const badge = engine ? ENGINE_BADGES[engine] : null;
   const modelLabel = model ? model.replace('claude-', '').replace(/-/g, ' ') : null;
   const phase = outcome?.phase;
@@ -649,7 +667,7 @@ function Header({ agentColor, engine, model, streaming, createdAt, outcome, onIn
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: agentColor }} />
-      <span className="text-gray-500 font-medium shrink-0">Assistant</span>
+      <span className="text-gray-500 font-medium shrink-0">{agentName || 'Assistant'}</span>
       {badge && (
         <span className="text-gray-600 flex items-center gap-1 shrink-0" title={badge.label}>
           {badge.icon}
@@ -1729,6 +1747,7 @@ function UnknownBlock({ event }) {
 function StoredAssistantBubble({
   message,
   agentColor,
+  agentName,
   fromAgent,
   agents,
   sessionHandoffs,
@@ -1769,6 +1788,7 @@ function StoredAssistantBubble({
       <div className="max-w-[95%] sm:max-w-[90%] min-w-0 bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <Header
           agentColor={agentColor}
+          agentName={message.agent_name || fromAgent?.name || agentName || undefined}
           engine={message.engine}
           model={message.model}
           streaming={false}

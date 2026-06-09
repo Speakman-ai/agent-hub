@@ -165,6 +165,7 @@ export default function ChatScreen() {
             <ChatMessage
               message={{ ...msg, queued: isQueued }}
               agentColor={activeAgent?.color}
+              agentName={activeAgent?.name}
               onDequeue={isQueued ? handleDequeue : undefined}
               onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
               onInterrupt={isQueued && isProcessing ? handleInterruptQueuedMessage : undefined}
@@ -198,6 +199,7 @@ export default function ChatScreen() {
             <StreamingMessage
               content={item.data.content}
               agentColor={activeAgent?.color}
+              agentName={activeAgent?.name}
               engine={item.data.engine}
               onInterrupt={handleCancel}
             />

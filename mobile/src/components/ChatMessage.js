@@ -27,6 +27,7 @@ import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags.js';
+import { resolveAgentDisplayName } from '../utils/agentDisplayName.js';
 import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent.js';
 import HandoffCard from './HandoffCard';
 
@@ -498,6 +499,7 @@ const prStyles = StyleSheet.create({
 function ChatMessage({
   message,
   agentColor,
+  agentName,
   onDequeue,
   onEditQueued,
   onInterrupt,
@@ -597,7 +599,7 @@ function ChatMessage({
         {!isUser && (
           <View style={styles.assistantHeader}>
             <View style={[styles.headerDot, { backgroundColor: agentColor }]} />
-            <Text style={styles.headerLabel}>Assistant</Text>
+            <Text style={styles.headerLabel}>{resolveAgentDisplayName(message, agentName)}</Text>
             {engineBadge && (
               <View style={styles.engineBadgeRow}>
                 <View style={[styles.engineDot, { backgroundColor: engineBadge.color }]} />
