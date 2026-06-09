@@ -93,7 +93,7 @@ export function buildOrchestratorDeps(
     }),
     cardLifecycle: createCardLifecycle(
       { stmts: routeDeps.stmts, broadcast: routeDeps.broadcast },
-      { cardId: card.id, projectId },
+      { cardId: card.id, projectId, moveToDoneOnPush: routeDeps.config.cardDoneOnPush !== false },
     ),
   };
 }

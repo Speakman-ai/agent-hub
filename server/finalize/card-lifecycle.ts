@@ -93,7 +93,8 @@ export interface CardLifecycle {
   /**
    * Terminal push success. Delegates to the §15 post-push detach module
    * (`./post-push-detach.ts`): posts the handoff comment, then moves the
-   * card to Review. `triggerSource` is forwarded so the comment can name
+   * card to Done (when `cardDoneOnPush` is on) or Review (legacy).
+   * `triggerSource` is forwarded so the comment can name
    * the autonomous trigger when appropriate. Order matters: a UI
    * subscriber that re-renders on the column-move broadcast will see the
    * comment already in place.
@@ -159,6 +160,11 @@ export interface CreateCardLifecycleOpts {
   inProgressColumnName?: string;
   /** Target column for the post-push detach. Defaults to `'Review'`. */
   reviewColumnName?: string;
+  /**
+   * When true, the post-push detach moves the card to **Done** instead of
+   * Review. Wired from the `cardDoneOnPush` config flag. Defaults to false.
+   */
+  moveToDoneOnPush?: boolean;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────
@@ -178,6 +184,7 @@ export function createCardLifecycle(
   const author = opts.author ?? 'finalize';
   const inProgressName = opts.inProgressColumnName ?? 'In Progress';
   const reviewName = opts.reviewColumnName ?? 'Review';
+  const moveToDoneOnPush = opts.moveToDoneOnPush === true;
 
   function postComment(content: string): void {
     try {
@@ -282,6 +289,7 @@ export function createCardLifecycle(
           triggerSource,
           author,
           reviewColumnName: reviewName,
+          moveToDone: moveToDoneOnPush,
         },
       );
     },

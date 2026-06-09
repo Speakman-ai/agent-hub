@@ -74,6 +74,30 @@ describe('formatPostPushComment', () => {
     expect(ui.endsWith('(run r)')).toBe(true);
     expect(agent.endsWith('(run r)')).toBe(true);
   });
+
+  it('uses the Done headline when movedToDone is set (cardDoneOnPush)', () => {
+    const content = formatPostPushComment({
+      prUrl: 'https://github.com/o/r/pull/55',
+      runId: 'run-d',
+      triggerSource: 'ui_button',
+      movedToDone: true,
+    });
+    expect(content).toBe(
+      'Finalized and pushed to GitHub — card moved to Done.\n' +
+        'https://github.com/o/r/pull/55\n' +
+        '(run run-d)',
+    );
+  });
+
+  it('keeps the Review handoff headline when movedToDone is false/absent', () => {
+    const content = formatPostPushComment({
+      prUrl: 'https://x',
+      runId: 'r',
+      triggerSource: 'ui_button',
+      movedToDone: false,
+    });
+    expect(content.startsWith('Finalized. PR is on GitHub')).toBe(true);
+  });
 });
 
 // ─── Unit fixtures ───────────────────────────────────────────────────
@@ -242,6 +266,159 @@ describe('runPostPushDetach — happy path (card in In Progress)', () => {
   });
 });
 
+describe('runPostPushDetach — moveToDone (cardDoneOnPush)', () => {
+  it('moves the card to the Done column and posts the Done headline', () => {
+    const { deps, comments, moves, broadcast } = makeDeps({ column_id: 'col-progress' });
+
+    runPostPushDetach(deps, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+      prUrl: 'https://github.com/o/r/pull/42',
+      runId: 'run-1',
+      triggerSource: 'ui_button',
+      moveToDone: true,
+    });
+
+    expect(moves).toEqual([{ columnId: 'col-done', position: 0, cardId: 'card-1' }]);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].content).toBe(
+      'Finalized and pushed to GitHub — card moved to Done.\n' +
+        'https://github.com/o/r/pull/42\n' +
+        '(run run-1)',
+    );
+    const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).toEqual(['kanban_update', 'kanban_update', 'card_moved']);
+    // The card_moved broadcast names the Done column so column-workflow
+    // subscribers see the same shape as a manual drag to Done.
+    const cardMoved = broadcast.mock.calls
+      .map((c) => c[0] as { type: string; columnName?: string })
+      .find((e) => e.type === 'card_moved');
+    expect(cardMoved?.columnName).toBe('Done');
+  });
+
+  it('resolves Done via pickDoneColumn (case-insensitive / contains "done")', () => {
+    const { deps, moves } = makeDeps({ column_id: 'col-progress' });
+    // Board with a renamed Done column — pickDoneColumn matches on "done"
+    // substring, so the move still lands there.
+    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
+      () => [
+        { id: 'col-progress', board_id: 'board-1', name: 'In Progress', position: 0 },
+        { id: 'col-shipped', board_id: 'board-1', name: 'Deployed / Done', position: 1 },
+      ],
+    );
+
+    runPostPushDetach(deps, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+      prUrl: 'https://x',
+      runId: 'r',
+      triggerSource: 'ui_button',
+      moveToDone: true,
+    });
+
+    expect(moves).toEqual([{ columnId: 'col-shipped', position: 0, cardId: 'card-1' }]);
+  });
+
+  it('is idempotent when the card is already in Done (headline still truthful)', () => {
+    const { deps, comments, moves } = makeDeps({ column_id: 'col-done' });
+
+    runPostPushDetach(deps, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+      prUrl: 'https://x',
+      runId: 'r',
+      triggerSource: 'ui_button',
+      moveToDone: true,
+    });
+
+    // Comment lands; move is a no-op. The card IS in Done, so asserting the
+    // Done transition is truthful even though no write happened.
+    expect(comments).toHaveLength(1);
+    expect(comments[0].content).toContain('card moved to Done');
+    expect(moves).toHaveLength(0);
+  });
+
+  // ── Reviewer-flagged regression: the Done headline must NOT assert a
+  //    transition that did not happen. Each case below leaves the card in a
+  //    non-Done column, so the comment must fall back to the non-assertive
+  //    handoff line. (Pre-fix, the assertive headline was posted up front,
+  //    unconditionally — the card thread lied.) ──
+  describe('honest headline — move cannot be confirmed', () => {
+    const NON_ASSERTIVE = 'Finalized. PR is on GitHub, owned by the developer from here.';
+
+    it('does not claim Done when the board has no columns (no target)', () => {
+      const { deps, comments, log, moves } = makeDeps({ column_id: 'col-progress' });
+      (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
+        () => [],
+      );
+
+      runPostPushDetach(deps, {
+        cardId: 'card-1',
+        projectId: 'proj-1',
+        prUrl: 'https://x',
+        runId: 'r',
+        triggerSource: 'ui_button',
+        moveToDone: true,
+      });
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('Done column not found'));
+      expect(moves).toHaveLength(0);
+      // Comment still posted, but with the non-assertive headline.
+      expect(comments).toHaveLength(1);
+      expect(comments[0].content).not.toContain('card moved to Done');
+      expect(comments[0].content.startsWith(NON_ASSERTIVE)).toBe(true);
+    });
+
+    it('does not claim Done when the card is missing', () => {
+      const { deps, comments, moves } = makeDeps();
+      (deps.stmts.getKanbanCard as unknown as { get: ReturnType<typeof vi.fn> }).get = vi.fn(
+        () => undefined,
+      );
+
+      runPostPushDetach(deps, {
+        cardId: 'missing-card',
+        projectId: 'proj-1',
+        prUrl: 'https://x',
+        runId: 'r',
+        triggerSource: 'ui_button',
+        moveToDone: true,
+      });
+
+      expect(moves).toHaveLength(0);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].content).not.toContain('card moved to Done');
+      expect(comments[0].content.startsWith(NON_ASSERTIVE)).toBe(true);
+    });
+
+    it('does not claim Done when the move write throws', () => {
+      const { deps, comments, log, broadcast } = makeDeps({ column_id: 'col-progress' });
+      (deps.stmts.moveKanbanCard as unknown as { run: ReturnType<typeof vi.fn> }).run = vi.fn(
+        () => {
+          throw new Error('FK constraint');
+        },
+      );
+
+      runPostPushDetach(deps, {
+        cardId: 'card-1',
+        projectId: 'proj-1',
+        prUrl: 'https://x',
+        runId: 'r',
+        triggerSource: 'ui_button',
+        moveToDone: true,
+      });
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('move failed'));
+      // No card_moved broadcast since the move did not complete.
+      const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
+      expect(types).not.toContain('card_moved');
+      // Comment posted with the non-assertive headline.
+      expect(comments).toHaveLength(1);
+      expect(comments[0].content).not.toContain('card moved to Done');
+      expect(comments[0].content.startsWith(NON_ASSERTIVE)).toBe(true);
+    });
+  });
+});
+
 describe('runPostPushDetach — idempotency', () => {
   it('does not re-move when card is already in Review', () => {
     const { deps, comments, moves } = makeDeps({ column_id: 'col-review' });
@@ -300,6 +477,31 @@ describe('runPostPushDetach — non-throwing contract', () => {
     ).not.toThrow();
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining('move failed'));
+  });
+
+  it('swallows a throwing broadcast on the post-move notification path', () => {
+    // Reviewer-flagged regression: after a successful move, the step-3
+    // `kanban_update` / `card_moved` broadcasts must not be able to escape
+    // this fire-and-forget function. The move write + `pushed` status are
+    // already persisted, so a dropped notification is cosmetic.
+    const { deps, log, moves } = makeDeps({ column_id: 'col-progress' });
+    (deps.broadcast as ReturnType<typeof vi.fn>).mockImplementation((evt: { type: string }) => {
+      if (evt.type === 'card_moved') throw new Error('ws closed');
+    });
+
+    expect(() =>
+      runPostPushDetach(deps, {
+        cardId: 'card-1',
+        projectId: 'proj-1',
+        prUrl: 'https://x',
+        runId: 'r',
+        triggerSource: 'ui_button',
+      }),
+    ).not.toThrow();
+
+    // The move write still happened; only the notification blew up.
+    expect(moves).toHaveLength(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('move broadcast failed'));
   });
 
   it('logs and bails the move when the card is missing', () => {

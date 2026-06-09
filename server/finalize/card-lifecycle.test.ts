@@ -357,6 +357,26 @@ describe('createCardLifecycle.onPushed', () => {
     expect(comments).toHaveLength(1);
     expect(moves).toHaveLength(0);
   });
+
+  it('moveToDoneOnPush routes the post-push detach to the Done column', () => {
+    const { deps, comments, moves } = makeDeps({ column_id: 'col-progress' });
+    const lc = createCardLifecycle(deps, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+      moveToDoneOnPush: true,
+    });
+    lc.onPushed({
+      runId: 'r1',
+      prUrl: 'https://github.com/o/r/pull/42',
+      triggerSource: 'ui_button',
+    });
+    expect(moves).toEqual([{ columnId: 'col-done', position: 0, cardId: 'card-1' }]);
+    expect(comments[0].content).toBe(
+      'Finalized and pushed to GitHub — card moved to Done.\n' +
+        'https://github.com/o/r/pull/42\n' +
+        '(run r1)',
+    );
+  });
 });
 
 // ─── onStalled ───────────────────────────────────────────────────────

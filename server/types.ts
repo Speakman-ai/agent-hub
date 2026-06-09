@@ -2414,6 +2414,17 @@ export interface AppConfig {
    * false (webhook-driven behavior unchanged for cloud deployments).
    */
   lanMode: boolean;
+  /**
+   * When true (the default), a successful push to GitHub moves the linked
+   * kanban card straight to the board's **Done** column instead of parking
+   * it in **Review**. This overrides the §15 Finalize default (push → Review,
+   * GitHub merge → Done): operators who treat "pushed = shipped" want the card
+   * marked Done the moment the branch lands on GitHub, without waiting for the
+   * PR-merge webhook. Set false to restore the merge-gated Review-then-Done
+   * flow. Configure via `cardDoneOnPush` in config.json or env
+   * `AGENT_HUB_CARD_DONE_ON_PUSH` (`false` / `0` / `off` to disable).
+   */
+  cardDoneOnPush: boolean;
   slackWebhookUrl: string | null;
   /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */
   browserMaxConcurrentContexts: number;

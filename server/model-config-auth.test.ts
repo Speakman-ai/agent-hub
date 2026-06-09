@@ -44,6 +44,7 @@ function makeConfig(): AppConfig {
     codexProfile: null,
     codexDangerBypass: true,
     lanMode: false,
+    cardDoneOnPush: true,
     slackWebhookUrl: null,
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
