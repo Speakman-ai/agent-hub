@@ -879,6 +879,51 @@ function initDb(dataDir: string): void {
       ON finalize_run_job_attempts(run_id);
   `);
 
+  // Cross-run per-instance flake history. One row per (run, job instance)
+  // collapsing that run's per-round attempts into a final state + whether the
+  // instance flaked within the run (failed→passed). Unlike
+  // finalize_run_job_attempts (scoped to one run, keyed by run_id), this table
+  // is project-scoped so the flake-rate computation can read an instance's
+  // outcomes across many runs without joining back to finalize_runs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS finalize_test_history (
+      run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      matrix_key TEXT NOT NULL DEFAULT '',
+      branch TEXT,
+      head_sha TEXT,
+      final_state TEXT NOT NULL,
+      flaked INTEGER NOT NULL DEFAULT 0,
+      recorded_at INTEGER NOT NULL,
+      PRIMARY KEY (run_id, job_id, matrix_key)
+    );
+    CREATE INDEX IF NOT EXISTS finalize_test_history_instance
+      ON finalize_test_history(project_id, job_id, matrix_key, recorded_at DESC);
+  `);
+
+  // Quarantine lane. A flaky job instance can be quarantined: it still runs
+  // every round (monitoring data keeps flowing into finalize_test_history) but
+  // its flake-recovery no longer blocks the push gate. Time-bounded (≤30 days,
+  // enforced in server/finalize/quarantine.ts) with a named owner so it cannot
+  // become a permanent escape hatch — an expired entry is surfaced as overdue.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS finalize_quarantine (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      matrix_key TEXT NOT NULL DEFAULT '',
+      owner TEXT NOT NULL,
+      reason TEXT,
+      quarantined_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_by TEXT,
+      UNIQUE (project_id, job_id, matrix_key)
+    );
+    CREATE INDEX IF NOT EXISTS finalize_quarantine_project
+      ON finalize_quarantine(project_id);
+  `);
+
   try {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
   } catch {
@@ -3817,6 +3862,52 @@ function initDb(dataDir: string): void {
     ),
     setFinalizeRunFlakeRecoveredJobs: db.prepare(
       `UPDATE finalize_runs SET flake_recovered_jobs = ? WHERE id = ?`,
+    ),
+
+    // finalize_test_history — cross-run per-instance flake history.
+    upsertFinalizeTestHistory: db.prepare(
+      `INSERT INTO finalize_test_history (
+        run_id, project_id, job_id, matrix_key, branch, head_sha, final_state, flaked, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, job_id, matrix_key) DO UPDATE SET
+        final_state = excluded.final_state,
+        flaked = excluded.flaked,
+        head_sha = excluded.head_sha,
+        branch = excluded.branch,
+        recorded_at = excluded.recorded_at`,
+    ),
+    listFinalizeTestHistoryForProject: db.prepare(
+      `SELECT run_id, project_id, job_id, matrix_key, branch, head_sha, final_state, flaked, recorded_at
+         FROM finalize_test_history
+        WHERE project_id = ? AND recorded_at >= ?
+        ORDER BY recorded_at DESC`,
+    ),
+
+    // finalize_quarantine — flaky-test quarantine lane.
+    upsertFinalizeQuarantine: db.prepare(
+      `INSERT INTO finalize_quarantine (
+        id, project_id, job_id, matrix_key, owner, reason, quarantined_at, expires_at, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, job_id, matrix_key) DO UPDATE SET
+        owner = excluded.owner,
+        reason = excluded.reason,
+        quarantined_at = excluded.quarantined_at,
+        expires_at = excluded.expires_at,
+        created_by = excluded.created_by`,
+    ),
+    listFinalizeQuarantineForProject: db.prepare(
+      `SELECT id, project_id, job_id, matrix_key, owner, reason, quarantined_at, expires_at, created_by
+         FROM finalize_quarantine
+        WHERE project_id = ?
+        ORDER BY expires_at ASC`,
+    ),
+    getFinalizeQuarantineById: db.prepare(
+      `SELECT id, project_id, job_id, matrix_key, owner, reason, quarantined_at, expires_at, created_by
+         FROM finalize_quarantine
+        WHERE id = ?`,
+    ),
+    deleteFinalizeQuarantine: db.prepare(
+      `DELETE FROM finalize_quarantine WHERE id = ? AND project_id = ?`,
     ),
 
     // reviewer_threads — diff-anchored notes produced by the reviewer

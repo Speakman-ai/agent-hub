@@ -312,6 +312,12 @@ function makeStmts(): {
     setFinalizeRunFlakeRecoveredJobs: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['setFinalizeRunFlakeRecoveredJobs'],
+    upsertFinalizeTestHistory: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['upsertFinalizeTestHistory'],
+    listFinalizeQuarantineForProject: {
+      all: vi.fn(() => []),
+    } as unknown as OrchestratorDeps['stmts']['listFinalizeQuarantineForProject'],
     listReviewerThreadsForRun: {
       all: vi.fn(() => threads),
     } as unknown as OrchestratorDeps['stmts']['listReviewerThreadsForRun'],

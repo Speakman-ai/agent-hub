@@ -2949,6 +2949,161 @@ components:
         - project_id
         - seeded
         - records
+    QuarantineError:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+    QuarantineEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        matrix_key:
+          type: string
+        owner:
+          type: string
+        reason:
+          type: string
+          nullable: true
+        quarantined_at:
+          type: integer
+        expires_at:
+          type: integer
+        created_by:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - active
+            - overdue
+        days_until_expiry:
+          type: integer
+      required:
+        - id
+        - job_id
+        - matrix_key
+        - owner
+        - reason
+        - quarantined_at
+        - expires_at
+        - created_by
+        - status
+        - days_until_expiry
+      description: "One quarantine-lane entry: a flaky job instance excused from blocking the gate, with a named owner and an expiry. `overdue` means it is past expiry and no longer excuses."
+    QuarantineListResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        now:
+          type: integer
+        max_days:
+          type: integer
+        default_days:
+          type: integer
+        active:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuarantineEntry"
+        overdue:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuarantineEntry"
+      required:
+        - project_id
+        - now
+        - max_days
+        - default_days
+        - active
+        - overdue
+    QuarantineCreateRequest:
+      type: object
+      properties:
+        job_id:
+          type: string
+          description: The ci.yaml v2 job id to quarantine.
+        matrix_key:
+          type: string
+          description: Matrix-shard discriminator; omit/empty for non-matrix jobs.
+        owner:
+          type: string
+          description: Named owner accountable for resolving the flake.
+        reason:
+          type: string
+          description: Why this instance is quarantined.
+        days:
+          type: number
+          description: Quarantine duration in days; clamped to ≤30 (default 30).
+        created_by:
+          type: string
+      required:
+        - job_id
+        - owner
+    QuarantineCreateResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        entry:
+          $ref: "#/components/schemas/QuarantineEntry"
+      required:
+        - project_id
+        - entry
+    FlakeInstance:
+      type: object
+      properties:
+        job_id:
+          type: string
+        matrix_key:
+          type: string
+        runs:
+          type: integer
+        failed_runs:
+          type: integer
+        flaked_runs:
+          type: integer
+        flake_rate:
+          type: number
+        fail_rate:
+          type: number
+        last_seen:
+          type: integer
+        quarantined:
+          type: boolean
+      required:
+        - job_id
+        - matrix_key
+        - runs
+        - failed_runs
+        - flaked_runs
+        - flake_rate
+        - fail_rate
+        - last_seen
+        - quarantined
+      description: Per job/matrix instance flake statistics over the requested window. `flake_rate` = fraction of runs that flaked within the run OR ended failed.
+    FlakeListResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        window_days:
+          type: integer
+        instances:
+          type: array
+          items:
+            $ref: "#/components/schemas/FlakeInstance"
+      required:
+        - project_id
+        - window_days
+        - instances
     FinalizeWizardErrorResponse:
       type: object
       properties:
@@ -10577,6 +10732,153 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ParityError"
+  /api/projects/{projectId}/finalize/quarantine:
+    get:
+      tags:
+        - Finalize
+      summary: List flaky-test quarantine entries (active + overdue)
+      description: Returns the project quarantine lane split into active entries (still excusing their instance) and overdue entries (past expiry, awaiting human renewal or removal).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Quarantine entries for the project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineListResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "500":
+          description: Quarantine list could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+    post:
+      tags:
+        - Finalize
+      summary: Quarantine a flaky job instance
+      description: Adds (or updates, idempotent per instance) a quarantine entry. `days` is clamped to ≤30. A quarantined instance still runs but no longer blocks the push gate until it expires.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuarantineCreateRequest"
+      responses:
+        "201":
+          description: Quarantine entry created/updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineCreateResponse"
+        "400":
+          description: Missing job_id/owner or invalid days.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "500":
+          description: Quarantine entry could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+  /api/projects/{projectId}/finalize/quarantine/{id}:
+    delete:
+      tags:
+        - Finalize
+      summary: Release a quarantine entry
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "204":
+          description: Quarantine entry released.
+        "404":
+          description: Project or quarantine entry not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "500":
+          description: Quarantine entry could not be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+  /api/projects/{projectId}/finalize/flakes:
+    get:
+      tags:
+        - Finalize
+      summary: Per-instance flake statistics from recorded run history
+      description: Computes a flake rate per job/matrix instance over the requested window (default 30 days), newest-evidence first, annotated with whether the instance is currently quarantined.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Look-back window in days; positive integer (default 30, max 365).
+          required: false
+          description: Look-back window in days; positive integer (default 30, max 365).
+          name: windowDays
+          in: query
+      responses:
+        "200":
+          description: Flake statistics for the window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlakeListResponse"
+        "400":
+          description: windowDays must be a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
+        "500":
+          description: Flake history could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuarantineError"
   /api/projects/{projectId}/finalize/environment-draft:
     get:
       tags:

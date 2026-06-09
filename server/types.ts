@@ -947,6 +947,42 @@ export interface FinalizeRunJobAttemptRow {
 }
 
 /**
+ * Cross-run per-instance flake history. One row per (run, job instance)
+ * collapsing the run's per-round attempts into a final state + whether the
+ * instance flaked within the run. Project-scoped so the flake-rate computation
+ * can read an instance's history across runs. See server/finalize/flake-history.ts.
+ */
+export interface FinalizeTestHistoryRow {
+  run_id: string;
+  project_id: string;
+  job_id: string;
+  matrix_key: string;
+  branch: string | null;
+  head_sha: string | null;
+  final_state: 'passed' | 'failed';
+  /** 1 when the instance failed an earlier round then passed a later one. */
+  flaked: number;
+  recorded_at: number;
+}
+
+/**
+ * Quarantine-lane row. A flaky job instance that still runs but no longer
+ * blocks the push gate. Time-bounded (≤30 days) with a named owner. See
+ * server/finalize/quarantine.ts.
+ */
+export interface FinalizeQuarantineRow {
+  id: string;
+  project_id: string;
+  job_id: string;
+  matrix_key: string;
+  owner: string;
+  reason: string | null;
+  quarantined_at: number;
+  expires_at: number;
+  created_by: string | null;
+}
+
+/**
  * Reviewer-thread row. One row per diff-anchored finding produced by the
  * reviewer agent during the review phase of a Finalize run.
  *
@@ -1627,6 +1663,14 @@ export interface Stmts {
   upsertFinalizeRunJobAttempt: Stmt;
   listFinalizeRunJobAttemptsForRun: Stmt;
   setFinalizeRunFlakeRecoveredJobs: Stmt;
+  // finalize_test_history — cross-run per-instance flake history.
+  upsertFinalizeTestHistory: Stmt;
+  listFinalizeTestHistoryForProject: Stmt;
+  // finalize_quarantine — flaky-test quarantine lane.
+  upsertFinalizeQuarantine: Stmt;
+  listFinalizeQuarantineForProject: Stmt;
+  getFinalizeQuarantineById: Stmt;
+  deleteFinalizeQuarantine: Stmt;
 
   // reviewer_threads — diff-anchored notes from the reviewer agent.
   // See wiki: finalize-code-changes-architecture-v0 (§8).

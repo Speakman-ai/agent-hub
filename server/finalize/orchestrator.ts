@@ -113,6 +113,8 @@ import {
 } from './timeline-message.js';
 import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
 import { blockedGateResult, serializeFlakeGate, type FlakeGateResult } from './flake-recovery.js';
+import { loadActiveQuarantine, recordRunTestHistory } from './quarantine-gate.js';
+import { applyQuarantineToGate, describeExcused } from './quarantine.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
 
 export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
@@ -233,6 +235,8 @@ export interface OrchestratorDeps {
     | 'upsertFinalizeRunJobAttempt'
     | 'listFinalizeRunJobAttemptsForRun'
     | 'setFinalizeRunFlakeRecoveredJobs'
+    | 'upsertFinalizeTestHistory'
+    | 'listFinalizeQuarantineForProject'
     | 'listReviewerThreadsForRun'
     | 'insertFinalizeMetric'
   >;
@@ -1269,6 +1273,20 @@ export async function runFinalize(
             { runId, round: loopCount, headSha: headValidatedAgainst },
           );
           if (!persisted) attemptHistoryPersisted = false;
+          // Refresh this run's cross-run flake-history rows from the snapshot
+          // just recorded. Idempotent upsert per instance — the final round's
+          // call reflects the run's ultimate per-instance outcome regardless of
+          // terminal path. Best-effort: a miss only degrades future flake-rate
+          // accuracy, never the gate's fail-closed correctness.
+          recordRunTestHistory(
+            { stmts: deps.stmts, now, log },
+            {
+              runId,
+              projectId: opts.project.id,
+              branch: opts.branch,
+              headSha: headValidatedAgainst,
+            },
+          );
         }
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
@@ -1428,6 +1446,28 @@ export async function runFinalize(
           const msg = err instanceof Error ? err.message : String(err);
           log(`[finalize-orchestrator] flake-recovery classification threw run=${runId}: ${msg}`);
           gate = blockedGateResult(`flake classification threw: ${msg}`);
+        }
+        // ── Quarantine lane (§ replace silent retry) ────────────────
+        // Excuse flake_recovered instances that are under an active quarantine:
+        // they still ran (their result was recorded for monitoring above), but a
+        // quarantined flake no longer blocks the gate. If every flagged instance
+        // is quarantined, the gate downgrades to clean and automation proceeds —
+        // this is what replaces the old "a laundered flake always withholds
+        // automation" behaviour. A `blocked` gate is never downgraded (it has no
+        // per-instance verdict to excuse), so the fail-closed contract holds.
+        const quarantineEntries = loadActiveQuarantine({ stmts: deps.stmts, log }, opts.project.id);
+        const quarantined = applyQuarantineToGate(gate, quarantineEntries, now());
+        if (quarantined.excused.length > 0) {
+          gate = quarantined.gate;
+          trace('quarantine_excused', {
+            round: loopCount,
+            status: gate.status,
+            excused: quarantined.excused.map((v) => ({ jobId: v.jobId, matrixKey: v.matrixKey })),
+          });
+          log(
+            `[finalize-orchestrator] run=${runId} quarantine excused flake-recovered job(s): ` +
+              `${describeExcused(quarantined.excused)}; gate now status=${gate.status}`,
+          );
         }
         let gatePersisted = false;
         try {
