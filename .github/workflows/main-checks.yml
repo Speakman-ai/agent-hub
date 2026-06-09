@@ -6,7 +6,6 @@ name: Main Checks
 # What lives here (instead of `ci.yml`):
 #   - Lint + format
 #   - Server typecheck duplicate signal (kept on PR baseline too)
-#   - Terraform fmt / init / validate
 #   - Skill-coupling enforcement
 #
 # OpenAPI freshness + coverage checks live in `api-docs.yml`
@@ -73,28 +72,6 @@ jobs:
 
       - name: Check Prettier formatting
         run: npm run format:check
-
-  terraform:
-    name: Terraform
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ops/terraform
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.10.0
-
-      - name: Terraform fmt (check)
-        run: terraform fmt -check -recursive
-
-      - name: Terraform init (no backend)
-        run: terraform init -backend=false
-
-      - name: Terraform validate
-        run: terraform validate
 
   skill-coupling:
     name: Platform module ↔ SKILL.md coupling

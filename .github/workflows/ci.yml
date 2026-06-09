@@ -4,7 +4,7 @@ name: CI
 # no path-based skipping, no conditional matrix. The whole point is a
 # CONSISTENT signal: if `CI` is green, the PR built and typechecked.
 #
-# Heavier checks (lint, format, terraform, OpenAPI freshness, skill-coupling)
+# Heavier checks (lint, format, OpenAPI freshness, skill-coupling)
 # run on `push: main` via `main-checks.yml` and are NOT blocking. We check the
 # main branch periodically and fix what's broken.
 #

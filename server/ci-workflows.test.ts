@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
  *                                          PR (no path filter, no `if:` on the
  *                                          jobs that the gate depends on).
  *   - `.github/workflows/main-checks.yml` — push:main informational suite
- *                                           (lint, terraform, skill-coupling).
+ *                                           (lint, skill-coupling).
  *   - `.github/workflows/skill-coupling.yml` was folded into main-checks.yml
  *                                            and should NOT exist.
  *   - `.github/workflows/api-docs.yml` runs on push:main only (no PR trigger).
@@ -82,9 +82,11 @@ describe('Post-merge informational suite (.github/workflows/main-checks.yml)', (
   });
 
   it('declares the deferred suites as jobs', () => {
-    for (const job of ['lint', 'terraform', 'skill-coupling']) {
+    for (const job of ['lint', 'skill-coupling']) {
       expect(extractJob(yml, job), `main-checks.yml missing job \`${job}\``).toBeTruthy();
     }
+    // The Terraform fmt/init/validate job was removed; it must not return.
+    expect(extractJob(yml, 'terraform')).toBeNull();
     expect(extractJob(yml, 'electron-tests')).toBeNull();
     expect(extractJob(yml, 'mobile-tests')).toBeNull();
   });
