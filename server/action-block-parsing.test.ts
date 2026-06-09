@@ -10,8 +10,6 @@ import {
   detectTagBlockInLastFence,
 } from './action-block-parsing.js';
 import { detectCloseCardBlock } from './card-auto-close.js';
-import { detectHandoffBlock } from './handoff.js';
-import { detectDelegateBlock } from './delegation.js';
 import { detectSkillBlock, parseSkillBlock } from './skill-invoke.js';
 import { detectReActBlock, parseReActBlock } from './chat.js';
 import { detectWikiRequestBlock } from './wiki-rag.js';
@@ -342,70 +340,6 @@ describe('detectCloseCardBlock — wrapper-shape tolerance', () => {
     const r = detectCloseCardBlock(text);
     expect(r.task).toBeNull();
     expect(r.reason).toBe('invalid-json');
-  });
-});
-
-describe('detectHandoffBlock — wrapper-shape tolerance', () => {
-  const valid = '{"toAgent":"hub-backend","note":"impl the fix"}';
-
-  it('parses an inner ```json code fence', () => {
-    const text = `<handoff>\n\`\`\`json\n${valid}\n\`\`\`\n</handoff>`;
-    const r = detectHandoffBlock(text);
-    expect(r.task).toEqual({ toAgent: 'hub-backend', note: 'impl the fix' });
-  });
-
-  it('parses with prose between the tag and the JSON', () => {
-    const text = `<handoff>\nForwarding to backend:\n${valid}\n</handoff>`;
-    const r = detectHandoffBlock(text);
-    expect(r.task).not.toBeNull();
-  });
-
-  it('parses with a blockquote prefix on every line', () => {
-    const text = `<handoff>\n> ${valid}\n</handoff>`;
-    const r = detectHandoffBlock(text);
-    expect(r.task).not.toBeNull();
-  });
-
-  it('parses with literal newlines inside a string value', () => {
-    // The original failure mode that motivated the parser: a `note` field
-    // that contains a real \n byte. JSON.parse would reject this raw, but
-    // the normalizer escapes it before parsing.
-    const body = '{"toAgent":"hub-backend","note":"first line\nsecond line"}';
-    const text = `<handoff>\n${body}\n</handoff>`;
-    const r = detectHandoffBlock(text);
-    expect(r.task).not.toBeNull();
-    expect(r.task!.note).toBe('first line\nsecond line');
-  });
-});
-
-describe('detectDelegateBlock — wrapper-shape tolerance', () => {
-  const oneTask = JSON.stringify({
-    agentId: 'hub-backend',
-    task: 't',
-    owner: 'o',
-    scope: 's',
-    expectedArtifact: 'e',
-    deadline: 'd',
-    returnFormat: 'r',
-  });
-
-  it('parses an inner ```json code fence', () => {
-    const text = `<delegate>\n\`\`\`json\n[${oneTask}]\n\`\`\`\n</delegate>`;
-    const r = detectDelegateBlock(text);
-    expect(r.tasks).not.toBeNull();
-    expect(r.tasks!.length).toBe(1);
-  });
-
-  it('parses with prose preamble before the array', () => {
-    const text = `<delegate>\nDispatching:\n[${oneTask}]\n</delegate>`;
-    const r = detectDelegateBlock(text);
-    expect(r.tasks).not.toBeNull();
-  });
-
-  it('parses with a blockquote prefix on every line', () => {
-    const text = `<delegate>\n> [${oneTask}]\n</delegate>`;
-    const r = detectDelegateBlock(text);
-    expect(r.tasks).not.toBeNull();
   });
 });
 

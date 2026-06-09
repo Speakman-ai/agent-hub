@@ -325,18 +325,6 @@ const config: AppConfig = {
   docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
-  // Webhook-dispatched Claude runs default to a longer ceiling than other
-  // call sites because review/CI handlers often run a full PR analysis
-  // (gh pr view + diff fetch + multi-file reasoning) that legitimately
-  // exceeds defaultTimeoutMs. Override per-event via webhookEventTimeoutMs.
-  webhookTimeoutMs: resolveInt(null, 'webhookTimeoutMs', 20 * 60 * 1000),
-  webhookEventTimeoutMs: (fileConfig.webhookEventTimeoutMs as
-    | Record<string, number>
-    | undefined) ?? {
-    // Review handlers run the full PR review prompt (gh diff + analysis).
-    // 20 min covers the median; the worker will still kill at this bound.
-    'pull_request_review.submitted': 20 * 60 * 1000,
-  },
   // Compose preview health poll — how long `PreviewComposeRuntime` waits for
   // 2xx on the entry service before marking the group failed. Override via
   // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`
@@ -406,9 +394,9 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
   })(),
 
-  // LAN mode: skip webhook auto-registration, lean on the existing 3-minute
-  // reconciliation poller for PR state, and let the poller dispatch reviewers
-  // on freshly-opened PRs in place of the `pull_request.opened` webhook.
+  // LAN mode: for deployments GitHub cannot reach (no public URL / tunnel).
+  // PR review and merge reconciliation rely on the reconciliation poller or
+  // manual resolve instead of inbound GitHub events.
   // Default false; opt in with AGENT_HUB_LAN_MODE=true or `"lanMode": true`
   // in config.json (or PATCH /api/config { lanMode: true }).
   lanMode: (() => {

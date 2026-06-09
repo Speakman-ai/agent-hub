@@ -12,30 +12,6 @@
 /** @typedef {{ title: string, body: string }} NotificationContent */
 
 /**
- * Build content for a card moved to "In Progress".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {NotificationContent}
- */
-export function cardStartedNotification({ cardTitle, assignee }) {
-  return {
-    title: 'Ticket Started',
-    body: `"${cardTitle}" started${assignee ? ` by ${assignee}` : ''}`,
-  };
-}
-
-/**
- * Build content for a card moved to "Review".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {NotificationContent}
- */
-export function cardReviewNotification({ cardTitle, assignee }) {
-  return {
-    title: 'PR Ready for Review',
-    body: `"${cardTitle}" moved to Review${assignee ? ` (${assignee})` : ''}`,
-  };
-}
-
-/**
  * Build content for a merged PR.
  * @param {{ cardTitle: string, prNumber: number, mergedBy?: string }} data
  * @returns {NotificationContent}
@@ -150,18 +126,6 @@ export function mapBroadcastToNotification(data) {
         branch: data.branch,
       });
       return { event: 'changes_ready', title, body };
-    }
-    case 'card_moved': {
-      const col = (data.columnName || '').toLowerCase();
-      if (col === 'in progress') {
-        const { title, body } = cardStartedNotification(data);
-        return { event: 'card_started', title, body };
-      }
-      if (col === 'review') {
-        const { title, body } = cardReviewNotification(data);
-        return { event: 'card_review', title, body };
-      }
-      return null;
     }
     case 'thread_created': {
       if (!data.thread) return null;

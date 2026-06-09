@@ -3,7 +3,6 @@
  *
  * We pin every method against:
  *   - the exact comment string written to `kanban_card_comments`
- *   - the move semantics (target column resolution + idempotency)
  *   - the broadcast events emitted alongside the writes
  *
  * The lifecycle module is the human-facing audit trail for a finalize
@@ -11,14 +10,14 @@
  * card becomes ambiguous, so the regex / equality matchers are
  * deliberately strict.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import {
   createCardLifecycle,
   NOOP_CARD_LIFECYCLE,
   type CardLifecycleDeps,
 } from './card-lifecycle.js';
-import type { KanbanCardRow, KanbanColumnRow } from '../types.js';
+import type { KanbanCardRow } from '../types.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -48,27 +47,6 @@ function fakeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
   } as unknown as KanbanCardRow;
 }
 
-const COLUMNS: KanbanColumnRow[] = [
-  { id: 'col-todo', board_id: 'board-1', name: 'To Do', position: 0, color: null, created_at: '' },
-  {
-    id: 'col-progress',
-    board_id: 'board-1',
-    name: 'In Progress',
-    position: 1,
-    color: null,
-    created_at: '',
-  },
-  {
-    id: 'col-review',
-    board_id: 'board-1',
-    name: 'Review',
-    position: 2,
-    color: null,
-    created_at: '',
-  },
-  { id: 'col-done', board_id: 'board-1', name: 'Done', position: 3, color: null, created_at: '' },
-];
-
 interface RecordedComment {
   id: string;
   cardId: string;
@@ -76,23 +54,15 @@ interface RecordedComment {
   content: string;
 }
 
-interface RecordedMove {
-  columnId: string;
-  position: number;
-  cardId: string;
-}
-
 function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
   deps: CardLifecycleDeps;
   card: KanbanCardRow;
   comments: RecordedComment[];
-  moves: RecordedMove[];
   broadcast: ReturnType<typeof vi.fn>;
   log: ReturnType<typeof vi.fn>;
 } {
   const card = fakeCard(cardOverride);
   const comments: RecordedComment[] = [];
-  const moves: RecordedMove[] = [];
   const broadcast = vi.fn();
   const log = vi.fn();
   let idCounter = 0;
@@ -102,15 +72,10 @@ function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
         get: vi.fn((id: string) => (id === card.id ? card : undefined)),
       } as unknown as CardLifecycleDeps['stmts']['getKanbanCard'],
       getKanbanColumns: {
-        all: vi.fn((boardId: string) =>
-          boardId === card.board_id ? COLUMNS : ([] as KanbanColumnRow[]),
-        ),
+        all: vi.fn(() => []),
       } as unknown as CardLifecycleDeps['stmts']['getKanbanColumns'],
       moveKanbanCard: {
-        run: vi.fn((columnId: string, position: number, cardId: string) => {
-          moves.push({ columnId, position, cardId });
-          if (cardId === card.id) card.column_id = columnId;
-        }),
+        run: vi.fn(),
       } as unknown as CardLifecycleDeps['stmts']['moveKanbanCard'],
       createKanbanCardComment: {
         run: vi.fn((id: string, cardId: string, author: string, content: string) => {
@@ -122,7 +87,7 @@ function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
     newId: () => `comment-${++idCounter}`,
     log,
   };
-  return { deps, card, comments, moves, broadcast, log };
+  return { deps, card, comments, broadcast, log };
 }
 
 // ─── NOOP ────────────────────────────────────────────────────────────
@@ -156,13 +121,13 @@ describe('NOOP_CARD_LIFECYCLE', () => {
 // ─── onStarted ───────────────────────────────────────────────────────
 
 describe('createCardLifecycle.onStarted', () => {
-  it('moves the card to In Progress and posts the start comment', () => {
-    const { deps, comments, moves, broadcast } = makeDeps({ column_id: 'col-todo' });
+  it('posts the start comment without moving the card', () => {
+    const { deps, comments, broadcast } = makeDeps({ column_id: 'col-todo' });
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
 
     lc.onStarted({ runId: 'run-abc', triggerSource: 'ui_button' });
 
-    expect(moves).toEqual([{ columnId: 'col-progress', position: 0, cardId: 'card-1' }]);
+    expect(deps.stmts.moveKanbanCard.run).not.toHaveBeenCalled();
     expect(comments).toEqual([
       {
         id: 'comment-1',
@@ -171,29 +136,16 @@ describe('createCardLifecycle.onStarted', () => {
         content: 'Finalize started (run run-abc) · trigger=ui_button',
       },
     ]);
-    // Both `kanban_update` events fire (one per write) AND the
-    // `card_moved` event fires (mirrors the manual move endpoint shape).
-    const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
-    expect(types).toContain('kanban_update');
-    expect(types).toContain('card_moved');
-    const moveBroadcast = broadcast.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .find((e) => e.type === 'card_moved');
-    expect(moveBroadcast).toMatchObject({
-      projectId: 'proj-1',
-      cardId: 'card-1',
-      columnName: 'In Progress',
-    });
+    expect(broadcast.mock.calls).toEqual([[{ type: 'kanban_update', projectId: 'proj-1' }]]);
   });
 
-  it('skips the move when the card is already in In Progress (idempotent)', () => {
-    const { deps, moves, comments } = makeDeps({ column_id: 'col-progress' });
+  it('still posts the comment when the card is already in In Progress', () => {
+    const { deps, comments } = makeDeps({ column_id: 'col-progress' });
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
 
     lc.onStarted({ runId: 'run-abc', triggerSource: 'agent_block' });
 
-    expect(moves).toHaveLength(0);
-    // Comment still fires.
+    expect(deps.stmts.moveKanbanCard.run).not.toHaveBeenCalled();
     expect(comments).toHaveLength(1);
     expect(comments[0].content).toContain('trigger=agent_block');
   });
@@ -208,66 +160,17 @@ describe('createCardLifecycle.onStarted', () => {
     lc.onStarted({ runId: 'r', triggerSource: 'ui_button' });
     expect(comments[0].author).toBe('finalize-bot');
   });
-
-  it('honors custom in-progress column name', () => {
-    const customCols: KanbanColumnRow[] = [
-      ...COLUMNS,
-      {
-        id: 'col-doing',
-        board_id: 'board-1',
-        name: 'Doing',
-        position: 5,
-        color: null,
-        created_at: '',
-      },
-    ];
-    const { deps, moves } = makeDeps();
-    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
-      () => customCols,
-    );
-    const lc = createCardLifecycle(deps, {
-      cardId: 'card-1',
-      projectId: 'proj-1',
-      inProgressColumnName: 'Doing',
-    });
-    lc.onStarted({ runId: 'r', triggerSource: 'ui_button' });
-    expect(moves[0].columnId).toBe('col-doing');
-  });
-
-  it('logs and skips the move when the target column is missing', () => {
-    const { deps, moves, log, comments } = makeDeps();
-    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
-      () => [COLUMNS[0]], // only "To Do" present
-    );
-    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    lc.onStarted({ runId: 'r', triggerSource: 'ui_button' });
-    expect(moves).toHaveLength(0);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('column "In Progress" not found'));
-    // Comment still goes through.
-    expect(comments).toHaveLength(1);
-  });
-
-  it('logs and skips when the card row vanished mid-run', () => {
-    const { deps, log, moves } = makeDeps();
-    (deps.stmts.getKanbanCard as unknown as { get: ReturnType<typeof vi.fn> }).get = vi.fn(
-      () => undefined,
-    );
-    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    lc.onStarted({ runId: 'r', triggerSource: 'ui_button' });
-    expect(moves).toHaveLength(0);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('not found'));
-  });
 });
 
 // ─── Rebase comments ─────────────────────────────────────────────────
 
 describe('createCardLifecycle — rebase transitions', () => {
   it('onRebaseClean posts the clean comment, no move', () => {
-    const { deps, comments, moves } = makeDeps();
+    const { deps, comments } = makeDeps();
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
     lc.onRebaseClean({ runId: 'r1' });
     expect(comments[0].content).toBe('Rebase: clean (run r1)');
-    expect(moves).toHaveLength(0);
+    expect(deps.stmts.moveKanbanCard.run).not.toHaveBeenCalled();
   });
 
   it('onRebaseConflictDispatched posts the dispatched-to-session comment', () => {
@@ -312,30 +215,24 @@ describe('createCardLifecycle — reviewer + step', () => {
   });
 });
 
-// ─── onPushed: comment + move to Review ──────────────────────────────
+// ─── onPushed: comment only (no column move) ─────────────────────────
 
 describe('createCardLifecycle.onPushed', () => {
-  it('delegates to post-push detach: posts handoff comment then moves card to Review (order matters)', () => {
-    const { deps, comments, moves, broadcast } = makeDeps({ column_id: 'col-progress' });
+  it('delegates to post-push detach: posts handoff comment without moving the card', () => {
+    const { deps, comments, broadcast } = makeDeps({ column_id: 'col-progress' });
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
     lc.onPushed({
       runId: 'r1',
       prUrl: 'https://github.com/o/r/pull/42',
       triggerSource: 'ui_button',
     });
-    // Handoff wording lives in `post-push-detach.ts`. The lifecycle test
-    // pins the contract — the user-visible card thread reads
-    // "Finalized…" with the PR URL on the next line.
     expect(comments[0].content).toBe(
       'Finalized. PR is on GitHub, owned by the developer from here.\n' +
         'https://github.com/o/r/pull/42\n' +
         '(run r1)',
     );
-    expect(moves).toEqual([{ columnId: 'col-review', position: 0, cardId: 'card-1' }]);
-    // The order of broadcasts: comment broadcast (kanban_update) before
-    // the move broadcasts (kanban_update + card_moved).
-    const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
-    expect(types).toEqual(['kanban_update', 'kanban_update', 'card_moved']);
+    expect(deps.stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+    expect(broadcast.mock.calls).toEqual([[{ type: 'kanban_update', projectId: 'proj-1' }]]);
   });
 
   it('autonomous trigger surfaces the suffix line in the comment', () => {
@@ -347,15 +244,6 @@ describe('createCardLifecycle.onPushed', () => {
       triggerSource: 'agent_block',
     });
     expect(comments[0].content).toContain('(triggered by autonomous agent)');
-  });
-
-  it('is idempotent: card already in Review → no second move', () => {
-    const { deps, moves, comments } = makeDeps({ column_id: 'col-review' });
-    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    lc.onPushed({ runId: 'r1', prUrl: 'https://x', triggerSource: 'ui_button' });
-    // Comment still posted; move skipped.
-    expect(comments).toHaveLength(1);
-    expect(moves).toHaveLength(0);
   });
 });
 
@@ -393,10 +281,6 @@ describe('createCardLifecycle.onTerminalFailed', () => {
 // ─── Non-throwing contract ───────────────────────────────────────────
 
 describe('createCardLifecycle — non-throwing', () => {
-  beforeEach(() => {
-    // Each test resets to a fresh deps in its own factory call.
-  });
-
   it('swallows DB errors on postComment', () => {
     const { deps, log } = makeDeps();
     (deps.stmts.createKanbanCardComment as unknown as { run: ReturnType<typeof vi.fn> }).run =
@@ -406,15 +290,5 @@ describe('createCardLifecycle — non-throwing', () => {
     const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
     expect(() => lc.onRebaseClean({ runId: 'r' })).not.toThrow();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('postComment failed'));
-  });
-
-  it('swallows DB errors on moveKanbanCard', () => {
-    const { deps, log } = makeDeps({ column_id: 'col-todo' });
-    (deps.stmts.moveKanbanCard as unknown as { run: ReturnType<typeof vi.fn> }).run = vi.fn(() => {
-      throw new Error('FK constraint');
-    });
-    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
-    expect(() => lc.onStarted({ runId: 'r', triggerSource: 'ui_button' })).not.toThrow();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('moveToColumnByName'));
   });
 });

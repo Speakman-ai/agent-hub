@@ -2428,8 +2428,6 @@ export function CronSection({ projects = [], onNavigate, showToast }) {
   );
 }
 
-/* WebhookSection removed — webhooks are now auto-managed when saving project repos */
-
 // ─── Slack Setup Wizard ───────────────────────────────────────────────────────
 
 const WIZARD_STEPS = [
@@ -5249,61 +5247,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     />
                   </div>
 
-                  {/*
-                    Delegation gate (per-agent operator switch).
-
-                    Surfaced only for lead agents (those with one or more
-                    sub-agents). Default is ON (treat undefined/true as
-                    enabled); the only state that disables dispatch is the
-                    explicit literal `false`. See
-                    `server/delegation-gate.ts` for the matching server-side
-                    semantics. Toggling here flips `delegationEnabled` in
-                    the agent edit buffer; saving sends it through the
-                    standard `PATCH /api/agents/:id` flow.
-                  */}
-                  {Array.isArray(agent.subAgents) && agent.subAgents.length > 0 && (
-                    <div className="border-t border-gray-700 pt-3">
-                      <div className="flex items-center gap-3 mb-2">
-                        <label className="text-xs text-gray-400 font-medium">
-                          Delegation to sub-agents
-                        </label>
-                        <button
-                          data-testid="agent-delegation-toggle"
-                          onClick={() => {
-                            const current =
-                              edit.delegationEnabled !== undefined
-                                ? edit.delegationEnabled
-                                : agent.delegationEnabled !== false;
-                            setEdit(agent.id, 'delegationEnabled', !current);
-                          }}
-                          className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                            (
-                              edit.delegationEnabled !== undefined
-                                ? edit.delegationEnabled
-                                : agent.delegationEnabled !== false
-                            )
-                              ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                              : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                          }`}
-                        >
-                          {(
-                            edit.delegationEnabled !== undefined
-                              ? edit.delegationEnabled
-                              : agent.delegationEnabled !== false
-                          )
-                            ? 'ON'
-                            : 'OFF'}
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        When OFF, this lead&apos;s{' '}
-                        <code className="font-mono">&lt;delegate&gt;</code> blocks are ignored and
-                        an in-chat nudge is shown instead. Use this when sub-agent fan-out is more
-                        harmful than helpful — the lead will complete the work inline.
-                      </p>
-                    </div>
-                  )}
-
                   {/* Heartbeat settings */}
                   <div className="border-t border-gray-700 pt-3">
                     <div className="flex items-center gap-3 mb-3">
@@ -5911,9 +5854,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
     <div>
       <h3 className="text-lg font-semibold mb-4">Export / Import Project</h3>
       <p className="text-sm text-gray-400 mb-6">
-        Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks. Import
-        creates the project on a new instance — or merge into an existing project to layer the
-        export's data on top.
+        Export a project with its agents, kanban board, wiki, crons, and rooms. Import creates the
+        project on a new instance — or merge into an existing project to layer the export's data on
+        top.
       </p>
 
       {/* Export */}
@@ -5948,7 +5891,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
         <p className="text-sm text-gray-400 mb-3">
           Upload a project export file. By default the export creates a brand-new project with all
           its data. Switch to “Merge into existing” to layer the export onto a project that already
-          exists — agents and settings are overwritten; crons, rooms, wiki, and webhooks are merged.
+          exists — agents and settings are overwritten; crons, rooms, and wiki are merged.
         </p>
 
         {!preview && (
@@ -5980,8 +5923,6 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                 <span className="text-white">{preview.crons?.length || 0}</span>
                 <span>Rooms:</span>
                 <span className="text-white">{preview.rooms?.length || 0}</span>
-                <span>Webhooks:</span>
-                <span className="text-white">{preview.webhooks?.length || 0}</span>
                 {preview.exportedAt && (
                   <>
                     <span>Exported:</span>
@@ -6024,7 +5965,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                   <span>
                     <span className="block">Merge into an existing project</span>
                     <span className="block text-xs text-gray-500">
-                      Overwrites agents/settings; merges crons, rooms, wiki, webhooks.
+                      Overwrites agents/settings; merges crons, rooms, and wiki.
                     </span>
                   </span>
                 </label>

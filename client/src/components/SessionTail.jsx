@@ -13,11 +13,6 @@ import {
   diffHasDisplayableLines,
   isExplicitEmptyWrite,
 } from '../utils/diff.js';
-import {
-  extractCoordinationBlocks,
-  describeHandoffReason,
-  describeDelegateReason,
-} from '../utils/coordinationBlocks.js';
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
 import { extractReviewVerdictContent } from '../utils/finalizeTimeline.js';
@@ -25,8 +20,6 @@ import { extractAskBlocks } from '../../../shared/utils/extractAskBlocks.js';
 import { shouldSuppressStreamEvent } from '../../../shared/utils/benignStreamEvents.js';
 import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
-import HandoffCard from './HandoffCard.jsx';
-import DelegateCard from './DelegateCard.jsx';
 import BrowserActivityPanel from './BrowserActivityPanel.jsx';
 import {
   Bot,
@@ -80,20 +73,9 @@ function SessionTail({
   onEventsLoaded,
   onAskSubmit,
   askSubmittedIds,
-  fromAgent,
-  agents,
-  sessionHandoffs,
-  sessionDelegations,
-  delegationDispatchError,
-  onOpenSession,
   browserScreenshots = {},
   onInterrupt,
 }) {
-  // `streaming` doubles as the parent-active signal for DelegateCard so it
-  // can decide whether an empty live snapshot means "still awaiting dispatch"
-  // (active turn) or "dispatch never happened" (closed turn) — the original
-  // "Queued forever" bug.
-  const parentSessionActive = !!streaming;
   const messageId = message?.id;
 
   /** Tracks lazy GET /messages/:id/events — must not conflate with "loaded empty". */
@@ -210,16 +192,7 @@ function SessionTail({
     if (message?.content) {
       return (
         <div data-testid="session-tail-events-error-with-content">
-          <StoredAssistantBubble
-            message={message}
-            agentColor={agentColor}
-            fromAgent={fromAgent}
-            agents={agents}
-            sessionHandoffs={sessionHandoffs}
-            sessionDelegations={sessionDelegations}
-            delegationDispatchError={delegationDispatchError}
-            onOpenSession={onOpenSession}
-          />
+          <StoredAssistantBubble message={message} agentColor={agentColor} />
           <div className="flex justify-start -mt-2 mb-4 min-w-0">
             <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3">
               <div
@@ -291,18 +264,7 @@ function SessionTail({
     message?.content &&
     (events !== undefined || eventFetchState === 'ok')
   ) {
-    return (
-      <StoredAssistantBubble
-        message={message}
-        agentColor={agentColor}
-        fromAgent={fromAgent}
-        agents={agents}
-        sessionHandoffs={sessionHandoffs}
-        sessionDelegations={sessionDelegations}
-        delegationDispatchError={delegationDispatchError}
-        onOpenSession={onOpenSession}
-      />
-    );
+    return <StoredAssistantBubble message={message} agentColor={agentColor} />;
   }
 
   const streamingFallbackReview =
@@ -354,17 +316,7 @@ function SessionTail({
         {streaming && blocks.length === 0 && (
           <div className="mt-2">
             {streamingFallbackText ? (
-              <TextBubble
-                text={streamingFallbackText}
-                fromAgent={fromAgent}
-                agents={agents}
-                sessionHandoffs={sessionHandoffs}
-                sessionDelegations={sessionDelegations}
-                delegationDispatchError={delegationDispatchError}
-                parentMessageId={messageId}
-                parentSessionActive={parentSessionActive}
-                onOpenSession={onOpenSession}
-              />
+              <TextBubble text={streamingFallbackText} />
             ) : (
               <span className="text-xs text-gray-500 italic">Waiting for first event…</span>
             )}
@@ -396,20 +348,7 @@ function SessionTail({
               case 'plan_proposal':
                 return <PlanProposalCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'text':
-                return (
-                  <TextBubble
-                    key={`b${i}`}
-                    text={block.text}
-                    fromAgent={fromAgent}
-                    agents={agents}
-                    sessionHandoffs={sessionHandoffs}
-                    sessionDelegations={sessionDelegations}
-                    delegationDispatchError={delegationDispatchError}
-                    parentMessageId={messageId}
-                    parentSessionActive={parentSessionActive}
-                    onOpenSession={onOpenSession}
-                  />
-                );
+                return <TextBubble key={`b${i}`} text={block.text} />;
               case 'ask_question':
                 return (
                   <AskUserQuestion
@@ -1506,148 +1445,20 @@ function formatToolInput(input) {
   }
 }
 
-function TextBubble({
-  text,
-  fromAgent,
-  agents,
-  sessionHandoffs,
-  sessionDelegations,
-  delegationDispatchError,
-  parentMessageId,
-  parentSessionActive,
-  onOpenSession,
-}) {
-  // Strip <agenthub:skill> / <agenthub:react> / … before coordination blocks.
-  // `eventsToBlocks` already strips for persisted session_events, but this
-  // bubble also renders `message.content` during early streaming (before the
-  // first session_event) — that path must not leak fenced skill blocks into
-  // the markdown renderer.
+function TextBubble({ text }) {
   const scrubbed = stripAssistantControlBlocks(text);
-  // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
-  // wall doesn't end up rendered inline. The blocks are surfaced separately
-  // as dedicated cards below the prose. Rendering delegate blocks here as a
-  // persistent `DelegateCard` is the fix for the "delegate sometimes
-  // doesn't show up" bug — the side `DelegationPanel` is driven by live
-  // WebSocket events that can be dropped or missed when the user switches
-  // sessions, so the message-anchored card is the reliable visual signal.
-  const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
-    extractCoordinationBlocks(scrubbed);
-  const review = extractReviewVerdictContent(stripped);
-  const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
-  const malformedProps = handoffMalformed
-    ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
-    : null;
-  const delegateReasonText = delegateMalformed
-    ? describeDelegateReason(delegateMalformed.reason)
-    : null;
+  const review = extractReviewVerdictContent(scrubbed);
+  if (!review.prose) return null;
   return (
-    <>
-      {review.prose ? (
-        <div className="markdown-content text-gray-200 text-sm leading-relaxed">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={MARKDOWN_COMPONENTS}
-          >
-            {review.prose}
-          </ReactMarkdown>
-        </div>
-      ) : null}
-      {handoff && (
-        <HandoffCard
-          toAgentId={handoff.toAgent}
-          note={handoff.note}
-          fromAgent={fromAgent}
-          agents={agents}
-          handoff={handoffRow}
-          onOpenSession={onOpenSession}
-        />
-      )}
-      {!handoff && malformedProps && (
-        <HandoffCard
-          toAgentId={malformedProps.toAgentId}
-          note={malformedProps.note}
-          fromAgent={fromAgent}
-          agents={agents}
-          handoff={malformedProps.handoff}
-          onOpenSession={onOpenSession}
-        />
-      )}
-      {(delegate || delegateMalformed) && (
-        <DelegateCard
-          tasks={delegate}
-          malformed={delegateMalformed}
-          malformedReasonText={delegateReasonText}
-          agents={agents}
-          sessionDelegations={sessionDelegations}
-          parentMessageId={parentMessageId}
-          parentSessionActive={parentSessionActive}
-          dispatchError={delegationDispatchError}
-        />
-      )}
-    </>
-  );
-}
-
-/**
- * Build HandoffCard props for a malformed `<handoff>` block. The server now
- * persists a failed row + broadcasts `handoff_error` for malformed payloads
- * (see `server/chat.ts`), so we prefer the server-side row when present
- * (`sessionHandoffs` entry with status='failed'). When the row hasn't
- * arrived yet (client parsed the block locally before the broadcast) we
- * synthesize a minimal failed row so the widget still renders with the
- * correct reason text.
- */
-function buildMalformedHandoffProps(malformed, sessionHandoffs) {
-  const serverRow = Array.isArray(sessionHandoffs)
-    ? sessionHandoffs.find(
-        (h) => h?.status === 'failed' && (!h?.to_agent_id || h.to_agent_id === '(unknown)'),
-      )
-    : null;
-  const reasonText = describeHandoffReason(malformed.reason);
-  const note =
-    (malformed.rawBody || '').trim().length > 0 ? malformed.rawBody.trim() : `(${reasonText})`;
-  const handoffProp = serverRow || {
-    id: null,
-    to_agent_id: null,
-    to_session_id: null,
-    status: 'failed',
-    error: reasonText,
-  };
-  return {
-    toAgentId: '(unknown)',
-    note,
-    handoff: handoffProp,
-  };
-}
-
-/**
- * Correlate a parsed <handoff> block back to its DB row. The server's fuzzy
- * resolver may have rewritten the id (e.g. "agent-hub-backend" →
- * "hub-backend"), so we accept either the raw block's `toAgent` or the
- * resolved `to_agent_id`, preferring delivered rows and then falling back
- * to the most recent matching row. When there's only one handoff row for
- * the whole source session (the common case — handoff is terminal) we
- * just use it unconditionally.
- */
-function pickHandoffRow(block, rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return null;
-  const wanted = (block?.toAgent || '').trim().toLowerCase();
-  const match = (r) => {
-    const rowAgent = (r?.to_agent_id || '').toLowerCase();
-    if (!wanted || !rowAgent) return false;
-    return (
-      rowAgent === wanted ||
-      rowAgent.endsWith(`-${wanted}`) ||
-      wanted.endsWith(`-${rowAgent}`) ||
-      wanted.includes(rowAgent) ||
-      rowAgent.includes(wanted)
-    );
-  };
-  return (
-    rows.find((r) => r.status === 'delivered' && match(r)) ||
-    rows.find((r) => match(r)) ||
-    (rows.length === 1 ? rows[0] : null)
+    <div className="markdown-content text-gray-200 text-sm leading-relaxed">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={MARKDOWN_COMPONENTS}
+      >
+        {review.prose}
+      </ReactMarkdown>
+    </div>
   );
 }
 
@@ -1726,43 +1537,15 @@ function UnknownBlock({ event }) {
 /**
  * Fallback bubble for stored assistant messages when event rows are absent.
  */
-function StoredAssistantBubble({
-  message,
-  agentColor,
-  fromAgent,
-  agents,
-  sessionHandoffs,
-  sessionDelegations,
-  delegationDispatchError,
-  onOpenSession,
-}) {
-  // Strip coordination blocks here too. Stored messages may include the
-  // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
-  // the same treatment: the message-anchored DelegateCard is the persistent
-  // visual record even when live WebSocket events never arrived.
+function StoredAssistantBubble({ message, agentColor }) {
   const scrubbed = stripAssistantControlBlocks(message.content);
-  const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
-    extractCoordinationBlocks(scrubbed);
-  const review = extractReviewVerdictContent(stripped);
-  const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
-  const malformedProps = handoffMalformed
-    ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
-    : null;
-  const delegateReasonText = delegateMalformed
-    ? describeDelegateReason(delegateMalformed.reason)
-    : null;
+  const review = extractReviewVerdictContent(scrubbed);
   const outcome = deriveAssistantTailOutcome({
     streaming: false,
     events: [],
     messageContent: message.content,
   });
-  const hasAssistantBubbleContent =
-    Boolean(review.prose) ||
-    Boolean(handoff) ||
-    Boolean(malformedProps) ||
-    Boolean(delegate) ||
-    Boolean(delegateMalformed);
-  if (!hasAssistantBubbleContent) return null;
+  if (!review.prose) return null;
 
   return (
     <div className="flex justify-start mb-4 min-w-0">
@@ -1775,54 +1558,15 @@ function StoredAssistantBubble({
           createdAt={message.created_at}
           outcome={outcome}
         />
-        {review.prose ? (
-          <div className="markdown-content text-gray-200 mt-1">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              components={MARKDOWN_COMPONENTS}
-            >
-              {review.prose}
-            </ReactMarkdown>
-          </div>
-        ) : null}
-        {handoff && (
-          <HandoffCard
-            toAgentId={handoff.toAgent}
-            note={handoff.note}
-            fromAgent={fromAgent}
-            agents={agents}
-            handoff={handoffRow}
-            onOpenSession={onOpenSession}
-          />
-        )}
-        {!handoff && malformedProps && (
-          <HandoffCard
-            toAgentId={malformedProps.toAgentId}
-            note={malformedProps.note}
-            fromAgent={fromAgent}
-            agents={agents}
-            handoff={malformedProps.handoff}
-            onOpenSession={onOpenSession}
-          />
-        )}
-        {(delegate || delegateMalformed) && (
-          <DelegateCard
-            tasks={delegate}
-            malformed={delegateMalformed}
-            malformedReasonText={delegateReasonText}
-            agents={agents}
-            sessionDelegations={sessionDelegations}
-            parentMessageId={message?.id}
-            // Stored persisted messages are inherently historical. The turn
-            // ended long ago, so an empty live snapshot here means dispatch
-            // didn't happen (or the WS broadcast was never received). Default
-            // to the historical branch so we render "Did not start" instead
-            // of an indefinite "Awaiting dispatch" spinner.
-            parentSessionActive={false}
-            dispatchError={delegationDispatchError}
-          />
-        )}
+        <div className="markdown-content text-gray-200 mt-1">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={MARKDOWN_COMPONENTS}
+          >
+            {review.prose}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

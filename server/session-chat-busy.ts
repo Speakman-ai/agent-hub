@@ -18,19 +18,16 @@ export function isPidAlive(pid: number | null | undefined): boolean {
 }
 
 /**
- * Whether a session currently has in-flight chat work. Prefer in-memory process /
- * delegation markers; fall back to `active_tasks` only when the row still
- * represents a live run (running status + live pid, or a pre-spawn window with
- * no pid yet).
+ * Whether a session currently has in-flight chat work. Prefer in-memory process
+ * markers; fall back to `active_tasks` only when the row still represents a live
+ * run (running status + live pid, or a pre-spawn window with no pid yet).
  */
 export function isSessionChatBusy(
   sessionId: string,
   activeProcesses: ReadonlyMap<string, unknown>,
-  activeDelegationSessions: ReadonlySet<string>,
   activeTask?: ActiveTaskRow | undefined,
 ): boolean {
   if (activeProcesses.has(sessionId)) return true;
-  if (activeDelegationSessions.has(sessionId)) return true;
   if (!activeTask) return false;
   if (activeTask.status && activeTask.status !== 'running') return false;
   if (activeTask.pid != null) return isPidAlive(activeTask.pid);
@@ -51,7 +48,6 @@ export function logQueueDrainPoll(
 export interface DrainIdleQueuedSessionsArgs {
   stmts: Pick<Stmts, 'getAllQueuedSessions' | 'getActiveTask' | 'getQueuedMessages'>;
   activeProcesses: ReadonlyMap<string, unknown>;
-  activeDelegationSessions: ReadonlySet<string>;
   drainQueue: (sessionId: string) => void;
 }
 
@@ -69,7 +65,7 @@ export function drainIdleQueuedSessions(args: DrainIdleQueuedSessionsArgs): numb
     if (queuedCount === 0) continue;
 
     const task = args.stmts.getActiveTask.get(session_id) as ActiveTaskRow | undefined;
-    if (isSessionChatBusy(session_id, args.activeProcesses, args.activeDelegationSessions, task)) {
+    if (isSessionChatBusy(session_id, args.activeProcesses, task)) {
       logQueueDrainPoll('skipped_busy', session_id, queuedCount);
       continue;
     }

@@ -267,14 +267,6 @@ export const api = {
     const data = await fetchJSON(`/sessions/${sessionId}/messages${q}`);
     return normalizeSessionMessagesResponse(data).messages;
   },
-  getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
-  /**
-   * Historical delegations for this session, ordered `started_at DESC`.
-   * Hydrates `delegations[sessionId]` on session load so message-anchored
-   * `<delegate>` cards in past assistant messages render their real terminal
-   * status (done/error/cancelled) instead of the "Queued" placeholder.
-   */
-  getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
   /** Session sidebar: linked kanban card, skills, aggregated run snapshot from message events. */
   getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
   /** Live git status — uncommitted or unpushed work in the session worktree. */
@@ -423,10 +415,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ designId: designId ?? null }),
     }),
-  // `setSessionWorktree` was removed when Agent Hub locked to
-  // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
-  // endpoint no longer exists.
-
   shipSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/ship`, {
       method: 'POST',

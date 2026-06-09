@@ -168,7 +168,7 @@ describe('Projects', () => {
       // Board + default columns are present immediately, not lazily on first GET.
       const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
-      expect(columnNames).toEqual(['To Do', 'In Progress', 'Review', 'Done']);
+      expect(columnNames).toEqual(['To Do', 'In Progress', 'Done']);
 
       // Project carries the primary "<Project> Agent" plus Docs + Intake.
       // Reviewer is deliberately absent (no `githubRepo` on workflow projects).
@@ -886,36 +886,6 @@ describe('Agents', () => {
         .expect(200);
 
       expect(res.body.avatar).toBe('/uploads/abc123.png');
-    });
-
-    // Operator-controlled `delegationEnabled` gate (per-agent disable switch
-    // for `<delegate>` dispatch). The PATCH route must accept this field on
-    // the allowlist so the SettingsPage toggle can flip it. The actual
-    // dispatch-skipping behaviour is unit-tested separately in
-    // `delegation-gate.test.ts`; here we just lock down round-trip
-    // persistence so a future allowlist edit can't silently drop the field.
-    it('persists delegationEnabled=false and round-trips it', async () => {
-      const agent = await createAgent();
-      const res = await request
-        .patch(`/api/agents/${agent.id}`)
-        .send({ delegationEnabled: false })
-        .expect(200);
-
-      expect(res.body.delegationEnabled).toBe(false);
-
-      const list = await request.get('/api/agents').expect(200);
-      const fetched = list.body.find((a: { id: string }) => a.id === agent.id);
-      expect(fetched?.delegationEnabled).toBe(false);
-    });
-
-    it('lets the operator re-enable delegation by sending true', async () => {
-      const agent = await createAgent();
-      await request.patch(`/api/agents/${agent.id}`).send({ delegationEnabled: false }).expect(200);
-      const res = await request
-        .patch(`/api/agents/${agent.id}`)
-        .send({ delegationEnabled: true })
-        .expect(200);
-      expect(res.body.delegationEnabled).toBe(true);
     });
 
     it('persists browserToolsEnabled=false and round-trips it', async () => {
@@ -2084,14 +2054,6 @@ describe('Session Queue', () => {
   it('returns queue for a session', async () => {
     const session = await createSession();
     const res = await request.get(`/api/sessions/${session.id}/queue`).expect(200);
-    expect(Array.isArray(res.body)).toBe(true);
-  });
-});
-
-describe('Delegations', () => {
-  it('returns delegations for a session', async () => {
-    const session = await createSession();
-    const res = await request.get(`/api/sessions/${session.id}/delegations`).expect(200);
     expect(Array.isArray(res.body)).toBe(true);
   });
 });

@@ -17,7 +17,6 @@ import StreamingMessage from '../components/StreamingMessage';
 import ThinkingIndicator from '../components/ThinkingIndicator';
 import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
-import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 // ChangesReadyBox replaced by FinalizeButton (card 2bce78c2). The component
 // file is intentionally retained — its removal is tracked as a separate
@@ -49,21 +48,17 @@ export default function ChatScreen() {
     handleCancel,
     chatScrollNonce,
     skills,
-    delegations,
     messageQueues,
     eventsByMessage,
     browserScreensBySession,
     handleDequeue,
     handleInterruptQueuedMessage,
     handleEditQueuedMessage,
-    handleDelegationCancel,
     handleEventsLoaded,
     activeSessionId,
     changesReady,
     dismissChangesReady,
     projects,
-    sessionHandoffs,
-    handleOpenHandoffSession,
     sessionAskMode,
     askSubmitted,
     handleAskSubmit,
@@ -104,7 +99,6 @@ export default function ChatScreen() {
   }, [messages, thinking, streamingContent, activeSessionId, chatScrollNonce]);
 
   const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
-  const activeDelegation = delegations[activeSessionId];
   const pendingChanges = changesReady?.[activeSessionId];
   const activeProject = projects?.find((p) => p.id === activeAgent?.projectId);
   const workflowProject = isWorkflowProject(activeProject);
@@ -128,9 +122,6 @@ export default function ChatScreen() {
       : []),
     ...(streamingContent
       ? [{ type: 'streaming', key: 'streaming', data: { content: streamingContent, engine: streamingEngine } }]
-      : []),
-    ...(activeDelegation?.tasks?.length > 0
-      ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
       : []),
     ...(pendingChanges &&
     !workflowProject &&
@@ -169,10 +160,6 @@ export default function ChatScreen() {
               onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
               onInterrupt={isQueued && isProcessing ? handleInterruptQueuedMessage : undefined}
               inFlightWhileStreaming={isQueued && isProcessing}
-              fromAgent={activeAgent}
-              agents={agents}
-              sessionHandoffs={sessionHandoffs}
-              onOpenSession={handleOpenHandoffSession}
             />
             {msg.role === 'assistant' && (
               <SessionTail
@@ -227,16 +214,6 @@ export default function ChatScreen() {
                 }
               />
             )}
-          </View>
-        );
-      case 'delegation':
-        return (
-          <View style={{ paddingHorizontal: 12 }}>
-            <DelegationPanel
-              delegations={item.data.tasks}
-              sessionId={activeSessionId}
-              onCancel={handleDelegationCancel}
-            />
           </View>
         );
       case 'resolve-pr-banner':

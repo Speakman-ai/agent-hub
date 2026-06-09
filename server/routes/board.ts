@@ -195,7 +195,6 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
   const defaultColumns = [
     { name: 'To Do', color: '#3B82F6' },
     { name: 'In Progress', color: '#F59E0B' },
-    { name: 'Review', color: '#8B5CF6' },
     { name: 'Done', color: '#10B981' },
   ];
   for (let i = 0; i < defaultColumns.length; i++) {
@@ -609,9 +608,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             },
           );
         }
-        // Note: PR review is now triggered by the GitHub webhook handler
-        // (pull_request.opened/synchronize) rather than by a card moving into
-        // the Review column. The Review column is a UI signal only.
+        // Note: PR review is triggered by the reconciliation poller or manual
+        // resolve (pull_request.opened/synchronize) rather than by a card
+        // moving into the Review column. The Review column is a UI signal only.
       } catch (err) {
         console.error(`[Card Move] Error in post-move hooks:`, (err as Error).message);
       }
@@ -749,7 +748,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           ``,
           `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
           `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
-          `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
+          `- **Move** this card as state changes (In Progress → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
           `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
           ``,
           `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
@@ -1178,9 +1177,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
     const colNameMap = Object.fromEntries(cols.map((c) => [c.id, c.name]));
     const inProgress = allEpicCards.filter((c) => colNameMap[c.column_id] === 'In Progress');
-    const inReview = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Review');
     const done = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Done');
-    const activeCards = inProgress.length + inReview.length;
+    const activeCards = inProgress.length;
 
     res.json({
       active: true,
@@ -1191,7 +1189,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       maxConcurrent: epic.autonomous_max_concurrent,
       eligibleCards: eligible.length,
       inProgressCards: inProgress.length,
-      inReviewCards: inReview.length,
       activeCards,
       slotsAvailable: Math.max(0, epic.autonomous_max_concurrent - activeCards),
       doneCards: done.length,

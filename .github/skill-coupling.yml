@@ -17,9 +17,6 @@
 # below. Keep entries one-per-line — this file is deliberately greppable.
 
 coupled_paths:
-  # Coordination protocol parsers / spawners
-  - server/delegation.ts
-  - server/handoff.ts
   - server/card-auto-close.ts
   # Auth Phase 3 multi-user/org surface
   - server/routes/auth.ts

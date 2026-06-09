@@ -38,7 +38,6 @@ function stubChatHandlerDeps(): ChatHandlerDeps {
     findAgent: vi.fn(),
     getEnrichedAgent: vi.fn(),
     activeProcesses: new Map(),
-    activeDelegationSessions: new Set(),
     autonomousProjects: new Set(),
     getClaudeBin: () => '/tmp/claude',
     getCursorBin: () => '/tmp/cursor-agent',
@@ -49,10 +48,6 @@ function stubChatHandlerDeps(): ChatHandlerDeps {
     createCursorChat: undefined,
     ensureWorktree: vi.fn(async () => ''),
     drainQueue: vi.fn(),
-    handleDelegation: vi.fn(async () => []),
-    handleDelegationCancel: vi.fn(),
-    synthesizeResults: vi.fn(),
-    parseDelegateBlock: vi.fn(),
     autoCommitAndPR: vi.fn(),
     tryAutonomousDispatch: vi.fn(),
   };

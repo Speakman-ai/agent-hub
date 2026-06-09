@@ -15,9 +15,6 @@ import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
-// Worktree toggle + detection-badge imports were removed when Agent Hub
-// locked to worktree-only sessions. `isWorkflowProject` no longer
-// influences this component.
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
@@ -43,7 +40,7 @@ export default function TopBar({ projectId, agentId } = {}) {
     activeSessionId,
     activeSessionState,
     agents,
-    handleOpenHandoffSession,
+    focusAgentSession,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
@@ -51,9 +48,6 @@ export default function TopBar({ projectId, agentId } = {}) {
   const effectiveAgentId = agentId || activeAgentId || activeAgent?.id || '';
   const effectiveProjectId = projectId || activeAgent?.projectId || '';
   const activeProject = projects?.find((p) => p.id === effectiveProjectId);
-  // `workflowProject` was used to hide the worktree toggle when the
-  // project was in workflow mode; the toggle itself was removed when
-  // Agent Hub locked to worktree-only sessions.
 
   const [showPicker, setShowPicker] = useState(false);
   const [showForward, setShowForward] = useState(false);
@@ -270,8 +264,8 @@ export default function TopBar({ projectId, agentId } = {}) {
           // Reuse the handoff-open path: flips activeAgent + activeSession,
           // stashing targetSessionId in pendingSessionIdRef so the sessions
           // loader honors it instead of clobbering with data[0].id.
-          if (typeof handleOpenHandoffSession === 'function') {
-            handleOpenHandoffSession(session.agent_id, session.id);
+          if (typeof focusAgentSession === 'function') {
+            focusAgentSession(session.agent_id, session.id);
           }
         }}
         onError={(msg) =>

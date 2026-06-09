@@ -59,7 +59,6 @@ describe('isColumnBlockerSensitive', () => {
   it('returns true for other columns', () => {
     expect(isColumnBlockerSensitive('To Do')).toBe(true);
     expect(isColumnBlockerSensitive('In Progress')).toBe(true);
-    expect(isColumnBlockerSensitive('Review')).toBe(true);
     expect(isColumnBlockerSensitive('QA')).toBe(true);
   });
 

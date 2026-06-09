@@ -4028,8 +4028,8 @@ describe.skip('commitPushAndCreatePR — existing-PR base retarget', () => {
     expect(String(warnings[0][3])).toMatch(
       /gh pr edit https:\/\/github.com\/test\/repo\/pull\/662/,
     );
-    // Card still moves to Review (non-fatal).
+    // Card does not move when gh pr edit fails (non-fatal warning comment only).
     const moveRun = (stmts.moveKanbanCard as { run: ReturnType<typeof vi.fn> }).run;
-    expect(moveRun).toHaveBeenCalledWith('col-review', 0, 'card-edit-fail');
+    expect(moveRun).not.toHaveBeenCalled();
   });
 });

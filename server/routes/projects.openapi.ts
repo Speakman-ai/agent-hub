@@ -60,10 +60,8 @@ export const ProjectOrderErrorComponent = registerComponent(
 // still on the hand-rolled validation path; rather than capture every
 // field today we passthrough() unknown keys so this registration is
 // strictly additive — extra fields a client sees in the wire response
-// stay valid and the schema documents the new webhookConfigured field
-// that drives the missing-webhook UI banner. A future "schematise the
-// rest of Project" follow-up can grow this object without breaking
-// existing consumers.
+// stay valid. A future "schematise the rest of Project" follow-up can
+// grow this object without breaking existing consumers.
 export const ProjectDetailComponent = registerComponent(
   'ProjectDetail',
   z
@@ -78,21 +76,11 @@ export const ProjectDetailComponent = registerComponent(
         description:
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',
       }),
-      webhookConfigured: z
-        .boolean()
-        .nullable()
-        .openapi({
-          description:
-            'Whether this project has at least one enabled webhook_configs row. ' +
-            '`true` — at least one enabled row delivers events. ' +
-            '`false` — `githubRepo` is set but no enabled row exists; PR events will NOT reach the reviewer pipeline. Drives the missing-webhook UI banner. ' +
-            '`null` — `githubRepo` is unset (non-GitHub remote or scratch project); webhook config is not applicable.',
-        }),
     })
     .passthrough()
     .openapi({
       description:
-        'Project detail response. Includes the full Project shape stored in `projects.json` plus the derived `webhookConfigured` flag. Additional fields beyond the documented ones (agents, githubWorkflow, prEnv, …) flow through via passthrough — schematise as that legacy surface migrates onto the schema-first contract.',
+        'Project detail response. Includes the full Project shape stored in `projects.json`. Additional fields beyond the documented ones (agents, githubWorkflow, prEnv, …) flow through via passthrough — schematise as that legacy surface migrates onto the schema-first contract.',
     }),
 );
 
@@ -104,78 +92,6 @@ export const ProjectDetailErrorComponent = registerComponent(
     })
     .openapi({
       description: 'Error envelope returned when the project slug is unknown.',
-    }),
-);
-
-// ─── Webhook auto-configure ───────────────────────────────────────
-
-export const WebhookConfigRowSchema = registerComponent(
-  'WebhookConfigRow',
-  z
-    .object({
-      id: z.number(),
-      project_id: z.string(),
-      repo_url: z.string(),
-      secret: z.string().nullable(),
-      events: z.string().openapi({ description: 'JSON-encoded event-toggle map.' }),
-      enabled: z.number().openapi({ description: '1 if enabled, 0 if disabled.' }),
-      author_allowlist: z.string().openapi({
-        description: 'JSON-encoded array of GitHub logins whose PRs trigger the reviewer.',
-      }),
-      created_at: z.string(),
-      updated_at: z.string().nullable(),
-    })
-    .openapi({ description: 'Persisted webhook_configs row.' }),
-);
-
-export const WebhookRegistrationResultSchema = registerComponent(
-  'WebhookRegistrationResult',
-  z
-    .union([
-      z.object({
-        ok: z.literal(true),
-        skipped: z.literal(true).optional(),
-        reason: z.string().optional(),
-        message: z.string().optional(),
-        hookId: z.number().optional(),
-        url: z.string().optional(),
-        events: z.array(z.string()).optional(),
-        updated: z.boolean().optional(),
-      }),
-      z.object({
-        ok: z.literal(false),
-        error: z.string(),
-      }),
-    ])
-    .openapi({
-      description:
-        'Outcome of the GitHub-side webhook registration. `skipped: true` with `reason: "github_app_installed"` means the GitHub App already delivers events for this repo, so no per-repo registration is needed — the local `webhook_configs` row is still created for UI clarity.',
-    }),
-);
-
-export const WebhookAutoConfigureResponseComponent = registerComponent(
-  'WebhookAutoConfigureResponse',
-  z
-    .object({
-      config: WebhookConfigRowSchema,
-      registration: WebhookRegistrationResultSchema,
-    })
-    .openapi({
-      description:
-        'Auto-configure result: the created `webhook_configs` row plus the registration outcome from GitHub.',
-    }),
-);
-
-export const WebhookAutoConfigureErrorComponent = registerComponent(
-  'WebhookAutoConfigureErrorResponse',
-  z
-    .object({
-      error: z.string(),
-      existingConfigId: z.number().optional(),
-    })
-    .openapi({
-      description:
-        'Error envelope. `existingConfigId` is set on 409 conflicts to point the UI at the row already in place.',
     }),
 );
 
@@ -218,7 +134,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Get a single project by slug',
   description:
-    'Returns the full project record from `projects.json` plus the derived `webhookConfigured` flag the missing-webhook UI banner depends on. ' +
+    'Returns the full project record from `projects.json`. ' +
     'The response is a superset of the `Project` row shape — extra fields flow through via `passthrough()` while the schema-first migration is in progress. ' +
     'Visibility-filtered: private projects only resolve for their owner (and the local-bypass / Owner-via-admin paths); other callers see a 404.',
   request: {
@@ -234,47 +150,6 @@ registerPath({
     404: {
       description: 'No project with this slug, or the caller cannot see it.',
       content: jsonContent(ProjectDetailErrorComponent),
-    },
-  },
-});
-
-// POST /api/projects/:projectId/webhook/auto-configure
-registerPath({
-  method: 'post',
-  path: '/api/projects/{projectId}/webhook/auto-configure',
-  tags: ['Projects'],
-  summary: 'One-click GitHub webhook setup for a project',
-  description:
-    'Creates a `webhook_configs` row with the standard event bundle (pull_request.opened / .synchronize / .review_comment.created enabled; .closed / review.submitted / check_suite.completed disabled) and registers the webhook on GitHub via the installation-token path when a GitHub App is configured, or the gh-CLI fallback otherwise. ' +
-    'Idempotent: returns 409 with `existingConfigId` if an enabled webhook config already exists for the project. ' +
-    'Requires `githubRepo` set on the project; returns 400 otherwise. ' +
-    'When the GitHub App is installed on the repo owner, the per-repo registration is skipped — the local row is still created so the missing-webhook UI banner clears, but the App is the active delivery path.',
-  request: {
-    params: z.object({
-      projectId: z.string().openapi({ description: 'Project slug (e.g. `agent-hub`).' }),
-    }),
-  },
-  responses: {
-    200: {
-      description:
-        'Webhook config created + registration attempted. Inspect `registration.ok` to learn whether the GitHub side succeeded; the local row is created either way.',
-      content: jsonContent(WebhookAutoConfigureResponseComponent),
-    },
-    400: {
-      description: 'Project has no `githubRepo` configured.',
-      content: jsonContent(WebhookAutoConfigureErrorComponent),
-    },
-    404: {
-      description: 'No project with this slug, or the caller cannot see it.',
-      content: jsonContent(WebhookAutoConfigureErrorComponent),
-    },
-    409: {
-      description: 'An enabled webhook config already exists for this project.',
-      content: jsonContent(WebhookAutoConfigureErrorComponent),
-    },
-    500: {
-      description: 'Server-side failure (DB outage, GitHub API exception).',
-      content: jsonContent(WebhookAutoConfigureErrorComponent),
     },
   },
 });

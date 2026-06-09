@@ -536,8 +536,7 @@ export async function runFinalize(
     { stmts: deps.stmts, now, log },
     { projectId: opts.project.id, runId, triggerSource: opts.triggerSource },
   );
-  // Mirror the run's start onto the kanban card: move card → In Progress
-  // (idempotent if already there) and post the "Finalize started" comment.
+  // Mirror the run's start onto the kanban card: post the "Finalize started" comment.
   // Idempotency on re-trigger is handled at the row-insert dedup above —
   // a `'reused'` short-circuit never reaches this point, so we don't
   // double-comment when the user clicks Finalize twice against the same

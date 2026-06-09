@@ -19,7 +19,6 @@ import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { getApiBaseUrl } from '../utils/config';
-import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordinationBlocks';
 import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
 import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules';
@@ -28,7 +27,6 @@ import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags.js';
 import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent.js';
-import HandoffCard from './HandoffCard';
 
 // Built once — overrides the Markdown library's default text/code rules so
 // every leaf <Text> is `selectable`, enabling browser-like drag-select copy
@@ -502,10 +500,6 @@ function ChatMessage({
   onEditQueued,
   onInterrupt,
   inFlightWhileStreaming = false,
-  fromAgent,
-  agents,
-  sessionHandoffs,
-  onOpenSession,
 }) {
   if (message.role === 'system') {
     if (parseShipRequestedMetadata(message.metadata)) {
@@ -531,26 +525,8 @@ function ChatMessage({
     return typeof message.content === 'string' ? message.content : message.content;
   }, [message.content, message.attachments, isUser]);
 
-  // For assistant messages, extract any `<handoff>` block so the JSON wall
-  // doesn't render as raw text. The block is shown as a HandoffCard instead.
-  const assistantBlocks = useMemo(() => {
-    if (isUser) return { stripped: message.content, handoff: null };
-    return extractCoordinationBlocks(message.content);
-  }, [isUser, message.content]);
-
-  // Correlate the parsed block to the matching DB row so HandoffCard can
-  // surface status (pending/delivered/failed) and a tappable "Open session"
-  // link. Returns null when no rows are loaded yet — the card still renders
-  // in that case, just without the link / status pill.
-  const handoffRow = useMemo(
-    () => (assistantBlocks.handoff ? pickHandoffRow(assistantBlocks.handoff, sessionHandoffs) : null),
-    [assistantBlocks.handoff, sessionHandoffs],
-  );
-
   // Long-press on any bubble copies its text to the system clipboard.
-  // For assistant bubbles we copy the stripped (markdown) content so any
-  // <handoff>/<delegate> JSON blocks don't pollute the paste target.
-  const copyPayload = isUser ? displayContent : assistantBlocks.stripped;
+  const copyPayload = displayContent;
   const copyEnabled = canCopy(copyPayload);
   const handleLongPress = useCallback(async () => {
     if (!copyEnabled) {
@@ -671,23 +647,11 @@ function ChatMessage({
             )}
           </>
         ) : (
-          <>
-            {assistantBlocks.stripped ? (
-              <Markdown style={markdownStyles} rules={selectableMarkdownRules}>
-                {assistantBlocks.stripped}
-              </Markdown>
-            ) : null}
-            {assistantBlocks.handoff && (
-              <HandoffCard
-                toAgentId={assistantBlocks.handoff.toAgent}
-                note={assistantBlocks.handoff.note}
-                fromAgent={fromAgent}
-                agents={agents}
-                handoff={handoffRow}
-                onOpenSession={onOpenSession}
-              />
-            )}
-          </>
+          displayContent ? (
+            <Markdown style={markdownStyles} rules={selectableMarkdownRules}>
+              {displayContent}
+            </Markdown>
+          ) : null
         )}
 
         {/* Timestamp */}

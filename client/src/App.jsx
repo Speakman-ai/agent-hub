@@ -13,7 +13,6 @@ import ReviewerPage from './components/ReviewerPage.jsx';
 import SessionAgentsPanel from './components/SessionAgentsPanel.jsx';
 import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
-import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionDesignPane from './components/SessionDesignPane.jsx';
@@ -62,7 +61,6 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck.js';
 import { api } from './utils/api.js';
-import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom, forcePinChatTailScroll } from './utils/chatScroll.js';
 import {
@@ -73,8 +71,6 @@ import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js
 import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
   awaitingInputNotification,
-  cardStartedNotification,
-  cardReviewNotification,
   prReadyNotification,
   sessionCompleteNotification,
   threadCreatedNotification,
@@ -147,10 +143,6 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   /** True while GET /api/sessions/:id/messages is in flight after a session switch. */
   const [sessionMessagesLoading, setSessionMessagesLoading] = useState(false);
-  // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
-  // source session — used by HandoffCard to render an "Open session" link.
-  const [sessionHandoffs, setSessionHandoffs] = useState([]);
-  // Sub-lg viewports: inline skill list (the full summary panel is lg+ only).
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
@@ -215,15 +207,6 @@ export default function App() {
   const [sessionDesignReloadToken, setSessionDesignReloadToken] = useState(0);
   // Controls the "Link a design" picker modal for the active chat session.
   const [showLinkDesign, setShowLinkDesign] = useState(false);
-  // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
-  const [delegations, setDelegations] = useState({});
-  // Last `delegation_error` per session — surfaces "Dispatch failed: …" on
-  // the message-anchored DelegateCard when the round never produced a
-  // `delegation_start` (no valid sub-agents, dispatcher exception, etc.).
-  // Without this, the only signal was a transient toast and the card sat
-  // on "Queued" forever. Cleared when a fresh `delegation_start` arrives
-  // for the same session. Shape: { [sessionId]: { message, parentMessageId? } }.
-  const [delegationDispatchErrors, setDelegationDispatchErrors] = useState({});
   // Rate-limit throttle state: Map of sessionId -> { active, retryAfterMs, clearedAt }
   const [throttle, setThrottle] = useState({});
   // Subagent tracking: Map of sessionId -> { total, running, done, errored }
@@ -1401,202 +1384,6 @@ export default function App() {
           }
           break;
 
-        // ─── Delegation events ────────────────────────────────
-        case 'delegation_start':
-          if (data.sessionId === activeSessionIdRef.current) {
-            const delegationStartedAt = Date.now();
-            setDelegations((prev) => ({
-              ...prev,
-              [data.sessionId]: {
-                parentMessageId: data.parentMessageId,
-                tasks: data.tasks.map((t) => ({
-                  delegationId: null,
-                  agentId: t.agentId,
-                  agentName: t.agentId,
-                  agentColor: null,
-                  task: t.task,
-                  status: 'pending',
-                  content: '',
-                  output: null,
-                  error: null,
-                  startedAt: delegationStartedAt,
-                })),
-              },
-            }));
-            // A fresh round just kicked off — clear any stale dispatch-error
-            // banner so the new card doesn't inherit the previous failure.
-            setDelegationDispatchErrors((prev) => {
-              if (!prev[data.sessionId]) return prev;
-              const next = { ...prev };
-              delete next[data.sessionId];
-              return next;
-            });
-          }
-          break;
-        case 'delegation_thinking':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setDelegations((prev) => {
-              const existing = prev[data.sessionId];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [data.sessionId]: {
-                  ...existing,
-                  tasks: existing.tasks.map((t) =>
-                    t.agentId === data.agentId
-                      ? {
-                          ...t,
-                          delegationId: data.delegationId,
-                          agentName: data.agentName,
-                          agentColor: data.agentColor,
-                          status: 'running',
-                        }
-                      : t,
-                  ),
-                },
-              };
-            });
-          }
-          break;
-        case 'delegation_stream':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setDelegations((prev) => {
-              const existing = prev[data.sessionId];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [data.sessionId]: {
-                  ...existing,
-                  tasks: existing.tasks.map((t) =>
-                    t.agentId === data.agentId
-                      ? {
-                          ...t,
-                          agentName: data.agentName,
-                          agentColor: data.agentColor,
-                          content: data.content,
-                          status: 'running',
-                        }
-                      : t,
-                  ),
-                },
-              };
-            });
-          }
-          break;
-        case 'delegation_agent_done':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setDelegations((prev) => {
-              const existing = prev[data.sessionId];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [data.sessionId]: {
-                  ...existing,
-                  tasks: existing.tasks.map((t) =>
-                    t.agentId === data.agentId
-                      ? { ...t, status: 'done', output: data.output, content: '' }
-                      : t,
-                  ),
-                },
-              };
-            });
-          }
-          break;
-        case 'delegation_agent_error':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setDelegations((prev) => {
-              const existing = prev[data.sessionId];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [data.sessionId]: {
-                  ...existing,
-                  tasks: existing.tasks.map((t) =>
-                    t.agentId === data.agentId ? { ...t, status: 'error', error: data.error } : t,
-                  ),
-                },
-              };
-            });
-          }
-          break;
-        case 'delegation_round_done':
-          // Delegation complete — keep the data for display but mark as done
-          break;
-        case 'delegation_cancelled':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setDelegations((prev) => {
-              const existing = prev[data.sessionId];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [data.sessionId]: {
-                  ...existing,
-                  tasks: existing.tasks.map((t) =>
-                    t.status === 'running' || t.status === 'pending'
-                      ? { ...t, status: 'cancelled' }
-                      : t,
-                  ),
-                },
-              };
-            });
-          }
-          break;
-        case 'delegation_error': {
-          const delegationMsg = `Delegation failed: ${data.error}`;
-          if (data.sessionId === activeSessionIdRef.current) {
-            setToasts((prev) => [
-              ...prev,
-              {
-                id: `delegation-err-${Date.now()}`,
-                type: 'error',
-                message: delegationMsg,
-                duration: 10000,
-              },
-            ]);
-          }
-          // Stash the error so the message-anchored DelegateCard can render a
-          // persistent "Dispatch failed: …" banner. Without this, a user who
-          // missed the toast saw an indefinite "Queued" spinner with no clue
-          // why the round never started.
-          if (data.sessionId) {
-            setDelegationDispatchErrors((prev) => ({
-              ...prev,
-              [data.sessionId]: {
-                message: typeof data.error === 'string' ? data.error : 'Unknown dispatch error',
-                parentMessageId:
-                  typeof data.parentMessageId === 'string' ? data.parentMessageId : null,
-              },
-            }));
-          }
-          notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
-          break;
-        }
-        case 'delegation_disabled': {
-          // Operator gate: lead has `delegationEnabled === false`. The server
-          // already persisted the explanatory system message — we just need
-          // to anchor a card-level banner so users browsing history without
-          // the system-message visible (e.g. compact view) still see why
-          // dispatch never started. Reuse the dispatchError state slot with
-          // a `kind: 'disabled'` discriminator so DelegateCard can render
-          // distinct copy (informational, not failure-red).
-          if (data.sessionId) {
-            const reason =
-              typeof data.reason === 'string' && data.reason.length > 0
-                ? data.reason
-                : 'Delegation disabled for this lead';
-            setDelegationDispatchErrors((prev) => ({
-              ...prev,
-              [data.sessionId]: {
-                kind: 'disabled',
-                message: reason,
-                parentMessageId:
-                  typeof data.parentMessageId === 'string' ? data.parentMessageId : null,
-              },
-            }));
-          }
-          break;
-        }
-
         case 'sessions_resuming': {
           const count = data.count || 0;
           const toast = {
@@ -1750,48 +1537,6 @@ export default function App() {
           notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
           // Also refresh kanban to show the new card comment
           setKanbanRefreshKey((k) => k + 1);
-          break;
-        }
-
-        // ── Ticket lifecycle notifications ─────────────────────────
-        case 'card_moved': {
-          const colLower = (data.columnName || '').toLowerCase();
-          const navigateCardToast = () => {
-            if (data.sessionId && data.agentId) {
-              focusAgentSessionRef.current?.(data.agentId, data.sessionId);
-            } else if (data.projectId) {
-              setCurrentView(`kanban:${data.projectId}`);
-              setSidebarOpen(false);
-            }
-          };
-          const canNavigateCardToast = Boolean((data.sessionId && data.agentId) || data.projectId);
-          if (colLower === 'in progress') {
-            const { title, body } = cardStartedNotification(data);
-            setToasts((prev) => [
-              ...prev,
-              {
-                id: `card-started-${data.cardId}-${Date.now()}`,
-                type: 'info',
-                message: body,
-                duration: 8000,
-                onClick: canNavigateCardToast ? navigateCardToast : undefined,
-              },
-            ]);
-            notify({ title, body, type: 'info' });
-          } else if (colLower === 'review') {
-            const { title, body } = cardReviewNotification(data);
-            setToasts((prev) => [
-              ...prev,
-              {
-                id: `card-review-${data.cardId}-${Date.now()}`,
-                type: 'info',
-                message: body,
-                duration: 8000,
-                onClick: canNavigateCardToast ? navigateCardToast : undefined,
-              },
-            ]);
-            notify({ title, body, type: 'info' });
-          }
           break;
         }
 
@@ -2017,31 +1762,6 @@ export default function App() {
           break;
         }
 
-        case 'handoff_start': {
-          // Append the just-created handoff row to the source session's list
-          // so the HandoffCard "Open session" link appears without needing a
-          // refresh. Only relevant when the source session is currently open.
-          if (data.sessionId === activeSessionIdRef.current) {
-            setSessionHandoffs((prev) => {
-              if (prev.some((h) => h.id === data.handoffId)) return prev;
-              return [
-                ...prev,
-                {
-                  id: data.handoffId,
-                  from_session_id: data.sessionId,
-                  to_session_id: data.toSessionId,
-                  from_agent_id: data.fromAgentId,
-                  to_agent_id: data.toAgentId,
-                  note: null,
-                  status: 'delivered',
-                  error: null,
-                },
-              ];
-            });
-          }
-          break;
-        }
-
         case 'session_forwarded': {
           // A session was forwarded somewhere — if the new session belongs to
           // the currently-active agent, splice it into the sidebar list so the
@@ -2150,37 +1870,6 @@ export default function App() {
             }
             return { ...prev, [sid]: true };
           });
-          break;
-        }
-        case 'handoff_error': {
-          // Surface the failure on the source session's handoff list so the
-          // UI can render a "Failed — <reason>" chip on the card instead of
-          // the usual "Delivering…" placeholder.
-          if (data.sessionId === activeSessionIdRef.current && data.handoffId) {
-            setSessionHandoffs((prev) => {
-              const existing = prev.find((h) => h.id === data.handoffId);
-              if (existing) {
-                return prev.map((h) =>
-                  h.id === data.handoffId
-                    ? { ...h, status: 'failed', error: data.error || 'Handoff failed' }
-                    : h,
-                );
-              }
-              return [
-                ...prev,
-                {
-                  id: data.handoffId,
-                  from_session_id: data.sessionId,
-                  to_session_id: null,
-                  from_agent_id: null,
-                  to_agent_id: null,
-                  note: null,
-                  status: 'failed',
-                  error: data.error || 'Handoff failed',
-                },
-              ];
-            });
-          }
           break;
         }
         default: {
@@ -2548,79 +2237,6 @@ export default function App() {
       cancelled = true;
     };
   }, [activeSessionId]);
-
-  // Load any handoffs emitted from this session so HandoffCard can resolve
-  // `toSessionId` and render a clickable "Open session" link. Best-effort —
-  // missing endpoint / offline must never block the chat render.
-  useEffect(() => {
-    if (!activeSessionId) {
-      setSessionHandoffs([]);
-      return;
-    }
-    let cancelled = false;
-    api
-      .getSessionHandoffs(activeSessionId)
-      .then((rows) => {
-        if (cancelled) return;
-        setSessionHandoffs(Array.isArray(rows) ? rows : []);
-      })
-      .catch(() => {
-        if (!cancelled) setSessionHandoffs([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId]);
-
-  // Hydrate historical delegations on session load so message-anchored
-  // `<delegate>` cards in saved assistant messages render their real
-  // terminal status (done/error/cancelled) instead of the "Queued"
-  // placeholder. Without this fetch, `delegations[sessionId]` is empty
-  // until a fresh `delegation_start` WS event arrives — meaning a session
-  // refresh after the round completed showed every delegate row as
-  // "Queued" forever (Bug intake: "Delegations stay queued; user expects
-  // immediate sub-agent kickoff"). Live WS events still win — the
-  // `delegation_start` handler replaces the entry when a *new* round
-  // begins. Best-effort: missing endpoint / offline must never block
-  // the chat render.
-  useEffect(() => {
-    if (!activeSessionId) return undefined;
-    let cancelled = false;
-    const sessionId = activeSessionId;
-    api
-      .getSessionDelegations(sessionId)
-      .then((rows) => {
-        if (cancelled) return;
-        const hydrated = mapDelegationRowsToLiveShape(rows);
-        if (!hydrated) return;
-        setDelegations((prev) => {
-          // Don't clobber a live round that arrived between fetch start
-          // and resolution — the WS-driven entry is always more
-          // authoritative than the historical snapshot.
-          if (prev[sessionId]) return prev;
-          return { ...prev, [sessionId]: hydrated };
-        });
-      })
-      .catch(() => {
-        // Missing endpoint / offline / 500 — silent: the panel falls back
-        // to the existing "Queued" placeholder, matching pre-fix behavior.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId]);
-
-  // Navigate into a handoff's target session (called from HandoffCard).
-  const handleOpenHandoffSession = useCallback(
-    (targetAgentId, targetSessionId) => {
-      if (!targetAgentId || !targetSessionId) return;
-      pendingSessionIdRef.current = targetSessionId;
-      setActiveAgentId(targetAgentId);
-      setActiveSessionId(targetSessionId);
-      setCurrentView('chat');
-    },
-    [setActiveAgentId],
-  );
 
   /** Switch to the agent that owns the session, then open chat (used by sidebar, toasts, dashboard). */
   const focusAgentSession = useCallback(
@@ -3491,14 +3107,6 @@ export default function App() {
         summary: `${step.phase}/${step.tool} -> ${outcome}${step.detail ? ` (${step.detail})` : ''}`,
       });
     }
-    for (const row of delegations[activeSessionId]?.tasks || []) {
-      out.push({
-        id: `delegation:${activeSessionId}:${row.agentId}:${row.status}`,
-        ts: row.startedAt,
-        kind: 'delegate',
-        summary: `${row.agentName || row.agentId} -> ${row.status}`,
-      });
-    }
     if (doneVerifyLogBySession[activeSessionId]) {
       out.push({
         id: `verify:${activeSessionId}`,
@@ -3514,7 +3122,6 @@ export default function App() {
     activeSession,
     sessionProgress,
     reactLoopStepsBySession,
-    delegations,
     doneVerifyLogBySession,
   ]);
 
@@ -4008,7 +3615,7 @@ export default function App() {
                   project={projects.find((p) => p.id === pullsProjectId)}
                   listRefreshNonce={pullsListRefreshNonce}
                   initialPrNumber={pullsOpenPrNumber}
-                  onOpenSession={handleOpenHandoffSession}
+                  onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
                   onToast={showToast}
                 />
               ) : currentView === 'releases' ? (
@@ -4206,14 +3813,6 @@ export default function App() {
                                       onEventsLoaded={handleEventsLoaded}
                                       onAskSubmit={handleAskSubmit}
                                       askSubmittedIds={askSubmitted}
-                                      fromAgent={activeAgent}
-                                      agents={agents}
-                                      sessionHandoffs={sessionHandoffs}
-                                      sessionDelegations={delegations[activeSessionId]}
-                                      delegationDispatchError={
-                                        delegationDispatchErrors[activeSessionId]
-                                      }
-                                      onOpenSession={handleOpenHandoffSession}
                                       browserScreenshots={
                                         browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
                                       }
@@ -4286,14 +3885,6 @@ export default function App() {
                                       onInterrupt={handleCancel}
                                       onAskSubmit={handleAskSubmit}
                                       askSubmittedIds={askSubmitted}
-                                      fromAgent={activeAgent}
-                                      agents={agents}
-                                      sessionHandoffs={sessionHandoffs}
-                                      sessionDelegations={delegations[activeSessionId]}
-                                      delegationDispatchError={
-                                        delegationDispatchErrors[activeSessionId]
-                                      }
-                                      onOpenSession={handleOpenHandoffSession}
                                       browserScreenshots={
                                         activeSessionId
                                           ? (browserScreensBySession[activeSessionId]?.[
@@ -4316,20 +3907,6 @@ export default function App() {
                                     </div>
                                   </div>
                                 )}
-                                {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                                {delegations[activeSessionId] &&
-                                  delegations[activeSessionId].tasks.length > 0 && (
-                                    <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                                      <DelegationPanel
-                                        delegations={delegations[activeSessionId].tasks}
-                                        sessionId={activeSessionId}
-                                        throttled={throttle[activeSessionId]?.active}
-                                        onCancel={(sid) =>
-                                          send({ type: 'delegation_cancel', sessionId: sid })
-                                        }
-                                      />
-                                    </div>
-                                  )}
                                 {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
                                 {changesReady[activeSessionId] &&
                                   !streamingMsgId &&

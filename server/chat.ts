@@ -34,7 +34,6 @@ import {
 } from './spawn-github-credentials.js';
 import { resolveGithubSpawnToken } from './github-spawn-token-resolver.js';
 import { getRepoOwnerForCwd } from './github-remote-owner.js';
-import type { DelegationResult } from './delegation.js';
 import {
   handleMultiAgentChat,
   initSessionMultiAgent,
@@ -42,13 +41,6 @@ import {
   activeMultiAgentRounds,
   handleMultiAgentCancel,
 } from './session-multi-agent.js';
-import {
-  detectHandoffBlock,
-  recordMalformedHandoff,
-  handoffHasTrailingContent,
-  handleHandoff,
-  buildHandoffPromptSection,
-} from './handoff.js';
 import {
   detectCloseCardBlock,
   describeCloseCardReason,
@@ -107,7 +99,6 @@ import {
   getWsAuthUserId,
   type AuthStampedWs,
 } from './session-ownership.js';
-import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import { recomputeSessionState } from './session-state.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
@@ -130,13 +121,8 @@ import {
 import { runWebSearchForQuery } from './web-search.js';
 import { pickInitialSessionTitle, scheduleTitleUpgrade } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
-import {
-  applyAssistantTextChunkForDelegationKickoff,
-  planDelegationRoundOnProcClose,
-} from './delegation-kickoff-buffer.js';
+import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
 import { isSessionChatBusy } from './session-chat-busy.js';
-import { clearDelegationUiMeta } from './delegation-state.js';
-import { isDelegationDisabledForAgent } from './delegation-gate.js';
 import type {
   Project,
   Agent,
@@ -233,25 +219,10 @@ interface SlashSkillResult {
   userArgs?: string;
 }
 
-interface DelegateTask {
-  agentId: string;
-  task: string;
-  owner: string;
-  scope: string;
-  expectedArtifact: string;
-  deadline: string;
-  returnFormat: string;
-}
-
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
   isFirstMessage?: boolean;
-  /**
-   * Target session id for which the prompt is being built. When provided,
-   * the builder checks for an incoming (delivered) handoff and appends a
-   * `## HANDOFF FROM ...` section on the first turn so the agent picks up
-   * the source session's transcript + handoff note.
-   */
+  /** Target session id for which the prompt is being built. */
   sessionId?: string;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
@@ -343,7 +314,6 @@ export interface ChatHandlerDeps {
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
   activeProcesses: Map<string, ChildProcess>;
-  activeDelegationSessions: Set<string>;
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
@@ -364,25 +334,6 @@ export interface ChatHandlerDeps {
     githubRepo?: string | null,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
-  handleDelegation: (
-    sessionId: string,
-    messageId: string,
-    tasks: DelegateTask[],
-    enrichedAgent: EnrichedAgent,
-    project: Project,
-    cwd: string,
-  ) => Promise<DelegationResult[]>;
-  handleDelegationCancel: (sessionId: string) => void;
-  synthesizeResults: (
-    sessionId: string,
-    agentId: string,
-    enrichedAgent: EnrichedAgent,
-    project: Project,
-    results: DelegationResult[],
-    originalContent: string,
-    cwd: string,
-  ) => Promise<void>;
-  parseDelegateBlock: (content: string) => DelegateTask[] | null;
   /**
    * Accessor for the per-session preview runtime. Returns `null` when the
    * runtime has not been wired (e.g. tests of unrelated chat surface or
@@ -430,7 +381,7 @@ const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
 
 /**
  * Max times an auto-continuation turn will reschedule itself when the
- * session already has an active task or an in-flight delegation round.
+ * session already has an active task.
  * Pure constant so callers (and tests) can reason about the cap
  * independently of the `setTimeout`-based scheduler.
  */
@@ -800,7 +751,7 @@ After significant work, update the wiki to preserve knowledge. Search first (\`G
 
         if (projectMode !== 'workflow') {
           const linkedCardLine = options.sessionHasLinkedCard
-            ? `**This session is already linked to a kanban card** (the card whose assignment spawned you). Do NOT create another card for this task — pick up the linked card, move it through the column lifecycle (To Do → In Progress → Review → Done), and self-report progress via comments on that card. Only create *new* cards for genuinely separate follow-up work you discover along the way.`
+            ? `**This session is already linked to a kanban card** (the card whose assignment spawned you). Do NOT create another card for this task — pick up the linked card, move it through the column lifecycle (To Do → In Progress → Done), and self-report progress via comments on that card. Only create *new* cards for genuinely separate follow-up work you discover along the way.`
             : `Use the \`kanban\` skill and the \`scripts/kanban-create-card.sh\` / \`scripts/kanban-move-card.sh\` wrappers (auth + base URL are handled for you). Do **not** call the board API with hand-rolled curl — JWT-enabled deployments return 401 without \`x-api-key\`. Skip cards for trivial tasks.
 When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. \`kanban-create-card.sh\` auto-links via \`$AGENT_HUB_SESSION_ID\` (this auto-renames the sidebar to the card title). On failure, log \`scripts/log-tool-error.sh\` and surface the stderr — do not treat a non-zero exit as success.`;
           prompt += `\n\n## Kanban Board — Task Self-Reporting
@@ -906,7 +857,7 @@ ${lifecycleStep1}
 2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${finalizeConfigured ? `Run **targeted** tests only while iterating. ${finalizeTargetedTestGuidance} **Do not run the full \`.agent-hub/ci.yaml\` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.` : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
-5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ' **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to GitHub** after gates pass.' : ' Commit, push, and open the PR with `gh pr create` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and move the card to "Review" with a comment containing the PR URL.'} Never merge your own PR.
+5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ' **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to GitHub** after gates pass.' : ' Commit, push, and open the PR with `gh pr create` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and add a card comment with the PR URL.'} Never merge your own PR.
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
@@ -945,13 +896,13 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
 2. Implement on a feature branch.
 3. Rebase, test, commit, push, and open/update the PR.
-4. Move card to Review and comment with PR URL.`
+4. Comment on the card with the PR URL; move to Done when merged.`
             : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
 3. Implement on a feature branch.
 4. Rebase, test, commit, push, and open the PR.
-5. Move card to Review and comment with PR URL.`;
+5. Comment on the card with the PR URL; move to Done when merged.`;
     const biasToActionScope =
       projectMode === 'workflow'
         ? 'starting implementation'
@@ -1399,7 +1350,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     findAgent,
     getEnrichedAgent,
     activeProcesses,
-    activeDelegationSessions,
     autonomousProjects,
     getClaudeBin,
     getCursorBin,
@@ -1410,10 +1360,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     createCursorChat: _createCursorChat,
     ensureWorktree,
     drainQueue,
-    handleDelegation,
-    handleDelegationCancel,
-    synthesizeResults,
-    parseDelegateBlock,
     getPreviewRuntime,
     getPreviewComposeRuntime,
     autoCommitAndPR,
@@ -1558,18 +1504,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
       const { project, agent } = found;
-      // Reviewer agents are write-only from the system spawn path
-      // (GitHub webhook → runReviewerDispatch). A client WS message
-      // (ws !== null) targeting a reviewer agent means a user is
-      // trying to chat with a reviewer — refuse. System spawns pass
-      // ws === null and continue through.
+      // Reviewer agents are system-spawned for in-session Finalize review.
+      // Refuse manual chat sessions against them from the web/mobile client.
       if (ws && agent.role === 'reviewer') {
         ws.send(
           JSON.stringify({
             type: 'error',
             sessionId,
             error:
-              'Reviewer agents only run from the GitHub PR webhook; chat sessions cannot be started manually.',
+              'Reviewer agents run from Finalize automation; chat sessions cannot be started manually.',
           }),
         );
         return;
@@ -1719,7 +1662,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
       const sessionBusy =
-        isSessionChatBusy(sessionId, activeProcesses, activeDelegationSessions, existingTask) ||
+        isSessionChatBusy(sessionId, activeProcesses, existingTask) ||
         activeMultiAgentRounds.has(sessionId);
 
       if (sessionBusy && !msg._fromQueue && !msg._multiAgentInternal) {
@@ -1728,7 +1671,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const plan = planAutoContinuationRetry({ retries });
           if (plan.action === 'retry') {
             console.warn(
-              `[auto-continuation] session ${sessionId}: active task or delegation present; ` +
+              `[auto-continuation] session ${sessionId}: active task present; ` +
                 `scheduling retry ${plan.nextRetry}/${AUTO_CONTINUATION_MAX_RETRIES}`,
             );
             setTimeout(() => {
@@ -1776,12 +1719,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
           }
-          if (activeDelegationSessions.has(sessionId)) {
-            handleDelegationCancel(sessionId);
-            setTimeout(runExistingQueued, 500);
-          } else {
-            setTimeout(runExistingQueued, 100);
-          }
+          setTimeout(runExistingQueued, 100);
           broadcast({ type: 'interrupted', sessionId });
           return;
         }
@@ -1868,10 +1806,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             markSessionTermination(sessionId, 'chat_interrupt');
             console.info(`[chat] chat_interrupt: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
-          }
-          if (activeDelegationSessions.has(sessionId)) {
-            handleDelegationCancel(sessionId);
-            setTimeout(() => drainQueue(sessionId), 500);
           }
           broadcast({ type: 'interrupted', sessionId });
         }
@@ -2787,61 +2721,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       //   codex → unknown `codex error: ...`
       let streamErrorMessage = '';
 
-      /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
-      let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
-      let delegationSafetyTimer: ReturnType<typeof setTimeout> | null = null;
-
-      function clearDelegationSafetyTimer(): void {
-        if (delegationSafetyTimer != null) {
-          clearTimeout(delegationSafetyTimer);
-          delegationSafetyTimer = null;
-        }
-      }
-
-      function startDelegationOnce(tasks: DelegateTask[]): void {
-        if (delegationWorkPromise !== null) return;
-        activeDelegationSessions.add(sessionId);
-        delegationSafetyTimer = setTimeout(
-          () => {
-            if (activeDelegationSessions.has(sessionId)) {
-              console.error(
-                `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
-              );
-              handleDelegationCancel(sessionId);
-              broadcast({
-                type: 'delegation_error',
-                sessionId,
-                parentMessageId: assistantMsgId,
-                error: 'Delegation timed out (safety limit reached)',
-              });
-              drainQueue(sessionId);
-            }
-          },
-          (config as AppConfig & { delegationSafetyTimeoutMs?: number })
-            .delegationSafetyTimeoutMs || 900000,
-        );
-
-        delegationWorkPromise = handleDelegation(
-          sessionId,
-          assistantMsgId,
-          tasks,
-          enrichedAgent!,
-          project,
-          effectiveCwd,
-        );
-        void delegationWorkPromise.finally(() => {
-          clearDelegationSafetyTimer();
-        });
-      }
-
-      function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
-        // Sub-agent delegation has been removed. This function is retained as a
-        // no-op so existing call sites continue to compile while the surrounding
-        // infrastructure is progressively deleted.
-        void assistantAccumulated;
-        return;
-      }
-
       if (engine === 'claude-code') {
         const isWorktree = effectiveCwd !== project.cwd;
         const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
@@ -3169,7 +3048,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (event.type === 'assistant_text') {
           const text =
             typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-          const { next, accumulatedForKickoff } = applyAssistantTextChunkForDelegationKickoff(
+          const { next } = applyAssistantTextChunk(
             { finalText, partialFallback },
             text,
             event.partial,
@@ -3180,7 +3059,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           try {
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
-          tryKickoffDelegationFromStream(accumulatedForKickoff);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {
@@ -3390,8 +3268,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
         // spawn-prompt-payload.ts). Failures are swallowed inside
-        // cleanup(); we null the ref so a long-lived closure (e.g.
-        // delegationWorkPromise) can't accidentally re-trigger.
+        // cleanup(); we null the ref so a long-lived closure can't
+        // accidentally re-trigger.
         if (systemPromptFileCleanup) {
           systemPromptFileCleanup();
           systemPromptFileCleanup = null;
@@ -3423,10 +3301,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 err instanceof Error ? err.message : String(err)
               }`,
             );
-          }
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
           }
           drainQueue(sessionId);
           return;
@@ -3465,10 +3339,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
 
         if (termination) {
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           finalizeChatRunAfterTermination({
             stmts: S,
             broadcast,
@@ -3578,10 +3448,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     drainQueue(sessionId);
                   });
                 });
-                if (delegationWorkPromise) {
-                  handleDelegationCancel(sessionId);
-                  delegationWorkPromise = null;
-                }
                 return;
               }
               errorMsg = buildNoConversationFoundRecoveryMessage(missing.sessionId);
@@ -3619,10 +3485,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errorMsg,
           });
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           try {
             const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
               | BackgroundTaskRow
@@ -3658,23 +3520,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // preview. Detected here alongside the other action blocks so the
         // post-stream hook below can dispatch boot + screenshot async.
         const previewDetection = detectPreviewBlock(rawFinalContent);
-        // Sub-agent delegation and handoff have been removed. We retain the
-        // local symbols as `null` so the rest of this handler — which still
-        // branches on `handoffDetection` / `delegateTasks` while the rest of
-        // the system is being progressively deleted — compiles and behaves as
-        // if the model had emitted neither a `<delegate>` nor a `<handoff>`
-        // block. Any literal `<delegate>...</delegate>` text the model still
-        // produces is left in the assistant message as inert prose; the
-        // dispatcher will not run.
-        const handoffDetection = null as ReturnType<typeof detectHandoffBlock> | null;
-        const delegationDisabled = false;
-        const delegateTasks = null as ReturnType<typeof parseDelegateBlock> | null;
-        // Platform-wide kill-switch: both systems are globally off. Guards the
-        // malformed-gate and disabled-gate branches below so they behave
-        // consistently instead of giving a misleading "bad JSON shape" nudge
-        // when the real cause is global removal.
-        // TODO(cleanup-card): delete with delegation modules
-        const delegationGloballyOff = true;
         let shouldAutoContinue = false;
         let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
         let continuationContextAdded = false;
@@ -4103,14 +3948,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             : '(empty response)';
         }
 
-        const hasDelegateBlock = /<delegate>\s*[\s\S]*?\s*<\/delegate>/.test(rawFinalContent);
-        const controlFlowPresent =
-          !!closeTask ||
-          !!closeCardDetection.present ||
-          !!handoffDetection?.present ||
-          !!handoffDetection?.task ||
-          !!delegateTasks ||
-          hasDelegateBlock;
+        const controlFlowPresent = !!closeTask || !!closeCardDetection.present;
         budgetResult = evaluateReactContinuationBudgets({
           reactLoopEnabled,
           continuationContextAdded,
@@ -4164,10 +4002,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           console.warn(`[stream] Dropping assistant message for ${sessionId}: ${message}`);
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           drainQueue(sessionId);
           return;
         }
@@ -4489,238 +4323,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             });
           });
           return;
-        }
-
-        // Handoff takes precedence over delegate — if the agent emitted a
-        // <handoff> block, ownership transfers to the target agent and we do
-        // not run the delegate/synthesize flow for this turn. Per design,
-        // <handoff> is terminal: any prose after the closing tag is dropped.
-        if (enrichedAgent) {
-          // No fallback to detectHandoffBlock — handoff dispatch is globally off.
-          // When handoffDetection is null the entire block below is skipped.
-          const detection = handoffDetection;
-          if (detection !== null && detection.task) {
-            if (delegationWorkPromise) {
-              handleDelegationCancel(sessionId);
-              delegationWorkPromise = null;
-            }
-            if (handoffHasTrailingContent(rawFinalContent)) {
-              console.warn(
-                `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
-              );
-            }
-            handleHandoff(sessionId, assistantMsgId, detection.task, enrichedAgent, project).catch(
-              (err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err);
-                console.error('[Handoff] Failed:', message);
-                broadcast({ type: 'handoff_error', sessionId, error: message });
-              },
-            );
-            drainQueue(sessionId);
-            return;
-          }
-          if (detection !== null && detection.present && detection.reason) {
-            if (delegationWorkPromise) {
-              handleDelegationCancel(sessionId);
-              delegationWorkPromise = null;
-            }
-            // The agent emitted a <handoff> tag but the payload was malformed
-            // (bad JSON, missing fields, etc.). Previously this path silently
-            // dropped the handoff with no UI feedback. Now: record a failed
-            // row + broadcast handoff_error so the widget renders the failure
-            // state instead of leaving the user staring at a dead-air turn.
-            const projectId =
-              (project as Project & { id?: string }).id ||
-              (enrichedAgent as EnrichedAgent & { projectId?: string }).projectId ||
-              '';
-            recordMalformedHandoff({
-              stmts,
-              broadcast,
-              sessionId,
-              fromAgentId: enrichedAgent.id,
-              fromAgentName: enrichedAgent.name,
-              projectId,
-              detection,
-            });
-            console.warn(
-              `[Handoff] Malformed <handoff> block in session ${sessionId}: ${detection.reason}`,
-            );
-            drainQueue(sessionId);
-            return;
-          }
-        }
-
-        // Operator-controlled gate (`delegationEnabled === false`): the lead is
-        // configured for inline-only completion. Surface a clear in-chat nudge
-        // and a `delegation_disabled` WS event for the message-anchored
-        // DelegateCard so the user knows exactly why nothing dispatched. This
-        // case takes priority over the malformed-gate branch below — when
-        // delegation is disabled we don't care whether the block parsed, the
-        // outcome is the same: nothing spawns.
-        const leadHasSubAgents =
-          agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
-        if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
-          const sysId = uuidv4();
-          const body = delegationGloballyOff
-            ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use direct chat or multi-agent sessions to coordinate with other agents.'
-            : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
-          try {
-            stmts.addMessage.run(
-              sysId,
-              sessionId,
-              'system',
-              body,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-            stmts.touchSession.run(sessionId);
-            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system' as const,
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-          } catch (err: unknown) {
-            const m = err instanceof Error ? err.message : String(err);
-            console.warn(`[delegation] failed to persist disabled-gate notice: ${m}`);
-            const fallback: MessageRow = {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system',
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: fallback });
-          }
-          // Anchored banner on the DelegateCard. Same shape as
-          // `delegation_error` so the client's existing dispatchError
-          // correlation logic works without a parallel state machine.
-          broadcast({
-            type: 'delegation_disabled',
-            sessionId,
-            parentMessageId: assistantMsgId,
-            reason: 'Delegation disabled for this lead',
-          });
-        }
-
-        if (
-          leadHasSubAgents &&
-          hasDelegateBlock &&
-          !delegateTasks &&
-          !delegationDisabled &&
-          !delegationGloballyOff
-        ) {
-          const sysId = uuidv4();
-          const body =
-            '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
-          try {
-            stmts.addMessage.run(
-              sysId,
-              sessionId,
-              'system',
-              body,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-            stmts.touchSession.run(sessionId);
-            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system' as const,
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-          } catch (err: unknown) {
-            const m = err instanceof Error ? err.message : String(err);
-            console.warn(`[delegation] failed to persist malformed delegate notice: ${m}`);
-            const fallback: MessageRow = {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system',
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: fallback });
-          }
-        }
-
-        if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
-          const parsedDelegateTasks = delegateTasks;
-          const closePlan = planDelegationRoundOnProcClose({
-            delegateTasks: parsedDelegateTasks,
-            hadEarlyDelegationPromise: delegationWorkPromise != null,
-          });
-          if (closePlan.mode === 'delegate') {
-            if (closePlan.startIfNeeded) {
-              startDelegationOnce(parsedDelegateTasks!);
-            }
-
-            if (delegationWorkPromise) {
-              void delegationWorkPromise
-                .then((results) => {
-                  if (results.length > 0) {
-                    return synthesizeResults(
-                      sessionId,
-                      agentId,
-                      enrichedAgent!,
-                      project,
-                      results,
-                      content,
-                      effectiveCwd,
-                    );
-                  }
-                })
-                .catch((err: unknown) => {
-                  const message = err instanceof Error ? err.message : String(err);
-                  console.error('[Delegation] Failed:', message);
-                  broadcast({
-                    type: 'delegation_error',
-                    sessionId,
-                    parentMessageId: assistantMsgId,
-                    error: message,
-                  });
-                })
-                .finally(() => {
-                  clearDelegationSafetyTimer();
-                  activeDelegationSessions.delete(sessionId);
-                  clearDelegationUiMeta(sessionId);
-                  broadcastActiveTasksSnapshot(stmts, broadcast);
-                  drainQueue(sessionId);
-                });
-            } else {
-              drainQueue(sessionId);
-            }
-            return;
-          }
         }
 
         // Isolated (git worktree) + Claude: give the filesystem a moment to settle

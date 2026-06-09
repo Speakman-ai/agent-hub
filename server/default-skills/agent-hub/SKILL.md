@@ -163,8 +163,7 @@ Concrete recipes live under **[examples/](examples/)**:
 
 **DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`,
 `wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`,
-`kanban_epics`, `kanban_card_blockers`, `skill_registry`, `webhook_configs`,
-`device_tokens`, `delegations`, `handoffs`.
+`kanban_epics`, `kanban_card_blockers`, `skill_registry`, `device_tokens`.
 
 **Real-time:** WebSocket on the same port as HTTP. Events include
 `message`, `session_created`, `kanban_update`, `wiki_update`,

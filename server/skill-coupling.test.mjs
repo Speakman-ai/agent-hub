@@ -39,8 +39,6 @@ describe('parseCouplingYaml', () => {
 
   it('includes every platform module called out in the kanban ticket', () => {
     const required = [
-      'server/delegation.ts',
-      'server/handoff.ts',
       'server/card-auto-close.ts',
       'server/routes/auth.ts',
       'server/memberships-store.ts',
@@ -85,10 +83,10 @@ items:
 
 describe('globToRegex / matchesAny', () => {
   it('matches literal paths exactly', () => {
-    const rx = globToRegex('server/delegation.ts');
-    expect(rx.test('server/delegation.ts')).toBe(true);
-    expect(rx.test('server/delegation-wrap.ts')).toBe(false);
-    expect(rx.test('other/server/delegation.ts')).toBe(false);
+    const rx = globToRegex('server/card-auto-close.ts');
+    expect(rx.test('server/card-auto-close.ts')).toBe(true);
+    expect(rx.test('server/card-auto-close-wrap.ts')).toBe(false);
+    expect(rx.test('other/server/card-auto-close.ts')).toBe(false);
   });
 
   it('** matches across path segments', () => {
@@ -106,7 +104,7 @@ describe('globToRegex / matchesAny', () => {
   });
 
   it('matchesAny returns true if any pattern hits', () => {
-    const patterns = ['server/delegation.ts', 'server/routes/auth.ts'];
+    const patterns = ['server/card-auto-close.ts', 'server/routes/auth.ts'];
     expect(matchesAny('server/routes/auth.ts', patterns)).toBe(true);
     expect(matchesAny('server/chat.ts', patterns)).toBe(false);
   });
@@ -126,23 +124,23 @@ describe('evaluateCoupling', () => {
     expect(result.matchedCoupled).toEqual([]);
   });
 
-  it('FAILS when delegation.ts changes without a skill-doc touch', () => {
+  it('FAILS when a coupled file changes without a skill-doc touch', () => {
     const result = evaluateCoupling({
-      changedFiles: ['server/delegation.ts'],
+      changedFiles: ['server/card-auto-close.ts'],
       labels: [],
       config,
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('coupled-change-without-skill-update');
-    expect(result.matchedCoupled).toEqual(['server/delegation.ts']);
+    expect(result.matchedCoupled).toEqual(['server/card-auto-close.ts']);
     expect(result.matchedDoc).toEqual([]);
     expect(result.overrideUsed).toBe(false);
   });
 
-  it('passes when delegation.ts change is accompanied by a SKILL.md touch', () => {
+  it('passes when a coupled change is accompanied by a SKILL.md touch', () => {
     const result = evaluateCoupling({
       changedFiles: [
-        'server/delegation.ts',
+        'server/card-auto-close.ts',
         'plugin/skills/agent-hub/SKILL.md',
       ],
       labels: [],
@@ -156,8 +154,8 @@ describe('evaluateCoupling', () => {
   it('accepts a references/ file as satisfying the coupling', () => {
     const result = evaluateCoupling({
       changedFiles: [
-        'server/handoff.ts',
-        'server/default-skills/agent-hub/references/handoff.md',
+        'server/routes/auth.ts',
+        'server/default-skills/agent-hub/references/auth.md',
       ],
       labels: [],
       config,
@@ -190,8 +188,7 @@ describe('evaluateCoupling', () => {
   it('reports EVERY coupled file that changed, not just the first', () => {
     const result = evaluateCoupling({
       changedFiles: [
-        'server/delegation.ts',
-        'server/handoff.ts',
+        'server/card-auto-close.ts',
         'server/users-store.ts',
         'README.md',
       ],
@@ -200,8 +197,7 @@ describe('evaluateCoupling', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.matchedCoupled).toEqual([
-      'server/delegation.ts',
-      'server/handoff.ts',
+      'server/card-auto-close.ts',
       'server/users-store.ts',
     ]);
   });
@@ -223,13 +219,13 @@ describe('evaluateCoupling', () => {
 describe('formatFailureMessage', () => {
   it('names each offending file and both override paths', () => {
     const result = evaluateCoupling({
-      changedFiles: ['server/delegation.ts', 'server/handoff.ts'],
+      changedFiles: ['server/card-auto-close.ts', 'server/routes/auth.ts'],
       labels: [],
       config: SHIPPED_CONFIG,
     });
     const msg = formatFailureMessage(result, SHIPPED_CONFIG);
-    expect(msg).toContain('server/delegation.ts');
-    expect(msg).toContain('server/handoff.ts');
+    expect(msg).toContain('server/card-auto-close.ts');
+    expect(msg).toContain('server/routes/auth.ts');
     expect(msg).toContain('plugin/skills/agent-hub/SKILL.md');
     expect(msg).toContain('skill-freeze-override');
     expect(msg).toContain('.github/skill-coupling.yml');

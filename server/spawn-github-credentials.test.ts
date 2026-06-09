@@ -334,16 +334,10 @@ describe('reviewer spawn isolation', () => {
   });
 });
 
-// NOTE — the `selectGithubSpawnToken` policy describe block was removed
-// alongside the helper itself (see PR #1069 reviewer finding M1). The
-// role-aware credential policy now lives exclusively in
-// `resolveGithubSpawnToken` (server/github-spawn-token-resolver.ts) and
-// is covered by `github-spawn-token-resolver.test.ts`. The composition
-// tests below stay — they pin the env-shape contract that
-// `applyReviewerSpawnIsolation` + `applyGithubSpawnCredentials` produce
-// regardless of which upstream resolver computed the token. Each test
-// now feeds a literal token (or `null`) into `applyGithubSpawnCredentials`
-// to simulate the resolver's output rather than invoking a policy
+// Composition tests pin the env-shape contract that
+// `applyReviewerSpawnIsolation` + `applyGithubSpawnCredentials` produce.
+// Each test feeds a literal token (or `null`) into `applyGithubSpawnCredentials`
+// to simulate the resolver's output.
 // helper that no longer exists.
 
 describe('reviewer spawn env contract (end-to-end composition)', () => {

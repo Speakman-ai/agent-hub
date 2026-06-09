@@ -5,8 +5,8 @@
  * module mirrors the user-actionable subset of those transitions onto
  * the kanban card the run is anchored to:
  *
- *   - Moves the card To Do → In Progress on trigger (idempotent).
- *   - Moves the card → Review on terminal push (`§15` post-push detach).
+ *   - Posts comments at user-actionable transitions (no automatic column moves).
+ *   - On terminal push, delegates to §15 post-push detach for the PR comment.
  *   - Posts a card comment at each user-actionable transition, so the
  *     comment timeline reads as the human-visible run history.
  *
@@ -48,9 +48,7 @@
  * (matching `stmts.moveKanbanCard`) and emit a `kanban_update` broadcast.
  * They are no-ops when the card is already in the target column, so the
  * orchestrator can call `onStarted` unconditionally and we won't bounce
- * a card that started in In Progress. The Review move on `onPushed` only
- * fires when push terminally succeeded — failed runs leave the card
- * where it was.
+ * Column moves are manual — agents and operators move cards via the board UI.
  *
  * **Non-throwing contract.** Every method swallows DB / broadcast errors
  * and logs via the injected `log` sink. The orchestrator's state machine
@@ -58,7 +56,7 @@
  * cosmetic issue, not grounds to fail the run.
  */
 import { randomUUID } from 'crypto';
-import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from '../types.js';
+import type { BroadcastFn, Stmts } from '../types.js';
 import { runPostPushDetach, type PostPushTriggerSource } from './post-push-detach.js';
 
 // ─── Public types ────────────────────────────────────────────────────
@@ -71,10 +69,7 @@ import { runPostPushDetach, type PostPushTriggerSource } from './post-push-detac
  * stay local.
  */
 export interface CardLifecycle {
-  /**
-   * The finalize run has been opened. Moves the card to In Progress
-   * (no-op if already there) and posts the "Finalize started" comment.
-   */
+  /** The finalize run has been opened. Posts the "Finalize started" comment. */
   onStarted(args: { runId: string; triggerSource: 'ui_button' | 'agent_block' }): void;
   /** Rebase succeeded with no conflict dispatch. First iteration only. */
   onRebaseClean(args: { runId: string }): void;
@@ -93,7 +88,7 @@ export interface CardLifecycle {
   /**
    * Terminal push success. Delegates to the §15 post-push detach module
    * (`./post-push-detach.ts`): posts the handoff comment, then moves the
-   * card to Review. `triggerSource` is forwarded so the comment can name
+   * card. `triggerSource` is forwarded so the comment can name
    * the autonomous trigger when appropriate. Order matters: a UI
    * subscriber that re-renders on the column-move broadcast will see the
    * comment already in place.
@@ -155,10 +150,6 @@ export interface CreateCardLifecycleOpts {
   projectId: string;
   /** Author tag on emitted comments. Defaults to `'finalize'`. */
   author?: string;
-  /** Target column for the In Progress move. Defaults to `'In Progress'`. */
-  inProgressColumnName?: string;
-  /** Target column for the post-push detach. Defaults to `'Review'`. */
-  reviewColumnName?: string;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────
@@ -176,9 +167,6 @@ export function createCardLifecycle(
   const newId = deps.newId ?? randomUUID;
   const log = deps.log ?? ((msg: string) => console.warn(msg));
   const author = opts.author ?? 'finalize';
-  const inProgressName = opts.inProgressColumnName ?? 'In Progress';
-  const reviewName = opts.reviewColumnName ?? 'Review';
-
   function postComment(content: string): void {
     try {
       deps.stmts.createKanbanCardComment.run(newId(), opts.cardId, author, content);
@@ -192,62 +180,8 @@ export function createCardLifecycle(
     }
   }
 
-  function moveToColumnByName(targetName: string): void {
-    try {
-      const card = deps.stmts.getKanbanCard.get(opts.cardId) as KanbanCardRow | undefined;
-      if (!card) {
-        log(`[card-lifecycle] moveToColumnByName: card=${opts.cardId} not found`);
-        return;
-      }
-      const cols = deps.stmts.getKanbanColumns.all(card.board_id) as KanbanColumnRow[];
-      const target = cols.find((c) => c.name === targetName);
-      if (!target) {
-        log(
-          `[card-lifecycle] moveToColumnByName: column "${targetName}" not found on ` +
-            `board=${card.board_id}`,
-        );
-        return;
-      }
-      if (card.column_id === target.id) {
-        // Idempotent: already in the target column, nothing to do.
-        return;
-      }
-      // Position 0 puts the card at the top of the target column. Matches
-      // `POST /board/cards/:cardId/move`'s default when no position is
-      // supplied (see `routes/board.ts`), so the move surface stays
-      // consistent whether a user clicked it or the orchestrator moved it.
-      deps.stmts.moveKanbanCard.run(target.id, 0, opts.cardId);
-      deps.broadcast({ type: 'kanban_update', projectId: opts.projectId });
-      // The `card_moved` broadcast carries the human-readable column name
-      // so subscribers (column-workflow runner, autonomous dispatcher) see
-      // the same shape they get from the manual move endpoint. Without
-      // this, those code paths would only fire on user-driven moves and
-      // an orchestrator-driven In Progress / Review transition would skip
-      // them. Cf. the manual move handler in `routes/board.ts`.
-      deps.broadcast({
-        type: 'card_moved',
-        projectId: opts.projectId,
-        cardId: opts.cardId,
-        cardTitle: card.title,
-        columnName: target.name,
-        assignee: card.assignee,
-        prUrl: card.pr_url,
-        sessionId: card.session_id || undefined,
-      });
-    } catch (err) {
-      log(
-        `[card-lifecycle] moveToColumnByName(${targetName}) failed for card=${opts.cardId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }
-
   return {
     onStarted({ runId, triggerSource }) {
-      // Order: move first so a UI client that subscribes to the column
-      // change has the comment timeline in place once the card re-renders.
-      moveToColumnByName(inProgressName);
       postComment(`Finalize started (run ${runId}) · trigger=${triggerSource}`);
     },
     onRebaseClean({ runId }) {
@@ -281,7 +215,6 @@ export function createCardLifecycle(
           runId,
           triggerSource,
           author,
-          reviewColumnName: reviewName,
         },
       );
     },

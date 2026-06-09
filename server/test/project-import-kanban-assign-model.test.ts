@@ -28,8 +28,7 @@ describe('POST /api/projects/:projectId/import — kanban assign_model', () => {
           columns: [
             { id: 'lex-td', name: 'To Do', position: 0, color: '#3B82F6' },
             { id: 'lex-ip', name: 'In Progress', position: 1, color: '#F59E0B' },
-            { id: 'lex-rv', name: 'Review', position: 2, color: '#8B5CF6' },
-            { id: 'lex-dn', name: 'Done', position: 3, color: '#10B981' },
+            { id: 'lex-dn', name: 'Done', position: 2, color: '#10B981' },
           ],
           epics: [],
           cards: [
@@ -76,8 +75,7 @@ describe('POST /api/projects/:projectId/import — kanban assign_model', () => {
           columns: [
             { id: 'lex-td', name: 'To Do', position: 0, color: '#3B82F6' },
             { id: 'lex-ip', name: 'In Progress', position: 1, color: '#F59E0B' },
-            { id: 'lex-rv', name: 'Review', position: 2, color: '#8B5CF6' },
-            { id: 'lex-dn', name: 'Done', position: 3, color: '#10B981' },
+            { id: 'lex-dn', name: 'Done', position: 2, color: '#10B981' },
           ],
           epics: [],
           cards: [

@@ -3,15 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
-import { stmts } from './db.js';
-import type {
-  Project,
-  Agent,
-  EnrichedAgent,
-  AgentLookup,
-  WebhookConfigRow,
-  Stmts,
-} from './types.js';
+import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
 
 // ─── Mutable state ──────────────────────────────────────────────────
 let PROJECTS_PATH: string = path.join(config.dataDir, 'projects.json');
@@ -29,7 +21,6 @@ function initProjects(dataDir?: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
-  migrateWebhookRepoToProject();
 }
 
 // ─── Core accessors ─────────────────────────────────────────────────
@@ -142,31 +133,6 @@ function migrateAhwDirectories(): void {
     console.log('[Migration] ✓ Removed ahw field from projects.json');
     projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
     hydrateProjects();
-  }
-}
-
-function migrateWebhookRepoToProject(): void {
-  const webhooks = (stmts as Stmts).getWebhookConfigs.all() as WebhookConfigRow[];
-  let migrated = false;
-
-  for (const wh of webhooks) {
-    const project = findProject(wh.project_id);
-    if (!project) continue;
-    if (project.githubRepo) continue;
-
-    const match = wh.repo_url?.match(/github\.com\/([^/]+\/[^/]+)/);
-    if (!match) continue;
-
-    project.githubRepo = match[1];
-    migrated = true;
-    console.log(
-      `[Migration] Set githubRepo="${project.githubRepo}" on project "${project.id}" from webhook config`,
-    );
-  }
-
-  if (migrated) {
-    saveProjects();
-    console.log('[Migration] ✓ Migrated webhook repo URLs to project.githubRepo');
   }
 }
 
@@ -406,7 +372,6 @@ Keep it short. Don't repeat the full description back.`,
  * is deliberately decoupled from autonomous-mode dispatch.
  */
 function ensureReviewerAgents(): boolean {
-  const typedStmts = stmts as Stmts;
   let changed = false;
 
   for (const project of projects) {
@@ -414,15 +379,7 @@ function ensureReviewerAgents(): boolean {
     if (project.agents.some((a) => a.role === 'reviewer')) continue;
 
     // Only seed for projects with GitHub integration.
-    const hasGithubRepo = Boolean(project.githubRepo);
-    let hasWebhook = false;
-    try {
-      const configs = typedStmts.getWebhookConfigsByProject.all(project.id) as WebhookConfigRow[];
-      hasWebhook = configs.some((c) => Boolean(c.enabled));
-    } catch {
-      // table might not exist on a brand-new install — ignore
-    }
-    if (!hasGithubRepo && !hasWebhook) continue;
+    if (!project.githubRepo) continue;
 
     const reviewerId = `${project.id}-reviewer`;
     if (findAgent(reviewerId)) continue;
@@ -560,7 +517,6 @@ export {
   // Bootstrap
   initProjects,
   migrateAhwDirectories,
-  migrateWebhookRepoToProject,
   // State accessors
   getProjects,
   setProjects,

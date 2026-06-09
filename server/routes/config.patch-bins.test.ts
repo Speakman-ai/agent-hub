@@ -90,7 +90,7 @@ describe('PATCH /api/config — engine bin paths', () => {
 
   it('persists lanMode and exposes it on GET /api/config', async () => {
     // Defaults to false on fresh installs — GET surfaces it so the client
-    // can render the right webhook setup UI.
+    // can render LAN-mode settings.
     const initial = await request.get('/api/config').expect(200);
     expect(typeof initial.body.lanMode).toBe('boolean');
 

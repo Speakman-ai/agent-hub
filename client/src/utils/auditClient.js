@@ -34,13 +34,6 @@
  *
  * The client helpers here are deliberately minimal. State reduction happens
  * in utils/auditReport.js and utils/rosterSuggest.js.
- *
- * Autonomous-dispatch boundary (future, non-v1):
- *   Once a roster is persisted, a background worker can pick up kanban cards
- *   tagged with a track id and dispatch them to the assigned agent via the
- *   same <delegate>/<handoff> protocol used elsewhere. The persistence
- *   endpoint is the seam — future autonomy can read tracks off the project
- *   row without a UI change.
  * ─────────────────────────────────────────────────────────────────────
  */
 

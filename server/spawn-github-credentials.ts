@@ -317,28 +317,3 @@ function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string
   env[`GIT_CONFIG_KEY_${idx}`] = key;
   env[`GIT_CONFIG_VALUE_${idx}`] = value;
 }
-
-// NOTE — `selectGithubSpawnToken` was removed.
-//
-// It was the synchronous-precursor policy function for picking the
-// GitHub credential to inject into a spawned agent env. After the
-// "user GitHub tokens + Hub account in setup" rewrite, ALL production
-// spawn paths route through the async `resolveGithubSpawnToken` in
-// `github-spawn-token-resolver.ts`, which encapsulates the same
-// reviewer / non-reviewer / autonomous-dispatch rules plus the
-// repo-aware App-installation chain.
-//
-// The helper was kept exported during the transition (so existing
-// tests would still pass) but it had no production callers — `chat.ts`
-// only imports `applyReviewerSpawnIsolation`, `applyGithubSpawnCredentials`,
-// and `applyReviewerRoleLock` from this module. The reviewer (PR #1069
-// review) flagged it as a "dead-code trap": a future contributor adding
-// a new spawn path would be tempted to reach for the synchronous,
-// well-documented function and silently reintroduce the pre-fix
-// behaviour (no installation-token preference, no autonomous-dispatch
-// guard).
-//
-// Removed in autofix(review): drop selectGithubSpawnToken (commit
-// addressing the M1 finding). If you need to pick a token for a new
-// spawn site, call `resolveGithubSpawnToken` — it is the only correct
-// entry point.

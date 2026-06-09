@@ -56,8 +56,6 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     docsTimeoutMs: 60000,
     slackTimeoutMs: 60000,
     conferenceTimeoutMs: 60000,
-    webhookTimeoutMs: 60000,
-    webhookEventTimeoutMs: {},
     publicUrl: null,
     defaultReviewer: null,
     botGithubToken: null,

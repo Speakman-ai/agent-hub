@@ -20,7 +20,7 @@
  *   • ps-phase-* rows reach status=ok (the "green dots" assertion)
  *   • "Done" advances to PostScaffoldAudit (Act IV)
  *   • Audit renders a readiness score
- *   • Confirm roster → ProjectLandingHandoff (Act V)
+ *   • Confirm roster → wizard completes (host receives onProjectCreated)
  *   • Landing shows the assigned roster + "Open project" CTA
  *
  * Network guard:
@@ -233,15 +233,9 @@ test.describe('Create project — happy path', () => {
     await expect(confirmBtn).toBeEnabled();
     await confirmBtn.click();
 
-    // ── Act V: ProjectLandingHandoff ─────────────────────────────────
-    await expect(page.getByTestId('project-landing')).toBeVisible();
-    await expect(page.getByTestId('pl-summary')).toBeVisible();
-    await expect(page.getByTestId('pl-roster')).toBeVisible();
-    // Assigned roster surfaces the Chat button for the Frontend track
-    // (only tracks with an agentId render the Chat CTA).
-    await expect(page.getByTestId('pl-chat-frontend')).toBeVisible();
-    // "Open project" CTA — the Next-Steps "Open the project home" row.
-    await expect(page.getByTestId('pl-next-open')).toBeVisible();
+    // Roster confirm completes the wizard — Act V landing removed; host receives open signal.
+    await expect(page.getByTestId('project-landing')).not.toBeVisible();
+    await expect(page.getByTestId('new-project-adaptive-mount')).not.toBeVisible();
 
     // ── Roster persistence wired up ───────────────────────────────────
     // The POST body should have both tracks with the second assigned to

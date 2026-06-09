@@ -429,13 +429,11 @@ export interface KanbanCardRow {
    *  default and posts an explanatory comment on the card. */
   pr_base_branch?: string | null;
   /** Persistent dedup key for review-feedback dispatch. Stores the highest
-   *  GitHub review id already dispatched to the linked session so the
-   *  `pull_request_review.submitted` webhook doesn't re-send stale feedback
-   *  after a server restart. NULL = never dispatched. */
+   *  GitHub review id already dispatched to the linked session so stale
+   *  feedback is not re-sent after a server restart. NULL = never dispatched. */
   last_dispatched_review_id?: number | null;
   /** Legacy dedup column for the removed review/CI poller's CI-failure probe.
-   *  No longer written (reviews/CI are webhook-only); retained for migration
-   *  stability. */
+   *  No longer written; retained for migration stability. */
   last_dispatched_check_run_id?: number | null;
   /** Legacy dedup column for the removed review/CI poller's inline review-comment
    *  probe. No longer written; retained for migration stability. */
@@ -550,62 +548,6 @@ export interface KanbanEpicRow {
   position: number;
   created_at: string;
   updated_at: string;
-}
-
-export interface WebhookConfigRow {
-  id: number;
-  project_id: string;
-  repo_url: string;
-  secret: string;
-  events: string;
-  enabled: number;
-  // JSON array of GitHub logins. Empty array = review-all (backwards compatible).
-  // When non-empty, only PRs whose pull_request.user.login matches (case-insensitive)
-  // trigger the reviewer dispatch. See shouldReviewPrAuthor() in routes/webhooks.ts.
-  author_allowlist: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WebhookLogRow {
-  id: number;
-  webhook_config_id: number;
-  event_type: string;
-  action: string | null;
-  delivery_id: string | null;
-  status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
-  result: string | null;
-  duration_ms: number | null;
-  created_at: string;
-}
-
-export interface WebhookEventRow {
-  id: number;
-  webhook_config_id: number;
-  delivery_id: string | null;
-  event_type: string;
-  action: string | null;
-  payload: string; // JSON-stringified GitHubWebhookPayload
-  signature: string | null;
-  status: 'pending' | 'processing' | 'done' | 'error' | 'skipped';
-  started_at: string | null;
-  completed_at: string | null;
-  error_message: string | null;
-  attempts: number;
-  created_at: string;
-  // Coalescing key for events scoped to a PR — `<repo_full_name>:<pr_number>`
-  // for events that target a specific PR, NULL otherwise. Two webhook_events
-  // rows with the same `pr_key` are never processed concurrently (per-PR
-  // serialization) and within a (event_type, action, pr_key) cohort, older
-  // pending rows are coalesced into 'skipped' when a newer row arrives.
-  pr_key: string | null;
-  // Persistent debounce: when set, the worker will not claim this row until
-  // `deferred_until <= datetime('now')`. Replaces the in-memory
-  // reviewerDebounceTimers map so debounce state survives restart.
-  deferred_until: string | null;
-  // For coalesced rows (status='skipped'), the id of the newer row that
-  // superseded this one. Lets the queue audit trail record the chain.
-  superseded_by: number | null;
 }
 
 export interface SkillRegistryRow {
@@ -1111,20 +1053,6 @@ export interface Stmts {
   deleteSlackBot: Stmt;
   deleteSlackBotsByAgent: Stmt;
 
-  // Delegations
-  createDelegation: Stmt;
-  updateDelegation: Stmt;
-  getDelegations: Stmt;
-  getDelegationsBySession: Stmt;
-
-  // Handoffs
-  createHandoff: Stmt;
-  setHandoffToSession: Stmt;
-  markHandoffDelivered: Stmt;
-  markHandoffFailed: Stmt;
-  getHandoffById: Stmt;
-  getHandoffByToSession: Stmt;
-  getHandoffsFromSession: Stmt;
   insertSkillInvocation: Stmt;
   listSkillInvocationsForSession: Stmt;
 
@@ -1187,7 +1115,7 @@ export interface Stmts {
   getSessionIdsByWorktreeBranch: Stmt;
   getKanbanCardByPrUrl: Stmt;
   /**
-   * Cards in the `Review` column with a non-null `pr_url` whose last update
+   * Cards in the `In Progress` column with a non-null `pr_url` whose last update
    * was more than 15 minutes ago — feeds the `pr-rebase-poll` sweep. Returns
    * `card_id`, `card_title`, `project_id`, `pr_url`, `card_updated_at`,
    * `session_agent_id` (null if the card's session row was deleted).
@@ -1221,39 +1149,6 @@ export interface Stmts {
   getAutonomousEpic: Stmt;
   getEligibleAutonomousCards: Stmt;
   markCardDispatchedByAutonomous: Stmt;
-
-  // Webhook configs
-  getWebhookConfigs: Stmt;
-  getWebhookConfigsByProject: Stmt;
-  getWebhookConfig: Stmt;
-  createWebhookConfig: Stmt;
-  updateWebhookConfig: Stmt;
-  deleteWebhookConfig: Stmt;
-  getWebhookConfigByProjectAndRepo: Stmt;
-  addWebhookLog: Stmt;
-  updateWebhookLog: Stmt;
-  getWebhookLogs: Stmt;
-  getRecentWebhookLogs: Stmt;
-
-  // Webhook events queue (fast-ack + background worker)
-  insertWebhookEvent: Stmt;
-  getWebhookEventByDelivery: Stmt;
-  getWebhookEventById: Stmt;
-  claimPendingWebhookEvent: Stmt;
-  markWebhookEventDone: Stmt;
-  markWebhookEventError: Stmt;
-  resetStaleWebhookEvents: Stmt;
-  countWebhookEventsByStatus: Stmt;
-  // Coalescing — mark older pending rows that share (event_type, action,
-  // pr_key) with a newer row as 'skipped'. Run at insert time so the worker
-  // claim path stays a single atomic UPDATE.
-  coalescePendingForKey: Stmt;
-  // Per-key concurrency / persistent-debounce introspection.
-  countPendingForPrKey: Stmt;
-  hasDeferredPendingForPrKey: Stmt;
-  // Evaluate `datetime('now', ?)` for a SQLite modifier string. Used to
-  // compute `deferred_until` at enqueue time on the DB clock.
-  evalDatetimeOffset: Stmt;
 
   // Wiki pages
   getWikiPages: Stmt;
@@ -1322,7 +1217,6 @@ export interface Stmts {
   deleteNotesByProject: Stmt;
   deleteWikiPagesByProject: Stmt;
   deleteWikiEmbeddingsByProject: Stmt;
-  deleteWebhookConfigsByProject: Stmt;
   deleteBoardsByProject: Stmt;
   deleteWorkflowsByProject: Stmt;
   deleteThreadsByProject: Stmt;
@@ -1537,15 +1431,15 @@ export interface Stmts {
   updateFinalizeRunReviewerVerdict: Stmt;
   /**
    * Set `finalize_runs.pr_url` for a run id. Written atomically with
-   * the push step (card 5c34b2de) so the webhook-side provenance lookup
+   * the push step (card 5c34b2de) so provenance lookup via
    * via {@link getFinalizeRunByPrUrl} can never see an orphan row.
    * See `server/finalize/provenance.ts` (design §11).
    */
   updateFinalizeRunPrUrl: Stmt;
   /**
    * Look up a finalize_runs row by the GitHub PR URL the push step
-   * recorded. Used by the webhook handler to classify incoming PR
-   * events as internal (registry hit) vs external (registry miss).
+   * recorded. Used to classify incoming PR events as internal (registry hit)
+   * vs external (registry miss).
    * Returns `undefined` when no orchestrator-pushed PR matches.
    * See `server/finalize/provenance.ts` (design §11).
    */
@@ -1636,14 +1530,6 @@ export interface Agent {
   parentAgentId?: string;
   subAgents?: string[];
   /**
-   * When set to `false`, the lead agent's `<delegate>` blocks are gated:
-   * the server skips spawning sub-agent sessions and emits a system-message
-   * + `delegation_disabled` WS event so the lead is nudged to complete work
-   * inline. Only meaningful for lead agents (those with `subAgents`).
-   * `undefined` / `true` → delegation enabled (default behaviour).
-   */
-  delegationEnabled?: boolean;
-  /**
    * When explicitly `false`, host-mediated browser tools (`<agenthub:react>`
    * `tool: browser`) are omitted from the enriched prompt and rejected at
    * execution time. When `undefined`, the project’s
@@ -1674,7 +1560,7 @@ export interface GithubWorkflowSettings {
   autoReview?: boolean;
   waitForCI?: boolean;
   waitForResolvedComments?: boolean;
-  /** When set, PR reviews dispatched via the GitHub webhook use this model instead of the reviewer agent's default `model`. */
+  /** When set, PR reviews use this model instead of the reviewer agent's default `model`. */
   reviewerModel?: string;
 }
 
@@ -2025,7 +1911,7 @@ export interface Project {
    * `cwd` is missing or not a git repo. Used to make project records
    * self-healing across container restarts. SSH URLs and non-GitHub
    * hosts are rejected by the API validator. Distinct from
-   * `githubRepo` (an `owner/repo` string used by webhook config).
+   * `githubRepo` (an `owner/repo` string for GitHub integration).
    */
   repoUrl?: string | null;
   githubWorkflow?: GithubWorkflowSettings;
@@ -2058,8 +1944,7 @@ export interface Project {
   orchestrationBudgets?: Record<string, unknown>;
   /**
    * Per-project preview-env config. When omitted or `enabled: false`, PR
-   * webhook events on this project's repo are ignored by the PR-env
-   * dispatcher. See {@link PrEnvProjectConfig}.
+   * events on this project's repo are ignored by the PR-env dispatcher. See {@link PrEnvProjectConfig}.
    */
   prEnv?: PrEnvProjectConfig;
   /**
@@ -2208,20 +2093,6 @@ export interface AppConfig {
   slackTimeoutMs: number;
   conferenceTimeoutMs: number;
   /**
-   * Fallback timeout (ms) for webhook-dispatched Claude runs. Falls back to
-   * `defaultTimeoutMs` when unset. Use `webhookEventTimeoutMs` to override
-   * per-event (e.g. `pull_request_review.submitted` typically needs longer
-   * than a 5-minute push autofix).
-   */
-  webhookTimeoutMs: number;
-  /**
-   * Per-event timeout (ms) overrides for webhook-dispatched Claude runs.
-   * Keys are either the bare event name (e.g. `pull_request_review`) or
-   * `event.action` (e.g. `pull_request_review.submitted`); the more specific
-   * key wins. See `resolveWebhookTimeoutMs` in `routes/webhooks.ts`.
-   */
-  webhookEventTimeoutMs: Record<string, number>;
-  /**
    * Server-wide default for compose preview health polling (ms). Overridden
    * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:
    * `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`; config.json:
@@ -2289,21 +2160,13 @@ export interface AppConfig {
    */
   codexDangerBypass: boolean;
   /**
-   * LAN / air-gapped mode. When true, Agent Hub assumes GitHub webhooks
-   * cannot reach this host (no public URL, no tunnel) and:
-   *
-   *   • `POST /api/webhooks` with `autoRegister: true` short-circuits with
-   *     `{ ok: true, skipped: true, reason: 'lan_mode' }` instead of calling
-   *     GitHub's hook-create API — no inbound webhook is provisioned.
-   *
-   * NOTE: the GitHub review/CI polling fallback was removed — reviews and CI
-   * are now handled purely by inbound webhooks. A LAN-mode deployment that
-   * GitHub cannot reach therefore no longer gets automated reviewer dispatch,
-   * PR-merge → Done reconciliation, or `changes_requested` follow-ups. Use a
-   * publicly reachable Hub (or a tunnel) if you need autonomous PR handling.
+   * LAN / air-gapped mode. When true, Agent Hub assumes GitHub cannot reach
+   * this host (no public URL, no tunnel). PR review and merge reconciliation
+   * rely on the reconciliation poller or manual resolve instead of inbound
+   * GitHub events.
    *
    * Configure via `lanMode` in config.json or `PATCH /api/config`. Defaults to
-   * false (webhook-driven behavior unchanged for cloud deployments).
+   * false.
    */
   lanMode: boolean;
   slackWebhookUrl: string | null;
@@ -2561,7 +2424,7 @@ export interface ChatMessage {
   /**
    * Internal: invoked at most once with true when the user message for this turn
    * was persisted (queued or immediate). False otherwise. Used so review-feedback
-   * webhook dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
+   * review-feedback dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
    */
   _onUserMessagePersisted?: (accepted: boolean) => void;
   /** Internal: skip multi-agent routing and run a single executor/advisor turn. */
@@ -2593,7 +2456,6 @@ export type WSIncomingMessage =
   | CancelMessage
   | DesignChatMessage
   | DesignCancelMessage
-  | { type: 'delegation_cancel'; sessionId: string }
   | { type: 'dequeue'; sessionId: string; messageId: string }
   | { type: 'edit_queue_item'; sessionId: string; messageId: string; content: string }
   | { type: 'ping' };
@@ -2608,7 +2470,6 @@ export interface WebSocketDeps {
   getProjects: () => Project[];
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
   handleCancel: (sessionId: string) => void;
-  handleDelegationCancel: (sessionId: string) => void;
   handleDequeue: (sessionId: string, messageId: string) => void;
   handleEditQueueItem: (sessionId: string, messageId: string, content: string) => void;
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) => Promise<void>;

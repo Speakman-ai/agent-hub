@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   awaitingInputNotification,
-  cardStartedNotification,
-  cardReviewNotification,
   prMergedNotification,
   prReadyNotification,
   sessionCompleteNotification,
@@ -33,39 +31,6 @@ describe('awaitingInputNotification', () => {
   it('falls back to a generic body when agent/session are unknown', () => {
     const result = awaitingInputNotification({});
     expect(result.body).toBe('An agent is waiting on your input');
-  });
-});
-
-describe('cardStartedNotification', () => {
-  it('formats with assignee', () => {
-    const result = cardStartedNotification({ cardTitle: 'Add login', assignee: 'hub-frontend' });
-    expect(result.title).toBe('Ticket Started');
-    expect(result.body).toBe('"Add login" started by hub-frontend');
-  });
-
-  it('formats without assignee', () => {
-    const result = cardStartedNotification({ cardTitle: 'Fix bug' });
-    expect(result.title).toBe('Ticket Started');
-    expect(result.body).toBe('"Fix bug" started');
-  });
-
-  it('handles empty assignee string', () => {
-    const result = cardStartedNotification({ cardTitle: 'Task', assignee: '' });
-    expect(result.body).toBe('"Task" started');
-  });
-});
-
-describe('cardReviewNotification', () => {
-  it('formats with assignee', () => {
-    const result = cardReviewNotification({ cardTitle: 'Add login', assignee: 'hub-frontend' });
-    expect(result.title).toBe('PR Ready for Review');
-    expect(result.body).toBe('"Add login" moved to Review (hub-frontend)');
-  });
-
-  it('formats without assignee', () => {
-    const result = cardReviewNotification({ cardTitle: 'Fix bug' });
-    expect(result.title).toBe('PR Ready for Review');
-    expect(result.body).toBe('"Fix bug" moved to Review');
   });
 });
 

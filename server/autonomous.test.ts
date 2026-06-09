@@ -198,7 +198,6 @@ function makeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
 const BOARD_COLS = [
   { id: 'col-todo', name: 'To Do' },
   { id: 'col-progress', name: 'In Progress' },
-  { id: 'col-review', name: 'Review' },
   { id: 'col-done', name: 'Done' },
 ];
 

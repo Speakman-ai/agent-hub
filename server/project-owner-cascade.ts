@@ -54,7 +54,6 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   stmts.deleteEscalationsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);
   stmts.deleteWikiPagesByProject.run(project.id);
-  stmts.deleteWebhookConfigsByProject.run(project.id);
   stmts.deleteBoardsByProject.run(project.id);
   stmts.deleteWorkflowsByProject.run(project.id);
   stmts.deleteThreadsByProject.run(project.id);

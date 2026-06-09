@@ -15,7 +15,7 @@
  *
  * Behaviour:
  * - Every {@link PR_REBASE_POLL_INTERVAL_MS} ms, query cards in the
- *   `Review` column with a non-null `pr_url` that haven't been touched
+ *   `In Progress` column with a non-null `pr_url` that haven't been touched
  *   for {@link PR_REBASE_STALE_AGE_MS}.
  * - For each, ask the injected `triggerResolve` to run the same flow the
  *   `POST /api/projects/:id/pulls/:number/resolve` route exposes (which

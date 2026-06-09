@@ -3,8 +3,6 @@ import {
   sessionCompletePush,
   changesReadyPush,
   prCreationStalePush,
-  cardStartedPush,
-  cardReviewPush,
   prMergedPush,
   threadCreatedPush,
   threadEntryPush,
@@ -94,9 +92,7 @@ describe('push formatters', () => {
     );
   });
 
-  it('formats card started / review / pr merged', () => {
-    expect(cardStartedPush({ cardTitle: 'X', assignee: 'A' }).body).toBe('"X" started by A');
-    expect(cardReviewPush({ cardTitle: 'X' }).body).toBe('"X" moved to Review');
+  it('formats pr merged', () => {
     expect(prMergedPush({ cardTitle: 'X', prNumber: 12, mergedBy: 'dev' }).body).toBe(
       'PR #12 merged by dev: "X"',
     );
@@ -167,8 +163,6 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
       'session_complete',
       'changes_ready',
       'pr_creation_stale',
-      'card_started',
-      'card_review',
       'pr_merged',
       'thread_created',
       'thread_entry',
@@ -359,33 +353,6 @@ describe('mapBroadcastToPush', () => {
     });
     expect(r?.event).toBe('changes_ready');
     expect(r?.payload.data?.branch).toBe('feat/x');
-  });
-
-  it('maps card_moved to started/review by column name and ignores others', () => {
-    expect(
-      mapBroadcastToPush({
-        type: 'card_moved',
-        cardId: 'c',
-        cardTitle: 'T',
-        columnName: 'In Progress',
-      })?.event,
-    ).toBe('card_started');
-    expect(
-      mapBroadcastToPush({
-        type: 'card_moved',
-        cardId: 'c',
-        cardTitle: 'T',
-        columnName: 'Review',
-      })?.event,
-    ).toBe('card_review');
-    expect(
-      mapBroadcastToPush({
-        type: 'card_moved',
-        cardId: 'c',
-        cardTitle: 'T',
-        columnName: 'Done',
-      }),
-    ).toBeNull();
   });
 
   it('maps webhook_pr_merged, thread_created, thread_entry_created, dispatch_failure', () => {

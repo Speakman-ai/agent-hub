@@ -2,8 +2,7 @@
  * Best-effort PR URL from auto-typed session titles (Resolve PR / Review PR flows).
  * Does not hit the network. Prefer `kanban_cards.pr_url` when the session is linked to a card.
  *
- * @see server/routes/pr-resolve.ts — `[Resolve PR #N]`
- * @see server/routes/webhooks.ts — `Review: PR #N`
+ * @see server/routes/pr-resolve.ts — `[Resolve PR #N]`, `Review: PR #N`
  */
 const GITHUB_PULL_IN_TITLE_RE = /https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i;
 

@@ -131,10 +131,8 @@ function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boole
  * The current call sites that pass `stmts`:
  *   - `routes/sessions.ts` (list, detail, restore, forward, etc.)
  *   - `routes/board.ts` (card → session spawn broadcast)
- *   - `routes/webhooks.ts` (review/reviewer spawn broadcasts)
  *   - `autonomous.ts` (autonomous dispatch session_created)
  *   - `chat.ts` (session-updated after first message + title upgrade)
- *   - `handoff.ts` (handoff session_created)
  *   - `kanban-caller-session.ts` (card-link title rename broadcast)
  *   - `session-agents.ts` (`enrichSessionWithAgents` reuses it)
  *

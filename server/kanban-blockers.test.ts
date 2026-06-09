@@ -120,7 +120,6 @@ describe('isColumnDone', () => {
     expect(isColumnDone('In Progress')).toBe(false);
     expect(isColumnDone('To Do')).toBe(false);
     expect(isColumnDone('Backlog')).toBe(false);
-    expect(isColumnDone('Review')).toBe(false);
   });
   it('handles null/undefined/empty', () => {
     expect(isColumnDone(null)).toBe(false);
@@ -171,7 +170,6 @@ describe('isColumnBlockerSensitive', () => {
   it('is true for every other column', () => {
     expect(isColumnBlockerSensitive('To Do')).toBe(true);
     expect(isColumnBlockerSensitive('In Progress')).toBe(true);
-    expect(isColumnBlockerSensitive('Review')).toBe(true);
     expect(isColumnBlockerSensitive('Blocked')).toBe(true);
     expect(isColumnBlockerSensitive('Custom Column')).toBe(true);
   });

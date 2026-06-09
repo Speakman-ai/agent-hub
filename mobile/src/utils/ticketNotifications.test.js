@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  cardStartedNotification,
-  cardReviewNotification,
   prMergedNotification,
   prReadyNotification,
   sessionCompleteNotification,
@@ -12,18 +10,7 @@ import {
 } from './ticketNotifications.js';
 
 describe('ticketNotification formatters', () => {
-  it('formats card started with assignee', () => {
-    expect(cardStartedNotification({ cardTitle: 'X', assignee: 'A' })).toEqual({
-      title: 'Ticket Started',
-      body: '"X" started by A',
-    });
-    expect(cardStartedNotification({ cardTitle: 'X' }).body).toBe('"X" started');
-  });
-
-  it('formats card review, PR merged, prReady variants', () => {
-    expect(cardReviewNotification({ cardTitle: 'X', assignee: 'A' }).body).toBe(
-      '"X" moved to Review (A)',
-    );
+  it('formats PR merged and prReady variants', () => {
     expect(prMergedNotification({ cardTitle: 'X', prNumber: 7 }).body).toBe(
       'PR #7 merged: "X"',
     );
@@ -73,6 +60,7 @@ describe('mapBroadcastToNotification', () => {
     expect(mapBroadcastToNotification(null)).toBeNull();
     expect(mapBroadcastToNotification({})).toBeNull();
     expect(mapBroadcastToNotification({ type: 'stream' })).toBeNull();
+    expect(mapBroadcastToNotification({ type: 'card_moved', columnName: 'In Progress' })).toBeNull();
   });
 
   it('maps "done" to session_complete with preview', () => {
@@ -88,27 +76,10 @@ describe('mapBroadcastToNotification', () => {
     expect(r.body).toContain('All done.');
   });
 
-  it('maps changes_ready and card_moved', () => {
+  it('maps changes_ready', () => {
     expect(
       mapBroadcastToNotification({ type: 'changes_ready', agentName: 'H', branch: 'f/x' }).event,
     ).toBe('changes_ready');
-    expect(
-      mapBroadcastToNotification({
-        type: 'card_moved',
-        columnName: 'In Progress',
-        cardTitle: 'T',
-      }).event,
-    ).toBe('card_started');
-    expect(
-      mapBroadcastToNotification({
-        type: 'card_moved',
-        columnName: 'Review',
-        cardTitle: 'T',
-      }).event,
-    ).toBe('card_review');
-    expect(
-      mapBroadcastToNotification({ type: 'card_moved', columnName: 'Done', cardTitle: 'T' }),
-    ).toBeNull();
   });
 
   it('maps thread events and flags ERROR entries', () => {

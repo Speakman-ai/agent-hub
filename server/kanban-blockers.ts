@@ -56,7 +56,7 @@ export function isColumnShippedLane(columnName: string | null | undefined): bool
  *       drop it; until then, this predicate keeps drag-into-Backlog
  *       quiet.
  *
- * Any other column (To Do, In Progress, Review, other custom columns)
+ * Any other column (To Do, In Progress, other custom columns)
  * triggers the confirm dialog when blockers are unresolved. Clients
  * mirror this predicate so no server-side 409 gating is needed.
  */

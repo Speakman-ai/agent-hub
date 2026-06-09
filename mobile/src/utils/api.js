@@ -92,9 +92,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
-  // `setSessionWorktree` was removed when Agent Hub locked to
-  // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
-  // endpoint no longer exists.
   // Toggle Ask Mode (read-only session). Server enforces this by spawning the
   // CLI with `--permission-mode plan` instead of `bypassPermissions`. Returns
   // the updated session row so callers can hydrate `ask_mode` in local state.
@@ -303,15 +300,7 @@ export const api = {
   // Message events (for session timeline)
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
 
-  // Delegations
-  getDelegations: (messageId) => fetchJSON(`/delegations/${messageId}`),
-  getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
-
   // Handoffs — DB rows for <handoff> blocks emitted from this session.
-  // Used by HandoffCard to resolve the target session id and render a
-  // tappable "Open session" link + status pill (pending / delivered / failed).
-  getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
-
   // Queue
   getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
 

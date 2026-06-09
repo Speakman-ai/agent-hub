@@ -14,7 +14,7 @@
  *     enabler, configuring user). There is **no org-owner fallback**: when
  *     no real user can be determined the owner resolves to `null` and the
  *     calling path is expected to hard-fail rather than borrow an identity.
- *   - Child sessions (handoff target, forwarded-to-agent) inherit the
+ *   - Child sessions (forwarded-to-agent, etc.) inherit the
  *     parent's owner (and only the parent's owner — null stays null).
  *   - Pre-migration rows (NULL owner) are owned by nobody: they are not
  *     auto-granted to any user.
@@ -170,7 +170,7 @@ export function getSessionOwner(sessionId: string): string | null {
 
 /**
  * Copy the owner from `sourceSessionId` onto `targetSessionId`. Used
- * by handoff and forward to keep child sessions strictly inheriting.
+ * by session forward to keep child sessions strictly inheriting.
  * Inherits only the source's recorded owner — when the source has no
  * owner, the target stays null (no org-owner fallback).
  */
@@ -179,10 +179,9 @@ export function inheritOwnerFromSession(targetSessionId: string, sourceSessionId
 }
 
 /**
- * Reviewer sessions are spawned by the GitHub webhook handler when a PR
- * opens or syncs (see `runReviewerDispatch` in `server/routes/webhooks.ts`).
- * They are shared across all users in the org: the review thread is a
- * read-only artifact that anyone with access to the project should be
+ * Reviewer sessions are spawned when a PR opens or syncs (poller or manual
+ * resolve). They are shared across all users in the org: the review thread
+ * is a read-only artifact that anyone with access to the project should be
  * able to inspect. We detect them by resolving the session's `agent_id`
  * through the project config and checking `agent.role === 'reviewer'`.
  *

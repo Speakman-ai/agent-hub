@@ -75,8 +75,6 @@ export function AppProvider({ children }) {
   const [sessionRoundProcessing, setSessionRoundProcessing] = useState(false);
   const [streamingAgent, setStreamingAgent] = useState(null);
 
-  // Delegation state: { [sessionId]: { parentMessageId, tasks: [...] } }
-  const [delegations, setDelegations] = useState({});
   // Message queue state: { [sessionId]: [{ id, content, position }] }
   const [messageQueues, setMessageQueues] = useState({});
   // Session events: { [messageId]: [{ seq, event }] }
@@ -119,11 +117,6 @@ export function AppProvider({ children }) {
   // is the derived set below which scans persisted message history.
   // Mirrors the web client's `askSubmittedOptimistic` in client/src/App.jsx.
   const [askSubmittedOptimistic, setAskSubmittedOptimistic] = useState(() => new Set());
-  // Handoff DB rows emitted from the active session — used by HandoffCard
-  // to resolve the target session id and render a tappable "Open session"
-  // link plus pending/failed status pills. Best-effort; missing endpoint or
-  // network failures never block the chat render.
-  const [sessionHandoffs, setSessionHandoffs] = useState([]);
   // Config readiness gate — prevents data fetching before AsyncStorage loads
   const [configReady, setConfigReady] = useState(false);
   // First-run setup wizard gate. `needsSetup` is true when the active org
@@ -396,119 +389,6 @@ export function AppProvider({ children }) {
         break;
       case 'session_round_done':
         if (forActiveSession) setSessionRoundProcessing(false);
-        break;
-
-      // Delegation events
-      case 'delegation_start':
-        setDelegations((prev) => ({
-          ...prev,
-          [data.sessionId]: {
-            parentMessageId: data.parentMessageId,
-            tasks: (data.tasks || []).map((t) => ({
-              delegationId: null,
-              agentId: t.agentId,
-              agentName: t.agentId,
-              agentColor: null,
-              task: t.task,
-              status: 'pending',
-              content: '',
-              output: null,
-              error: null,
-            })),
-          },
-        }));
-        break;
-      case 'delegation_thinking':
-        setDelegations((prev) => {
-          const session = prev[data.sessionId];
-          if (!session) return prev;
-          return {
-            ...prev,
-            [data.sessionId]: {
-              ...session,
-              tasks: session.tasks.map((t) =>
-                t.agentId === data.agentId
-                  ? { ...t, delegationId: data.delegationId, agentName: data.agentName, agentColor: data.agentColor, status: 'running' }
-                  : t
-              ),
-            },
-          };
-        });
-        break;
-      case 'delegation_stream':
-        setDelegations((prev) => {
-          const session = prev[data.sessionId];
-          if (!session) return prev;
-          return {
-            ...prev,
-            [data.sessionId]: {
-              ...session,
-              tasks: session.tasks.map((t) =>
-                t.agentId === data.agentId
-                  ? { ...t, agentName: data.agentName, agentColor: data.agentColor, status: 'running', content: data.content }
-                  : t
-              ),
-            },
-          };
-        });
-        break;
-      case 'delegation_agent_done':
-        setDelegations((prev) => {
-          const session = prev[data.sessionId];
-          if (!session) return prev;
-          return {
-            ...prev,
-            [data.sessionId]: {
-              ...session,
-              tasks: session.tasks.map((t) =>
-                t.agentId === data.agentId
-                  ? { ...t, status: 'done', output: data.output, content: '' }
-                  : t
-              ),
-            },
-          };
-        });
-        break;
-      case 'delegation_agent_error':
-        setDelegations((prev) => {
-          const session = prev[data.sessionId];
-          if (!session) return prev;
-          return {
-            ...prev,
-            [data.sessionId]: {
-              ...session,
-              tasks: session.tasks.map((t) =>
-                t.agentId === data.agentId
-                  ? { ...t, status: 'error', error: data.error }
-                  : t
-              ),
-            },
-          };
-        });
-        break;
-      case 'delegation_cancelled':
-        setDelegations((prev) => {
-          const session = prev[data.sessionId];
-          if (!session) return prev;
-          return {
-            ...prev,
-            [data.sessionId]: {
-              ...session,
-              tasks: session.tasks.map((t) =>
-                t.status === 'running' || t.status === 'pending'
-                  ? { ...t, status: 'cancelled' }
-                  : t
-              ),
-            },
-          };
-        });
-        break;
-      case 'delegation_round_done':
-        // No state change needed — tasks already updated individually
-        break;
-      case 'delegation_error':
-        // System-level delegation error — just log it
-        console.warn('[Delegation] Error:', data.error);
         break;
 
       // Session events (for timeline)
@@ -1116,44 +996,12 @@ export function AppProvider({ children }) {
     reloadMessages();
   }, [activeSessionId, reloadMessages]);
 
-  // Load handoffs emitted from this session so HandoffCard can resolve
-  // `to_session_id` and render a tappable "Open session" link. Best-effort —
-  // a missing endpoint or offline state must never block the chat render.
-  useEffect(() => {
-    if (!activeSessionId) {
-      setSessionHandoffs([]);
-      return;
-    }
-    let cancelled = false;
-    api
-      .getSessionHandoffs(activeSessionId)
-      .then((rows) => {
-        if (cancelled) return;
-        setSessionHandoffs(Array.isArray(rows) ? rows : []);
-      })
-      .catch(() => {
-        if (!cancelled) setSessionHandoffs([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId]);
-
-  // Navigate into a handoff's target session (invoked from HandoffCard).
-  // Stash the target on `pendingSessionIdRef` *before* flipping
-  // `activeAgentId` so the sessions-load effect (which fires on the agent
-  // change) honors it instead of clobbering it with `data[0].id`. We still
-  // set `activeSessionId` optimistically so the UI swaps immediately; the
-  // loader then confirms it once the session list arrives.
-  const handleOpenHandoffSession = useCallback(
-    (targetAgentId, targetSessionId) => {
-      if (!targetAgentId || !targetSessionId) return;
-      pendingSessionIdRef.current = targetSessionId;
-      setActiveAgentId(targetAgentId);
-      setActiveSessionId(targetSessionId);
-    },
-    [],
-  );
+  const focusAgentSession = useCallback((targetAgentId, targetSessionId) => {
+    if (!targetAgentId || !targetSessionId) return;
+    pendingSessionIdRef.current = targetSessionId;
+    setActiveAgentId(targetAgentId);
+    setActiveSessionId(targetSessionId);
+  }, []);
 
   // Rehydrate streaming state from activeTasks when switching sessions.
   useEffect(() => {
@@ -1193,13 +1041,11 @@ export function AppProvider({ children }) {
     setActiveTasks({});
     setSessionAgents([]);
     setSessionRoundProcessing(false);
-    setDelegations({});
     setMessageQueues({});
     setEventsByMessage({});
     setCronSessions([]);
     setChangesReady({});
     setFinalizeStatusBySession({});
-    setSessionHandoffs([]);
     setSessionAskMode(false);
     // Reconnect WebSocket to new org
     reconnect();
@@ -1541,13 +1387,6 @@ export function AppProvider({ children }) {
     }
   }, [send]);
 
-  const handleDelegationCancel = useCallback(() => {
-    const sid = activeSessionIdRef.current;
-    if (sid) {
-      send({ type: 'delegation_cancel', sessionId: sid });
-    }
-  }, [send]);
-
   const handleEventsLoaded = useCallback((messageId, events) => {
     setEventsByMessage((prev) => {
       const existing = prev[messageId];
@@ -1680,16 +1519,13 @@ export function AppProvider({ children }) {
     sessionAgents,
     sessionRoundProcessing,
     handleSessionAgentsUpdated,
-    delegations,
-    sessionHandoffs,
-    handleOpenHandoffSession,
+    focusAgentSession,
     messageQueues,
     eventsByMessage,
     browserScreensBySession,
     handleDequeue,
     handleInterruptQueuedMessage,
     handleEditQueuedMessage,
-    handleDelegationCancel,
     handleEventsLoaded,
     cronSessions,
     kanbanRefreshKey,

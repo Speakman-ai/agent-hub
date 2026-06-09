@@ -30,7 +30,6 @@ function makeStmts(
     deleteEscalationsByProject: noop,
     deleteNotesByProject: noop,
     deleteWikiPagesByProject: noop,
-    deleteWebhookConfigsByProject: noop,
     deleteBoardsByProject: noop,
     deleteWorkflowsByProject: noop,
     deleteThreadsByProject: noop,

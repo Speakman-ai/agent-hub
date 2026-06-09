@@ -182,7 +182,6 @@ export const ProjectExportEnvelopeComponent = registerComponent(
       project: z.object({}).passthrough().optional(),
       crons: z.array(z.object({}).passthrough()).optional(),
       rooms: z.array(z.object({}).passthrough()).optional(),
-      webhooks: z.array(z.object({}).passthrough()).optional(),
       wiki: z.array(z.object({}).passthrough()).optional(),
       kanban: z.object({}).passthrough().nullable().optional(),
     })
@@ -466,9 +465,9 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/export',
   tags: ['Projects'],
-  summary: 'Export a project (project + crons + rooms + webhooks + wiki + kanban)',
+  summary: 'Export a project (project + crons + rooms + wiki + kanban)',
   description:
-    'Returns a V3 export envelope as a downloadable JSON attachment. Webhook secrets are redacted; session-id linkages on kanban cards are stripped.',
+    'Returns a V3 export envelope as a downloadable JSON attachment. Session-id linkages on kanban cards are stripped.',
   request: { params: projectIdParams },
   responses: {
     200: {

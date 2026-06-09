@@ -781,18 +781,15 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
     name: string;
   }>;
   const inProgressColId = cols.find((c) => c.name === 'In Progress')?.id;
-  const reviewColId = cols.find((c) => c.name === 'Review')?.id;
   const epicCards = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
-  const activeCardCount = epicCards.filter(
-    (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
-  ).length;
+  const activeCardCount = epicCards.filter((c) => c.column_id === inProgressColId).length;
   const slotsAvailable = Math.max(0, effectiveMaxConcurrent - activeCardCount);
   if (slotsAvailable === 0) {
     const capLabel = isIntegrationBranch
       ? `${effectiveMaxConcurrent} (integration branch — serial)`
       : `${effectiveMaxConcurrent}`;
     console.log(
-      `[Autonomous] No slots for epic "${epic.name}" — ${activeCardCount}/${capLabel} active (in-progress + in-review)`,
+      `[Autonomous] No slots for epic "${epic.name}" — ${activeCardCount}/${capLabel} active (in-progress)`,
     );
     return;
   }
@@ -890,9 +887,7 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
       const db = d.getDb();
       const claimSlot = db.transaction((cardId: string): boolean => {
         const epicCardsNow = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
-        const activeNow = epicCardsNow.filter(
-          (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
-        ).length;
+        const activeNow = epicCardsNow.filter((c) => c.column_id === inProgressColId).length;
         if (activeNow >= effectiveMaxConcurrent) return false;
         d.stmts.markCardDispatchedByAutonomous.run(cardId);
         d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, cardId);

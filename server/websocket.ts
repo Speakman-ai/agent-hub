@@ -82,7 +82,6 @@ export default function createWebSocket(
     getProjects,
     handleChat,
     handleCancel,
-    handleDelegationCancel,
     handleDequeue,
     handleEditQueueItem,
     handleDesignChat,
@@ -299,9 +298,6 @@ export default function createWebSocket(
         handleDesignChat(ws, msg as unknown as import('./types.js').DesignChatMessage);
       } else if (type === 'design_cancel' && typeof msg.designId === 'string') {
         handleDesignCancel(msg.designId);
-      } else if (type === 'delegation_cancel' && typeof msg.sessionId === 'string') {
-        if (!mayActOnSession(msg.sessionId)) return;
-        handleDelegationCancel(msg.sessionId);
       } else if (
         type === 'dequeue' &&
         typeof msg.sessionId === 'string' &&

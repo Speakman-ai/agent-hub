@@ -16,9 +16,6 @@
  *     existence of private projects.
  *
  * Exceptions handled INSIDE this gate:
- *   - GitHub webhook routes are unauthenticated by design and live on
- *     `/api/webhooks/*` (no projectId in the path), so they don't trip
- *     this mount.
  *   - `DELETE /api/projects/:projectId` — the route handler owns the Owner
  *     kill-switch (`canDeleteProject`). If the gate returned 404 here the
  *     kill-switch would never run, so we detect the pattern with `isDeleteSelf`

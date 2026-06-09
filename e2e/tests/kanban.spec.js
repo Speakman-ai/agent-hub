@@ -17,7 +17,6 @@ test.describe('Kanban board', () => {
     // Default columns should render
     await expect(page.getByText('To Do')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('In Progress')).toBeVisible();
-    await expect(page.getByText('Review')).toBeVisible();
     await expect(page.getByText('Done')).toBeVisible();
   });
 

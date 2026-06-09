@@ -36,30 +36,21 @@ describe('isSessionChatBusy', () => {
       ...overrides,
     }) as ActiveTaskRow;
 
-  it('is busy when activeProcesses or delegation holds the session', () => {
+  it('is busy when activeProcesses holds the session', () => {
     const procs = new Map([['sess-1', {}]]);
-    const deleg = new Set<string>();
-    expect(isSessionChatBusy('sess-1', procs, deleg)).toBe(true);
-
-    procs.clear();
-    deleg.add('sess-1');
-    expect(isSessionChatBusy('sess-1', procs, deleg)).toBe(true);
+    expect(isSessionChatBusy('sess-1', procs)).toBe(true);
   });
 
   it('is not busy when only a stale active_tasks row remains (dead pid)', () => {
-    expect(isSessionChatBusy('sess-1', new Map(), new Set(), task({ pid: 999_999_999 }))).toBe(
-      false,
-    );
+    expect(isSessionChatBusy('sess-1', new Map(), task({ pid: 999_999_999 }))).toBe(false);
   });
 
   it('is busy when active_tasks is running without pid (pre-spawn window)', () => {
-    expect(isSessionChatBusy('sess-1', new Map(), new Set(), task({ pid: null }))).toBe(true);
+    expect(isSessionChatBusy('sess-1', new Map(), task({ pid: null }))).toBe(true);
   });
 
   it('is not busy when active_tasks status is not running', () => {
-    expect(
-      isSessionChatBusy('sess-1', new Map(), new Set(), task({ status: 'done', pid: 1 })),
-    ).toBe(false);
+    expect(isSessionChatBusy('sess-1', new Map(), task({ status: 'done', pid: 1 }))).toBe(false);
   });
 });
 
@@ -67,7 +58,6 @@ describe('drainIdleQueuedSessions', () => {
   it('drains queues for idle sessions and skips busy ones', () => {
     const drainQueue = vi.fn();
     const activeProcesses = new Map<string, unknown>([['busy', {}]]);
-    const activeDelegationSessions = new Set<string>();
 
     const stmts = {
       getAllQueuedSessions: {
@@ -88,7 +78,6 @@ describe('drainIdleQueuedSessions', () => {
     const n = drainIdleQueuedSessions({
       stmts: stmts as never,
       activeProcesses,
-      activeDelegationSessions,
       drainQueue,
     });
 

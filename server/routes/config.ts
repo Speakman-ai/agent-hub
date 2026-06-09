@@ -84,14 +84,6 @@ function cronImportSkillPrincipal(raw: unknown, project: Project | null): string
   }
 }
 
-interface WebhookImportData {
-  repo_url: string;
-  secret?: string;
-  events?: string;
-  enabled?: boolean | number;
-  author_allowlist?: string;
-}
-
 interface WikiImportData {
   slug: string;
   title: string;
@@ -154,7 +146,6 @@ interface ProjectExportData {
     [key: string]: unknown;
   };
   crons?: CronImportData[];
-  webhooks?: WebhookImportData[];
   wiki?: WikiImportData[];
   kanban?: KanbanImportData;
 }
@@ -623,12 +614,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           }) => rest,
         );
 
-      const webhooks = (
-        stmts.getWebhookConfigsByProject.all(project.id) as Array<
-          Record<string, unknown> & { secret: string }
-        >
-      ).map(({ secret: _secret, ...rest }) => ({ ...rest, secret: '***REDACTED***' }));
-
       const wikiPages = (
         stmts.getWikiPages.all(project.id) as Array<Record<string, unknown> & { slug: string }>
       ).map((page) => {
@@ -662,7 +647,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         exportedAt: new Date().toISOString(),
         project,
         crons: projectCrons,
-        webhooks,
         wiki: wikiPages,
         kanban,
       };
@@ -700,7 +684,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     const results: Record<string, string | boolean> = {
       project: false,
       crons: false,
-      webhooks: false,
       wiki: false,
       kanban: false,
     };
@@ -794,31 +777,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       });
     }
 
-    if (Array.isArray(data.webhooks)) {
-      const webhooks = data.webhooks;
-      runSection('webhooks', () => {
-        const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
-          repo_url: string;
-        }>;
-        const existingRepos = new Set(existing.map((w) => w.repo_url));
-        let imported = 0;
-        for (const w of webhooks) {
-          if (existingRepos.has(w.repo_url)) continue;
-          const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
-          stmts.createWebhookConfig.run(
-            targetProjectId,
-            w.repo_url,
-            secret,
-            w.events || '{}',
-            w.enabled ? 1 : 0,
-            typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
-          );
-          imported++;
-        }
-        results.webhooks = `${imported} new, ${webhooks.length - imported} skipped`;
-      });
-    }
-
     if (Array.isArray(data.wiki)) {
       const wiki = data.wiki;
       runSection('wiki', () => {
@@ -832,7 +790,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           // no fallback, so a single malformed export row (missing or
           // undefined title/slug) blew up the whole import with
           // `RangeError: Too few parameter values were provided` — the user
-          // lost crons, rooms, kanban, and webhooks too. Now: validate up
+          // lost crons, rooms, and kanban too. Now: validate up
           // front, skip the bad row with a console.warn, keep the rest of
           // the section running. See card
           // `project-import-500-wiki-section-throws-rangeerror`.

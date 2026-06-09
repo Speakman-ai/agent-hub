@@ -3,7 +3,6 @@ import { ArrowLeft, Check, Code2, FolderGit2, Kanban, X } from 'lucide-react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire.jsx';
 import ProvisioningStatus from './ProvisioningStatus.jsx';
 import PostScaffoldAudit from './PostScaffoldAudit.jsx';
-import ProjectLandingHandoff from './ProjectLandingHandoff.jsx';
 import PreviewConfirm, { buildPreviewPatch } from './PreviewConfirm.jsx';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import {
@@ -35,12 +34,8 @@ import {
  *      and the user clicks "Continue", we transition to...
  *   3. `audit` — render <PostScaffoldAudit /> (Act IV): readiness score,
  *      findings, gaps, plus an agent-roster picker the user confirms to
- *      persist tracks on the new project record. On confirm we transition to...
- *   4. `landing` — render <ProjectLandingHandoff /> (Act V): summary card
- *      (repo / stack / integrations), audit highlights, assigned roster
- *      with per-row "Chat" actions, and a starter-task next-steps panel.
- *      Every outbound action funnels through `onProjectCreated` so the
- *      host app can decide how to route (open chat, open kanban, etc.).
+ *      persist tracks on the new project record. On confirm the host receives
+ *      `onProjectCreated({ projectId, action: 'open' })`.
  *  5. `workflow-form` — render <WorkflowProjectForm /> for non-code
  *      projects. On submit we POST `/api/projects` with `mode:'workflow'`
  *      and signal `onProjectCreated({projectId, action:'task'})` so the
@@ -75,7 +70,6 @@ export default function NewProjectAdaptiveFlow({
   const [launchError, setLaunchError] = useState(null);
   const [createdProjectId, setCreatedProjectId] = useState(null);
   const [questionnairePayload, setQuestionnairePayload] = useState(null);
-  const [landingContext, setLandingContext] = useState(null);
   // Detected preview defaults for the new scaffold (from the server's
   // `preview-defaults-detected` WebSocket broadcast). The server already
   // auto-applies these to `project.prEnv.preview` server-side after the
@@ -166,7 +160,6 @@ export default function NewProjectAdaptiveFlow({
       setView('provisioning');
       currentPayloadRef.current = payload;
       setQuestionnairePayload(payload);
-      setLandingContext(null);
       try {
         const { wsUrl, projectId } = await provision(payload);
         if (projectId) setCreatedProjectId(projectId);
@@ -241,107 +234,26 @@ export default function NewProjectAdaptiveFlow({
     setView('audit');
   }, []);
 
-  // Act IV → Act V handoff. The audit component passes its rendered report
-  // + roster as a second arg so the landing can render the summary without
-  // refetching. The skip path still bypasses the landing (user explicitly
-  // opted out of finishing the flow in-wizard).
-  //
-  // The server response (`saved.tracks`) is authoritative for `agentId` —
-  // for the post-scaffold create flow every row's agent is minted by
-  // POST /roster as `<projectId>-<trackId>`, and the local UI roster
-  // carried `agentId: null` until that round-trip. We merge by trackId so
-  // the landing inherits the minted ids while keeping the typed-by-user
-  // `agentName` available for display when no agent record is in scope.
-  const handleAuditConfirmed = useCallback((saved, extras) => {
-    const savedTracks = Array.isArray(saved?.tracks) ? saved.tracks : [];
-    const localRoster = Array.isArray(extras?.roster) ? extras.roster : [];
-    const localByTrackId = new Map(localRoster.map((r) => [r.trackId, r]));
-
-    const rosterRows =
-      savedTracks.length > 0
-        ? savedTracks.map((t) => {
-            const local = localByTrackId.get(t.id);
-            return {
-              trackId: t.id,
-              label: t.label || local?.label || t.id,
-              agentId: t.agentId || local?.agentId || null,
-              agentName: local?.agentName || null,
-              custom: typeof t.custom === 'boolean' ? t.custom : !!local?.custom,
-            };
-          })
-        : localRoster;
-
-    // Prefer the server-returned `agents` array (includes minted ids +
-    // display names from the just-created agent rows) and fall back to
-    // whatever Act IV had in memory.
-    const agents =
-      Array.isArray(saved?.agents) && saved.agents.length > 0
-        ? saved.agents
-        : Array.isArray(extras?.agents)
-          ? extras.agents
-          : [];
-
-    setLandingContext({
-      roster: rosterRows,
-      report: extras?.report || null,
-      agents,
-      savedTracks,
+  // Act IV completion — roster save signals the host to open the new project.
+  const handleAuditConfirmed = useCallback(() => {
+    onProjectCreated?.({
+      projectId: createdProjectId,
+      repoUrl: repoUrl || null,
+      action: 'open',
     });
-    setView('landing');
-  }, []);
+  }, [onProjectCreated, createdProjectId, repoUrl]);
 
   const handleAuditSkip = useCallback(() => {
-    // Skip is an explicit exit — don't create a landing context. Emit the
-    // "project created" signal with whatever we have so the host can
-    // still refresh its project list / sidebar. The host's onProjectCreated
-    // handler routes the view; we don't call onClose to avoid clobbering.
+    // Skip is an explicit exit. Emit the "project created" signal with
+    // whatever we have so the host can still refresh its project list /
+    // sidebar. The host's onProjectCreated handler routes the view; we don't
+    // call onClose to avoid clobbering.
     if (createdProjectId) {
       onProjectCreated?.({ projectId: createdProjectId, skipped: true });
     } else {
       onClose?.();
     }
   }, [onClose, onProjectCreated, createdProjectId]);
-
-  // Landing action handlers — every path funnels through `onProjectCreated`
-  // with a payload the host can route on (e.g. open a chat, open the
-  // kanban). `onProjectCreated` is the terminal signal; we intentionally
-  // do NOT call `onClose` here because the host's `onProjectCreated`
-  // handler already manages the view transition, and calling both in the
-  // same tick would let `onClose`'s setState clobber the routing.
-  const handleLandingOpenProject = useCallback(
-    ({ projectId, repoUrl: outRepoUrl }) => {
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        repoUrl: outRepoUrl || null,
-        action: 'open',
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
-
-  const handleLandingStartChat = useCallback(
-    ({ projectId, agentId, trackId }) => {
-      if (!agentId) return;
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        agentId,
-        trackId: trackId || null,
-        action: 'chat',
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
-
-  const handleLandingStarterTask = useCallback(
-    ({ projectId, task }) => {
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        action: 'task',
-        task: task || null,
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
 
   const handlePickType = useCallback(
     (type) => {
@@ -424,24 +336,6 @@ export default function NewProjectAdaptiveFlow({
           />
         </div>
       </div>
-    );
-  }
-
-  if (view === 'landing') {
-    return (
-      <ProjectLandingHandoff
-        projectId={createdProjectId}
-        projectName={questionnairePayload?.name}
-        repoUrl={repoUrl}
-        payload={questionnairePayload}
-        report={landingContext?.report || null}
-        roster={landingContext?.roster || []}
-        agents={landingContext?.agents || []}
-        onOpenProject={handleLandingOpenProject}
-        onStartChat={handleLandingStartChat}
-        onOpenStarterTask={handleLandingStarterTask}
-        onClose={handleClose}
-      />
     );
   }
 

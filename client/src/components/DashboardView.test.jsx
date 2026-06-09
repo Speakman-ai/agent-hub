@@ -21,7 +21,7 @@ const SAMPLE = {
     byColumn: [
       { columnName: 'To Do', count: 20 },
       { columnName: 'In Progress', count: 6 },
-      { columnName: 'Review', count: 5 },
+      { columnName: 'Done', count: 5 },
     ],
     byPriority: { urgent: 2, high: 4, medium: 8, low: 3 },
   },
@@ -111,7 +111,7 @@ describe('DashboardView', () => {
     const byColumn = screen.getByTestId('kanban-by-column');
     expect(byColumn).toHaveTextContent('To Do');
     expect(byColumn).toHaveTextContent('In Progress');
-    expect(byColumn).toHaveTextContent('Review');
+    expect(byColumn).toHaveTextContent('Done');
     // Largest count should be visible verbatim
     expect(byColumn).toHaveTextContent('20');
 

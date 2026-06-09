@@ -84,8 +84,7 @@ graph TB
 - **At least one engine CLI** — see [Engine CLIs](#engine-clis) below. The
   server boots without any installed, but chat sessions cannot run until one
   is on `PATH` or pointed at via config.
-- **`gh` CLI** (optional) — only needed for webhook registration helpers and
-  the autonomous PR-review flow.
+- **`gh` CLI** (optional) — only needed for the autonomous PR-review flow.
 
 ### Engine CLIs
 
@@ -282,7 +281,7 @@ Configuration resolves in priority order: **environment variables** >
 | `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`     | Path to Codex CLI                                    |
 | `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                  | Fallback working directory                           |
 | `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                   | Break-glass API key (treated as Owner for all orgs)  |
-| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback |
+| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for OAuth callbacks and spawn `AGENT_HUB_URL` fallback |
 | `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist  |
 
 > **`ALLOWED_ORIGINS` gotcha:** the `ecosystem.config.cjs` default of
@@ -400,7 +399,6 @@ The server exposes a RESTful API at `http://localhost:3051/api`. Key resource gr
 | Messages | `/api/sessions/:id/messages` | Message history |
 | Kanban | `/api/projects/:id/board` | Boards, columns, cards, epics, comments |
 | Wiki | `/api/projects/:id/wiki` | Knowledge base with full-text search |
-| Webhooks | `/api/webhooks` | GitHub webhook configuration |
 | Crons | `/api/crons` | Scheduled task management |
 | Heartbeats | `/api/agents/:id/heartbeat` | Agent health check scheduling |
 | Config | `/api/config` | Server configuration |
@@ -420,7 +418,6 @@ erDiagram
     KANBAN_BOARDS ||--o{ KANBAN_COLUMNS : has
     KANBAN_COLUMNS ||--o{ KANBAN_CARDS : contains
     PROJECTS ||--o{ WIKI_PAGES : has
-    PROJECTS ||--o{ WEBHOOK_CONFIGS : has
     AGENTS ||--o{ HEARTBEAT_LOGS : produces
     CRONS ||--o{ CRON_LOGS : produces
 ```
@@ -447,11 +444,9 @@ pm2 restart agent-hub
 ```
 
 - **`ecosystem.config.cjs`** runs `node server/node_modules/tsx/dist/cli.mjs index.ts` with `cwd` set to `server/`.
-- **Nginx** reverse proxies port 80 to localhost:3051. Keep `proxy_read_timeout` reasonable (e.g. 60s+); GitHub webhooks should get a quick `2xx` from `/api/webhooks/github` (the app responds before long-running work).
+- **Nginx** reverse proxies port 80 to localhost:3051. Keep `proxy_read_timeout` reasonable (e.g. 60s+).
 - **PM2** manages the Node.js process with auto-restart.
 - **Port 3051** is localhost-only; all external traffic routes through Nginx.
-
-**GitHub webhooks:** The **signing secret** configured on the GitHub side must **exactly match** the secret stored in Agent Hub’s webhook config for that repo. Mismatches produce `HMAC verification failed` in logs. The server verifies the raw request body (`express.json` `verify` hook); deploy current server code so HMAC uses the same bytes GitHub signed.
 
 **`gh` CLI on the server:** For autonomous review features, install a recent [GitHub CLI](https://cli.github.com/). Older versions lack `gh pr view --json reviewThreads`; the server falls back to the GraphQL API when that field is missing.
 

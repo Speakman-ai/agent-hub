@@ -34,8 +34,6 @@ function makeCfg(): AppConfig {
     docsTimeoutMs: 1,
     slackTimeoutMs: 1,
     conferenceTimeoutMs: 1,
-    webhookTimeoutMs: 1,
-    webhookEventTimeoutMs: {},
     publicUrl: null,
     defaultReviewer: null,
     botGithubToken: null,

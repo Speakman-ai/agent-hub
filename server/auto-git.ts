@@ -1248,34 +1248,14 @@ async function collectDiffStat(cwd: string): Promise<string> {
 
 // ─── Auto-commit & PR on agent completion ───────────────────────────
 
-/**
- * Move a card to the Review column and persist the PR URL on it.
- *
- * NOTE: This used to also dispatch the lead-review pipeline. As of the unified
- * reviewer refactor, PR review fires from the GitHub webhook on
- * `pull_request.opened` / `pull_request.synchronize`, so this function is now
- * purely a UI/state update — the dedicated Reviewer agent will be dispatched
- * by the webhook handler when GitHub announces the new PR/push.
- */
-function moveCardToReview(card: KanbanCardRow, project: Project, prUrl: string | null): void {
+/** Persist the PR URL on the linked kanban card (no automatic column move). */
+function persistCardPrUrl(card: KanbanCardRow, prUrl: string | null): void {
+  if (!prUrl) return;
   const d = getDeps();
-  if (prUrl) {
-    try {
-      d.stmts.setCardPrUrl.run(prUrl, card.id);
-    } catch (_e: unknown) {
-      /* non-critical */
-    }
-  }
-
-  const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
-  if (board) {
-    const cols = d.stmts.getKanbanColumns.all(board.id) as Array<{ id: string; name: string }>;
-    const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
-    if (reviewCol) {
-      d.stmts.moveKanbanCard.run(reviewCol.id, 0, card.id);
-      d.broadcast({ type: 'kanban_update', projectId: project.id });
-      console.log(`[auto-commit] Card "${card.title}" moved to Review`);
-    }
+  try {
+    d.stmts.setCardPrUrl.run(prUrl, card.id);
+  } catch (_e: unknown) {
+    /* non-critical */
   }
 }
 
@@ -1647,7 +1627,7 @@ async function commitPushAndCreatePR(
           effectiveCwd,
           githubToken,
         );
-        if (card) moveCardToReview(card, project, existingPrUrl);
+        if (card) persistCardPrUrl(card, existingPrUrl);
         // Re-apply auto-merge intent in case the user flipped the toggle ON
         // and re-clicked "Create PR" against a branch with no new changes.
         // Idempotent on GitHub's side if already enabled.
@@ -1972,9 +1952,9 @@ async function commitPushAndCreatePR(
         }
       }
 
-      // Move the card to Review for visibility. The Reviewer agent will be
-      // dispatched by the GitHub webhook handler when the PR opens/syncs.
-      if (card) moveCardToReview(card, project, prUrl);
+      // Move the card to Review for visibility. The Reviewer agent is
+      // dispatched by the reconciliation poller or manual PR resolve.
+      if (card) persistCardPrUrl(card, prUrl);
 
       // Project + dashboard activity feeds (kanban Reviews panel, org dashboard).
       try {

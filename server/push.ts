@@ -30,8 +30,6 @@ export const PUSH_EVENT_TYPES = [
   'session_complete',
   'changes_ready',
   'pr_creation_stale',
-  'card_started',
-  'card_review',
   'pr_merged',
   'thread_created',
   'thread_entry',
@@ -139,26 +137,6 @@ export function prCreationStalePush(args: {
   };
 }
 
-export function cardStartedPush(args: { cardTitle: string; assignee?: string }): {
-  title: string;
-  body: string;
-} {
-  return {
-    title: 'Ticket Started',
-    body: `"${args.cardTitle}" started${args.assignee ? ` by ${args.assignee}` : ''}`,
-  };
-}
-
-export function cardReviewPush(args: { cardTitle: string; assignee?: string }): {
-  title: string;
-  body: string;
-} {
-  return {
-    title: 'PR Ready for Review',
-    body: `"${args.cardTitle}" moved to Review${args.assignee ? ` (${args.assignee})` : ''}`,
-  };
-}
-
 export function prMergedPush(args: { cardTitle: string; prNumber: number; mergedBy?: string }): {
   title: string;
   body: string;
@@ -214,8 +192,7 @@ export function cronCompletePush(args: { cronName: string; result: string }): {
  * recipient can route back to it on mobile. The push `data` payload
  * carries `runId` + `sessionId` + `cardId` + `type:
  * 'finalize_stall_warning'`; the deep-link is built client-side from
- * those fields (mirroring the convention used by `card_review` /
- * `session_complete`).
+ * those fields (mirroring the convention used by `session_complete`).
  */
 export function finalizeStallWarningPush(args: { cardTitle?: string; ageMinutes?: number }): {
   title: string;
@@ -499,35 +476,6 @@ export function mapBroadcastToPush(data: BroadcastData): {
           },
         },
       };
-    }
-
-    case 'card_moved': {
-      const col = typeof data.columnName === 'string' ? data.columnName.toLowerCase() : '';
-      const cardTitle = typeof data.cardTitle === 'string' ? data.cardTitle : 'Card';
-      const assignee = typeof data.assignee === 'string' ? data.assignee : undefined;
-      if (col === 'in progress') {
-        const { title, body } = cardStartedPush({ cardTitle, assignee });
-        return {
-          event: 'card_started',
-          payload: {
-            title,
-            body,
-            data: { cardId: data.cardId, type: 'card_started' },
-          },
-        };
-      }
-      if (col === 'review') {
-        const { title, body } = cardReviewPush({ cardTitle, assignee });
-        return {
-          event: 'card_review',
-          payload: {
-            title,
-            body,
-            data: { cardId: data.cardId, type: 'card_review' },
-          },
-        };
-      }
-      return null;
     }
 
     case 'webhook_pr_merged': {

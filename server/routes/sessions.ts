@@ -1129,41 +1129,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
   });
 
-  router.get('/api/delegations/:messageId', (req: Request, res: Response) => {
-    try {
-      const message = stmts.getMessageById.get(req.params.messageId) as MessageRow | undefined;
-      if (!message || !userOwnsSession(req as AuthenticatedRequest, message.session_id)) {
-        return res.status(404).json({ error: 'Message not found' });
-      }
-      const delegations = stmts.getDelegations.all(req.params.messageId);
-      res.json(delegations);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/sessions/:sessionId/delegations', (req: Request, res: Response) => {
-    try {
-      const delegations = stmts.getDelegationsBySession.all(req.params.sessionId);
-      res.json(delegations);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // Return every handoff emitted from this source session (any status).
-  // Used by the chat UI to resolve <handoff> blocks in saved messages to a
-  // clickable link into the target session. Mirrors the delegations shape
-  // so the client can lazy-fetch on session open.
-  router.get('/api/sessions/:sessionId/handoffs', (req: Request, res: Response) => {
-    try {
-      const handoffs = stmts.getHandoffsFromSession.all(req.params.sessionId);
-      res.json(handoffs);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
   router.get('/api/sessions/:sessionId/skill-invocations', (req: Request, res: Response) => {
     try {
       const rows = stmts.listSkillInvocationsForSession.all(req.params.sessionId);

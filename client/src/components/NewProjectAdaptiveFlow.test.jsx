@@ -4,12 +4,7 @@ import NewProjectAdaptiveFlow, { inferWithGithub } from './NewProjectAdaptiveFlo
 import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '../utils/adaptiveQuestionnaire.js';
 
 // Mock the audit transport layer so the flow test can drive Act IV and
-// transition into Act V (landing) without needing a live server.
-//
-// PostScaffoldAudit now runs in `createAgents` mode (one freshly-minted
-// agent per track) — saveRoster's response carries the minted `agentId`s
-// AND the created agent records, which the landing uses to render the
-// per-row display name + per-track "Chat" actions.
+// complete the wizard without needing a live server.
 vi.mock('../utils/auditClient.js', () => ({
   fetchAuditReport: vi.fn(async () => ({
     projectId: 'proj-1',
@@ -207,9 +202,8 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(screen.queryByTestId('ps-phase-gh-push')).not.toBeInTheDocument();
   });
 
-  it('advances from audit to the Act V landing after a successful roster save', async () => {
+  it('completes the wizard after a successful roster save', async () => {
     const { onProjectCreated, onClose } = await runThroughQuestionnaire();
-    // Finish provisioning with a repoUrl so the landing can display it.
     act(() => {
       subscribeHandlers.onEvent({
         type: 'done',
@@ -219,11 +213,6 @@ describe('NewProjectAdaptiveFlow', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('ps-success-close'));
     });
-    // Wait for the audit to finish its initial load. Post-scaffold runs in
-    // create-agents mode — each track renders a name input the user can
-    // edit before confirming. `initialRosterForCreate` pre-fills the name
-    // from the project name ("my-proj Architect"), so the confirm button
-    // is enabled immediately.
     await waitFor(() => {
       expect(screen.getByTestId('roster-agent-name-architect')).toBeInTheDocument();
     });
@@ -234,39 +223,12 @@ describe('NewProjectAdaptiveFlow', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('psa-confirm'));
     });
-    // Landing rendered.
-    await waitFor(() => {
-      expect(screen.getByTestId('project-landing')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('pl-repo-link')).toHaveAttribute(
-      'href',
-      'https://github.com/acme/my-proj',
-    );
-
-    // The roster panel hydrates from the server response — every row shows
-    // the typed agent name (not "Unassigned") and exposes a per-row Chat
-    // action wired to the minted `<projectId>-<trackId>` agent id.
-    const architectRow = screen.getByTestId('pl-roster-row-architect');
-    expect(architectRow).toHaveTextContent('Architect');
-    expect(architectRow).toHaveTextContent('my-proj Architect');
-    expect(architectRow).not.toHaveTextContent(/Unassigned/i);
-    expect(screen.getByTestId('pl-chat-architect')).not.toBeDisabled();
-
-    // onProjectCreated / onClose are NOT fired yet — the user has to click
-    // a next-step CTA to leave the landing.
-    expect(onProjectCreated).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-
-    // Clicking the primary "Brief lead" CTA routes through onProjectCreated
-    // with `action: 'chat'` + the minted agent id. onClose is NOT called —
-    // the host's onProjectCreated handler owns the view transition to avoid
-    // a setState race where onClose would clobber the routing.
-    fireEvent.click(screen.getByTestId('pl-next-chat-lead'));
+    expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
     expect(onProjectCreated).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 'proj-1',
-        agentId: 'proj-1-architect',
-        action: 'chat',
+        repoUrl: 'https://github.com/acme/my-proj',
+        action: 'open',
       }),
     );
     expect(onClose).not.toHaveBeenCalled();

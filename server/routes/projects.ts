@@ -353,8 +353,7 @@ const PR_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PR_ENV_RESERVED_KEYS = new Set(['PORT']);
 
 // SSM Parameter Store reference syntax — operators can put
-// `${ssm:/path/to/param}` in a value and the pr-env-builder resolves it
-// at build time via `server/ssm-resolver.ts`. The pattern is anchored
+// `${ssm:/path/to/param}` in a pr-env value. The pattern is anchored
 // (^...$) so the *entire* value must be a single reference token.
 //
 // Mixed strings like `prefix-${ssm:/x}` are deliberately out of scope:
@@ -1363,15 +1362,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json({ cloneId, repoName, clonePath });
   });
 
-  /**
-   * GitHub webhooks were removed; there is no per-project webhook to
-   * configure. Retained as a stable `null` so existing API consumers that
-   * still read `webhookConfigured` don't break.
-   */
-  function computeWebhookConfigured(_project: Project): boolean | null {
-    return null;
-  }
-
   router.get('/api/projects', (req: Request, res: Response) => {
     const caller = resolveVisibilityCaller(req);
     // Visibility gate: shared projects always pass; private projects only
@@ -1381,7 +1371,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const projects = filterVisibleProjects(getProjects(), caller);
     const enriched = projects.map((p) => ({
       ...p,
-      webhookConfigured: computeWebhookConfigured(p),
       agents: p.agents.map((a) => {
         const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
         let lastActivity: string | null = null;
@@ -1652,16 +1641,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    // `webhookConfigured` tells the operator at a glance whether this
-    // project will see PR events from GitHub. Projects without a
-    // `githubRepo` set (non-GitHub remotes, scratch projects) report
-    // `null` — N/A, no webhook is even meaningful. Projects with a
-    // `githubRepo` but zero enabled `webhook_configs` rows report
-    // `false` — the reviewer pipeline will never fire because GitHub
-    // can't reach us. This drives the missing-webhook nudge surfaced
-    // in the project settings panel.
-    const webhookConfigured = computeWebhookConfigured(project);
-    res.json({ ...project, webhookConfigured });
+    res.json(project);
   });
 
   // ─── Re-detect preview defaults from the project's checkout ──────
@@ -1997,7 +1977,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     //   2. A Docs agent (`ensureDocsAgents()`), enabled for all projects.
     //   3. An Intake agent (`ensureIntakeAgents()`), enabled for all projects.
     //   4. A Reviewer agent is NOT seeded here — Reviewer is GitHub-only
-    //      (`ensureReviewerAgents()` gates on `githubRepo` / webhooks).
+    //      (`ensureReviewerAgents()` gates on `githubRepo`).
     if (createMode === 'workflow') {
       try {
         // 1. Pre-create the kanban board with default columns so the user
@@ -2046,7 +2026,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
         // 4. Seed Docs and Intake for every project (Reviewer is GitHub-only
         //    and skipped here intentionally — `ensureReviewerAgents()` gates
-        //    on `githubRepo` / webhook configs).
+        //    on `githubRepo`).
         ensureDocsAgents();
         ensureIntakeAgents();
 

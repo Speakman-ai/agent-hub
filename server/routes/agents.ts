@@ -221,7 +221,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'reviewer',
       'role',
       'canReview',
-      'delegationEnabled',
     ] as const;
     for (const key of allowed) {
       if ((parsed as Record<string, unknown>)[key] !== undefined) {

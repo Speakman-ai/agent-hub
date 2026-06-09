@@ -65,23 +65,13 @@ function initDb(dataDir: string): void {
   db.exec('DROP TABLE IF EXISTS watchdog_events');
   db.exec('DROP TABLE IF EXISTS session_watchdog');
 
-  // Pre-bootstrap migration: P1 webhook_events columns (pr_key, deferred_until,
-  // superseded_by). MUST run before the bootstrap `db.exec` below because that
-  // block contains `CREATE INDEX … ON webhook_events(pr_key, …)` — and on
-  // existing installs `CREATE TABLE IF NOT EXISTS webhook_events` is a no-op,
-  // so the index would reference a column that doesn't exist yet and throw
-  // `SqliteError: no such column: pr_key` (root-caused 2026-05-07 deploy
-  // outage on dev + prod). The post-bootstrap migration block further down
-  // also needs these columns for the CHECK-constraint rebuild, so adding them
-  // here is strictly earlier — fresh installs skip the ALTER (no table) and
-  // the bootstrap CREATE TABLE creates them inline; legacy installs get the
-  // columns added before any index references them. ALTER TABLE on a missing
-  // table throws "no such table" which the try/catch swallows safely.
-  for (const col of ['pr_key TEXT', 'deferred_until TEXT', 'superseded_by INTEGER']) {
+  // GitHub webhook subsystem removed — drop legacy tables on existing installs.
+  // FK order: child tables first (webhook_events, webhook_logs), then webhook_configs.
+  for (const tbl of ['webhook_events', 'webhook_logs', 'webhook_configs']) {
     try {
-      db.exec(`ALTER TABLE webhook_events ADD COLUMN ${col}`);
-    } catch (_e) {
-      /* table doesn't exist yet (fresh install) or column already present */
+      db.exec(`DROP TABLE IF EXISTS ${tbl}`);
+    } catch (err) {
+      console.warn(`[db] DROP TABLE ${tbl} failed:`, (err as Error).message);
     }
   }
 
@@ -434,90 +424,6 @@ function initDb(dataDir: string): void {
       ON kanban_card_blockers(card_id);
     CREATE INDEX IF NOT EXISTS idx_kanban_card_blockers_blocked_by
       ON kanban_card_blockers(blocked_by_card_id);
-
-    CREATE TABLE IF NOT EXISTS webhook_configs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id TEXT NOT NULL,
-      repo_url TEXT NOT NULL,
-      secret TEXT NOT NULL,
-      events TEXT NOT NULL DEFAULT '{}',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      author_allowlist TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_configs_project ON webhook_configs(project_id);
-
-    CREATE TABLE IF NOT EXISTS webhook_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      webhook_config_id INTEGER NOT NULL,
-      event_type TEXT NOT NULL,
-      action TEXT,
-      delivery_id TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','success','error','skipped')),
-      result TEXT,
-      duration_ms INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
-    CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
-
-    -- Webhook events queue: raw delivered events awaiting async processing.
-    -- Writes here from the fast-ack handler; a background worker claims rows
-    -- for kanban lifecycle + Claude prompt execution. Keeps the HTTP handler
-    -- off the hot path (see: webhook starvation incident, 2026-04-16).
-    --
-    -- P1 dedup/concurrency (card 2c4a0d06): three columns layer on top of
-    -- the P0 fast-ack design:
-    --   * pr_key         -- "<repo_full_name>:<pr_number>" for PR-scoped events.
-    --                       The worker never claims two rows with the same
-    --                       pr_key concurrently (per-PR serialization).
-    --   * deferred_until -- persistent debounce. The worker won't claim rows
-    --                       whose deferred_until is still in the future.
-    --                       Replaces in-memory reviewerDebounceTimers so
-    --                       debounce state survives restart.
-    --   * superseded_by  -- coalescing audit trail. When a newer row for the
-    --                       same (event_type, action, pr_key) arrives, older
-    --                       pending rows are flipped to status='skipped' with
-    --                       superseded_by pointing at the newer row.
-    CREATE TABLE IF NOT EXISTS webhook_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      webhook_config_id INTEGER NOT NULL,
-      delivery_id TEXT,
-      event_type TEXT NOT NULL,
-      action TEXT,
-      payload TEXT NOT NULL,
-      signature TEXT,
-      status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending','processing','done','error','skipped')),
-      started_at TEXT,
-      completed_at TEXT,
-      error_message TEXT,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      pr_key TEXT,
-      deferred_until TEXT,
-      superseded_by INTEGER,
-      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_status ON webhook_events(status, created_at);
-    -- Partial unique index: idempotency on GitHub's x-github-delivery header
-    -- when present. NULL delivery_ids are allowed to repeat (legacy / manual replays).
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_delivery
-      ON webhook_events(delivery_id)
-      WHERE delivery_id IS NOT NULL;
-    -- Per-key concurrency cap query: looks up "any row for this pr_key
-    -- currently processing?" The partial-index condition keeps it tight so
-    -- the index is useful even with millions of completed rows over time.
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-      ON webhook_events(pr_key, status)
-      WHERE pr_key IS NOT NULL AND status IN ('pending','processing');
-    -- Deferred-until claim path: only the rows that are still waiting on a
-    -- debounce window need an index. Fully-claimed rows drop out.
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-      ON webhook_events(deferred_until)
-      WHERE deferred_until IS NOT NULL AND status = 'pending';
 
     -- Skill registry: central catalog of available skills
     CREATE TABLE IF NOT EXISTS skill_registry (
@@ -1341,10 +1247,7 @@ function initDb(dataDir: string): void {
   }
 
   // Persistent dedup for review-feedback dispatch. Stores the highest GitHub
-  // review id we have already dispatched author feedback for, so the
-  // `pull_request_review.submitted` webhook doesn't re-send the same
-  // `changes_requested` feedback after a restart clears the in-memory
-  // `lastDispatchedReviewId` map.
+  // review id we have already dispatched author feedback for.
   try {
     db.prepare('SELECT last_dispatched_review_id FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -1352,8 +1255,8 @@ function initDb(dataDir: string): void {
   }
 
   // Legacy dedup column for the (removed) review/CI poller's CI-failure probe.
-  // No longer written now that reviews/CI are webhook-only; retained so the
-  // append-only migration list stays stable on existing databases.
+  // No longer written; retained so the append-only migration list stays stable
+  // on existing databases.
   try {
     db.prepare('SELECT last_dispatched_check_run_id FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -1508,15 +1411,6 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
-  // Per-webhook author allowlist — when non-empty, only PRs whose
-  // pull_request.user.login matches (case-insensitive) trigger the reviewer.
-  // Empty array (default) = review-all, backwards compatible.
-  try {
-    db.exec("ALTER TABLE webhook_configs ADD COLUMN author_allowlist TEXT NOT NULL DEFAULT '[]'");
-  } catch (_e) {
-    /* already exists */
-  }
-
   db.exec(`
     -- Designs: Claude-Design-style canvas. Each design is a singleton-agent
     -- chat with an artifact directory on disk rendered in an iframe.
@@ -1634,95 +1528,6 @@ function initDb(dataDir: string): void {
     } catch (err) {
       console.warn(`[db] DROP TABLE ${tbl} failed:`, (err as Error).message);
     }
-  }
-
-  // Migration: P1 webhook event coalescing CHECK-constraint rebuild.
-  // The pr_key / deferred_until / superseded_by columns themselves are added
-  // in the pre-bootstrap block above (must run before the bootstrap block's
-  // CREATE INDEX on pr_key). What's left here is the conditional table
-  // rebuild that updates the `status` CHECK constraint to allow the new
-  // 'skipped' value — that requires a full INSERT…SELECT copy and so stays
-  // post-bootstrap to run after the table definitively exists.
-  {
-    const ddl =
-      (
-        db
-          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='webhook_events'")
-          .get() as { sql: string } | undefined
-      )?.sql ?? '';
-    // Rebuild only when the legacy CHECK set is still in effect AND the new
-    // 'skipped' value is missing. Idempotent: subsequent boots find 'skipped'
-    // in the DDL and skip the rebuild.
-    if (ddl && !ddl.includes("'skipped'")) {
-      const handle = db;
-      handle.transaction(() => {
-        handle.exec(`
-          CREATE TABLE webhook_events_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            webhook_config_id INTEGER NOT NULL,
-            delivery_id TEXT,
-            event_type TEXT NOT NULL,
-            action TEXT,
-            payload TEXT NOT NULL,
-            signature TEXT,
-            status TEXT NOT NULL DEFAULT 'pending'
-              CHECK(status IN ('pending','processing','done','error','skipped')),
-            started_at TEXT,
-            completed_at TEXT,
-            error_message TEXT,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            pr_key TEXT,
-            deferred_until TEXT,
-            superseded_by INTEGER,
-            FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-          );
-          INSERT INTO webhook_events_new
-            (id, webhook_config_id, delivery_id, event_type, action, payload, signature,
-             status, started_at, completed_at, error_message, attempts, created_at,
-             pr_key, deferred_until, superseded_by)
-          SELECT
-            id, webhook_config_id, delivery_id, event_type, action, payload, signature,
-            status, started_at, completed_at, error_message, attempts, created_at,
-            pr_key, deferred_until, superseded_by
-          FROM webhook_events;
-          DROP TABLE webhook_events;
-          ALTER TABLE webhook_events_new RENAME TO webhook_events;
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_status
-            ON webhook_events(status, created_at);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_delivery
-            ON webhook_events(delivery_id)
-            WHERE delivery_id IS NOT NULL;
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-            ON webhook_events(pr_key, status)
-            WHERE pr_key IS NOT NULL AND status IN ('pending','processing');
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-            ON webhook_events(deferred_until)
-            WHERE deferred_until IS NOT NULL AND status = 'pending';
-        `);
-      })();
-    }
-  }
-  // Belt-and-suspenders: if the table was already created with the new CHECK
-  // constraint (fresh install or earlier rebuild) the indexes still need to
-  // exist on legacy installs that pre-date them.
-  try {
-    db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-       ON webhook_events(pr_key, status)
-       WHERE pr_key IS NOT NULL AND status IN ('pending','processing')`,
-    );
-  } catch (_e) {
-    /* already exists or column not yet present in this transaction window */
-  }
-  try {
-    db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-       ON webhook_events(deferred_until)
-       WHERE deferred_until IS NOT NULL AND status = 'pending'`,
-    );
-  } catch (_e) {
-    /* already exists */
   }
 
   // W4 observability migrations on pool_slots / pool_metrics were removed
@@ -1901,6 +1706,62 @@ function initDb(dataDir: string): void {
     // tolerates it via the substring-match back-compat).
     console.warn(
       '[db] Backlog column drop migration failed (boards may be partially migrated):',
+      (err as Error).message,
+    );
+  }
+
+  // Migration: drop the "Review" column from every kanban board.
+  // Reviews now happen in-session via Finalize — there is no separate
+  // review-queue column. Cards in Review move to Done; the column is
+  // deleted and remaining positions are re-packed. Idempotent on reboot.
+  try {
+    const reviewCols = db
+      .prepare(`SELECT id, board_id FROM kanban_columns WHERE name = 'Review'`)
+      .all() as { id: string; board_id: string }[];
+    if (reviewCols.length > 0) {
+      const findDone = db.prepare(
+        `SELECT id FROM kanban_columns WHERE board_id = ? AND name = 'Done' LIMIT 1`,
+      );
+      const maxCardPos = db.prepare(
+        `SELECT COALESCE(MAX(position), -1) AS p FROM kanban_cards WHERE column_id = ?`,
+      );
+      const cardsInCol = db.prepare(
+        `SELECT id FROM kanban_cards WHERE column_id = ? ORDER BY position ASC`,
+      );
+      const moveCard = db.prepare(
+        `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
+      );
+      const deleteCol = db.prepare(`DELETE FROM kanban_columns WHERE id = ?`);
+      const colsForBoard = db.prepare(
+        `SELECT id FROM kanban_columns WHERE board_id = ? ORDER BY position ASC, name ASC`,
+      );
+      const setColPos = db.prepare(`UPDATE kanban_columns SET position = ? WHERE id = ?`);
+      const txn = db.transaction(() => {
+        const touchedBoards = new Set<string>();
+        for (const col of reviewCols) {
+          touchedBoards.add(col.board_id);
+          const done = findDone.get(col.board_id) as { id: string } | undefined;
+          if (done) {
+            let next = ((maxCardPos.get(done.id) as { p: number }).p as number) + 1;
+            const cards = cardsInCol.all(col.id) as { id: string }[];
+            for (const c of cards) {
+              moveCard.run(done.id, next++, c.id);
+            }
+          }
+          deleteCol.run(col.id);
+        }
+        for (const boardId of touchedBoards) {
+          const remaining = colsForBoard.all(boardId) as { id: string }[];
+          for (let i = 0; i < remaining.length; i++) {
+            setColPos.run(i, remaining[i].id);
+          }
+        }
+      });
+      txn();
+    }
+  } catch (err) {
+    console.warn(
+      '[db] Review column drop migration failed (boards may be partially migrated):',
       (err as Error).message,
     );
   }
@@ -2412,38 +2273,6 @@ function initDb(dataDir: string): void {
     deleteSlackBot: db.prepare('DELETE FROM slack_bots WHERE id = ?'),
     deleteSlackBotsByAgent: db.prepare('DELETE FROM slack_bots WHERE agent_id = ?'),
 
-    // Delegations
-    createDelegation: db.prepare(
-      `INSERT INTO delegations (id, session_id, parent_message_id, agent_id, agent_name, task, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-    ),
-    updateDelegation: db.prepare(
-      `UPDATE delegations SET status = ?, output = ?, error = ?, completed_at = datetime('now') WHERE id = ?`,
-    ),
-    getDelegations: db.prepare(
-      'SELECT * FROM delegations WHERE parent_message_id = ? ORDER BY started_at ASC',
-    ),
-    getDelegationsBySession: db.prepare(
-      'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC',
-    ),
-
-    // Handoffs
-    createHandoff: db.prepare(
-      `INSERT INTO handoffs (id, from_session_id, from_agent_id, to_agent_id, project_id, note, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-    ),
-    setHandoffToSession: db.prepare(`UPDATE handoffs SET to_session_id = ? WHERE id = ?`),
-    markHandoffDelivered: db.prepare(
-      `UPDATE handoffs SET status = 'delivered', delivered_at = datetime('now') WHERE id = ?`,
-    ),
-    markHandoffFailed: db.prepare(`UPDATE handoffs SET status = 'failed', error = ? WHERE id = ?`),
-    getHandoffById: db.prepare('SELECT * FROM handoffs WHERE id = ?'),
-    getHandoffByToSession: db.prepare(
-      'SELECT * FROM handoffs WHERE to_session_id = ? AND status = ? LIMIT 1',
-    ),
-    getHandoffsFromSession: db.prepare(
-      'SELECT * FROM handoffs WHERE from_session_id = ? ORDER BY created_at ASC',
-    ),
     insertSkillInvocation: db.prepare(
       `INSERT INTO skill_invocations
        (id, session_id, skill_id, source, reason, status, injected_bytes)
@@ -2599,7 +2428,7 @@ function initDb(dataDir: string): void {
        JOIN kanban_boards b ON c.board_id = b.id
        LEFT JOIN sessions s ON c.session_id = s.id
        WHERE c.pr_url IS NOT NULL
-         AND col.name = 'Review'
+         AND col.name = 'In Progress'
          AND datetime(c.updated_at) < datetime('now', '-15 minutes')
        ORDER BY c.updated_at ASC
        LIMIT 50`,
@@ -2809,146 +2638,6 @@ function initDb(dataDir: string): void {
     // `triaged_at`, `triaged_by`, and `suggested_assignee` columns remain
     // on `kanban_cards` for backward-compat with existing rows, but the
     // dispatch path no longer reads or writes them. See server/routing.ts.
-
-    // Webhook configs
-    getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
-    getWebhookConfigsByProject: db.prepare(
-      'SELECT * FROM webhook_configs WHERE project_id = ? ORDER BY created_at DESC',
-    ),
-    getWebhookConfig: db.prepare('SELECT * FROM webhook_configs WHERE id = ?'),
-    createWebhookConfig: db.prepare(
-      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
-    ),
-    updateWebhookConfig: db.prepare(
-      "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, author_allowlist = ?, updated_at = datetime('now') WHERE id = ?",
-    ),
-    deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
-    getWebhookConfigByProjectAndRepo: db.prepare(
-      'SELECT * FROM webhook_configs WHERE project_id = ? AND repo_url = ?',
-    ),
-    addWebhookLog: db.prepare(
-      'INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)',
-    ),
-    updateWebhookLog: db.prepare(
-      'UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?',
-    ),
-    getWebhookLogs: db.prepare(
-      'SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?',
-    ),
-    getRecentWebhookLogs: db.prepare(
-      'SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?',
-    ),
-
-    // Webhook events queue (fast-ack + background worker)
-    insertWebhookEvent: db.prepare(
-      `INSERT INTO webhook_events
-         (webhook_config_id, delivery_id, event_type, action, payload, signature, pr_key, deferred_until)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ),
-    getWebhookEventByDelivery: db.prepare(
-      'SELECT id FROM webhook_events WHERE delivery_id = ? LIMIT 1',
-    ),
-    getWebhookEventById: db.prepare('SELECT * FROM webhook_events WHERE id = ?'),
-    // Atomic claim: picks the oldest eligible pending row and flips it to
-    // 'processing' in a single UPDATE, returning the row. Safe under WAL
-    // because better-sqlite3 is single-threaded per connection — no other
-    // writer can interleave inside this statement.
-    //
-    // P1 contract (card 2c4a0d06):
-    //   * deferred_until — skip rows whose persistent debounce window
-    //     hasn't elapsed yet. Replaces the in-memory reviewerDebounceTimers.
-    //   * pr_key NOT IN (… processing …) — never claim two rows for the
-    //     same PR concurrently. The webhook handler may dispatch git ops
-    //     against the PR worktree; serializing per-PR is what keeps a
-    //     reviewer race or autofix race from clobbering itself.
-    claimPendingWebhookEvent: db.prepare(`
-      UPDATE webhook_events
-      SET status = 'processing',
-          started_at = datetime('now'),
-          attempts = attempts + 1
-      WHERE id = (
-        SELECT id FROM webhook_events e1
-        WHERE e1.status = 'pending'
-          AND (e1.deferred_until IS NULL OR e1.deferred_until <= datetime('now'))
-          AND (
-            e1.pr_key IS NULL
-            OR NOT EXISTS (
-              SELECT 1 FROM webhook_events e2
-              WHERE e2.status = 'processing'
-                AND e2.pr_key IS NOT NULL
-                AND e2.pr_key = e1.pr_key
-            )
-          )
-        ORDER BY e1.created_at ASC, e1.id ASC
-        LIMIT 1
-      )
-      RETURNING *
-    `),
-    markWebhookEventDone: db.prepare(
-      "UPDATE webhook_events SET status = 'done', completed_at = datetime('now') WHERE id = ?",
-    ),
-    markWebhookEventError: db.prepare(
-      "UPDATE webhook_events SET status = 'error', completed_at = datetime('now'), error_message = ? WHERE id = ?",
-    ),
-    // Stale-claim recovery: reset rows stuck in 'processing' back to 'pending'
-    // on server boot. Safe because the worker hasn't started yet.
-    resetStaleWebhookEvents: db.prepare(
-      "UPDATE webhook_events SET status = 'pending', started_at = NULL WHERE status = 'processing'",
-    ),
-    countWebhookEventsByStatus: db.prepare(
-      'SELECT status, COUNT(*) AS n FROM webhook_events GROUP BY status',
-    ),
-    // Insert-time coalescing: when a new row arrives with non-null pr_key,
-    // mark every OLDER pending row sharing (event_type, action, pr_key) as
-    // 'skipped' with `superseded_by` pointing at the new row. Run inside the
-    // same insert path so the worker's claim query stays a single atomic
-    // UPDATE — there's no separate sweep tick to lose races against.
-    //
-    // Bound parameters:
-    //   1. superseded_by id (the newer row's id)
-    //   2. event_type
-    //   3. action (NULL-safe via IS, see action-or-null treatment below)
-    //   4. pr_key
-    //   5. id of the new row (so we don't supersede ourselves)
-    //
-    // `action IS ?` is intentional — synchronize/opened/closed all live
-    // under event_type='pull_request' with distinct `action` values. We
-    // coalesce within the same action (so a synchronize doesn't supersede
-    // a closed event for the same PR).
-    coalescePendingForKey: db.prepare(`
-      UPDATE webhook_events
-      SET status = 'skipped',
-          completed_at = datetime('now'),
-          superseded_by = ?
-      WHERE status = 'pending'
-        AND event_type = ?
-        AND action IS ?
-        AND pr_key = ?
-        AND id != ?
-    `),
-    countPendingForPrKey: db.prepare(
-      "SELECT COUNT(*) AS n FROM webhook_events WHERE pr_key = ? AND status IN ('pending','processing')",
-    ),
-    // Used by isReviewerDispatchPending: returns 1 if any pending row exists
-    // for this pr_key whose deferred_until is still in the future (or whose
-    // event_type is one of the reviewer-triggering kinds and is still
-    // pending). Exact match on pr_key — caller passes `<repo>:<prNumber>`.
-    hasDeferredPendingForPrKey: db.prepare(`
-      SELECT 1 AS found
-      FROM webhook_events
-      WHERE pr_key = ?
-        AND status = 'pending'
-        AND event_type = 'pull_request'
-        AND action IN ('opened','synchronize')
-      LIMIT 1
-    `),
-    // Evaluate a SQLite datetime modifier string (e.g. '+30 seconds') against
-    // 'now' under the DB clock. Used by the webhook enqueue path so the
-    // resulting `deferred_until` value is comparable to the worker's
-    // `claimPendingWebhookEvent` predicate (which uses `datetime('now')`).
-    // Pulled out as a prepared statement to keep the SQLite expression on the
-    // DB side (no JS Date math) and to make the eval cacheable.
-    evalDatetimeOffset: db.prepare("SELECT datetime('now', ?) AS ts"),
 
     // Wiki pages
     getWikiPages: db.prepare(
@@ -3215,7 +2904,6 @@ function initDb(dataDir: string): void {
     deleteNotesByProject: db.prepare('DELETE FROM notes WHERE project_id = ?'),
     deleteWikiPagesByProject: db.prepare('DELETE FROM wiki_pages WHERE project_id = ?'),
     deleteWikiEmbeddingsByProject: db.prepare('DELETE FROM wiki_embeddings WHERE project_id = ?'),
-    deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
     deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
@@ -3571,7 +3259,7 @@ function initDb(dataDir: string): void {
     ),
     // Record the GitHub PR URL the push step opened for a finalize run.
     // Written atomically with the `git push` + `gh pr create` sequence
-    // by the push gate (card 5c34b2de) so the webhook handler can use
+    // by the push gate (card 5c34b2de) so provenance lookup can use
     // a registry hit to mean "internal PR" with no risk of orphan rows.
     // See `server/finalize/provenance.ts` (design §11).
     updateFinalizeRunPrUrl: db.prepare(

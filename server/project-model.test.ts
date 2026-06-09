@@ -1,14 +1,7 @@
 import { getRequest } from './test/helpers.js';
 import config from './config.js';
-import { stmts } from './db.js';
-import {
-  migrateWebhookRepoToProject,
-  findProject,
-  getProjects,
-  saveProjects,
-  ensureReviewerAgents,
-} from './project-model.js';
-import type { Stmts, Project } from './types.js';
+import { findProject, saveProjects, ensureReviewerAgents } from './project-model.js';
+import type { Project } from './types.js';
 
 let originalApiKey: string | null;
 const createdProjectIds: string[] = [];
@@ -27,110 +20,6 @@ afterAll(async () => {
       .catch(() => {});
   }
   config.apiKey = originalApiKey;
-});
-
-describe('migrateWebhookRepoToProject', () => {
-  it('sets githubRepo on a project from webhook config repo_url', async () => {
-    const request = await getRequest();
-
-    const projId = `migrate-test-${Date.now()}`;
-    createdProjectIds.push(projId);
-    const res = await (
-      request as {
-        post(url: string): {
-          send(body: Record<string, unknown>): {
-            expect(code: number): Promise<{ body: Record<string, unknown> }>;
-          };
-        };
-      }
-    )
-      .post('/api/projects')
-      .send({ id: projId, name: 'Migrate Test', cwd: '/tmp', color: '#000' })
-      .expect(201);
-
-    const project = findProject(projId);
-    expect(project).toBeTruthy();
-    expect(project!.githubRepo).toBeUndefined();
-
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/test-org/test-repo',
-      'secret123',
-      '["pull_request.opened"]',
-      1,
-      '[]',
-    );
-
-    migrateWebhookRepoToProject();
-
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('test-org/test-repo');
-  });
-
-  it('does not overwrite existing githubRepo', async () => {
-    const request = await getRequest();
-
-    const projId = `migrate-noop-${Date.now()}`;
-    createdProjectIds.push(projId);
-    await (
-      request as {
-        post(url: string): {
-          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
-        };
-      }
-    )
-      .post('/api/projects')
-      .send({ id: projId, name: 'No Overwrite Test', cwd: '/tmp', color: '#111' })
-      .expect(201);
-
-    const project = findProject(projId);
-    project!.githubRepo = 'existing/repo';
-    saveProjects();
-
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/other-org/other-repo',
-      'secret456',
-      '["push"]',
-      1,
-      '[]',
-    );
-
-    migrateWebhookRepoToProject();
-
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('existing/repo');
-  });
-
-  it('only captures owner/repo, ignoring trailing path segments', async () => {
-    const request = await getRequest();
-
-    const projId = `migrate-trailing-${Date.now()}`;
-    await (
-      request as {
-        post(url: string): {
-          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
-        };
-      }
-    )
-      .post('/api/projects')
-      .send({ id: projId, name: 'Trailing Path Test', cwd: '/tmp', color: '#222' })
-      .expect(201);
-
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/some-org/some-repo/tree/main/extra',
-      'secret789',
-      '["push"]',
-      1,
-      '[]',
-    );
-
-    migrateWebhookRepoToProject();
-
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('some-org/some-repo');
-  });
 });
 
 describe('ensureReviewerAgents', () => {
@@ -186,7 +75,7 @@ describe('ensureReviewerAgents', () => {
     expect(reviewer!.canReview).toBe(true);
   });
 
-  it('does NOT seed a reviewer when project has neither githubRepo nor enabled webhook', async () => {
+  it('does NOT seed a reviewer when project has no githubRepo', async () => {
     const projId = `reviewer-noseed-${Date.now()}`;
     await createProjectWithAgent(projId, 'No Reviewer Seed', '#555');
 
@@ -208,25 +97,6 @@ describe('ensureReviewerAgents', () => {
     const updated = findProject(projId);
     const reviewers = (updated!.agents || []).filter((a) => a.role === 'reviewer');
     expect(reviewers).toHaveLength(1);
-  });
-
-  it('seeds reviewer when project has an enabled webhook config but no githubRepo', async () => {
-    const projId = `reviewer-webhook-${Date.now()}`;
-    await createProjectWithAgent(projId, 'Webhook Only Reviewer', '#777');
-
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/whonly/repo',
-      'sec',
-      '["pull_request.opened"]',
-      1,
-      '[]',
-    );
-
-    ensureReviewerAgents();
-
-    const updated = findProject(projId);
-    expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
 
   it('seeds a reviewer whose system prompt has a balanced decision tree (no approve-bias) and an in-session verdict contract', async () => {

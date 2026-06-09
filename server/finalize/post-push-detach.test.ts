@@ -4,9 +4,8 @@
  * Two layers:
  *
  *   - **Unit** — exercise `formatPostPushComment` and `runPostPushDetach`
- *     against mocked Stmts. Covers wording (both trigger sources), move
- *     semantics, idempotency, broadcast order, and the non-throwing
- *     contract on DB errors.
+ *     against mocked Stmts. Covers wording (both trigger sources), comment
+ *     posting, broadcast order, and the non-throwing contract on DB errors.
  *
  *   - **Integration** — drive the whole §15 loop against a real
  *     in-memory `better-sqlite3` database. Simulates the orchestrator
@@ -104,69 +103,27 @@ function fakeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
   } as unknown as KanbanCardRow;
 }
 
-const COLUMNS: KanbanColumnRow[] = [
-  { id: 'col-todo', board_id: 'board-1', name: 'To Do', position: 0, color: null, created_at: '' },
-  {
-    id: 'col-progress',
-    board_id: 'board-1',
-    name: 'In Progress',
-    position: 1,
-    color: null,
-    created_at: '',
-  },
-  {
-    id: 'col-review',
-    board_id: 'board-1',
-    name: 'Review',
-    position: 2,
-    color: null,
-    created_at: '',
-  },
-  { id: 'col-done', board_id: 'board-1', name: 'Done', position: 3, color: null, created_at: '' },
-];
-
 interface RecordedComment {
   id: string;
   cardId: string;
   author: string;
   content: string;
 }
-interface RecordedMove {
-  columnId: string;
-  position: number;
-  cardId: string;
-}
 
 function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
   deps: PostPushDetachDeps;
   card: KanbanCardRow;
   comments: RecordedComment[];
-  moves: RecordedMove[];
   broadcast: ReturnType<typeof vi.fn>;
   log: ReturnType<typeof vi.fn>;
 } {
   const card = fakeCard(cardOverride);
   const comments: RecordedComment[] = [];
-  const moves: RecordedMove[] = [];
   const broadcast = vi.fn();
   const log = vi.fn();
   let idCounter = 0;
   const deps: PostPushDetachDeps = {
     stmts: {
-      getKanbanCard: {
-        get: vi.fn((id: string) => (id === card.id ? card : undefined)),
-      } as unknown as PostPushDetachDeps['stmts']['getKanbanCard'],
-      getKanbanColumns: {
-        all: vi.fn((boardId: string) =>
-          boardId === card.board_id ? COLUMNS : ([] as KanbanColumnRow[]),
-        ),
-      } as unknown as PostPushDetachDeps['stmts']['getKanbanColumns'],
-      moveKanbanCard: {
-        run: vi.fn((columnId: string, position: number, cardId: string) => {
-          moves.push({ columnId, position, cardId });
-          if (cardId === card.id) card.column_id = columnId;
-        }),
-      } as unknown as PostPushDetachDeps['stmts']['moveKanbanCard'],
       createKanbanCardComment: {
         run: vi.fn((id: string, cardId: string, author: string, content: string) => {
           comments.push({ id, cardId, author, content });
@@ -177,14 +134,14 @@ function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
     newId: () => `comment-${++idCounter}`,
     log,
   };
-  return { deps, card, comments, moves, broadcast, log };
+  return { deps, card, comments, broadcast, log };
 }
 
 // ─── Unit: runPostPushDetach ─────────────────────────────────────────
 
 describe('runPostPushDetach — happy path (card in In Progress)', () => {
-  it('posts the handoff comment then moves the card to Review', () => {
-    const { deps, comments, moves, broadcast } = makeDeps({ column_id: 'col-progress' });
+  it('posts the handoff comment without moving the card', () => {
+    const { deps, comments, broadcast } = makeDeps({ column_id: 'col-progress' });
 
     runPostPushDetach(deps, {
       cardId: 'card-1',
@@ -201,12 +158,7 @@ describe('runPostPushDetach — happy path (card in In Progress)', () => {
         '(run run-1)',
     );
     expect(comments[0].author).toBe('finalize');
-    expect(moves).toEqual([{ columnId: 'col-review', position: 0, cardId: 'card-1' }]);
-    // Order: comment broadcast (kanban_update), then move broadcasts
-    // (kanban_update + card_moved). UI subscribers that re-render on the
-    // column-move event see the comment already in place.
-    const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
-    expect(types).toEqual(['kanban_update', 'kanban_update', 'card_moved']);
+    expect(broadcast.mock.calls).toEqual([[{ type: 'kanban_update', projectId: 'proj-1' }]]);
   });
 
   it('includes the autonomous-trigger suffix when triggerSource is agent_block', () => {
@@ -222,47 +174,11 @@ describe('runPostPushDetach — happy path (card in In Progress)', () => {
 
     expect(comments[0].content).toContain('(triggered by autonomous agent)');
   });
-
-  it('respects custom reviewColumnName override', () => {
-    // Start the card in To Do so the override (Done) actually triggers a
-    // move — using In Progress as the override would land back where we
-    // started and hit the idempotent no-op.
-    const { deps, moves } = makeDeps({ column_id: 'col-todo' });
-
-    runPostPushDetach(deps, {
-      cardId: 'card-1',
-      projectId: 'proj-1',
-      prUrl: 'https://x',
-      runId: 'r',
-      triggerSource: 'ui_button',
-      reviewColumnName: 'Done',
-    });
-
-    expect(moves[0].columnId).toBe('col-done');
-  });
-});
-
-describe('runPostPushDetach — idempotency', () => {
-  it('does not re-move when card is already in Review', () => {
-    const { deps, comments, moves } = makeDeps({ column_id: 'col-review' });
-
-    runPostPushDetach(deps, {
-      cardId: 'card-1',
-      projectId: 'proj-1',
-      prUrl: 'https://x',
-      runId: 'r',
-      triggerSource: 'ui_button',
-    });
-
-    // The comment always lands; the move is a no-op.
-    expect(comments).toHaveLength(1);
-    expect(moves).toHaveLength(0);
-  });
 });
 
 describe('runPostPushDetach — non-throwing contract', () => {
-  it('swallows DB errors on createKanbanCardComment and continues to the move', () => {
-    const { deps, log, moves } = makeDeps({ column_id: 'col-progress' });
+  it('swallows DB errors on createKanbanCardComment', () => {
+    const { deps, log, comments } = makeDeps({ column_id: 'col-progress' });
     (deps.stmts.createKanbanCardComment as unknown as { run: ReturnType<typeof vi.fn> }).run =
       vi.fn(() => {
         throw new Error('disk full');
@@ -279,75 +195,7 @@ describe('runPostPushDetach — non-throwing contract', () => {
     ).not.toThrow();
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining('postComment failed'));
-    // Move still attempted even when the comment write blew up.
-    expect(moves).toHaveLength(1);
-  });
-
-  it('swallows DB errors on moveKanbanCard', () => {
-    const { deps, log } = makeDeps({ column_id: 'col-progress' });
-    (deps.stmts.moveKanbanCard as unknown as { run: ReturnType<typeof vi.fn> }).run = vi.fn(() => {
-      throw new Error('FK constraint');
-    });
-
-    expect(() =>
-      runPostPushDetach(deps, {
-        cardId: 'card-1',
-        projectId: 'proj-1',
-        prUrl: 'https://x',
-        runId: 'r',
-        triggerSource: 'ui_button',
-      }),
-    ).not.toThrow();
-
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('move failed'));
-  });
-
-  it('logs and bails the move when the card is missing', () => {
-    const { deps, log, moves } = makeDeps();
-    (deps.stmts.getKanbanCard as unknown as { get: ReturnType<typeof vi.fn> }).get = vi.fn(
-      () => undefined,
-    );
-
-    runPostPushDetach(deps, {
-      cardId: 'missing-card',
-      projectId: 'proj-1',
-      prUrl: 'https://x',
-      runId: 'r',
-      triggerSource: 'ui_button',
-    });
-
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('card=missing-card not found'));
-    expect(moves).toHaveLength(0);
-  });
-
-  it('logs and bails when the Review column does not exist on the board', () => {
-    const { deps, log, moves } = makeDeps({ column_id: 'col-progress' });
-    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
-      () => [
-        // No "Review" column on this board.
-        {
-          id: 'col-todo',
-          board_id: 'board-1',
-          name: 'To Do',
-          position: 0,
-          color: null,
-          created_at: '',
-        },
-      ],
-    );
-
-    runPostPushDetach(deps, {
-      cardId: 'card-1',
-      projectId: 'proj-1',
-      prUrl: 'https://x',
-      runId: 'r',
-      triggerSource: 'ui_button',
-    });
-
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining('column "Review" not found on board=board-1'),
-    );
-    expect(moves).toHaveLength(0);
+    expect(comments).toHaveLength(0);
   });
 });
 
@@ -554,8 +402,7 @@ describe('§15 integration — pushed run → provenance hit → merge moves car
       name: 'In Progress',
       position: 1,
     });
-    harness.insertColumn({ id: 'col-review', board_id: BOARD_ID, name: 'Review', position: 2 });
-    harness.insertColumn({ id: 'col-done', board_id: BOARD_ID, name: 'Done', position: 3 });
+    harness.insertColumn({ id: 'col-done', board_id: BOARD_ID, name: 'Done', position: 2 });
     harness.insertCard({
       id: CARD_ID,
       board_id: BOARD_ID,
@@ -577,7 +424,7 @@ describe('§15 integration — pushed run → provenance hit → merge moves car
     });
   }
 
-  it('detach moves card → Review; classifyPr says internal/registry; merge moves card → Done', async () => {
+  it('detach posts handoff comment; classifyPr says internal/registry; merge moves card to Done', async () => {
     const harness = buildIntegrationHarness();
     seed(harness, { startingColumn: 'col-progress' });
 
@@ -599,11 +446,11 @@ describe('§15 integration — pushed run → provenance hit → merge moves car
       },
     );
 
-    // Card landed in Review.
-    const reviewRow = harness.db
+    // Card stays in In Progress — column moves are manual after push.
+    const progressRow = harness.db
       .prepare(`SELECT column_id FROM kanban_cards WHERE id = ?`)
       .get(CARD_ID) as { column_id: string } | undefined;
-    expect(reviewRow?.column_id).toBe('col-review');
+    expect(progressRow?.column_id).toBe('col-progress');
 
     // Handoff comment present and well-formed.
     const comments = harness.db

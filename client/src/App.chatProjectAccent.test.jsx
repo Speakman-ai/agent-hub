@@ -42,7 +42,6 @@ vi.mock('./utils/api.js', async (importOriginal) => {
       getSessions: vi.fn((agentId) => Promise.resolve(sessionsByAgent[agentId] || [])),
       getArchivedSessions: vi.fn(() => Promise.resolve([])),
       getMessages: vi.fn(() => Promise.resolve([])),
-      getSessionHandoffs: vi.fn(() => Promise.resolve([])),
       getSessionProgress: vi.fn(() => Promise.resolve({ steps: [] })),
       getConfig: vi.fn(() => Promise.resolve({})),
       getAuthStatus: vi.fn(() =>
