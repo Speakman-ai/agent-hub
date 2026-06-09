@@ -24,6 +24,8 @@ import {
   clearSessionPreviewStorage,
   previewIdFromEvent,
   shouldShowSessionPreviewPane,
+  previewStateApiPath,
+  resolvePreviewHydration,
 } from './utils/sessionPreviewState.js';
 import FinalizeButton from './components/finalize/FinalizeButton.jsx';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect.jsx';
@@ -260,6 +262,18 @@ export default function App() {
   const workspaceEnsureAttemptedRef = useRef(new Set());
   const previewEventBySessionRef = useRef(previewEventBySession);
   previewEventBySessionRef.current = previewEventBySession;
+  const previewStartingBySessionRef = useRef(previewStartingBySession);
+  previewStartingBySessionRef.current = previewStartingBySession;
+  /**
+   * Per-session monotonic "start generation", bumped on each Start-preview
+   * click. The /preview/state reconcile poll captures it before its
+   * request and re-checks it before applying, so a response computed for
+   * an OLDER run is discarded when the user restarted in-flight. This is
+   * what lets the synthetic `preview_starting` seed (which has no
+   * previewId yet) converge safely without reopening the stale-response
+   * race — see the reconcile effect and `reconcilePreviewEvent`.
+   */
+  const previewStartSeqRef = useRef({});
   /** Sessions where the user clicked Stop — ignore late preview_failed WS noise. */
   const previewUserStoppedBySessionRef = useRef({});
   const tearDownSessionPreviewRef = useRef(null);
@@ -2878,6 +2892,24 @@ export default function App() {
   const handleStartSessionPreview = useCallback(
     async (sessionId) => {
       if (!sessionId) return;
+      // Bump the start generation so any /preview/state poll still in
+      // flight for the PREVIOUS run is discarded on arrival rather than
+      // clobbering this fresh (re)start — the synthetic seed below has no
+      // previewId to match on.
+      previewStartSeqRef.current[sessionId] = (previewStartSeqRef.current[sessionId] || 0) + 1;
+      // Drop any prior run's event so the synthetic `preview_starting`
+      // seed becomes the authoritative current state for this (re)start.
+      // Without this, a leftover terminal event (e.g. the previous run's
+      // `ready`) keeps masking the seed in `activePreviewEvent` — the pane
+      // shows the stale preview, the hydration effect's deps don't change
+      // so it never reschedules, and `resolvePreviewHydration` reads the
+      // stale event as "current" and can't converge the new run.
+      setPreviewEventBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
       setPreviewStartingBySession((prev) => ({ ...prev, [sessionId]: true }));
       setPreviewPaneOpenBySession((prev) => ({ ...prev, [sessionId]: true }));
       try {
@@ -3456,6 +3488,96 @@ export default function App() {
         });
       });
   }, [activeSessionId, connected, activeSessionWorktreeReady, showToast]);
+
+  // Whether the active session currently shows the optimistic synthetic
+  // `preview_starting` seed. Extracted (rather than inlined into the
+  // effect deps) so `react-hooks/exhaustive-deps` can statically check it,
+  // and so a Start click that flips the seed reschedules the hydration
+  // effect even when `activePreviewEvent?.kind` is unchanged.
+  const activeSessionSeedStarting = !!(
+    activeSessionId && previewStartingBySession[activeSessionId]
+  );
+
+  // Self-heal a preview pane stuck on "Booting preview…". The pane's
+  // status is driven purely by live `agenthub_preview` WS events; the
+  // WS connect-snapshot rehydrates a client that *reconnects*, but a
+  // live frame dropped while the socket stays OPEN (a transient blip that
+  // never triggers onclose → reconnect) leaves the pane pinned on
+  // `preview_starting` forever, even though the backend group is already
+  // `ready` and the proxy serves 200. The dropped frame can be the
+  // `ready`/`failed` terminal OR the `preview_starting` itself — in the
+  // latter case the only client state is the synthetic seed (no
+  // previewId). While the active session shows a starting preview (real
+  // WS event OR synthetic seed), poll the authoritative `GET
+  // /preview/state` and reconcile.
+  //
+  // Stale-response race: a poll issued for run A can return after the
+  // user restarts (run B). We capture the per-session start generation
+  // before the request and re-check it before applying, so a response
+  // for an old run is discarded rather than clobbering the restart. That
+  // generation guard is what lets the no-id synthetic seed converge
+  // safely; `reconcilePreviewEvent` additionally requires a positive
+  // previewId match when the current run already has one (covers
+  // WS-driven restarts that don't bump the generation).
+  useEffect(() => {
+    const sid = activeSessionId;
+    if (!sid || !connected) return;
+    const wsEvent = previewEventBySessionRef.current[sid];
+    const seeded = !!previewStartingBySessionRef.current[sid];
+    const isStarting = wsEvent ? wsEvent.kind === 'preview_starting' : seeded;
+    if (!isStarting) return;
+    let cancelled = false;
+    const reconcile = async () => {
+      const liveWs = previewEventBySessionRef.current[sid];
+      const liveSeeded = !!previewStartingBySessionRef.current[sid];
+      const stillStarting = liveWs ? liveWs.kind === 'preview_starting' : liveSeeded;
+      if (!stillStarting) return;
+      const seqAtRequest = previewStartSeqRef.current[sid] || 0;
+      try {
+        const res = await api.get(previewStateApiPath(sid));
+        if (cancelled || !res?.event) return;
+        const decision = resolvePreviewHydration({
+          currentEvent: previewEventBySessionRef.current[sid],
+          seeded: !!previewStartingBySessionRef.current[sid],
+          fetched: res.event,
+          seqAtRequest,
+          currentSeq: previewStartSeqRef.current[sid] || 0,
+        });
+        if (!decision) return;
+        setPreviewEventBySession((prev) => ({ ...prev, [sid]: decision.event }));
+        // A terminal event landed via hydration — clear the optimistic
+        // seed flag so the pane reads the freshly stored terminal event
+        // (mirrors the WS-event handler's cleanup).
+        if (decision.event.kind === 'preview' || decision.event.kind === 'preview_failed') {
+          setPreviewStartingBySession((prev) => {
+            if (!prev[sid]) return prev;
+            const nextSeed = { ...prev };
+            delete nextSeed[sid];
+            return nextSeed;
+          });
+        }
+      } catch {
+        // Best-effort hydration — live WS events remain the primary
+        // path; a failed poll just retries on the next tick.
+      }
+    };
+    const id = setInterval(reconcile, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // Keyed on the event *kind* AND the synthetic seed flag, not the
+    // whole event: streaming `preview_log` frames mutate `logTail` every
+    // line but leave `kind` as `preview_starting`, so depending on the
+    // kind avoids tearing down and recreating the interval (which would
+    // reset the 5 s timer) on every log line while still re-running on
+    // real transitions. The seed flag is a separate dep because a Start
+    // click can flip `previewStartingBySession[sid]` to true WITHOUT
+    // changing `activePreviewEvent?.kind` (e.g. a dropped `preview_starting`
+    // frame) — without it the effect would never schedule the poll that
+    // converges the no-id seed.
+  }, [activeSessionId, connected, activePreviewEvent?.kind, activeSessionSeedStarting]);
+
   const activeResolvePrBannerInfo = useMemo(() => {
     if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name)) return null;
     return {

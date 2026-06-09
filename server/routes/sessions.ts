@@ -73,6 +73,10 @@ import {
 } from '../preview/start-session-preview.js';
 import { createPreviewProxyHandler } from '../preview/preview-proxy.js';
 import { getSessionPreviewPort } from '../preview/session-preview-port.js';
+import {
+  getSessionPreviewStateEvent,
+  type SessionPreviewStateRuntime,
+} from '../preview/get-session-preview-state.js';
 import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
 import type {
   PreviewComposeRuntimeSync,
@@ -1394,6 +1398,35 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         ticket,
         ttlSeconds: Math.floor(PREVIEW_TICKET_TTL_MS / 1000),
       });
+    },
+  );
+
+  // ── Preview state hydration ───────────────────────────────────────
+  // `SessionPreviewPane` derives its status purely from live
+  // `agenthub_preview` WS events. The WS connect-snapshot covers
+  // (re)connects, but a `ready` frame dropped while the socket stays
+  // open (transient blip, no reconnect) strands the pane on
+  // `preview_starting` even though the backend group is `ready`. This
+  // GET lets the client re-request the current truth and reconcile
+  // without forcing a WS reconnect. Returns `{ event }` using the SAME
+  // wire shape the WS connect-snapshot emits, or `{ event: null }` when
+  // no preview is active for the session. Ownership-gated with the same
+  // 404 shape as the ticket/proxy handlers so probing session ids leaks
+  // nothing.
+  router.get(
+    '/api/sessions/:sessionId/preview/state',
+    requireRole('User'),
+    (req: Request, res: Response) => {
+      const sessionId = req.params.sessionId as string;
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const runtime = deps.getPreviewComposeRuntime?.() as
+        | SessionPreviewStateRuntime
+        | null
+        | undefined;
+      const event = getSessionPreviewStateEvent(runtime, sessionId);
+      return res.json({ event });
     },
   );
 

@@ -771,3 +771,44 @@ registerPath({
     500: errorResponse('Unexpected server error.'),
   },
 });
+
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/preview/state',
+  tags: ['Sessions'],
+  summary: 'Get current preview state for a chat session',
+  description:
+    'Returns the current `agenthub_preview` event for the session — the same wire shape delivered live over WebSocket and on the WS connect-snapshot — or `{ event: null }` when no compose preview is active. The client uses this to reconcile a preview pane that is stuck on `preview_starting` because a live `ready` event was dropped while the socket stayed open (no reconnect, so the connect-snapshot never replayed).',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Current preview event, or null when none is active.',
+      content: jsonContent(
+        z.object({
+          event: z
+            .object({
+              type: z.literal('agenthub_preview'),
+              kind: z.enum(['preview_starting', 'preview', 'preview_failed']),
+              sessionId: z.string(),
+              previewId: z.string(),
+              target: z.literal('client'),
+              route: z.string(),
+              previewUrl: z.string().optional(),
+              fullUrl: z.string().optional(),
+              port: z.number().optional(),
+              screenshotPath: z.string().nullable(),
+              logTail: z.array(z.string()),
+              error: z.string().optional(),
+            })
+            .nullable()
+            .openapi({
+              description:
+                'The current preview snapshot event, or null when no preview is active for the session.',
+            }),
+        }),
+      ),
+    },
+    404: errorResponse('Session not found.'),
+    500: errorResponse('Unexpected server error.'),
+  },
+});

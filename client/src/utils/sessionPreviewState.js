@@ -397,6 +397,113 @@ export function shouldShowSessionPreviewPane({
 }
 
 /**
+ * REST path (relative to the `/api` base) for the preview-state
+ * hydration endpoint. The client calls this to re-request the
+ * authoritative preview event for a session when its pane is stuck on
+ * `preview_starting` — e.g. a live `ready` WS frame was dropped while
+ * the socket stayed open, so no reconnect fired and the WS
+ * connect-snapshot never replayed.
+ */
+export function previewStateApiPath(sessionId) {
+  return `/sessions/${sessionId}/preview/state`;
+}
+
+/**
+ * Decide how to reconcile a pane's CURRENT preview event with the
+ * authoritative event returned by `GET /preview/state`. The rules are
+ * deliberately conservative so hydration only ever *advances* a stuck
+ * pane and never fights the live WS event stream:
+ *
+ *   - Only a pane currently on `preview_starting` is a candidate — a
+ *     pane that already advanced (`preview` / `preview_failed` / idle)
+ *     is left untouched so we never downgrade fresher live state.
+ *   - The fetched event must be terminal (`preview` or `preview_failed`)
+ *     to apply. A fetched `preview_starting` carries no advancement, so
+ *     we keep the current event (which may hold a fresher live logTail).
+ *   - Run identity is resolved by the caller and this reducer together:
+ *       · When the current run already has a `previewId` (the real WS
+ *         `preview_starting` has landed), require a positive match — a
+ *         delayed terminal for an OLDER id is dropped. This covers
+ *         WS-driven restarts that don't bump the client start-generation.
+ *       · When the current run is the synthetic seed (empty `previewId`,
+ *         set on the Start-preview click before any WS frame arrives), we
+ *         cannot match by id, so we apply the fetched terminal to let the
+ *         pane converge even when the `preview_starting` frame itself was
+ *         dropped. The stale-response race for this no-id case is handled
+ *         by the CALLER's start-generation guard (it discards a response
+ *         issued for a run the user has since restarted away from) — see
+ *         the reconcile effect in App.jsx. Without that guard this branch
+ *         would be unsafe; with it, the seed converges without reopening
+ *         the race.
+ *
+ * Returns the event that should be stored for the session — either the
+ * `fetched` event (when it advances state) or the `current` reference
+ * unchanged (so callers can bail without a re-render).
+ */
+export function reconcilePreviewEvent(current, fetched) {
+  if (!current || current.kind !== 'preview_starting') return current;
+  if (!fetched || typeof fetched !== 'object') return current;
+  if (fetched.kind !== 'preview' && fetched.kind !== 'preview_failed') return current;
+  const curId = current.previewId;
+  // Identifiable current run → only a same-id terminal may apply.
+  if (curId) return curId === fetched.previewId ? fetched : current;
+  // Synthetic seed (no id) → apply; the caller's start-generation guard
+  // owns staleness so this can't clobber a newer restart.
+  return fetched;
+}
+
+/**
+ * The synthetic `preview_starting` seed the UI shows between the
+ * Start-preview click and the first WS frame. It has no `previewId`
+ * because the group id is minted server-side during async boot. Exported
+ * so the reconcile path and tests share one definition.
+ */
+export const SYNTHETIC_PREVIEW_STARTING_SEED = {
+  type: 'agenthub_preview',
+  kind: 'preview_starting',
+  previewId: '',
+};
+
+/**
+ * Full decision for a `GET /preview/state` hydration response. Folds the
+ * start-generation staleness guard together with `reconcilePreviewEvent`
+ * so the entire self-heal contract is unit-testable in one pure place —
+ * the reconcile effect in App.jsx is then a thin wiring layer.
+ *
+ * The start-generation (`seqAtRequest` captured before the request,
+ * `currentSeq` read at apply time) is the identity signal for the no-id
+ * synthetic seed: if the user (re)started the preview while the request
+ * was in flight the generation advances and we discard the response, so a
+ * terminal event for an older run can never clobber the newer one. When
+ * the generation is unchanged the response is authoritative for the run
+ * on screen, so `reconcilePreviewEvent` may safely converge the seed.
+ *
+ * @param {object|null|undefined} currentEvent stored WS event for the
+ *   session, or null/undefined when only the synthetic seed exists.
+ * @param {boolean} seeded whether the optimistic synthetic seed is set.
+ * @param {*} fetched the `event` from `/preview/state` (or null).
+ * @param {number} seqAtRequest start generation when the poll was issued.
+ * @param {number} currentSeq start generation now (at apply time).
+ * @returns {{event: object}|null} the event to store, or null to leave
+ *   the session's state unchanged.
+ */
+export function resolvePreviewHydration({
+  currentEvent,
+  seeded,
+  fetched,
+  seqAtRequest,
+  currentSeq,
+}) {
+  if (!fetched || typeof fetched !== 'object') return null;
+  // Stale: the run the response describes is no longer the one on screen.
+  if (seqAtRequest !== currentSeq) return null;
+  const current = currentEvent ?? (seeded ? SYNTHETIC_PREVIEW_STARTING_SEED : null);
+  const next = reconcilePreviewEvent(current, fetched);
+  if (next === current) return null;
+  return { event: next };
+}
+
+/**
  * Validate a pane width pulled from localStorage. Returns the clamped
  * number on success, or `null` if the input is unusable.
  */

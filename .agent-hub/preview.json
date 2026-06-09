@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "projectId": "agent-hub",
+  "prEnv": {
+    "enabled": false,
+    "preview": {
+      "enabled": true,
+      "captureRoutes": [
+        "/"
+      ],
+      "idleTTL": 1800,
+      "compose": {
+        "entryService": "client",
+        "entryPort": 80,
+        "file": "compose.preview.yml",
+        "healthPath": "/"
+      }
+    }
+  }
+}

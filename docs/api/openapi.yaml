@@ -9051,6 +9051,91 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/preview/state:
+    get:
+      tags:
+        - Sessions
+      summary: Get current preview state for a chat session
+      description: "Returns the current `agenthub_preview` event for the session — the same wire shape delivered live over WebSocket and on the WS connect-snapshot — or `{ event: null }` when no compose preview is active. The client uses this to reconcile a preview pane that is stuck on `preview_starting` because a live `ready` event was dropped while the socket stayed open (no reconnect, so the connect-snapshot never replayed)."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Current preview event, or null when none is active.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event:
+                    type: object
+                    nullable: true
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - agenthub_preview
+                      kind:
+                        type: string
+                        enum:
+                          - preview_starting
+                          - preview
+                          - preview_failed
+                      sessionId:
+                        type: string
+                      previewId:
+                        type: string
+                      target:
+                        type: string
+                        enum:
+                          - client
+                      route:
+                        type: string
+                      previewUrl:
+                        type: string
+                      fullUrl:
+                        type: string
+                      port:
+                        type: number
+                      screenshotPath:
+                        type: string
+                        nullable: true
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      error:
+                        type: string
+                    required:
+                      - type
+                      - kind
+                      - sessionId
+                      - previewId
+                      - target
+                      - route
+                      - screenshotPath
+                      - logTail
+                    description: The current preview snapshot event, or null when no preview is active for the session.
+                required:
+                  - event
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/bug-reports:
     options:
       tags:

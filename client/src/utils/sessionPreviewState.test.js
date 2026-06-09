@@ -12,6 +12,9 @@ import {
   resolvePreviewBrowserUrl,
   withPreviewTicket,
   shouldShowSessionPreviewPane,
+  previewStateApiPath,
+  reconcilePreviewEvent,
+  resolvePreviewHydration,
 } from './sessionPreviewState.js';
 
 describe('derivePaneState', () => {
@@ -455,5 +458,189 @@ describe('shouldShowSessionPreviewPane', () => {
   it('returns false on a completely empty input', () => {
     expect(shouldShowSessionPreviewPane()).toBe(false);
     expect(shouldShowSessionPreviewPane({})).toBe(false);
+  });
+});
+
+describe('previewStateApiPath', () => {
+  it('builds the /api-relative hydration path for a session', () => {
+    expect(previewStateApiPath('sess-1')).toBe('/sessions/sess-1/preview/state');
+  });
+});
+
+describe('reconcilePreviewEvent', () => {
+  // Real-world `current` always has an id by the time we'd self-heal: the
+  // WS `preview_starting` (carrying the group id) replaces the synthetic
+  // seed before the 5 s reconcile poll fires. The terminal events the
+  // hydration endpoint returns always carry the same id.
+  const starting = {
+    type: 'agenthub_preview',
+    kind: 'preview_starting',
+    sessionId: 's1',
+    previewId: 'p1',
+  };
+  const ready = {
+    type: 'agenthub_preview',
+    kind: 'preview',
+    sessionId: 's1',
+    previewId: 'p1',
+    fullUrl: '/p',
+  };
+  const failed = {
+    type: 'agenthub_preview',
+    kind: 'preview_failed',
+    sessionId: 's1',
+    previewId: 'p1',
+  };
+
+  it('advances a stuck `preview_starting` pane to a fetched `preview` (ready) event of the same run', () => {
+    expect(reconcilePreviewEvent(starting, ready)).toBe(ready);
+  });
+
+  it('advances a stuck `preview_starting` pane to a fetched `preview_failed` event of the same run', () => {
+    expect(reconcilePreviewEvent(starting, failed)).toBe(failed);
+  });
+
+  it('leaves the current event untouched when the pane is not starting (no downgrade)', () => {
+    // A pane already on `ready` must never be clobbered by a late poll.
+    expect(reconcilePreviewEvent(ready, starting)).toBe(ready);
+    expect(reconcilePreviewEvent(failed, ready)).toBe(failed);
+  });
+
+  it('does not apply a fetched `preview_starting` (no advancement — keep fresher live logTail)', () => {
+    expect(reconcilePreviewEvent(starting, starting)).toBe(starting);
+  });
+
+  it('returns the current reference unchanged for null/garbage fetched payloads', () => {
+    expect(reconcilePreviewEvent(starting, null)).toBe(starting);
+    expect(reconcilePreviewEvent(starting, undefined)).toBe(starting);
+    expect(reconcilePreviewEvent(starting, 'nope')).toBe(starting);
+  });
+
+  it('returns the current reference (null/idle) unchanged when there is nothing to advance', () => {
+    expect(reconcilePreviewEvent(null, ready)).toBeNull();
+    expect(reconcilePreviewEvent(undefined, ready)).toBeUndefined();
+  });
+
+  describe('previewId race guard', () => {
+    const startingA = { type: 'agenthub_preview', kind: 'preview_starting', previewId: 'A' };
+    const startingNoId = { type: 'agenthub_preview', kind: 'preview_starting', previewId: '' };
+    const readyA = { type: 'agenthub_preview', kind: 'preview', previewId: 'A', fullUrl: '/p' };
+    const readyB = { type: 'agenthub_preview', kind: 'preview', previewId: 'B', fullUrl: '/p' };
+    const failedB = { type: 'agenthub_preview', kind: 'preview_failed', previewId: 'B' };
+
+    it('applies a terminal event whose previewId matches the current starting run', () => {
+      expect(reconcilePreviewEvent(startingA, readyA)).toBe(readyA);
+    });
+
+    it('does NOT apply a stale terminal event for an OLDER preview id', () => {
+      // User restarted: pane shows run A but a delayed /preview/state
+      // response for run B arrives. Mismatched ids → drop the stale event.
+      expect(reconcilePreviewEvent(startingA, readyB)).toBe(startingA);
+      expect(reconcilePreviewEvent(startingA, failedB)).toBe(startingA);
+    });
+
+    it('CONVERGES the synthetic seed (no previewId) to a terminal event', () => {
+      // When the `preview_starting` WS frame itself was dropped, the only
+      // client state is the no-id seed. The reducer applies the
+      // authoritative terminal so the pane converges even though there is
+      // no id to match. The stale-after-restart race for this no-id case
+      // is prevented by the caller's start-generation guard (reconcile
+      // effect), NOT by this reducer — see reconcilePreviewEvent docs.
+      expect(reconcilePreviewEvent(startingNoId, readyB)).toBe(readyB);
+      expect(reconcilePreviewEvent(startingNoId, failedB)).toBe(failedB);
+    });
+
+    it('treats a missing previewId on an identifiable current run as a non-match (no clobber)', () => {
+      // Current run HAS an id but the fetched terminal lacks one → cannot
+      // prove same-run, so keep current. (The hydration endpoint always
+      // emits an id; this is defensive.)
+      const readyNoId = { type: 'agenthub_preview', kind: 'preview', fullUrl: '/p' };
+      expect(reconcilePreviewEvent(startingA, readyNoId)).toBe(startingA);
+    });
+  });
+});
+
+describe('resolvePreviewHydration', () => {
+  const readyA = { type: 'agenthub_preview', kind: 'preview', previewId: 'A', fullUrl: '/p' };
+  const readyB = { type: 'agenthub_preview', kind: 'preview', previewId: 'B', fullUrl: '/p' };
+  const startingA = { type: 'agenthub_preview', kind: 'preview_starting', previewId: 'A' };
+
+  it('returns null when the fetched event is missing/garbage', () => {
+    expect(
+      resolvePreviewHydration({
+        currentEvent: startingA,
+        seeded: false,
+        fetched: null,
+        seqAtRequest: 1,
+        currentSeq: 1,
+      }),
+    ).toBeNull();
+  });
+
+  it('DISCARDS a response when the start generation advanced in-flight (user restarted)', () => {
+    // The exact stale-response race: poll issued for run A (seq 1), user
+    // restarts (seq 2), the A response arrives — must be dropped even
+    // though the current state is again a no-id starting seed.
+    expect(
+      resolvePreviewHydration({
+        currentEvent: undefined,
+        seeded: true,
+        fetched: readyA,
+        seqAtRequest: 1,
+        currentSeq: 2,
+      }),
+    ).toBeNull();
+  });
+
+  it('CONVERGES the synthetic seed to a terminal when the generation is unchanged', () => {
+    // preview_starting WS frame was dropped → only the seed exists, no
+    // restart happened (seq stable) → apply the authoritative terminal.
+    expect(
+      resolvePreviewHydration({
+        currentEvent: undefined,
+        seeded: true,
+        fetched: readyB,
+        seqAtRequest: 3,
+        currentSeq: 3,
+      }),
+    ).toEqual({ event: readyB });
+  });
+
+  it('applies a same-id terminal over an identifiable starting run', () => {
+    expect(
+      resolvePreviewHydration({
+        currentEvent: startingA,
+        seeded: false,
+        fetched: readyA,
+        seqAtRequest: 1,
+        currentSeq: 1,
+      }),
+    ).toEqual({ event: readyA });
+  });
+
+  it('does not apply a mismatched-id terminal even when the generation is unchanged', () => {
+    // Same generation but a WS-driven restart gave current id A; a stale
+    // terminal for B must not clobber it (reconcilePreviewEvent id-match).
+    expect(
+      resolvePreviewHydration({
+        currentEvent: startingA,
+        seeded: false,
+        fetched: readyB,
+        seqAtRequest: 1,
+        currentSeq: 1,
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when there is no starting run to advance (no current, not seeded)', () => {
+    expect(
+      resolvePreviewHydration({
+        currentEvent: undefined,
+        seeded: false,
+        fetched: readyA,
+        seqAtRequest: 1,
+        currentSeq: 1,
+      }),
+    ).toBeNull();
   });
 });
