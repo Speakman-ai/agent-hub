@@ -42,7 +42,6 @@ import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 const DEFAULT_COLUMNS = [
   { id: 'todo', name: 'To Do', color: '#3B82F6' },
   { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
-  { id: 'review', name: 'Review', color: '#8B5CF6' },
   { id: 'done', name: 'Done', color: '#10B981' },
 ];
 

@@ -1267,13 +1267,6 @@ export interface Stmts {
   getKanbanCardBySession: Stmt;
   getSessionIdsByWorktreeBranch: Stmt;
   getKanbanCardByPrUrl: Stmt;
-  /**
-   * Cards in the `Review` column with a non-null `pr_url` whose last update
-   * was more than 15 minutes ago — feeds the `pr-rebase-poll` sweep. Returns
-   * `card_id`, `card_title`, `project_id`, `pr_url`, `card_updated_at`,
-   * `session_agent_id` (null if the card's session row was deleted).
-   */
-  getStalePrCardsForRebaseCheck: Stmt;
   getNextUndocumentedCard: Stmt;
   markCardDocumented: Stmt;
   deleteKanbanCard: Stmt;

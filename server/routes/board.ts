@@ -195,7 +195,6 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
   const defaultColumns = [
     { name: 'To Do', color: '#3B82F6' },
     { name: 'In Progress', color: '#F59E0B' },
-    { name: 'Review', color: '#8B5CF6' },
     { name: 'Done', color: '#10B981' },
   ];
   for (let i = 0; i < defaultColumns.length; i++) {

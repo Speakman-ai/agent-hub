@@ -168,7 +168,7 @@ describe('Projects', () => {
       // Board + default columns are present immediately, not lazily on first GET.
       const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
-      expect(columnNames).toEqual(['To Do', 'In Progress', 'Review', 'Done']);
+      expect(columnNames).toEqual(['To Do', 'In Progress', 'Done']);
 
       // Project carries the primary "<Project> Agent" plus Docs + Intake.
       // Reviewer is deliberately absent (no `githubRepo` on workflow projects).
@@ -1312,10 +1312,11 @@ describe('Kanban Board', () => {
       const res = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
       expect(res.body).toHaveProperty('columns');
       expect(Array.isArray(res.body.columns)).toBe(true);
-      expect(res.body.columns.length).toBe(4);
+      expect(res.body.columns.length).toBe(3);
       const names = (res.body.columns as Array<{ name: string }>).map((c) => c.name);
       expect(names).toContain('To Do');
       expect(names).toContain('Done');
+      expect(names).not.toContain('Review');
       expect(names).not.toContain('Backlog');
     });
 

@@ -10,6 +10,7 @@ import {
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
+import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -1946,6 +1947,24 @@ function initDb(dataDir: string): void {
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.
   db.exec(WORKTREE_PREVIEW_SECRETS_SCHEMA);
 
+  // Migration: retire the legacy default "Review" kanban column. New boards
+  // no longer seed it; existing boards have their Review cards folded into
+  // "In Progress" and the column dropped (there is no in-UI column editor
+  // yet, so boards can't be cleaned up by hand). Idempotent — no-op once a
+  // board has no Review column. See migrations/collapse-review-column.ts.
+  try {
+    const collapsed = collapseReviewColumn(db);
+    if (collapsed.columnsDeleted > 0 || collapsed.cardsMoved > 0 || collapsed.boardsSkipped > 0) {
+      console.log(
+        `[migration] collapse-review-column: moved ${collapsed.cardsMoved} card(s) to In Progress, ` +
+          `deleted ${collapsed.columnsDeleted} Review column(s), skipped ${collapsed.boardsSkipped} board(s) ` +
+          `with no In Progress target across ${collapsed.boardsScanned} board(s).`,
+      );
+    }
+  } catch (e) {
+    console.error('[migration] collapse-review-column failed:', (e as Error).message);
+  }
+
   {
     const wfCols = (db.pragma('table_info(workflows)') as { name: string }[]).map((c) => c.name);
     if (wfCols.length > 0) {
@@ -2744,29 +2763,6 @@ function initDb(dataDir: string): void {
     ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
-    // Feeds `server/pr-rebase-poll.ts`. We hard-code the 15-minute window
-    // here (matches `PR_REBASE_STALE_AGE_MS` in pre-push-rebase). The
-    // sessions LEFT JOIN tolerates cards whose creator session row was
-    // garbage-collected — `session_agent_id` is null in that case and the
-    // poller skips the row.
-    getStalePrCardsForRebaseCheck: db.prepare(
-      `SELECT
-         c.id            AS card_id,
-         c.title         AS card_title,
-         b.project_id    AS project_id,
-         c.pr_url        AS pr_url,
-         c.updated_at    AS card_updated_at,
-         s.agent_id      AS session_agent_id
-       FROM kanban_cards c
-       JOIN kanban_columns col ON c.column_id = col.id
-       JOIN kanban_boards b ON c.board_id = b.id
-       LEFT JOIN sessions s ON c.session_id = s.id
-       WHERE c.pr_url IS NOT NULL
-         AND col.name = 'Review'
-         AND datetime(c.updated_at) < datetime('now', '-15 minutes')
-       ORDER BY c.updated_at ASC
-       LIMIT 50`,
-    ),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
