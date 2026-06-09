@@ -327,13 +327,33 @@ ci.yaml v2 jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD ru
 - **RAM**: recommend **16GB+** when running backend + frontend + 4 E2E shards concurrently (~6 inner dockerds). Tune `FINALIZE_MAX_PARALLEL_JOBS` (default 4) if needed
 - **Disk**: inner compose images accumulate per job; repo scripts should `docker compose down -v`; outer `docker rm -v` clears the per-job graph volume
 
+### GitHub-parity resource caps (gate runner) vs pre-prod runner
+
+A correctness gate must **not** be faster or beefier than the GitHub-hosted runner it stands in for. A more powerful runner launders timing-sensitive failures: PR surveytracker#1001 was Finalize-green / GitHub-red because the runner's extra CPU let a Cypress `input:visible` 10s timeout pass that blew on a 2-vCPU GitHub runner. So every Finalize job container is CPU/memory-capped to approximate a GitHub-hosted runner.
+
+- **Gate runner (default)**: GitHub-parity, constrained. `docker run` gets `--cpus`, `--memory`, and `--memory-swap` (== `--memory`, so the RAM cap is hard with no swap headroom). Resolved from env in `server/finalize/runner-resource-profile.ts`; applied in the shared `buildStartJobContainerArgv` so the Hub-local and remote runner-agent paths cap identically.
+- **Pre-prod runner**: ECS/prod-like, intentionally unconstrained — for perf/soak/preview work where matching production capacity matters, **not** for the pass/fail gate. Select with `FINALIZE_RUNNER_RESOURCE_PROFILE=unconstrained`.
+
+GitHub-hosted standard Ubuntu runner specs (verified June 2026, [docs](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)): public repos 4 vCPU / 16 GB; private repos 2 vCPU / 8 GB; `ubuntu-slim` 1 vCPU / 5 GB.
+
+The **default is the stricter `ubuntu-private` tier (2 vCPU / 8 GB)**, chosen so the gate is never faster than GitHub without having to know each repo's visibility: a private repo gets exact parity, and a public repo runs *slower* than GitHub (the safe direction — a slower runner can't launder a timing failure into a false-green; at worst a conservative false-red, fixed by opting up to `ubuntu-public`). Defaulting to `ubuntu-public` would instead let any gated private repo run beefier than GitHub and re-open the false-green hole.
+
+Config (env):
+
+- `FINALIZE_RUNNER_RESOURCE_PROFILE` — `ubuntu-private` (default), `ubuntu-public`, `ubuntu-slim`, or `unconstrained`. Unknown names fall back to the default (a typo must not silently uncap the gate). Set `ubuntu-public` for public-repo deploys that want exact GitHub parity.
+- `FINALIZE_RUNNER_CPUS` — override CPU cores (layers on the base profile).
+- `FINALIZE_RUNNER_MEMORY` — override RAM, bytes or docker suffix (`16g`, `512m`, …).
+
 ### Escape hatch
 
 - `FINALIZE_RUNNER_DOCKER_MODE=host-socket` restores legacy behavior (mount host `/var/run/docker.sock`, one ephemeral container per step, `host.docker.internal` for port probes). Use only for debugging.
+- `FINALIZE_RUNNER_RESOURCE_PROFILE=unconstrained` removes the GitHub-parity CPU/memory caps (legacy full-host behavior). Use for the pre-prod runner or local debugging — never for the gate.
 
 ### Key files
 
 - `server/finalize/job-container.ts` — job-scoped start / exec / stop
+- `server/finalize/runner-exec-args.ts` — shared pure `docker run` / `docker exec` argv builders (parity seam)
+- `server/finalize/runner-resource-profile.ts` — GitHub-parity CPU/memory cap resolution
 - `server/finalize/runner/entrypoint.sh` — starts inner dockerd
 - `server/finalize/runner-docker-mode.ts` — `dind` vs `host-socket`
 

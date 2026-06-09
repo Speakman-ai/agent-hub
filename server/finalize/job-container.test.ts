@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   buildExecJobStepArgv,
   buildRemoveGraphVolumeArgv,
@@ -41,6 +41,38 @@ describe('buildStartJobContainerArgv', () => {
     expect(argv.some((a) => a.includes('docker.sock'))).toBe(false);
     expect(argv).toContain('/usr/local/bin/runner-entrypoint.sh');
     expect(argv).toContain('daemon');
+  });
+
+  it('applies GitHub-parity CPU/memory caps from the resolved profile', () => {
+    const GiB = 1024 * 1024 * 1024;
+    const argv = buildStartJobContainerArgv({
+      containerName: 'finalize-run1-e2e-core',
+      image: 'agent-hub/finalize-runner:ubuntu-24.04',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'finalize-run1-e2e-core',
+      // Inject a fixed env so the test doesn't depend on the host's env.
+      resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'ubuntu-private' },
+    });
+    expect(argv).toContain('--cpus');
+    expect(argv[argv.indexOf('--cpus') + 1]).toBe('2');
+    expect(argv).toContain('--memory');
+    expect(argv[argv.indexOf('--memory') + 1]).toBe(String(8 * GiB));
+    // Hard cap: swap limit equals the memory limit (no swap headroom).
+    expect(argv).toContain('--memory-swap');
+    expect(argv[argv.indexOf('--memory-swap') + 1]).toBe(String(8 * GiB));
+  });
+
+  it('omits resource flags when the unconstrained escape hatch is set', () => {
+    const argv = buildStartJobContainerArgv({
+      containerName: 'finalize-run1-e2e-core',
+      image: 'agent-hub/finalize-runner:ubuntu-24.04',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'finalize-run1-e2e-core',
+      resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'unconstrained' },
+    });
+    expect(argv).not.toContain('--cpus');
+    expect(argv).not.toContain('--memory');
+    expect(argv).not.toContain('--memory-swap');
   });
 });
 

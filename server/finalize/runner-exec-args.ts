@@ -14,6 +14,7 @@
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 import { resolveHostMountPath } from './container-runner.js';
+import { resolveRunnerResourceArgs } from './runner-resource-profile.js';
 
 const STEP_SHELL_ARGV = FINALIZE_STEP_SHELL.split(/\s+/u);
 export const RUNNER_USER = 'runner';
@@ -92,6 +93,12 @@ export interface JobContainerOptions {
    * path translation applies on the fleet box.
    */
   workspaceMount?: string;
+  /**
+   * Env source for resolving GitHub-parity CPU/memory caps (see
+   * runner-resource-profile.ts). Defaults to `process.env`; tests inject a
+   * fixed env to assert the resulting `--cpus` / `--memory` flags.
+   */
+  resourceEnv?: NodeJS.ProcessEnv;
 }
 
 export interface ExecJobStepOptions {
@@ -123,6 +130,10 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
   const hostMount = opts.workspaceMount ?? resolveHostMountPath(opts.worktreePath);
   const graphVolume = sanitizeVolumeName(opts.containerName);
   const args = ['run', '-d', '--privileged', '--cgroupns=host', '--name', opts.containerName];
+
+  // GitHub-parity CPU/memory caps: the gate runner must never be faster/beefier
+  // than the GitHub-hosted runner it stands in for (see runner-resource-profile.ts).
+  args.push(...resolveRunnerResourceArgs(opts.resourceEnv ?? process.env));
 
   for (const [key, value] of Object.entries(opts.labels ?? {})) {
     args.push('--label', `${key}=${value}`);
