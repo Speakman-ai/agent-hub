@@ -1,6 +1,6 @@
 {
   "name": "agent-hub-server",
-  "version": "2.3.12",
+  "version": "2.3.13",
   "private": true,
   "type": "module",
   "scripts": {
