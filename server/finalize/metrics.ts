@@ -586,6 +586,25 @@ function quantile(sortedAsc: ReadonlyArray<number>, q: number): number {
 export const RANGE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
+ * Inclusivity epsilon (ms) added to the upper bound of **now-anchored**
+ * windows (the blank default and the relative `<N><m|h|d>` form).
+ *
+ * The read query is half-open: `observed_at >= fromMs AND observed_at < toMs`.
+ * For a window that ends at "now", the present instant must be *inside* the
+ * window — otherwise a metric row written in the same millisecond the window
+ * is computed (`observed_at === now()`) is excluded by the strict `< toMs`.
+ * That is a real boundary flake: under load the final emitter write of a
+ * Finalize run and the subsequent read can land in the same ms, silently
+ * dropping that row from the aggregate. Bumping `toMs` by 1ms makes the
+ * current instant fall inside `[fromMs, toMs)`.
+ *
+ * Explicit `<isoFrom>..<isoTo>` ranges are NOT bumped — their half-open
+ * `[from, to)` semantics are intentional so adjacent windows tile without
+ * double-counting a row at the shared boundary.
+ */
+export const NOW_ANCHOR_EPSILON_MS = 1;
+
+/**
  * Parse the `range` query-string passed to the read endpoint. Accepts:
  *   - `1h`, `24h`, `30m`, `7d`, `90d` — relative windows ending now.
  *   - `<isoFrom>..<isoTo>` — explicit `[from, to)` half-open interval.
@@ -602,8 +621,8 @@ export function parseRange(
   const trimmed = (raw ?? '').trim();
   if (!trimmed) {
     // Default window: 24h ending now.
-    const to = now();
-    return { fromMs: to - 24 * 60 * 60 * 1000, toMs: to };
+    const nowMs = now();
+    return { fromMs: nowMs - 24 * 60 * 60 * 1000, toMs: nowMs + NOW_ANCHOR_EPSILON_MS };
   }
   const rel = /^([0-9]+)\s*(m|h|d)$/i.exec(trimmed);
   if (rel) {
@@ -613,8 +632,8 @@ export function parseRange(
     const unitMs = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
     const windowMs = value * unitMs;
     if (windowMs > RANGE_MAX_MS) return null;
-    const to = now();
-    return { fromMs: to - windowMs, toMs: to };
+    const nowMs = now();
+    return { fromMs: nowMs - windowMs, toMs: nowMs + NOW_ANCHOR_EPSILON_MS };
   }
   const sep = trimmed.indexOf('..');
   if (sep > 0) {

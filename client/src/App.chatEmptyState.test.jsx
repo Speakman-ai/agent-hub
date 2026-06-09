@@ -151,7 +151,7 @@ describe('App — chat empty-state identifies the page and agent', () => {
   });
 
   it('shows a "Chat" page tag, agent name, and orientation copy when the session has no messages', async () => {
-    render(<App />);
+    render(<App initialView="chat" />);
 
     await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
     await act(async () => {
@@ -175,5 +175,29 @@ describe('App — chat empty-state identifies the page and agent', () => {
     expect(empty).toHaveTextContent(/type a message/i);
     // Keyboard-shortcut hint is preserved (regression guard).
     expect(empty).toHaveTextContent(/Ctrl\+K to switch agents/);
+  });
+
+  it('lands on the Dashboard (home view) by default, not the chat view', async () => {
+    // Regression guard for "make dashboard the home page": rendering App
+    // with no explicit view must mount the org Dashboard, even though a
+    // session auto-restores in the background. Previously the app defaulted
+    // to the chat view.
+    render(<App />);
+
+    await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
+    await act(async () => {
+      ctl.resolveProjects(PROJECT_FIXTURE);
+    });
+    await waitFor(() => expect(typeof ctl.resolveSessionsByAgent['agent-1']).toBe('function'), {
+      timeout: 3000,
+    });
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-1'](ONE_SESSION);
+    });
+
+    // The Dashboard heading is present…
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+    // …and we did NOT default into the chat empty-state.
+    expect(screen.queryByTestId('chat-empty-state')).not.toBeInTheDocument();
   });
 });

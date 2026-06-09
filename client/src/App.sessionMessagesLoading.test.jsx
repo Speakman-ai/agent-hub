@@ -198,7 +198,7 @@ describe('App — session switch + getMessages loading', () => {
   });
 
   it('shows chat-messages-loading until deferred getMessages resolves after switching session', async () => {
-    render(<App />);
+    render(<App initialView="chat" />);
     await bootstrapTwoSessions();
 
     await act(async () => {
@@ -233,7 +233,7 @@ describe('App — session switch + getMessages loading', () => {
   });
 
   it('does not apply a stale getMessages result after switching away (cancelled effect)', async () => {
-    render(<App />);
+    render(<App initialView="chat" />);
     await bootstrapTwoSessions();
 
     await act(async () => {
@@ -272,7 +272,7 @@ describe('App — session switch + getMessages loading', () => {
   });
 
   it('clears sessionMessagesLoading when getMessages rejects', async () => {
-    render(<App />);
+    render(<App initialView="chat" />);
     await bootstrapTwoSessions();
 
     await act(async () => {

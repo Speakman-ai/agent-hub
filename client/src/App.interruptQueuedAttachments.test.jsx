@@ -206,7 +206,7 @@ describe('App — interrupt queued message with persisted attachments', () => {
   });
 
   it('re-sends chat with persisted images and never calls /api/upload', async () => {
-    render(<App />);
+    render(<App initialView="chat" />);
 
     await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
     await act(async () => {
@@ -269,7 +269,7 @@ describe('App — interrupt queued message with persisted attachments', () => {
   it('never renders a grey cross-agent streaming label (retired bubble)', async () => {
     localStorage.setItem('activeAgentId', 'agent-1');
 
-    render(<App />);
+    render(<App initialView="chat" />);
 
     await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
     await act(async () => {

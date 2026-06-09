@@ -128,6 +128,7 @@ import {
   shouldNotifyForAwaitingInput,
 } from './utils/awaitingInputState.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
+import { getInitialView } from './utils/navigation.js';
 import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
@@ -144,7 +145,13 @@ import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentCol
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive.js';
 import { deriveSessionState } from './utils/deriveSessionState.js';
 
-export default function App() {
+/**
+ * @param {object} [props]
+ * @param {string} [props.initialView] — explicit top-level view to mount on
+ *   (test seam). Production renders `<App />` with no prop, so the app lands
+ *   on the default home view (the Dashboard) via `getInitialView`.
+ */
+export default function App({ initialView } = {}) {
   const [projects, setProjects] = useState([]);
   const [agents, setAgents] = useState([]);
   const [activeAgentId, _setActiveAgentId] = useState(() => {
@@ -186,7 +193,7 @@ export default function App() {
   // Worktree state was removed when Agent Hub locked to worktree-only sessions.
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
   const [sessionAskMode, setSessionAskMode] = useState(false);
-  const [currentView, setCurrentView] = useState('chat');
+  const [currentView, setCurrentView] = useState(getInitialView(initialView));
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);

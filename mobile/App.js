@@ -158,7 +158,10 @@ function AppContent() {
       <View style={styles.root}>
         <NavigationContainer theme={DarkTheme} ref={navigationRef}>
           <StatusBar style="light" />
-          <Stack.Navigator screenOptions={{ headerShown: false, animation: 'none' }}>
+          <Stack.Navigator
+            initialRouteName="Dashboard"
+            screenOptions={{ headerShown: false, animation: 'none' }}
+          >
             <Stack.Screen name="Chat" component={ChatScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="Skills" component={SkillsScreen} />

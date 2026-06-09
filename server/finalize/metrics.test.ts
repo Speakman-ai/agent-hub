@@ -346,8 +346,27 @@ describe('parseRange', () => {
     const r = parseRange('', () => 100_000_000);
     expect(r).not.toBeNull();
     if (!r) return;
-    expect(r.toMs).toBe(100_000_000);
+    // Upper bound is now()+1ms so the current instant is inside the
+    // half-open `[from, to)` read window (see NOW_ANCHOR_EPSILON_MS).
+    expect(r.toMs).toBe(100_000_000 + 1);
     expect(r.fromMs).toBe(100_000_000 - 24 * 60 * 60 * 1000);
+  });
+
+  it('includes the current instant in now-anchored windows (boundary regression)', () => {
+    // Regression for the flake where a metric row observed at exactly
+    // `now()` was dropped by the strict `observed_at < toMs` read: the
+    // final emitter write of a run and the subsequent read landed in the
+    // same millisecond under load, so the row fell on the excluded edge.
+    // A now-anchored window MUST contain `now` itself.
+    const T = 1_700_000_000_000;
+    for (const input of ['', '1h', '30m', '7d']) {
+      const r = parseRange(input, () => T);
+      expect(r).not.toBeNull();
+      if (!r) continue;
+      // `now` is strictly inside the half-open window: fromMs <= T < toMs.
+      expect(r.fromMs).toBeLessThanOrEqual(T);
+      expect(T).toBeLessThan(r.toMs);
+    }
   });
 
   it('parses relative units (m, h, d)', () => {
