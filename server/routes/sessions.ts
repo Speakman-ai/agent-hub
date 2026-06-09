@@ -37,16 +37,24 @@ import type {
   SessionProgressRow,
   CheckpointRow,
   KanbanCardRow,
+  KanbanEpicRow,
   SkillInvocationRow,
   Project,
   FinalizeRunRow,
 } from '../types.js';
+import { resolveFinalizeBaseBranchForCard } from '../finalize/resolve-base-branch.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
+import {
+  computeSessionChanges,
+  computeFileDiff,
+  listSessionChangedPaths,
+  resolveWorktreeRelativePath,
+} from '../session-changes.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -745,6 +753,106 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: 'worktree_status_failed', message: msg });
+    }
+  });
+
+  // ── Session code-diff pane ────────────────────────────────────────
+  // Total session delta (committed + uncommitted + untracked) vs the
+  // merge-base with the base branch. Powers the web "Changes" pane.
+
+  // Resolve the branch a session should be diffed against. Uses the same
+  // card → epic → repo-default chain as Finalize / auto-git so the Changes
+  // pane anchors to the session's real PR base, not just the repo default.
+  // Returns null when there's no linked card; computeSessionChanges then
+  // resolves the repo default itself.
+  async function resolveSessionDiffBase(session: SessionRow): Promise<string | null> {
+    if (!session.worktree_path) return null;
+    const card = stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined;
+    if (!card) return null;
+    try {
+      return await resolveFinalizeBaseBranchForCard({
+        card,
+        worktreePath: session.worktree_path,
+        getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+      });
+    } catch {
+      // Base resolution is best-effort — fall back to repo default.
+      return null;
+    }
+  }
+
+  router.get('/api/sessions/:sessionId/changes', async (req: Request, res: Response) => {
+    const id = req.params.sessionId as string;
+    if (!userOwnsSession(req as AuthenticatedRequest, id)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const session = stmts.getSession.get(id) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!session.worktree_path) {
+      return res.json({
+        baseBranch: null,
+        baseSha: null,
+        headSha: null,
+        branch: session.worktree_branch ?? null,
+        dirty: false,
+        files: [],
+        truncated: false,
+      });
+    }
+    try {
+      const baseBranch = await resolveSessionDiffBase(session);
+      const summary = await computeSessionChanges({
+        worktreePath: session.worktree_path,
+        baseBranch,
+      });
+      res.json(summary);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'session_changes_failed', message: msg });
+    }
+  });
+
+  router.get('/api/sessions/:sessionId/changes/diff', async (req: Request, res: Response) => {
+    const id = req.params.sessionId as string;
+    if (!userOwnsSession(req as AuthenticatedRequest, id)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const file = typeof req.query.file === 'string' ? req.query.file : '';
+    if (!file) return res.status(400).json({ error: 'file query parameter is required' });
+    const session = stmts.getSession.get(id) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!session.worktree_path) {
+      return res.status(404).json({ error: 'Session has no worktree' });
+    }
+    // Reject absolute / out-of-worktree paths up front with a clear 400 — the
+    // `git diff --no-index` path would otherwise be a server file-read oracle.
+    const safeFile = resolveWorktreeRelativePath(session.worktree_path, file);
+    if (!safeFile) return res.status(400).json({ error: 'invalid file path' });
+    try {
+      const baseBranch = await resolveSessionDiffBase(session);
+      // Authorization is membership-based: only diff a path git itself reports
+      // as changed for this session. We gate against the UNTRUNCATED change set
+      // (not the capped UI list) so a file past MAX_CHANGED_FILES is still
+      // diffable. The `untracked` flag is derived server-side here — never
+      // trusted from the client query string.
+      const membership = await listSessionChangedPaths({
+        worktreePath: session.worktree_path,
+        baseBranch,
+      });
+      const entry = membership.get(safeFile);
+      if (!entry) {
+        return res.status(404).json({ error: 'file is not part of this session’s changes' });
+      }
+      const result = await computeFileDiff({
+        worktreePath: session.worktree_path,
+        baseBranch,
+        file: safeFile,
+        untracked: entry.untracked,
+      });
+      res.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'session_file_diff_failed', message: msg });
     }
   });
 

@@ -13,6 +13,7 @@
     "test:coverage": "node ./scripts/check-test-deps.mjs && vitest run --coverage"
   },
   "dependencies": {
+    "@git-diff-view/react": "^0.1.5",
     "date-fns": "^4.1.0",
     "highlight.js": "^11.11.1",
     "html2canvas": "^1.4.1",

@@ -1762,6 +1762,105 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    SessionChangeFile:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Repo-relative path (new path for renames).
+        oldPath:
+          type: string
+          description: Previous path for renames/copies.
+        status:
+          type: string
+          enum:
+            - added
+            - modified
+            - deleted
+            - renamed
+            - copied
+            - type-changed
+        additions:
+          type: integer
+        deletions:
+          type: integer
+        binary:
+          type: boolean
+        untracked:
+          type: boolean
+          description: True for files git is not tracking yet (freshly created).
+      required:
+        - path
+        - status
+        - additions
+        - deletions
+        - binary
+        - untracked
+      description: One changed file in a session worktree.
+    SessionChanges:
+      type: object
+      properties:
+        baseBranch:
+          type: string
+          nullable: true
+        baseSha:
+          type: string
+          nullable: true
+          description: Merge-base SHA the diff is anchored to (null if unresolved).
+        headSha:
+          type: string
+          nullable: true
+        branch:
+          type: string
+          nullable: true
+        dirty:
+          type: boolean
+          description: True when the worktree has uncommitted changes.
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionChangeFile"
+        truncated:
+          type: boolean
+          description: True when the file list was capped at the server limit.
+      required:
+        - baseBranch
+        - baseSha
+        - headSha
+        - branch
+        - dirty
+        - files
+        - truncated
+      description: Total session delta (committed + uncommitted + untracked) vs base.
+    SessionFileDiff:
+      type: object
+      properties:
+        path:
+          type: string
+        status:
+          type: string
+          enum:
+            - added
+            - modified
+            - deleted
+            - renamed
+            - copied
+            - type-changed
+        binary:
+          type: boolean
+        unifiedDiff:
+          type: string
+          description: Unified diff body. Empty when binary or tooLarge.
+        tooLarge:
+          type: boolean
+          description: True when the patch exceeded the byte cap and was withheld.
+      required:
+        - path
+        - status
+        - binary
+        - unifiedDiff
+        - tooLarge
+      description: Unified diff for a single changed file.
     BugReportsErrorResponse:
       type: object
       properties:
@@ -9132,6 +9231,85 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "500":
           description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/changes:
+    get:
+      tags:
+        - Sessions
+      summary: List files changed in a session worktree
+      description: Returns the total session delta — committed, uncommitted, and untracked files — diffed against the merge-base of the base branch and the worktree HEAD. Owner-filtered; a session the caller does not own returns 404. Sessions with no worktree return an empty file list.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Session change summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionChanges"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Failed to compute session changes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/changes/diff:
+    get:
+      tags:
+        - Sessions
+      summary: Unified diff for a single changed file
+      description: Returns the unified diff for one file in a session worktree. The `file` must be a repo-relative path that the server reports as changed for this session — absolute paths and `..` traversal are rejected, and paths outside the changed-file set return 404 (the endpoint is membership-gated so it can't be used as an arbitrary file-read primitive). Whether a file is tracked vs. untracked is determined server-side. Binary and oversized diffs return an empty body with `binary`/`tooLarge` set.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Repo-relative path to diff (new path for renames).
+          required: true
+          description: Repo-relative path to diff (new path for renames).
+          name: file
+          in: query
+      responses:
+        "200":
+          description: File diff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFileDiff"
+        "400":
+          description: Missing or invalid (absolute / out-of-worktree) file path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found, has no worktree, or file is not a session change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Failed to compute file diff.
           content:
             application/json:
               schema:

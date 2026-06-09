@@ -1,4 +1,13 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  lazy,
+  Suspense,
+} from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import ChatMessage from './components/ChatMessage.jsx';
@@ -17,6 +26,8 @@ import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionDesignPane from './components/SessionDesignPane.jsx';
+// Lazy — pulls in @git-diff-view/react + its CSS only when the diff pane opens.
+const SessionChangesPane = lazy(() => import('./components/SessionChangesPane.jsx'));
 import LinkDesignModal from './components/LinkDesignModal.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
@@ -89,6 +100,7 @@ import {
   AlertTriangle,
   Loader2,
   ArrowLeftRight,
+  GitBranch,
 } from 'lucide-react';
 import {
   migrateFromLegacy,
@@ -254,6 +266,15 @@ export default function App() {
   const [previewEventBySession, setPreviewEventBySession] = useState({});
   /** Per-session preview pane open/closed flag (auto-opens on first event). */
   const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState({});
+  /** Per-session Changes (code diff) pane open flag. When true the diff pane
+   * replaces the preview pane on the right (the two are mutually exclusive). */
+  const [diffPaneOpenBySession, setDiffPaneOpenBySession] = useState({});
+  /** Per-session changed-file count, lifted from the diff pane to badge the
+   * "Changes" toolbar button. */
+  const [diffFileCountBySession, setDiffFileCountBySession] = useState({});
+  /** Per-session counter bumped on each `code_changed` WS event; passed to the
+   * diff pane as a reloadToken so the file list stays live while the agent works. */
+  const [codeChangedTickBySession, setCodeChangedTickBySession] = useState({});
   /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
   const [previewStartingBySession, setPreviewStartingBySession] = useState({});
   /** While POST /sessions/:id/workspace/ensure is cloning the session worktree. */
@@ -2074,6 +2095,8 @@ export default function App() {
         case 'code_changed': {
           const sid = data.sessionId;
           if (!sid || !sessionsRef.current.some((s) => s.id === sid)) break;
+          // Bump the per-session reload token so an open Changes pane refetches.
+          setCodeChangedTickBySession((prev) => ({ ...prev, [sid]: (prev[sid] || 0) + 1 }));
           const previewKind = previewEventBySessionRef.current[sid]?.kind;
           if (previewKind !== 'preview' && sid === activeSessionIdRef.current) {
             setPreviewPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
@@ -2995,12 +3018,18 @@ export default function App() {
   // "no app loaded here" placeholder — the user opens it via the
   // Start preview button below the chat, which seeds a synthetic
   // `preview_starting` event into `activePreviewEvent`.
-  const showSessionPreviewPane = shouldShowSessionPreviewPane({
-    activeSessionId,
-    project: activeChatProject,
-    activePreviewEvent,
-    paneOpenBySession: previewPaneOpenBySession,
-  });
+  // The Changes (code diff) pane and the preview pane share the right-hand
+  // slot and are mutually exclusive — opening Changes replaces an open
+  // preview (the preview's own state is preserved and returns on close).
+  const showSessionDiffPane = !!activeSessionId && diffPaneOpenBySession[activeSessionId] === true;
+  const showSessionPreviewPane =
+    !showSessionDiffPane &&
+    shouldShowSessionPreviewPane({
+      activeSessionId,
+      project: activeChatProject,
+      activePreviewEvent,
+      paneOpenBySession: previewPaneOpenBySession,
+    });
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
@@ -4527,6 +4556,32 @@ export default function App() {
 
                       {activeSessionId && (
                         <div className="px-3 md:px-6 pb-2 flex items-center gap-2 border-t border-gray-800/80 pt-2">
+                          {/* Changes (code diff) toggle — opens the diff pane on
+                            the right, replacing the preview pane if open. */}
+                          <button
+                            type="button"
+                            data-testid="toggle-changes-pane"
+                            aria-pressed={showSessionDiffPane}
+                            onClick={() =>
+                              setDiffPaneOpenBySession((prev) => ({
+                                ...prev,
+                                [activeSessionId]: !prev[activeSessionId],
+                              }))
+                            }
+                            title="View session file changes"
+                            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
+                              showSessionDiffPane
+                                ? 'bg-sky-700/70 text-sky-50 border-sky-600'
+                                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                            }`}
+                          >
+                            <GitBranch size={13} /> Changes
+                            {diffFileCountBySession[activeSessionId] > 0 && (
+                              <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
+                                {diffFileCountBySession[activeSessionId]}
+                              </span>
+                            )}
+                          </button>
                           <SessionPreviewStartButton
                             sessionId={activeSessionId}
                             project={activeChatProject}
@@ -4595,6 +4650,35 @@ export default function App() {
                         onStop={handlePreviewStop}
                         onConfigure={handlePreviewConfigure}
                       />
+                    )}
+                    {showSessionDiffPane && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[720px]">
+                            <Loader2 size={18} className="animate-spin text-sky-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionChangesPane
+                          sessionId={activeSessionId}
+                          reloadToken={codeChangedTickBySession[activeSessionId] || 0}
+                          onClose={() =>
+                            setDiffPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [activeSessionId]: false,
+                            }))
+                          }
+                          onSummary={(s) =>
+                            setDiffFileCountBySession((prev) => {
+                              const next = Array.isArray(s?.files) ? s.files.length : 0;
+                              // Return the same reference when unchanged so React
+                              // bails out instead of rerendering on every refetch.
+                              if (prev[activeSessionId] === next) return prev;
+                              return { ...prev, [activeSessionId]: next };
+                            })
+                          }
+                        />
+                      </Suspense>
                     )}
                     {linkedDesign && (
                       <SessionDesignPane

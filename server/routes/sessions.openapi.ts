@@ -812,3 +812,110 @@ registerPath({
     500: errorResponse('Unexpected server error.'),
   },
 });
+
+// ─── Session code-diff pane ──────────────────────────────────────────
+
+const ChangeStatusSchema = z.enum([
+  'added',
+  'modified',
+  'deleted',
+  'renamed',
+  'copied',
+  'type-changed',
+]);
+
+export const SessionChangeFileComponent = registerComponent(
+  'SessionChangeFile',
+  z
+    .object({
+      path: z.string().openapi({ description: 'Repo-relative path (new path for renames).' }),
+      oldPath: z.string().optional().openapi({ description: 'Previous path for renames/copies.' }),
+      status: ChangeStatusSchema,
+      additions: z.number().int(),
+      deletions: z.number().int(),
+      binary: z.boolean(),
+      untracked: z
+        .boolean()
+        .openapi({ description: 'True for files git is not tracking yet (freshly created).' }),
+    })
+    .openapi({ description: 'One changed file in a session worktree.' }),
+);
+
+export const SessionChangesComponent = registerComponent(
+  'SessionChanges',
+  z
+    .object({
+      baseBranch: z.string().nullable(),
+      baseSha: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Merge-base SHA the diff is anchored to (null if unresolved).' }),
+      headSha: z.string().nullable(),
+      branch: z.string().nullable(),
+      dirty: z
+        .boolean()
+        .openapi({ description: 'True when the worktree has uncommitted changes.' }),
+      files: z.array(SessionChangeFileComponent),
+      truncated: z
+        .boolean()
+        .openapi({ description: 'True when the file list was capped at the server limit.' }),
+    })
+    .openapi({ description: 'Total session delta (committed + uncommitted + untracked) vs base.' }),
+);
+
+export const SessionFileDiffComponent = registerComponent(
+  'SessionFileDiff',
+  z
+    .object({
+      path: z.string(),
+      status: ChangeStatusSchema,
+      binary: z.boolean(),
+      unifiedDiff: z
+        .string()
+        .openapi({ description: 'Unified diff body. Empty when binary or tooLarge.' }),
+      tooLarge: z
+        .boolean()
+        .openapi({ description: 'True when the patch exceeded the byte cap and was withheld.' }),
+    })
+    .openapi({ description: 'Unified diff for a single changed file.' }),
+);
+
+// GET /api/sessions/:sessionId/changes
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/changes',
+  tags: ['Sessions'],
+  summary: 'List files changed in a session worktree',
+  description:
+    'Returns the total session delta — committed, uncommitted, and untracked files — diffed against the merge-base of the base branch and the worktree HEAD. Owner-filtered; a session the caller does not own returns 404. Sessions with no worktree return an empty file list.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: { description: 'Session change summary.', content: jsonContent(SessionChangesComponent) },
+    404: errorResponse('Session not found.'),
+    500: errorResponse('Failed to compute session changes.'),
+  },
+});
+
+// GET /api/sessions/:sessionId/changes/diff
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/changes/diff',
+  tags: ['Sessions'],
+  summary: 'Unified diff for a single changed file',
+  description:
+    "Returns the unified diff for one file in a session worktree. The `file` must be a repo-relative path that the server reports as changed for this session — absolute paths and `..` traversal are rejected, and paths outside the changed-file set return 404 (the endpoint is membership-gated so it can't be used as an arbitrary file-read primitive). Whether a file is tracked vs. untracked is determined server-side. Binary and oversized diffs return an empty body with `binary`/`tooLarge` set.",
+  request: {
+    params: sessionIdParams,
+    query: z.object({
+      file: z
+        .string()
+        .openapi({ description: 'Repo-relative path to diff (new path for renames).' }),
+    }),
+  },
+  responses: {
+    200: { description: 'File diff.', content: jsonContent(SessionFileDiffComponent) },
+    400: errorResponse('Missing or invalid (absolute / out-of-worktree) file path.'),
+    404: errorResponse('Session not found, has no worktree, or file is not a session change.'),
+    500: errorResponse('Failed to compute file diff.'),
+  },
+});
