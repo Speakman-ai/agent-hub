@@ -14,6 +14,7 @@ export const ENGINE_OPTIONS = [
 
 export const ENGINE_MODELS = {
   'claude-code': [
+    { id: 'claude-fable-5', label: 'Fable 5', short: 'Fable' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus' },
     { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus 4.7' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },

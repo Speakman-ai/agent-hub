@@ -142,7 +142,12 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 // ─── Exported config object ──────────────────────────────────────
 
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
+  // claude-fable-5: Anthropic's flagship generally-available Mythos-class model
+  // (API id `claude-fable-5`, released 2026-06-09). Listed first as the most
+  // capable Claude Code option. Keep in sync with client TopBar.jsx MODEL_LABELS,
+  // shared systemBannerModel.js MODEL_KNOWN_LABELS, and mobile engineOptions.js.
   'claude-code': [
+    'claude-fable-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',

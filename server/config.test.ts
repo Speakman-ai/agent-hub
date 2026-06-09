@@ -286,6 +286,39 @@ describe('config.ts — codex-cli model defaults', () => {
   });
 });
 
+describe('config.ts — claude-code model defaults', () => {
+  // No config.json is written, so config.ts falls back to its built-in
+  // DEFAULT_ENGINE_VALID_MODELS / DEFAULT_ENGINE_DEFAULT_MODELS.
+  async function importDefaults() {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = path.join(
+      os.tmpdir(),
+      `agent-hub-claude-defaults-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    return (await import('./config.js')).default;
+  }
+
+  it('offers claude-fable-5 as a selectable claude-code model', async () => {
+    // Regression: Claude Fable 5 (API id `claude-fable-5`, released 2026-06-09)
+    // is Anthropic's flagship generally-available Claude Code model and must be
+    // selectable, otherwise PUT /api/sessions/:id/model rejects it as invalid.
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-fable-5');
+    expect(cfg.allValidModels).toContain('claude-fable-5');
+  });
+
+  it('lists claude-fable-5 first as the flagship claude-code option', async () => {
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code'][0]).toBe('claude-fable-5');
+  });
+
+  it('keeps the claude-code default in its valid model list', async () => {
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code']).toContain(cfg.engineDefaultModels['claude-code']);
+  });
+});
+
 describe('config.ts — CLI binary auto-detection (pickBin)', () => {
   // Use an isolated tmp data dir so a developer's local
   // ~/.agent-hub/data/config.json overrides cannot influence these tests.

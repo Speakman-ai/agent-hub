@@ -45,6 +45,19 @@ describe('mobile engine picker constants', () => {
     expect(models).not.toContain('gpt-5.1-codex-max');
   });
 
+  it('exposes claude-fable-5 first for claude-code with a Fable 5 label', () => {
+    // Regression: Claude Fable 5 (claude-fable-5) is the flagship GA Claude Code
+    // model. It must appear in the mobile picker and stay aligned with
+    // server/config.ts and client TopBar.jsx.
+    const models = ENGINE_MODELS['claude-code'];
+    const ids = models.map((m) => m.id);
+    expect(ids).toContain('claude-fable-5');
+    expect(ids[0]).toBe('claude-fable-5');
+    const fable = models.find((m) => m.id === 'claude-fable-5');
+    expect(fable.label).toBe('Fable 5');
+    expect(fable.short).toBe('Fable');
+  });
+
   it('exposes only composer-2.5 as the model for cursor-agent', () => {
     const models = ENGINE_MODELS['cursor-agent'].map((m) => m.id);
     expect(models).toEqual(['composer-2.5']);

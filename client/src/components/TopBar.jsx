@@ -19,6 +19,7 @@ const ENGINE_OPTIONS = [
 ];
 
 const MODEL_LABELS = {
+  'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
   'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
@@ -42,7 +43,13 @@ function modelDisplay(id) {
 function fallbackModelsForEngine(engine) {
   if (engine === 'cursor-agent') return ['composer-2.5'];
   if (engine === 'codex-cli') return ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
-  return ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6'];
+  return [
+    'claude-fable-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+  ];
 }
 
 export default function TopBar({
