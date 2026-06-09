@@ -1,6 +1,10 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { partitionAttachmentFiles } from '../utils/attachmentValidation.js';
 import { getAuthHeaders } from '../utils/connection.js';
+import { formatShortcut, getPlatform } from '../utils/shortcuts.js';
+
+// Keep in sync with the `toggle-microphone` entry in utils/shortcuts.js.
+const MIC_TOGGLE_BINDING = 'Mod+Alt+M';
 
 // genId() only works in secure contexts (HTTPS / localhost).
 // Fall back to Math.random-based ID for plain HTTP (e.g. remote EC2 over HTTP).
@@ -50,24 +54,27 @@ export function baseAudioContentType(mimeType) {
   return base || 'audio/webm';
 }
 
-export default function MessageInput({
-  onSend,
-  onCancel,
-  disabled,
-  isProcessing,
-  queueLength = 0,
-  agentColor,
-  skills,
-  askMode,
-  readOnly,
-  draftKey,
-  onFileError,
-  composerPrefill,
-  onComposerPrefillClear,
-  onReplaceQueuedMessage,
-  sessionAgents = [],
-  enableMentions = false,
-}) {
+function MessageInput(
+  {
+    onSend,
+    onCancel,
+    disabled,
+    isProcessing,
+    queueLength = 0,
+    agentColor,
+    skills,
+    askMode,
+    readOnly,
+    draftKey,
+    onFileError,
+    composerPrefill,
+    onComposerPrefillClear,
+    onReplaceQueuedMessage,
+    sessionAgents = [],
+    enableMentions = false,
+  },
+  ref,
+) {
   // Per-session (per-draftKey) draft store. Lives for the component's lifetime
   // so switching agents/sessions preserves each composer's unsent text.
   // When `draftKey` changes, we stash the current draft under the previous key
@@ -546,6 +553,30 @@ export default function MessageInput({
     if (isRecording) stopRecording();
     else startRecording();
   }, [isRecording, isTranscribing, startRecording, stopRecording]);
+
+  // The mic button is disabled when the composer is disabled (and not mid-stream)
+  // or while a transcription upload is in flight. Mirror that exact condition so
+  // the keyboard shortcut is a true no-op whenever the button itself isn't.
+  const micDisabled = (disabled && !isProcessing) || isTranscribing;
+
+  // Human-readable chord for the mic button tooltip (e.g. "⌘⌥M" / "Ctrl+Alt+M").
+  const micShortcutLabel = formatShortcut(MIC_TOGGLE_BINDING, getPlatform());
+
+  // Expose an imperative toggle so the global keyboard shortcut (wired in
+  // App.jsx via useKeyboardShortcuts) can start/stop voice input on the active
+  // composer without prop-drilling the recording state up the tree.
+  useImperativeHandle(
+    ref,
+    () => ({
+      toggleRecording: () => {
+        if (micDisabled) return false;
+        handleMicClick();
+        return true;
+      },
+      isRecording: () => isRecording,
+    }),
+    [micDisabled, handleMicClick, isRecording],
+  );
 
   // Cleanup on unmount — never leave the mic LED on.
   useEffect(() => {
@@ -1116,7 +1147,7 @@ export default function MessageInput({
         <button
           type="button"
           onClick={handleMicClick}
-          disabled={(disabled && !isProcessing) || isTranscribing}
+          disabled={micDisabled}
           aria-label={
             isTranscribing
               ? 'Transcribing audio'
@@ -1129,8 +1160,8 @@ export default function MessageInput({
             isTranscribing
               ? 'Transcribing...'
               : isRecording
-                ? 'Stop recording (tap)'
-                : 'Voice input — tap to start, tap again to stop'
+                ? `Stop recording (tap or ${micShortcutLabel})`
+                : `Voice input (tap or ${micShortcutLabel} to toggle)`
           }
           className={`px-2 py-3 transition-colors disabled:opacity-30 ${
             isRecording
@@ -1316,3 +1347,5 @@ export default function MessageInput({
     </div>
   );
 }
+
+export default forwardRef(MessageInput);

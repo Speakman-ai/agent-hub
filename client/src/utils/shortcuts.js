@@ -75,6 +75,13 @@ export const WEB_DEFAULT_SHORTCUTS = [
     binding: 'Mod+Alt+D',
     group: 'Create',
   },
+  {
+    id: 'toggle-microphone',
+    label: 'Toggle microphone',
+    description: 'Start or stop voice input in the active chat composer',
+    binding: 'Mod+Alt+M',
+    group: 'Compose',
+  },
   GO_TO_BOARD,
   {
     id: 'go-to-wiki',

@@ -378,6 +378,9 @@ export default function App() {
   const scrollContainerRef = useRef(null);
   /** Observed for height changes (streaming, images, code blocks) while pinned to bottom. */
   const messagesColumnRef = useRef(null);
+  /** Imperative handle on the chat composer — lets the toggle-microphone hotkey
+   *  start/stop voice input without prop-drilling recording state up the tree. */
+  const messageInputRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   // Linked-design id of the active session — kept in a ref so the stable WS
@@ -3763,6 +3766,7 @@ export default function App() {
       'go-to-skills': () => setCurrentView('skills'),
       'go-to-settings': () => setCurrentView('settings'),
       'go-to-next-project': goToNextProject,
+      'toggle-microphone': () => messageInputRef.current?.toggleRecording(),
       'show-help': () => setShowShortcutsHelp(true),
     },
     shortcuts: keyboardShortcutList,
@@ -4623,6 +4627,7 @@ export default function App() {
 
                       {/* Input */}
                       <MessageInput
+                        ref={messageInputRef}
                         onSend={handleSend}
                         onCancel={handleCancel}
                         disabled={!activeAgent || !connected}

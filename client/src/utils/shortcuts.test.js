@@ -289,6 +289,57 @@ it('DEFAULT_SHORTCUTS matches web defaults (modal / hook fallback)', () => {
   expect(DEFAULT_SHORTCUTS).toBe(WEB_DEFAULT_SHORTCUTS);
 });
 
+describe('toggle-microphone shortcut', () => {
+  const entry = WEB_DEFAULT_SHORTCUTS.find((s) => s.id === 'toggle-microphone');
+
+  it('is registered with the Mod+Alt+M binding under the Compose group', () => {
+    expect(entry).toBeTruthy();
+    expect(entry.binding).toBe('Mod+Alt+M');
+    expect(entry.group).toBe('Compose');
+    expect(entry.label).toBeTruthy();
+  });
+
+  it('carries a primary modifier so it fires from inside the focused composer', () => {
+    // The chat textarea holds focus almost always; without a primary modifier
+    // useKeyboardShortcuts would defer to typing and the hotkey would never fire.
+    expect(hasPrimaryModifier(entry.binding)).toBe(true);
+  });
+
+  it('matches Ctrl+Alt+M / Cmd+Alt+M including the macOS Option dead-key code path', () => {
+    expect(
+      matchShortcut(
+        makeEvent({ key: 'm', code: 'KeyM', ctrl: true, alt: true }),
+        entry.binding,
+        'other',
+      ),
+    ).toBe(true);
+    expect(
+      matchShortcut(
+        makeEvent({ key: 'm', code: 'KeyM', meta: true, alt: true }),
+        entry.binding,
+        'mac',
+      ),
+    ).toBe(true);
+    // macOS Option+M emits event.key === 'µ' but event.code === 'KeyM'.
+    expect(
+      matchShortcut(
+        makeEvent({ key: 'µ', code: 'KeyM', meta: true, alt: true }),
+        entry.binding,
+        'mac',
+      ),
+    ).toBe(true);
+    // Missing Alt must not match.
+    expect(
+      matchShortcut(makeEvent({ key: 'm', code: 'KeyM', ctrl: true }), entry.binding, 'other'),
+    ).toBe(false);
+  });
+
+  it('formats as a readable chord on each platform', () => {
+    expect(formatShortcut(entry.binding, 'mac')).toBe('⌘⌥M');
+    expect(formatShortcut(entry.binding, 'other')).toBe('Ctrl+Alt+M');
+  });
+});
+
 describe('getPlatform', () => {
   it('detects mac', () => {
     expect(getPlatform({ platform: 'MacIntel' })).toBe('mac');
