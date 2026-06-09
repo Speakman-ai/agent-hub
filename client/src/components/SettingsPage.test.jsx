@@ -19,6 +19,17 @@ vi.mock('../utils/api.js', () => ({
     getAgents: vi.fn(),
     updateAgent: vi.fn(),
     getProjectSecrets: vi.fn().mockResolvedValue({ secrets: {} }),
+    getMyAgentModelOverrides: vi.fn().mockResolvedValue({ agentModelOverrides: {} }),
+    putMyAgentModelOverride: vi.fn((id, body) =>
+      Promise.resolve({ agentModelOverrides: { [id]: body.model } }),
+    ),
+    deleteMyAgentModelOverride: vi.fn().mockResolvedValue({ agentModelOverrides: {} }),
+    getMyAgentEngineOverrides: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
+    putMyAgentEngineOverride: vi.fn((id, body) =>
+      Promise.resolve({ agentEngineOverrides: { [id]: { engine: body.engine } } }),
+    ),
+    deleteMyAgentEngineOverride: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
+    getMcpServers: vi.fn().mockResolvedValue({ mcpServers: {} }),
   },
 }));
 
@@ -700,6 +711,101 @@ describe('ProjectsSection — visibility toggle', () => {
         expect.stringMatching(/Only org Owners can make a shared project private/),
         'error',
       );
+    });
+  });
+});
+
+/**
+ * Regression guard for the per-user override save race.
+ *
+ * Saves now go through the per-AGENT merge endpoints, so editing one agent
+ * sends only that agent's key — it can never clobber another agent's pick
+ * (the whole-map lost-update window the reviewer flagged). Each agent's write
+ * carries its own value, independent of what's in flight for another agent.
+ */
+describe('AgentConfigSection — per-user override saves are race-safe', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });
+    api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'] },
+    });
+    api.getMyAgentModelOverrides.mockResolvedValue({ agentModelOverrides: {} });
+    api.getMyAgentEngineOverrides.mockResolvedValue({ agentEngineOverrides: {} });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends a per-agent merge call per edit and never clobbers another agent', async () => {
+    const agents = [
+      {
+        id: 'agent-a',
+        name: 'Agent A',
+        role: 'lead',
+        engine: 'claude-code',
+        active: true,
+        projectId: 'p1',
+      },
+      {
+        id: 'agent-b',
+        name: 'Agent B',
+        role: 'lead',
+        engine: 'claude-code',
+        active: true,
+        projectId: 'p1',
+      },
+    ];
+
+    // Agent A's save hangs until released, so Agent B is edited while it's in
+    // flight — the exact window the old whole-map PUT could lose.
+    let releaseFirst;
+    const firstPut = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    api.putMyAgentModelOverride
+      .mockImplementationOnce((id, body) =>
+        firstPut.then(() => ({ agentModelOverrides: { [id]: body.model } })),
+      )
+      .mockImplementation((id, body) =>
+        Promise.resolve({ agentModelOverrides: { [id]: body.model } }),
+      );
+
+    const { findByText, getByTestId } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={agents}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    // Expand Agent A and pick a model (call #1 — now pending).
+    fireEvent.click(await findByText('Agent A'));
+    fireEvent.change(getByTestId('per-user-model-select'), {
+      target: { value: 'claude-sonnet-4-20250514' },
+    });
+    await waitFor(() => expect(api.putMyAgentModelOverride).toHaveBeenCalledTimes(1));
+
+    // Collapse A, expand B, pick a different model while A's call is in flight
+    // (only one card expands at a time, mirroring real usage).
+    fireEvent.click(await findByText('Agent B'));
+    fireEvent.change(getByTestId('per-user-model-select'), {
+      target: { value: 'claude-opus-4-8' },
+    });
+    releaseFirst();
+
+    await waitFor(() => expect(api.putMyAgentModelOverride).toHaveBeenCalledTimes(2));
+    // Each agent was saved with ONLY its own id + value — no whole-map payload
+    // exists to drop the other agent's change.
+    expect(api.putMyAgentModelOverride).toHaveBeenCalledWith('agent-a', {
+      model: 'claude-sonnet-4-20250514',
+    });
+    expect(api.putMyAgentModelOverride).toHaveBeenCalledWith('agent-b', {
+      model: 'claude-opus-4-8',
     });
   });
 });

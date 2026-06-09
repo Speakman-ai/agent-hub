@@ -262,6 +262,8 @@ export async function runReviewerTurn(
     const model = resolveEffectiveModel(config, engine, {
       agentModel: reviewer.model as string | undefined,
       ownerUserId: roomOwnerId,
+      // Honor the reviewer-page per-user model dropdown for the session owner.
+      agentId: reviewer.id,
     });
 
     // Use session worktree by default; fall back to the runId-attached

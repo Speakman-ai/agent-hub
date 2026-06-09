@@ -18,6 +18,9 @@ vi.mock('../utils/api.js', () => ({
     getModelConfig: vi.fn(),
     saveContext: vi.fn(),
     updateAgent: vi.fn(),
+    getMyAgentModelOverrides: vi.fn(),
+    putMyAgentModelOverride: vi.fn(),
+    deleteMyAgentModelOverride: vi.fn(),
   },
 }));
 
@@ -45,6 +48,11 @@ const projectWithoutReviewer = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getMyAgentModelOverrides.mockResolvedValue({ agentModelOverrides: {} });
+  api.putMyAgentModelOverride.mockImplementation((id, body) =>
+    Promise.resolve({ agentModelOverrides: { [id]: body.model } }),
+  );
+  api.deleteMyAgentModelOverride.mockResolvedValue({ agentModelOverrides: {} });
   api.getModelConfig.mockResolvedValue({
     defaultModel: 'claude-opus-4-8',
     engineDefaultModels: {
@@ -97,13 +105,31 @@ describe('ReviewerPage', () => {
     );
   });
 
-  it('lets the user switch and save the reviewer model', async () => {
+  it('saves the reviewer model as a per-user pick (not the shared row)', async () => {
+    api.getContext.mockResolvedValue({ 'IDENTITY.md': 'reviewer body' });
+
+    render(<ReviewerPage projectId="proj-1" projects={[projectWithReviewer]} />);
+
+    const modelSelect = await screen.findByTestId('per-user-model-select');
+    // No per-user pick yet → blank "Default" option selected.
+    expect(modelSelect).toHaveValue('');
+
+    fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
+
+    // Selecting the model persists via the per-AGENT merge endpoint (only the
+    // reviewer agent's key), never the whole-map PUT and never the shared row.
+    await waitFor(() =>
+      expect(api.putMyAgentModelOverride).toHaveBeenCalledWith('proj-1-reviewer', {
+        model: 'claude-sonnet-4-20250514',
+      }),
+    );
+    expect(api.updateAgent).not.toHaveBeenCalled();
+  });
+
+  it('saves the reviewer engine to the shared row and lists the new engine models', async () => {
     const onAgentsChange = vi.fn();
     api.getContext.mockResolvedValue({ 'IDENTITY.md': 'reviewer body' });
-    api.updateAgent.mockResolvedValue({
-      ...reviewerAgent,
-      model: 'claude-sonnet-4-20250514',
-    });
+    api.updateAgent.mockResolvedValue({ ...reviewerAgent, engine: 'codex-cli' });
 
     render(
       <ReviewerPage
@@ -113,51 +139,26 @@ describe('ReviewerPage', () => {
       />,
     );
 
-    const modelSelect = await screen.findByTestId('reviewer-model-select');
-    expect(modelSelect).toHaveValue('claude-opus-4-8');
-
-    fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
-    fireEvent.click(screen.getByRole('button', { name: /save model/i }));
-
-    await waitFor(() =>
-      expect(api.updateAgent).toHaveBeenCalledWith('proj-1-reviewer', {
-        engine: 'claude-code',
-        model: 'claude-sonnet-4-20250514',
-      }),
-    );
-    expect(onAgentsChange).toHaveBeenCalled();
-  });
-
-  it('resets the reviewer model when switching engines', async () => {
-    api.getContext.mockResolvedValue({ 'IDENTITY.md': 'reviewer body' });
-    api.updateAgent.mockResolvedValue({
-      ...reviewerAgent,
-      engine: 'codex-cli',
-      model: '',
-    });
-
-    render(<ReviewerPage projectId="proj-1" projects={[projectWithReviewer]} />);
-
     fireEvent.change(await screen.findByTestId('reviewer-engine-select'), {
       target: { value: 'codex-cli' },
     });
 
-    const modelSelect = await screen.findByTestId('reviewer-model-select');
-    expect(modelSelect).toHaveValue('');
+    // The per-user model dropdown re-lists models for the newly selected engine.
+    const modelSelect = await screen.findByTestId('per-user-model-select');
     expect(Array.from(modelSelect.options).map((option) => option.value)).toEqual([
       '',
       'gpt-5-codex',
       'gpt-5',
     ]);
 
-    fireEvent.click(screen.getByRole('button', { name: /save model/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save engine/i }));
 
     await waitFor(() =>
-      expect(api.updateAgent).toHaveBeenCalledWith('proj-1-reviewer', {
-        engine: 'codex-cli',
-        model: '',
-      }),
+      expect(api.updateAgent).toHaveBeenCalledWith('proj-1-reviewer', { engine: 'codex-cli' }),
     );
+    // Engine save must NOT write a model to the shared row.
+    expect(api.updateAgent.mock.calls[0][1]).not.toHaveProperty('model');
+    expect(onAgentsChange).toHaveBeenCalled();
   });
 
   it('shows an empty state when the project has no reviewer agent', async () => {

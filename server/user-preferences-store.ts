@@ -1,13 +1,23 @@
 /**
  * JSON preferences on `orgs.db.users.preferences_json`.
  *
- * One shape today:
+ * Two shapes today:
  *   - `agentEngineOverrides` — per-account per-agent engine (+ optional model)
  *                              override. Lets two users open the same agent
  *                              under different engines (User A → codex-cli,
  *                              User B → claude-code) without touching the
  *                              shared `agents` row. Consulted by session-spawn
  *                              sites before falling back to `agent.engine`.
+ *   - `agentModelOverrides`  — per-account per-agent **model** override. This
+ *                              is the per-user "default model" picked from the
+ *                              agent / reviewer model dropdown: it changes only
+ *                              the model the caller's own sessions spawn with,
+ *                              never the shared `agents` row or any other user.
+ *                              The engine stays whatever the shared row (or an
+ *                              `agentEngineOverrides` entry) resolves to; the
+ *                              model is validated against that engine at spawn
+ *                              time, so a stale pick simply falls back to the
+ *                              per-engine default.
  *
  * The map is stored on the `preferences_json` column so we don't have to
  * migrate the table every time a new preference is added. The column is
@@ -28,6 +38,8 @@ export interface AgentEngineOverride {
 
 export interface UserPreferencesStored {
   agentEngineOverrides?: Record<string, AgentEngineOverride>;
+  /** Per-agent per-user model pick (`{ [agentId]: modelId }`). */
+  agentModelOverrides?: Record<string, string>;
 }
 
 function normalizeAgentEngineOverrides(
@@ -48,6 +60,19 @@ function normalizeAgentEngineOverrides(
   return Object.keys(out).length ? out : undefined;
 }
 
+function normalizeAgentModelOverrides(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const agentId = typeof k === 'string' ? k.trim() : '';
+    if (!agentId) continue;
+    const model = typeof v === 'string' ? v.trim() : '';
+    if (!model) continue;
+    out[agentId] = model;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function parsePrefsJson(raw: string | null): UserPreferencesStored {
   if (!raw?.trim()) return {};
   try {
@@ -55,8 +80,10 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     if (!o || typeof o !== 'object' || Array.isArray(o)) return {};
     const obj = o as Record<string, unknown>;
     const ao = normalizeAgentEngineOverrides(obj.agentEngineOverrides);
+    const mo = normalizeAgentModelOverrides(obj.agentModelOverrides);
     const result: UserPreferencesStored = {};
     if (ao) result.agentEngineOverrides = ao;
+    if (mo) result.agentModelOverrides = mo;
     return result;
   } catch {
     return {};
@@ -86,6 +113,9 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   if (prefs.agentEngineOverrides && Object.keys(prefs.agentEngineOverrides).length > 0) {
     stored.agentEngineOverrides = prefs.agentEngineOverrides;
   }
+  if (prefs.agentModelOverrides && Object.keys(prefs.agentModelOverrides).length > 0) {
+    stored.agentModelOverrides = prefs.agentModelOverrides;
+  }
   const json = Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
   getOrgsDb().prepare('UPDATE users SET preferences_json = ? WHERE id = ?').run(json, userId);
 }
@@ -106,6 +136,11 @@ export function mergeUserPreferencesJson(
   if (partial.agentEngineOverrides !== undefined) {
     next.agentEngineOverrides = Object.keys(partial.agentEngineOverrides).length
       ? partial.agentEngineOverrides
+      : undefined;
+  }
+  if (partial.agentModelOverrides !== undefined) {
+    next.agentModelOverrides = Object.keys(partial.agentModelOverrides).length
+      ? partial.agentModelOverrides
       : undefined;
   }
   replaceUserPreferencesJson(userId, next);

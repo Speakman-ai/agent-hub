@@ -731,6 +731,33 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  // Per-agent merge endpoints — update only one agent's entry server-side, so
+  // a save can't clobber other agents' picks or a concurrent edit elsewhere.
+  putMyAgentEngineOverride: (agentId, body) =>
+    fetchJSON(`/auth/me/agent-engine-overrides/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteMyAgentEngineOverride: (agentId) =>
+    fetchJSON(`/auth/me/agent-engine-overrides/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+    }),
+
+  getMyAgentModelOverrides: () => fetchJSON('/auth/me/agent-model-overrides'),
+  putMyAgentModelOverrides: (body) =>
+    fetchJSON('/auth/me/agent-model-overrides', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  putMyAgentModelOverride: (agentId, body) =>
+    fetchJSON(`/auth/me/agent-model-overrides/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteMyAgentModelOverride: (agentId) =>
+    fetchJSON(`/auth/me/agent-model-overrides/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+    }),
 
   getSkillCredentials: (skillId) =>
     fetchJSON(

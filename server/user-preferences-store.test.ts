@@ -6,7 +6,11 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
 import { createUser } from './users-store.js';
-import { replaceUserPreferencesJson, getUserPreferencesRow } from './user-preferences-store.js';
+import {
+  replaceUserPreferencesJson,
+  mergeUserPreferencesJson,
+  getUserPreferencesRow,
+} from './user-preferences-store.js';
 
 describe('user-preferences-store', () => {
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'ah-preftest-'));
@@ -111,5 +115,65 @@ describe('user-preferences-store', () => {
       );
     const loaded = getUserPreferencesRow(id);
     expect(Object.keys(loaded.agentEngineOverrides ?? {})).toEqual(['good']);
+  });
+
+  it('round-trips per-agent model overrides JSON', () => {
+    const id = uuidv4();
+    createUser({
+      id,
+      username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
+      passwordHash: 'x',
+    });
+    replaceUserPreferencesJson(id, {
+      agentModelOverrides: { 'agent-hub': 'claude-opus-4-8', reviewer: 'gpt-5-codex' },
+    });
+    const loaded = getUserPreferencesRow(id);
+    expect(loaded.agentModelOverrides).toEqual({
+      'agent-hub': 'claude-opus-4-8',
+      reviewer: 'gpt-5-codex',
+    });
+
+    replaceUserPreferencesJson(id, { agentModelOverrides: {} });
+    expect(getUserPreferencesRow(id).agentModelOverrides).toBeUndefined();
+  });
+
+  it('drops malformed model-override entries on read', () => {
+    const id = uuidv4();
+    createUser({
+      id,
+      username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
+      passwordHash: 'x',
+    });
+    getOrgsDb()
+      .prepare('UPDATE users SET preferences_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({
+          agentModelOverrides: {
+            good: 'claude-opus-4-8',
+            empty: '   ', // blank → dropped
+            wrongType: { model: 'x' }, // non-string → dropped
+          },
+        }),
+        id,
+      );
+    const loaded = getUserPreferencesRow(id);
+    expect(loaded.agentModelOverrides).toEqual({ good: 'claude-opus-4-8' });
+  });
+
+  it('merge updates one sub-map without clobbering the other', () => {
+    const id = uuidv4();
+    createUser({
+      id,
+      username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
+      passwordHash: 'x',
+    });
+    replaceUserPreferencesJson(id, {
+      agentEngineOverrides: { reviewer: { engine: 'codex-cli' } },
+    });
+    // Merging only the model map must leave the engine map intact.
+    mergeUserPreferencesJson(id, { agentModelOverrides: { 'agent-hub': 'claude-opus-4-8' } });
+    const loaded = getUserPreferencesRow(id);
+    expect(loaded.agentEngineOverrides?.reviewer).toEqual({ engine: 'codex-cli' });
+    expect(loaded.agentModelOverrides).toEqual({ 'agent-hub': 'claude-opus-4-8' });
   });
 });

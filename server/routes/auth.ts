@@ -119,6 +119,9 @@ import {
   UpdateUserRoleBody,
   UpsertSkillCredentialBody,
   PutAgentEngineOverridesBody,
+  PutAgentModelOverridesBody,
+  PutAgentModelOverrideEntryBody,
+  AgentEngineOverrideEntry,
   UserSummary,
   ZodErrorResponse,
   formatZodError,
@@ -477,6 +480,199 @@ registerPath({
     400: {
       description: 'Invalid payload.',
       content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/agent-model-overrides',
+  tags: ['Auth'],
+  summary: 'Per-user per-agent default-model picks.',
+  responses: {
+    200: {
+      description:
+        'Caller-scoped map of agentId → model id (the per-user "default model" dropdown selection). Entries whose model is no longer valid for any engine are filtered out.',
+      content: {
+        'application/json': {
+          schema: z.object({ agentModelOverrides: z.record(z.string(), z.string()) }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/agent-model-overrides',
+  tags: ['Auth'],
+  summary: 'Replace the caller-scoped per-agent default-model map.',
+  description:
+    'Pass `{ agentModelOverrides: {} }` to clear all picks. Each model id must be valid for at least one configured engine; an empty-string value drops that single agent entry. Only the caller’s own sessions are affected.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: PutAgentModelOverridesBody,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: {
+        'application/json': {
+          schema: z.object({ agentModelOverrides: z.record(z.string(), z.string()) }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+const AgentModelOverridesResponse = z.object({
+  agentModelOverrides: z.record(z.string(), z.string()),
+});
+const AgentEngineOverridesResponse = z.object({
+  agentEngineOverrides: z.record(
+    z.string(),
+    z.object({ engine: z.string(), model: z.string().optional() }),
+  ),
+});
+const AgentIdPathParam = {
+  params: z.object({ agentId: z.string().openapi({ description: 'Agent id.' }) }),
+};
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/agent-model-overrides/{agentId}',
+  tags: ['Auth'],
+  summary: "Set the caller's default model for one agent (merge).",
+  description:
+    "Merges server-side: updates only this agent's pick, leaving every other agent (and any concurrent edit from another tab) untouched. Preferred over the whole-map PUT for single edits.",
+  request: {
+    ...AgentIdPathParam,
+    body: { content: { 'application/json': { schema: PutAgentModelOverrideEntryBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: { 'application/json': { schema: AgentModelOverridesResponse } },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/me/agent-model-overrides/{agentId}',
+  tags: ['Auth'],
+  summary: "Clear the caller's default model for one agent (merge).",
+  request: { ...AgentIdPathParam },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: { 'application/json': { schema: AgentModelOverridesResponse } },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/agent-engine-overrides/{agentId}',
+  tags: ['Auth'],
+  summary: "Set the caller's engine override for one agent (merge).",
+  description:
+    "Merges server-side: updates only this agent's engine, leaving other agents untouched. Omitting `model` preserves any existing per-agent model the legacy combined override stored (dropped only if no longer valid for the chosen engine); an explicit `model` must be valid for the engine.",
+  request: {
+    ...AgentIdPathParam,
+    body: { content: { 'application/json': { schema: AgentEngineOverrideEntry } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: { 'application/json': { schema: AgentEngineOverridesResponse } },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/me/agent-engine-overrides/{agentId}',
+  tags: ['Auth'],
+  summary: "Clear the caller's engine override for one agent (merge).",
+  request: { ...AgentIdPathParam },
+  responses: {
+    200: {
+      description: 'Updated map.',
+      content: { 'application/json': { schema: AgentEngineOverridesResponse } },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ErrorResponse } },
     },
     401: {
       description: 'Not authenticated.',
@@ -1186,6 +1382,54 @@ function filterStoredAgentEngineOverrides(
   return out;
 }
 
+/** Models that are valid for at least one configured engine. */
+function allKnownModels(): Set<string> {
+  const out = new Set<string>();
+  for (const list of Object.values(config.engineValidModels)) {
+    if (Array.isArray(list)) for (const m of list) out.add(m);
+  }
+  return out;
+}
+
+/**
+ * Validate a `{ [agentId]: modelId }` PUT body for the per-user model
+ * override map. An empty model string drops that agent's entry. Returns a
+ * precise `400` message naming the first offending entry.
+ */
+function sanitizeAgentModelOverridesFromBody(
+  body: Record<string, string>,
+): { ok: true; agentModelOverrides: Record<string, string> } | { ok: false; error: string } {
+  const cleaned: Record<string, string> = {};
+  const known = allKnownModels();
+  for (const [agentId, raw] of Object.entries(body)) {
+    const id = typeof agentId === 'string' ? agentId.trim() : '';
+    if (!id) continue;
+    const model = typeof raw === 'string' ? raw.trim() : '';
+    if (!model) continue; // empty == clear this agent's pick
+    if (!known.has(model)) {
+      return { ok: false, error: `Unknown model "${model}" for agent "${id}"` };
+    }
+    cleaned[id] = model;
+  }
+  return { ok: true, agentModelOverrides: cleaned };
+}
+
+/**
+ * Drop persisted model picks whose model id is no longer valid for any
+ * configured engine, keeping the API output honest after a config change.
+ */
+function filterStoredAgentModelOverrides(
+  stored: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!stored) return {};
+  const known = allKnownModels();
+  const out: Record<string, string> = {};
+  for (const [agentId, model] of Object.entries(stored)) {
+    if (typeof model === 'string' && known.has(model)) out[agentId] = model;
+  }
+  return out;
+}
+
 export default function createAuthRoutes(options: AuthRoutesOptions = {}): Router {
   const router = Router();
   const loginLimiter = buildLoginLimiter(options);
@@ -1719,6 +1963,185 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       agentEngineOverrides: checked.agentEngineOverrides,
     });
     res.json({ agentEngineOverrides: checked.agentEngineOverrides });
+  });
+
+  router.get('/api/auth/me/agent-model-overrides', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const rowUser = getUserById(authedReq.authUserId);
+    if (!rowUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const stored = getUserPreferencesRow(authedReq.authUserId).agentModelOverrides;
+    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(stored) });
+  });
+
+  router.put('/api/auth/me/agent-model-overrides', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const rowUser = getUserById(authedReq.authUserId);
+    if (!rowUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const parsed = PutAgentModelOverridesBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    const checked = sanitizeAgentModelOverridesFromBody(parsed.data.agentModelOverrides ?? {});
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.error });
+      return;
+    }
+    mergeUserPreferencesJson(authedReq.authUserId, {
+      agentModelOverrides: checked.agentModelOverrides,
+    });
+    res.json({ agentModelOverrides: checked.agentModelOverrides });
+  });
+
+  // ── Per-AGENT merge endpoints (preferred over the whole-map PUTs) ───────
+  // These read-modify-write a single agent's entry server-side in one
+  // synchronous handler (better-sqlite3 is sync, so concurrent requests can't
+  // interleave). The client never sends the whole map, so a save can't clobber
+  // another agent's pick or another tab's concurrent edit.
+
+  router.put('/api/auth/me/agent-model-overrides/:agentId', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!getUserById(authedReq.authUserId)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const agentId = String(req.params.agentId ?? '').trim();
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+    const parsed = PutAgentModelOverrideEntryBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    const model = parsed.data.model.trim();
+    if (!model) {
+      res.status(400).json({ error: 'model is required (use DELETE to clear)' });
+      return;
+    }
+    if (!allKnownModels().has(model)) {
+      res.status(400).json({ error: `Unknown model "${model}"` });
+      return;
+    }
+    const current = getUserPreferencesRow(authedReq.authUserId).agentModelOverrides ?? {};
+    const next = { ...current, [agentId]: model };
+    mergeUserPreferencesJson(authedReq.authUserId, { agentModelOverrides: next });
+    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next) });
+  });
+
+  router.delete('/api/auth/me/agent-model-overrides/:agentId', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!getUserById(authedReq.authUserId)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const agentId = String(req.params.agentId ?? '').trim();
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+    const current = getUserPreferencesRow(authedReq.authUserId).agentModelOverrides ?? {};
+    const next = { ...current };
+    delete next[agentId];
+    mergeUserPreferencesJson(authedReq.authUserId, { agentModelOverrides: next });
+    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next) });
+  });
+
+  router.put('/api/auth/me/agent-engine-overrides/:agentId', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!getUserById(authedReq.authUserId)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const agentId = String(req.params.agentId ?? '').trim();
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+    const parsed = AgentEngineOverrideEntry.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    const engine = parsed.data.engine.trim();
+    if (!new Set(Object.keys(config.engineValidModels)).has(engine)) {
+      res.status(400).json({ error: `Unknown engine "${engine}"` });
+      return;
+    }
+    const allowed = config.engineValidModels[engine] ?? [];
+    const current = getUserPreferencesRow(authedReq.authUserId).agentEngineOverrides ?? {};
+    const existing = current[agentId];
+    // Model resolution: an explicit `model` in the body wins; otherwise PRESERVE
+    // any existing per-agent model the old combined override may have stored
+    // (the bug the reviewer flagged was silently dropping it). A preserved
+    // model that is no longer valid for the chosen engine is dropped (mirrors
+    // filterStoredAgentEngineOverrides) rather than persisted as a bad combo.
+    let model = '';
+    const explicitModel = typeof parsed.data.model === 'string' ? parsed.data.model.trim() : null;
+    if (explicitModel) {
+      if (!allowed.includes(explicitModel)) {
+        res.status(400).json({
+          error: `Model "${explicitModel}" is not allowed for engine "${engine}". Allowed: ${allowed.join(', ')}`,
+        });
+        return;
+      }
+      model = explicitModel;
+    } else if (explicitModel === null && existing?.model && allowed.includes(existing.model)) {
+      model = existing.model; // preserve the legacy combined model
+    }
+    const entry: AgentEngineOverride = model ? { engine, model } : { engine };
+    const next = { ...current, [agentId]: entry };
+    mergeUserPreferencesJson(authedReq.authUserId, { agentEngineOverrides: next });
+    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(next) });
+  });
+
+  router.delete('/api/auth/me/agent-engine-overrides/:agentId', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!getUserById(authedReq.authUserId)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const agentId = String(req.params.agentId ?? '').trim();
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+    const current = getUserPreferencesRow(authedReq.authUserId).agentEngineOverrides ?? {};
+    const next = { ...current };
+    delete next[agentId];
+    mergeUserPreferencesJson(authedReq.authUserId, { agentEngineOverrides: next });
+    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(next) });
   });
 
   // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──

@@ -14,7 +14,8 @@ import AccountSection from './AccountSection.jsx';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
-import MyAgentEngineOverrideInline from './MyAgentEngineOverrideInline.jsx';
+import PerUserModelSelect from './PerUserModelSelect.jsx';
+import PerUserEngineSelect from './PerUserEngineSelect.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -3903,6 +3904,24 @@ export function AgentConfigSection({
   const [showNew, setShowNew] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [modelConfig, setModelConfig] = useState(null);
+  // Per-user, per-agent default-model picks (`{ [agentId]: modelId }`).
+  // Backs the Model dropdown below: selecting a model only changes the model
+  // *this* user's sessions spawn with — never the shared agent row.
+  const [modelOverrides, setModelOverrides] = useState({});
+  const [modelOverrideSaving, setModelOverrideSaving] = useState({});
+  const [modelOverrideSaved, setModelOverrideSaved] = useState({});
+  // Per-user, per-agent engine override (`{ [agentId]: engineId }`). Lets a
+  // user run their own sessions under a different CLI engine than the shared
+  // `agent.engine` row. Same caller-scoped storage as the model picks.
+  const [engineOverrides, setEngineOverrides] = useState({});
+  const [engineOverrideSaving, setEngineOverrideSaving] = useState({});
+  const [engineOverrideSaved, setEngineOverrideSaved] = useState({});
+  // Saves go through the per-AGENT merge endpoints, so a write never sends the
+  // whole map and can't clobber another agent's pick or another tab's edit.
+  // We still serialize writes per agentId (keyed promise chain) so rapid edits
+  // to the SAME agent land in order. The server response returns the full,
+  // freshly-merged map, which we use to reconcile display state.
+  const saveChainsRef = useRef({});
   const [bulkEngine, setBulkEngine] = useState('claude-code');
   const [bulkModel, setBulkModel] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -3934,6 +3953,128 @@ export function AgentConfigSection({
       .then(setModelConfig)
       .catch(() => {});
   }, []);
+
+  const parseModelMap = (body) =>
+    body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+      ? body.agentModelOverrides
+      : null;
+
+  // Flatten `{ [agentId]: { engine, model? } }` → `{ [agentId]: engineId }`.
+  // This page manages only the engine; the legacy `model` subfield is left
+  // untouched server-side (the per-agent PUT preserves it).
+  const parseEngineMap = (body) => {
+    const raw =
+      body?.agentEngineOverrides && typeof body.agentEngineOverrides === 'object'
+        ? body.agentEngineOverrides
+        : null;
+    if (!raw) return null;
+    const flat = {};
+    for (const [id, entry] of Object.entries(raw)) {
+      if (entry && typeof entry.engine === 'string') flat[id] = entry.engine;
+    }
+    return flat;
+  };
+
+  useEffect(() => {
+    api
+      .getMyAgentModelOverrides()
+      .then((body) => setModelOverrides(parseModelMap(body) ?? {}))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api
+      .getMyAgentEngineOverrides()
+      .then((body) => setEngineOverrides(parseEngineMap(body) ?? {}))
+      .catch(() => {});
+  }, []);
+
+  // Serialize writes per agentId so rapid edits to the SAME agent land in
+  // order. Different agents don't contend — the per-agent endpoint merges
+  // each one independently on the server.
+  const runSerialized = (key, fn) => {
+    const prev = saveChainsRef.current[key] || Promise.resolve();
+    const next = prev.catch(() => {}).then(fn);
+    saveChainsRef.current[key] = next;
+    return next;
+  };
+
+  // Persist a single agent's per-user pick via the per-agent merge endpoint.
+  // Optimistic update of the display map; reconciled from the server's full
+  // merged map on success; refetched (not rolled back to a stale snapshot) on
+  // error. Because each write touches only this agent's key server-side, it
+  // can't drop another agent's pick or another tab's concurrent edit.
+  const persistOverride = ({
+    agentId,
+    value,
+    setMap,
+    setSaving,
+    setSaved,
+    save,
+    parse,
+    refetch,
+    errorMsg,
+  }) => {
+    setMap((m) => {
+      const n = { ...m };
+      if (value) n[agentId] = value;
+      else delete n[agentId];
+      return n;
+    });
+    setSaving((p) => ({ ...p, [agentId]: true }));
+    setSaved((p) => ({ ...p, [agentId]: false }));
+    return runSerialized(`${errorMsg}:${agentId}`, async () => {
+      try {
+        const merged = parse(await save());
+        if (merged) setMap(merged);
+        setSaved((p) => ({ ...p, [agentId]: true }));
+        setTimeout(() => setSaved((p) => ({ ...p, [agentId]: false })), 2000);
+      } catch (e) {
+        try {
+          const fresh = parse(await refetch());
+          if (fresh) setMap(fresh);
+        } catch {
+          /* leave optimistic state; toast already surfaces the failure */
+        }
+        showToast?.(e instanceof Error ? e.message : errorMsg, 'error');
+      } finally {
+        setSaving((p) => ({ ...p, [agentId]: false }));
+      }
+    });
+  };
+
+  const saveModelOverride = (agentId, model) =>
+    persistOverride({
+      agentId,
+      value: model,
+      setMap: setModelOverrides,
+      setSaving: setModelOverrideSaving,
+      setSaved: setModelOverrideSaved,
+      save: () =>
+        model
+          ? api.putMyAgentModelOverride(agentId, { model })
+          : api.deleteMyAgentModelOverride(agentId),
+      parse: parseModelMap,
+      refetch: () => api.getMyAgentModelOverrides(),
+      errorMsg: 'Failed to save model',
+    });
+
+  const saveEngineOverride = (agentId, engine) =>
+    persistOverride({
+      agentId,
+      value: engine,
+      setMap: setEngineOverrides,
+      setSaving: setEngineOverrideSaving,
+      setSaved: setEngineOverrideSaved,
+      // Engine-only PUT — the server preserves any existing per-agent model.
+      save: () =>
+        engine
+          ? api.putMyAgentEngineOverride(agentId, { engine })
+          : api.deleteMyAgentEngineOverride(agentId),
+      parse: parseEngineMap,
+      refetch: () => api.getMyAgentEngineOverrides(),
+      errorMsg: 'Failed to save engine',
+    });
 
   const getModelsForEngine = (engine) => {
     if (!modelConfig) return [];
@@ -4988,7 +5129,7 @@ export function AgentConfigSection({
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className={labelClass}>Name</label>
                       <input
@@ -4998,7 +5139,7 @@ export function AgentConfigSection({
                       />
                     </div>
                     <div>
-                      <label className={labelClass}>Engine</label>
+                      <label className={labelClass}>Engine (shared)</label>
                       <select
                         value={edit.engine || 'claude-code'}
                         onChange={(e) => {
@@ -5014,36 +5155,35 @@ export function AgentConfigSection({
                         ))}
                       </select>
                     </div>
-                    <div>
-                      <label className={labelClass}>Model</label>
-                      <select
-                        value={
-                          edit.model ||
-                          agent.model ||
-                          getDefaultModel(edit.engine || agent.engine || 'claude-code')
-                        }
-                        onChange={(e) => setEdit(agent.id, 'model', e.target.value)}
-                        className={inputClass}
-                      >
-                        {getModelsForEngine(edit.engine || agent.engine || 'claude-code').map(
-                          (m) => (
-                            <option key={m} value={m}>
-                              {m}
-                              {m === getDefaultModel(edit.engine || agent.engine || 'claude-code')
-                                ? ' (default)'
-                                : ''}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </div>
                   </div>
 
-                  <MyAgentEngineOverrideInline
-                    agentId={agent.id}
-                    agentEngine={agent.engine || 'claude-code'}
-                    modelConfig={modelConfig}
-                  />
+                  {/* Per-user picks — these change only the current user's own
+                      sessions for this agent, never the shared row above. */}
+                  <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-3">
+                    <h5 className="mb-2 text-xs font-medium text-indigo-200">Only for me</h5>
+                    <div className="grid grid-cols-2 gap-3">
+                      <PerUserEngineSelect
+                        agentEngine={edit.engine || agent.engine || 'claude-code'}
+                        modelConfig={modelConfig}
+                        value={engineOverrides[agent.id] || ''}
+                        onSelect={(eng) => saveEngineOverride(agent.id, eng)}
+                        saving={!!engineOverrideSaving[agent.id]}
+                        saved={!!engineOverrideSaved[agent.id]}
+                        selectClassName={inputClass}
+                      />
+                      <PerUserModelSelect
+                        engine={
+                          engineOverrides[agent.id] || edit.engine || agent.engine || 'claude-code'
+                        }
+                        modelConfig={modelConfig}
+                        value={modelOverrides[agent.id] || ''}
+                        onSelect={(m) => saveModelOverride(agent.id, m)}
+                        saving={!!modelOverrideSaving[agent.id]}
+                        saved={!!modelOverrideSaved[agent.id]}
+                        selectClassName={inputClass}
+                      />
+                    </div>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>

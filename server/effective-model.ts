@@ -1,11 +1,19 @@
 /**
  * Canonical model resolution for CLI spawns keyed by session ownership.
  *
- * Order: explicit (request / session picker) → shared `agent.model` (only if
- * allowed for `engine`) → `cfg.engineDefaultModels[engine]` (else
- * `cfg.defaultModel`; if `cfg` is partial in tests or legacy mocks, falls
- * back to process `defaultModelForEngine(engine)` — same singleton as
- * startup).
+ * Order: explicit (request / session picker) → per-user **per-agent** model
+ * override (`agentModelOverrides` on `preferences_json`, only when `agentId` +
+ * `ownerUserId` are supplied and the picked model is valid for `engine`) →
+ * shared `agent.model` (only if allowed for `engine`) →
+ * `cfg.engineDefaultModels[engine]` (else `cfg.defaultModel`; if `cfg` is
+ * partial in tests or legacy mocks, falls back to process
+ * `defaultModelForEngine(engine)` — same singleton as startup).
+ *
+ * The per-user model tier is what backs the agent / reviewer "default model"
+ * dropdown: selecting a model writes the caller's own `agentModelOverrides`
+ * entry and only changes the model their sessions spawn with — never the
+ * shared `agents` row or any other user. The engine is unchanged by this tier;
+ * if the model isn't valid for the resolved engine it's skipped.
  *
  * `resolveEffectiveEngineAndModel` extends this with a per-user **per-agent**
  * engine override sourced from `agentEngineOverrides` on `preferences_json`. When
@@ -21,8 +29,10 @@ export interface ResolveEffectiveModelOpts {
   explicitModel?: string | null;
   /** Shared agent row (`projects.json`). */
   agentModel?: string | null;
-  /** `sessions.owner_user_id` — accepted for signature parity; no per-user model tier remains. */
+  /** `sessions.owner_user_id`; required (with `agentId`) to apply the per-user model override. */
   ownerUserId?: string | null;
+  /** Agent id used to key the per-user `agentModelOverrides` map. */
+  agentId?: string | null;
 }
 
 export interface ResolveEffectiveEngineAndModelOpts {
@@ -71,6 +81,7 @@ export function resolveEffectiveEngineAndModel(
       // into a different engine.
       agentModel: explicitEngine === opts.agentEngine ? opts.agentModel : null,
       ownerUserId: opts.ownerUserId,
+      agentId: opts.agentId,
     });
     return {
       engine: explicitEngine,
@@ -90,12 +101,13 @@ export function resolveEffectiveEngineAndModel(
     if (override?.engine) {
       const model = resolveEffectiveModel(cfg, override.engine, {
         // Per-agent override's `model` is treated as an explicit pick —
-        // it wins over the shared `agentModel`.
+        // it wins over the shared `agentModel` and the per-user model tier.
         explicitModel: opts.explicitModel ?? override.model ?? null,
         // Same reasoning as above — drop the shared model when the engine
         // diverges.
         agentModel: override.engine === opts.agentEngine ? opts.agentModel : null,
         ownerUserId: uid,
+        agentId: opts.agentId,
       });
       return {
         engine: override.engine,
@@ -109,6 +121,7 @@ export function resolveEffectiveEngineAndModel(
     explicitModel: opts.explicitModel,
     agentModel: opts.agentModel,
     ownerUserId: opts.ownerUserId,
+    agentId: opts.agentId,
   });
   return { engine: opts.agentEngine, model, overrideApplied: false };
 }
@@ -121,10 +134,27 @@ export function resolveEffectiveModel(
   const explicit = opts.explicitModel?.trim();
   if (explicit) return explicit;
 
+  const allowed = cfg.engineValidModels?.[engine];
+
+  // Per-user "default model" pick (from the agent / reviewer model dropdown).
+  // Only honored when it's still a valid model for the resolved engine, so a
+  // stale pick after an engine change falls through to the shared / default
+  // tiers instead of spawning an invalid model id.
+  const uid = opts.ownerUserId;
+  if (uid && opts.agentId) {
+    let userModel: string | undefined;
+    try {
+      userModel = getUserPreferencesRow(uid).agentModelOverrides?.[opts.agentId];
+    } catch {
+      userModel = undefined;
+    }
+    const trimmed = userModel?.trim();
+    if (trimmed && Array.isArray(allowed) && allowed.includes(trimmed)) return trimmed;
+  }
+
   const agentM = opts.agentModel?.trim();
   if (agentM) {
-    const allowedAgent = cfg.engineValidModels?.[engine];
-    if (Array.isArray(allowedAgent) && allowedAgent.includes(agentM)) return agentM;
+    if (Array.isArray(allowed) && allowed.includes(agentM)) return agentM;
   }
 
   return cfg.engineDefaultModels?.[engine] ?? cfg.defaultModel ?? defaultModelForEngine(engine);

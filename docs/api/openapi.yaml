@@ -472,6 +472,25 @@ components:
             $ref: "#/components/schemas/AgentEngineOverrideEntry"
       required:
         - agentEngineOverrides
+    PutAgentModelOverridesBody:
+      type: object
+      properties:
+        agentModelOverrides:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - agentModelOverrides
+      description: 'Caller-scoped map of agentId → model id — the per-user "default model" picked from the agent / reviewer model dropdown. Pass `{ agentModelOverrides: {} }` to clear. Each model must be valid for some configured engine; pass an empty string to drop a single agent entry.'
+    PutAgentModelOverrideEntryBody:
+      type: object
+      properties:
+        model:
+          type: string
+          minLength: 1
+      required:
+        - model
+      description: Set the caller's per-user default model for a single agent (path `:agentId`). Merges server-side, so it never disturbs other agents' picks or another tab's concurrent edit. Use DELETE on the same path to clear.
     ClaudeLoginBody:
       type: object
       properties:
@@ -6132,6 +6151,283 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/agent-model-overrides:
+    get:
+      tags:
+        - Auth
+      summary: Per-user per-agent default-model picks.
+      responses:
+        "200":
+          description: Caller-scoped map of agentId → model id (the per-user "default model" dropdown selection). Entries whose model is no longer valid for any engine are filtered out.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentModelOverrides:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - agentModelOverrides
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Replace the caller-scoped per-agent default-model map.
+      description: "Pass `{ agentModelOverrides: {} }` to clear all picks. Each model id must be valid for at least one configured engine; an empty-string value drops that single agent entry. Only the caller’s own sessions are affected."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAgentModelOverridesBody"
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentModelOverrides:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - agentModelOverrides
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/agent-model-overrides/{agentId}:
+    put:
+      tags:
+        - Auth
+      summary: Set the caller's default model for one agent (merge).
+      description: "Merges server-side: updates only this agent's pick, leaving every other agent (and any concurrent edit from another tab) untouched. Preferred over the whole-map PUT for single edits."
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAgentModelOverrideEntryBody"
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentModelOverrides:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - agentModelOverrides
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags:
+        - Auth
+      summary: Clear the caller's default model for one agent (merge).
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentModelOverrides:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required:
+                  - agentModelOverrides
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/agent-engine-overrides/{agentId}:
+    put:
+      tags:
+        - Auth
+      summary: Set the caller's engine override for one agent (merge).
+      description: "Merges server-side: updates only this agent's engine, leaving other agents untouched. Omitting `model` preserves any existing per-agent model the legacy combined override stored (dropped only if no longer valid for the chosen engine); an explicit `model` must be valid for the engine."
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentEngineOverrideEntry"
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentEngineOverrides:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                      required:
+                        - engine
+                required:
+                  - agentEngineOverrides
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User row missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags:
+        - Auth
+      summary: Clear the caller's engine override for one agent (merge).
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Updated map.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentEngineOverrides:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                      required:
+                        - engine
+                required:
+                  - agentEngineOverrides
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Not authenticated.
           content:

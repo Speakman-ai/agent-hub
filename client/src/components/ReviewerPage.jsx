@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { ScanEye, FileText, Pencil, PenLine, Save, Loader2 } from 'lucide-react';
+import PerUserModelSelect from './PerUserModelSelect.jsx';
 
 // Per-project page for editing the reviewer agent's markdown context files
 // (served by the existing GET/PUT /api/agents/:agentId/context endpoints).
@@ -28,6 +29,14 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
   const [reviewerDraft, setReviewerDraft] = useState({ engine: 'claude-code', model: '' });
   const [savingModel, setSavingModel] = useState(false);
   const [modelSaveStatus, setModelSaveStatus] = useState(null);
+  // Per-user, per-agent default-model picks (`{ [agentId]: modelId }`). The
+  // reviewer Model dropdown writes the caller's own pick here — it only
+  // changes the model the current user's reviewer sessions spawn under.
+  const [modelOverrides, setModelOverrides] = useState({});
+  const [modelOverrideSaving, setModelOverrideSaving] = useState(false);
+  const [modelOverrideSaved, setModelOverrideSaved] = useState(false);
+  // Serialize this page's reviewer-model writes so rapid changes land in order.
+  const modelSaveChain = useRef(Promise.resolve());
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +63,24 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
     });
     setModelSaveStatus(null);
   }, [reviewerAgent?.id, reviewerAgent?.engine, reviewerAgent?.model]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyAgentModelOverrides()
+      .then((body) => {
+        if (cancelled) return;
+        const map =
+          body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+            ? body.agentModelOverrides
+            : {};
+        setModelOverrides(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!reviewerAgentId) {
@@ -95,27 +122,22 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
       (engine) => (modelConfig.engineValidModels[engine]?.length ?? 0) > 0,
     );
   }, [modelConfig]);
-  const modelChoices = modelConfig?.engineValidModels?.[reviewerEngine] || [];
-  const defaultModel =
-    modelConfig?.engineDefaultModels?.[reviewerEngine] || modelConfig?.defaultModel || '';
-  const modelDirty =
-    reviewerAgent &&
-    (reviewerDraft.engine !== (reviewerAgent.engine || 'claude-code') ||
-      (reviewerDraft.model || '') !== (reviewerAgent.model || ''));
+  const engineDirty =
+    reviewerAgent && reviewerDraft.engine !== (reviewerAgent.engine || 'claude-code');
 
-  const handleModelSave = async () => {
+  // Engine is a shared/admin setting — saved on the reviewer agent row.
+  const handleEngineSave = async () => {
     if (!reviewerAgentId) return;
     setSavingModel(true);
     setModelSaveStatus(null);
     try {
       const updated = await api.updateAgent(reviewerAgentId, {
         engine: reviewerDraft.engine || 'claude-code',
-        model: reviewerDraft.model || '',
       });
-      setReviewerDraft({
+      setReviewerDraft((draft) => ({
+        ...draft,
         engine: updated?.engine || reviewerDraft.engine || 'claude-code',
-        model: updated?.model || '',
-      });
+      }));
       setModelSaveStatus('saved');
       if (onAgentsChange) onAgentsChange();
     } catch (err) {
@@ -123,6 +145,52 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
     } finally {
       setSavingModel(false);
     }
+  };
+
+  // Model is per-user — persisted to the caller's own preferences, never the
+  // shared reviewer row. `''` clears the pick (falls back to engine default).
+  // Uses the per-AGENT merge endpoint so a save only ever touches the reviewer
+  // agent's own key: it can't clobber model picks made on the Settings page or
+  // in another tab the way a whole-map PUT from a stale snapshot would.
+  const saveReviewerModelOverride = (model) => {
+    if (!reviewerAgentId) return;
+    setModelOverrides((m) => {
+      const n = { ...m };
+      if (model) n[reviewerAgentId] = model;
+      else delete n[reviewerAgentId];
+      return n;
+    });
+    setModelOverrideSaving(true);
+    setModelOverrideSaved(false);
+    modelSaveChain.current = modelSaveChain.current
+      .catch(() => {})
+      .then(async () => {
+        try {
+          const body = model
+            ? await api.putMyAgentModelOverride(reviewerAgentId, { model })
+            : await api.deleteMyAgentModelOverride(reviewerAgentId);
+          // Reconcile from the server's full merged map (reflects edits from
+          // elsewhere that landed in the meantime).
+          if (body?.agentModelOverrides && typeof body.agentModelOverrides === 'object') {
+            setModelOverrides(body.agentModelOverrides);
+          }
+          setModelOverrideSaved(true);
+          setTimeout(() => setModelOverrideSaved(false), 2000);
+        } catch (err) {
+          // Refetch rather than roll back to a stale snapshot.
+          try {
+            const fresh = await api.getMyAgentModelOverrides();
+            if (fresh?.agentModelOverrides && typeof fresh.agentModelOverrides === 'object') {
+              setModelOverrides(fresh.agentModelOverrides);
+            }
+          } catch {
+            /* leave optimistic state; status line surfaces the failure */
+          }
+          setModelSaveStatus(err && err.message ? err.message : 'Save failed');
+        } finally {
+          setModelOverrideSaving(false);
+        }
+      });
   };
 
   return (
@@ -183,39 +251,22 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
                     )}
                   </select>
                 </div>
-                <div>
-                  <label
-                    htmlFor="reviewer-model-select"
-                    className="block text-xs text-gray-400 mb-1"
-                  >
-                    Model
-                  </label>
-                  <select
-                    id="reviewer-model-select"
-                    data-testid="reviewer-model-select"
-                    value={reviewerDraft.model || ''}
-                    disabled={!modelConfig || savingModel}
-                    onChange={(e) =>
-                      setReviewerDraft((draft) => ({ ...draft, model: e.target.value }))
-                    }
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 disabled:opacity-60"
-                  >
-                    <option value="">
-                      {defaultModel ? `Engine default (${defaultModel})` : 'Engine default'}
-                    </option>
-                    {modelChoices.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <PerUserModelSelect
+                  label="Model (only for me)"
+                  engine={reviewerEngine}
+                  modelConfig={modelConfig}
+                  value={reviewerAgentId ? modelOverrides[reviewerAgentId] || '' : ''}
+                  onSelect={saveReviewerModelOverride}
+                  saving={modelOverrideSaving}
+                  saved={modelOverrideSaved}
+                  disabled={!reviewerAgentId}
+                />
               </div>
               <div className="flex items-center gap-2 mt-3">
                 <button
                   type="button"
-                  onClick={handleModelSave}
-                  disabled={!modelDirty || savingModel}
+                  onClick={handleEngineSave}
+                  disabled={!engineDirty || savingModel}
                   className="text-xs bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50 flex items-center gap-1"
                 >
                   {savingModel ? (
@@ -223,7 +274,7 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
                   ) : (
                     <Save size={12} />
                   )}
-                  Save model
+                  Save engine
                 </button>
                 {modelConfigError && (
                   <span className="text-xs text-red-400">{modelConfigError}</span>

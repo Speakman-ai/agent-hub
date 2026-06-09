@@ -214,6 +214,30 @@ export const PutAgentEngineOverridesBody = registerComponent(
   }),
 );
 
+export const PutAgentModelOverridesBody = registerComponent(
+  'PutAgentModelOverridesBody',
+  z
+    .object({
+      agentModelOverrides: z.record(z.string(), z.string()),
+    })
+    .openapi({
+      description:
+        'Caller-scoped map of agentId → model id — the per-user "default model" picked from the agent / reviewer model dropdown. Pass `{ agentModelOverrides: {} }` to clear. Each model must be valid for some configured engine; pass an empty string to drop a single agent entry.',
+    }),
+);
+
+export const PutAgentModelOverrideEntryBody = registerComponent(
+  'PutAgentModelOverrideEntryBody',
+  z
+    .object({
+      model: z.string().min(1),
+    })
+    .openapi({
+      description:
+        "Set the caller's per-user default model for a single agent (path `:agentId`). Merges server-side, so it never disturbs other agents' picks or another tab's concurrent edit. Use DELETE on the same path to clear.",
+    }),
+);
+
 // ── CLI auth route bodies ──────────────────────────────────────────────
 
 export const ClaudeLoginBody = registerComponent(
