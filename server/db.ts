@@ -1194,6 +1194,17 @@ function initDb(dataDir: string): void {
     db.exec("ALTER TABLE sessions ADD COLUMN finalize_automation TEXT NOT NULL DEFAULT 'manual'");
   }
 
+  // Error text of the most recent turn that ended in an upstream engine/API
+  // error (e.g. "API Error: The socket connection was closed unexpectedly").
+  // Cleared at every turn spawn. While set, Finalize automation refuses to
+  // auto-start/auto-push for the session (fail-closed against merging a
+  // half-finished turn). See server/turn-error.ts.
+  try {
+    db.prepare('SELECT last_turn_error FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN last_turn_error TEXT DEFAULT NULL');
+  }
+
   // Soft-delete ("archive") column. When set, the session is hidden from the
   // live `getSessions` list but remains in the DB for up to 24 hours so users
   // can restore it via POST /api/sessions/:sessionId/restore.
@@ -2298,6 +2309,9 @@ function initDb(dataDir: string): void {
     // Derived state cache — intentionally does NOT touch `updated_at` so that
     // frequent signal-boundary recomputes don't churn the session sort order.
     updateSessionState: db.prepare('UPDATE sessions SET state = ? WHERE id = ?'),
+    // Turn-error flag — intentionally does NOT touch `updated_at` (set/cleared
+    // around every spawn; must not churn the session sort order).
+    updateSessionLastTurnError: db.prepare('UPDATE sessions SET last_turn_error = ? WHERE id = ?'),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
     ),

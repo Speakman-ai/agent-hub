@@ -89,6 +89,14 @@ export interface SessionRow {
    * live value on read, so this is a best-effort seed/cache — NULL is safe.
    */
   state?: string | null;
+  /**
+   * Error text of the most recent turn that ended in an upstream engine/API
+   * error (stream `isError` result or non-zero CLI exit). Cleared at every
+   * turn spawn. While set, Finalize automation refuses to auto-start or
+   * auto-push for this session — fail-closed so an autonomous session can
+   * never merge a half-finished turn. See `server/turn-error.ts`.
+   */
+  last_turn_error?: string | null;
 }
 
 export interface MessageRow {
@@ -1070,6 +1078,7 @@ export interface Stmts {
   updateSessionAutoShipOnComplete: Stmt;
   updateSessionFinalizeAutomation: Stmt;
   updateSessionState: Stmt;
+  updateSessionLastTurnError: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;

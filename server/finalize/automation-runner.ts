@@ -51,6 +51,26 @@ async function enableGithubAutoMerge(
   }
 }
 
+/**
+ * True (and logs why) when the session's last turn ended in an engine/API
+ * error — see `sessions.last_turn_error` (written by chat.ts via
+ * `server/turn-error.ts`). Blocks fire-and-forget automation only; manual
+ * Finalize routes do not consult this flag.
+ */
+function sessionTurnErrorBlocksAutomation(
+  session: SessionRow,
+  sessionId: string,
+  action: 'auto-start' | 'auto-push',
+): boolean {
+  const lastTurnError = session.last_turn_error;
+  if (!lastTurnError) return false;
+  console.warn(
+    `[finalize-automation] Skipping ${action} session=${sessionId}: last turn ended in error ` +
+      `(${lastTurnError.slice(0, 200)}). Waiting for a clean turn or a manual Finalize run.`,
+  );
+  return true;
+}
+
 async function loadSessionContext(sessionId: string): Promise<{
   session: SessionRow;
   project: Project;
@@ -80,6 +100,13 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   if (!routeDeps) return;
   const ctx = await loadSessionContext(sessionId);
   if (!ctx) return;
+
+  // Fail-closed turn-error gate: if the session's last turn ended in an
+  // upstream engine/API error (e.g. "API Error: The socket connection was
+  // closed unexpectedly"), the worktree may hold a half-finished change set.
+  // Never auto-start Finalize on it — wait for a clean turn (the transient
+  // auto-retry in chat.ts usually provides one) or an explicit manual run.
+  if (sessionTurnErrorBlocksAutomation(ctx.session, sessionId, 'auto-start')) return;
 
   const level = resolveSessionFinalizeAutomation(ctx.session);
   if (!shouldAutoStartFinalize(level)) return;
@@ -118,6 +145,10 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   if (!routeDeps) return;
   const ctx = await loadSessionContext(args.sessionId);
   if (!ctx) return;
+
+  // Same fail-closed gate as auto-start: a ready_to_push run parked before
+  // the errored turn must not auto-push/auto-merge over it.
+  if (sessionTurnErrorBlocksAutomation(ctx.session, args.sessionId, 'auto-push')) return;
 
   const level = resolveSessionFinalizeAutomation(ctx.session);
   if (!shouldAutoPushAfterReady(level)) return;

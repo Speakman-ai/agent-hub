@@ -56,6 +56,13 @@ import {
 } from './card-auto-close.js';
 import { detectPreviewBlock, describePreviewReason } from './preview/preview-block.js';
 import { handleMutatingToolUseForCodeChange } from './code-change-tracker.js';
+import {
+  resolveTurnEndError,
+  planTransientErrorRetry,
+  buildTurnErrorContinuationPrompt,
+  buildTransientRetryNotice,
+  buildTurnErrorHaltNotice,
+} from './turn-error.js';
 import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js';
 import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
@@ -327,6 +334,13 @@ interface InternalChatMessage extends ChatMessage {
   _spawnCwd?: string;
   /** One-shot retry after Claude "No conversation found" on `--resume`. */
   _noConversationRetry?: number;
+  /**
+   * Count of auto-retries already performed after a transient engine/API
+   * error ended a turn (e.g. "API Error: The socket connection was closed
+   * unexpectedly"). Capped at TRANSIENT_TURN_ERROR_MAX_RETRIES — see
+   * `server/turn-error.ts`.
+   */
+  _transientErrorRetry?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -3185,6 +3199,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       activeProcesses.set(sessionId, proc);
       trackChild(proc);
+      // NOTE: `sessions.last_turn_error` is intentionally NOT cleared here.
+      // Clearing at spawn would reopen the Finalize automation gate while a
+      // recovery turn is still in flight (a parked ready_to_push run could
+      // auto-push mid-recovery). The flag clears only in the close handler,
+      // after this turn has verifiably ended cleanly. See server/turn-error.ts.
       if (proc.pid) {
         try {
           S.updateActiveTaskPid.run(proc.pid, sessionId);
@@ -3448,6 +3467,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // If spawn already failed with ENOENT/EACCES/etc, the 'error' listener
         // has already saved a clearer message. Bail out before we clobber it.
         if (spawnErrored) {
+          // A spawn failure is an errored turn: keep the Finalize automation
+          // gate closed (fail-closed) until some later turn closes cleanly.
+          try {
+            S.updateSessionLastTurnError.run(`${engine} failed to spawn`, sessionId);
+          } catch {}
           emitReactLoopStep(broadcast, {
             sessionId,
             messageId: assistantMsgId,
@@ -3632,6 +3656,63 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               errorMsg = buildNoConversationFoundRecoveryMessage(missing.sessionId);
             }
           }
+
+          // Record the errored turn on the session — Finalize automation
+          // (auto-start/auto-push) is blocked while this flag is set, so an
+          // autonomous session can never ship a half-finished turn. Cleared
+          // at the next spawn (including the retry below).
+          try {
+            S.updateSessionLastTurnError.run(errorMsg, sessionId);
+          } catch {}
+
+          // Transient upstream failure (socket drop, 5xx/overloaded, rate
+          // limit, timeout): retry the SAME message after a short backoff
+          // instead of stranding the session on an error. Claude resumes via
+          // `--resume <engine_session_id>` so no context is lost.
+          {
+            const transientRetries = msg._transientErrorRetry ?? 0;
+            const retryPlan = planTransientErrorRetry(transientRetries, errorMsg);
+            if (retryPlan.retry) {
+              const attempt = transientRetries + 1;
+              console.warn(
+                `[chat] Transient engine error on session ${sessionId} (attempt ${attempt}); ` +
+                  `retrying in ${retryPlan.delayMs}ms: ${errorMsg.slice(0, 200)}`,
+              );
+              persistCloseCardGateSystemMessage(
+                sessionId,
+                buildTransientRetryNotice(errorMsg, attempt, retryPlan.delayMs),
+                { kind: 'turn_error_retry', attempt, errorText: errorMsg.slice(0, 500) },
+              );
+              if (delegationWorkPromise) {
+                handleDelegationCancel(sessionId);
+                delegationWorkPromise = null;
+              }
+              setTimeout(() => {
+                void handleChat(null, {
+                  ...msg,
+                  _transientErrorRetry: attempt,
+                  _spawnCwd: effectiveCwd,
+                } as InternalChatMessage).catch((err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  console.error('[turn-error-retry] Retry dispatch failed:', message);
+                  drainQueue(sessionId);
+                });
+              }, retryPlan.delayMs);
+              return;
+            }
+            if (transientRetries > 0) {
+              // Retries exhausted — make the give-up explicit in the
+              // transcript (the ⚠️ Error message below carries the error
+              // itself; this explains why no further retry happens and that
+              // Finalize automation stays paused).
+              persistCloseCardGateSystemMessage(
+                sessionId,
+                buildTurnErrorHaltNotice(errorMsg, transientRetries),
+                { kind: 'turn_error_halt', retries: transientRetries },
+              );
+            }
+          }
+
           if (!termination) {
             console.error(
               formatChatExitLog({
@@ -3693,6 +3774,40 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           } catch {}
           drainQueue(sessionId);
           return;
+        }
+
+        // Turn ended WITH output but ALSO with an upstream error — e.g. text
+        // streamed for a while, then "API Error: The socket connection was
+        // closed unexpectedly" arrived as an `isError` result event and the
+        // CLI exited non-zero. Historically this fell through to the success
+        // path, so autonomous sessions auto-started Finalize on a
+        // half-finished worktree. The partial message is still persisted
+        // below (it's real context, and the engine session holds it for
+        // `--resume`), but the session is flagged: Finalize automation is
+        // blocked until a clean turn, and transient errors auto-retry via a
+        // continuation at the tail of this handler.
+        const turnEndError = resolveTurnEndError({
+          exitCode: code,
+          signal,
+          streamErrorMessage,
+          engine,
+        });
+        if (turnEndError) {
+          try {
+            S.updateSessionLastTurnError.run(turnEndError.errorText, sessionId);
+          } catch {}
+          console.warn(
+            `[chat] Turn for session ${sessionId} ended with output but errored ` +
+              `(code=${code}, signal=${signal ?? 'none'}): ${turnEndError.errorText.slice(0, 200)}`,
+          );
+        } else {
+          // Clean close — the ONLY place the turn-error gate reopens. A
+          // recovery turn that is merely in flight keeps the flag set (it was
+          // written by the errored close that scheduled it), so Finalize
+          // automation stays blocked until this verifiably clean exit.
+          try {
+            S.updateSessionLastTurnError.run(null, sessionId);
+          } catch {}
         }
 
         const rawFinalContent = assembled || errorOutput.trim() || '(empty response)';
@@ -4766,6 +4881,58 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
             return;
           }
+        }
+
+        // Errored-but-assembled turn: auto-commit so work-in-progress is
+        // preserved on the session branch, but NEVER allow the commit to
+        // auto-start Finalize (the `last_turn_error` flag also guards the
+        // automation-runner side). Transient errors get a bounded
+        // auto-continuation: the engine session resumes with a recovery
+        // prompt so the agent verifies and finishes the interrupted work.
+        if (turnEndError) {
+          const transientRetries = msg._transientErrorRetry ?? 0;
+          const retryPlan = planTransientErrorRetry(transientRetries, turnEndError.errorText);
+          await runWorktreeAutoCommitAndDrainTail(false);
+          if (retryPlan.retry) {
+            const attempt = transientRetries + 1;
+            console.warn(
+              `[chat] Scheduling turn-error continuation for session ${sessionId} ` +
+                `(attempt ${attempt}) in ${retryPlan.delayMs}ms`,
+            );
+            persistCloseCardGateSystemMessage(
+              sessionId,
+              buildTransientRetryNotice(turnEndError.errorText, attempt, retryPlan.delayMs),
+              {
+                kind: 'turn_error_retry',
+                attempt,
+                errorText: turnEndError.errorText.slice(0, 500),
+              },
+            );
+            setTimeout(() => {
+              void handleChat(null, {
+                type: 'chat',
+                agentId,
+                sessionId,
+                content: buildTurnErrorContinuationPrompt(turnEndError.errorText),
+                _autoContinuation: true,
+                _continuationDepth: continuationDepth + 1,
+                _chainStartedAtMs: chainStartedAtMs,
+                _spawnCwd: effectiveCwd,
+                _transientErrorRetry: attempt,
+              } as InternalChatMessage).catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[turn-error-retry] Continuation dispatch failed:', message);
+                drainQueue(sessionId);
+              });
+            }, retryPlan.delayMs);
+          } else {
+            persistCloseCardGateSystemMessage(
+              sessionId,
+              buildTurnErrorHaltNotice(turnEndError.errorText, transientRetries),
+              { kind: 'turn_error_halt', retries: transientRetries },
+            );
+          }
+          return;
         }
 
         // Isolated (git worktree) + Claude: give the filesystem a moment to settle
