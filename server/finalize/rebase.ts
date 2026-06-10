@@ -295,7 +295,9 @@ export async function runRebasePhase(
       );
     }
 
-    // Non-trivial: dispatch to session, wait for turn-end, retry.
+    // Non-trivial conflict or dirty worktree: dispatch to session, wait
+    // for turn-end, retry. Both are session-fixable; only the message
+    // body differs.
     setPhase(stmts, broadcast, opts.runId, opts.card.session_id ?? null, 'rebase', 'dispatching');
     conflictsDispatchedCount += 1;
     const sessionId = await resolveSessionIdForRun(stmts, opts);
@@ -305,11 +307,20 @@ export async function runRebasePhase(
         opts.runId,
         'failed',
         'rebase_aborted',
-        'no session linked to card; cannot dispatch conflict fix',
+        conflictAttempt.kind === 'dirty-worktree'
+          ? `worktree has uncommitted changes (${conflictAttempt.files.join(', ')}) and no session is linked to dispatch a fix`
+          : 'no session linked to card; cannot dispatch conflict fix',
         billedSeconds,
       );
     }
-    const body = buildConflictDispatchMessage(conflictAttempt.unresolved, opts.baseBranch);
+    const body =
+      conflictAttempt.kind === 'dirty-worktree'
+        ? buildDirtyWorktreeDispatchMessage(
+            conflictAttempt.files,
+            opts.baseBranch,
+            conflictAttempt.detail,
+          )
+        : buildConflictDispatchMessage(conflictAttempt.unresolved, opts.baseBranch);
     const dispatchResult = await deps.dispatchAndWaitForTurnEnd({
       sessionId,
       cardId: opts.card.id,
@@ -419,6 +430,19 @@ type InlineFixOutcome =
       unresolved: Array<{ path: string; hunks: ConflictHunk[] }>;
       innerPasses: number;
     }
+  | {
+      /**
+       * `git rebase` refused to start because the worktree has uncommitted
+       * changes to tracked files (unstaged or staged). Common in Resolve PR
+       * sessions where the agent's last turn left edits uncommitted. The
+       * outer driver dispatches a fix-it message into the session and
+       * retries instead of failing terminal.
+       */
+      kind: 'dirty-worktree';
+      files: string[];
+      detail: string;
+      innerPasses: number;
+    }
   | { kind: 'aborted'; detail: string; innerPasses: number };
 
 /**
@@ -443,6 +467,9 @@ type InlineFixOutcome =
  *      re-validate against `origin/<base>` after a fix).
  *   - `non-trivial` with the list of files we declined to touch on the
  *      first commit where mechanical resolution gave up.
+ *   - `dirty-worktree` when the rebase never started because tracked
+ *      files have uncommitted changes — dispatched to the session like
+ *      `non-trivial` so the agent can commit/revert and Finalize retries.
  *   - `aborted` on hard infra-style failures (e.g. `git rebase` itself
  *      crashing, fs read/write errors, the inner cap tripping). The
  *      caller surfaces these as `rebase_aborted`.
@@ -454,8 +481,12 @@ async function attemptInlineConflictFix(args: InlineFixArgs): Promise<InlineFixO
   const { worktreePath, baseBranch, env, runGit, regenLock } = args;
 
   // Re-trigger the rebase. If it succeeds we are done; otherwise enter
-  // the conflict resolution loop.
+  // the conflict resolution loop. Keep git's actual stderr/stdout from
+  // the failure — when the rebase stops with zero conflicted files, that
+  // text is the only honest explanation of what happened (dirty tree,
+  // untracked collision, paused empty commit, …).
   let rebaseRunning = false;
+  let rebaseFailureDetail = '';
   try {
     await runGit(['rebase', '--empty=drop', `origin/${baseBranch}`], {
       cwd: worktreePath,
@@ -466,8 +497,9 @@ async function attemptInlineConflictFix(args: InlineFixArgs): Promise<InlineFixO
     // re-rebase landed without conflict. The next outer pass will hit
     // `noop`/`rebased` and exit successfully.
     return { kind: 'all-trivial-resolved', innerPasses: 1 };
-  } catch {
+  } catch (err) {
     rebaseRunning = true;
+    rebaseFailureDetail = formatGitError(err);
   }
 
   let pass = 0;
@@ -480,14 +512,46 @@ async function attemptInlineConflictFix(args: InlineFixArgs): Promise<InlineFixO
     }
     const conflictedFiles = list.files;
     if (conflictedFiles.length === 0) {
-      // Rebase appears stalled with no markers — most likely an empty
-      // commit produced by an auto-fix on a previous round. Surface as
-      // aborted so the agent can untangle it; we don't want a silent
-      // `--skip` that drops a commit the session intended to land.
+      // The rebase exited non-zero but the index has no unmerged paths.
+      // Two very different situations land here, and conflating them was
+      // the source of the chronic `(possibly an empty commit)` failures on
+      // Resolve PR sessions:
+      //
+      //   1. The rebase NEVER STARTED — `git rebase` refused up front,
+      //      most commonly "cannot rebase: You have unstaged changes."
+      //      (dirty worktree) or an untracked-file collision. There is no
+      //      rebase to abort; the worktree state is the problem.
+      //   2. The rebase genuinely STARTED and paused with nothing
+      //      unmerged — e.g. an empty commit produced by an auto-fix on a
+      //      previous round. Abort and surface; we don't want a silent
+      //      `--skip` that drops a commit the session intended to land.
+      const inProgress = await isRebaseInProgressInWorktree(worktreePath);
+      if (!inProgress) {
+        const dirty = await listDirtyTrackedFiles(runGit, worktreePath, env);
+        if (dirty.length > 0) {
+          // Self-healable: dispatch into the session so the agent commits
+          // (or reverts) the leftover edits, then retry the rebase.
+          return {
+            kind: 'dirty-worktree',
+            files: dirty,
+            detail: rebaseFailureDetail,
+            innerPasses: pass,
+          };
+        }
+        return {
+          kind: 'aborted',
+          detail: `rebase could not start (worktree reports clean): ${
+            rebaseFailureDetail || 'unknown git failure'
+          }`,
+          innerPasses: pass,
+        };
+      }
       await safeAbort(runGit, worktreePath, env);
       return {
         kind: 'aborted',
-        detail: 'rebase paused with no conflicted files (possibly an empty commit)',
+        detail: `rebase paused with no conflicted files (possibly an empty commit)${
+          rebaseFailureDetail ? `: ${rebaseFailureDetail}` : ''
+        }`,
         innerPasses: pass,
       };
     }
@@ -611,6 +675,71 @@ async function listConflictedFiles(
   }
 }
 
+/**
+ * True iff a rebase is actually in progress on disk. Session worktrees are
+ * dedicated clones (`.git` is a directory), so probing the two state dirs
+ * directly is sufficient — same approach as `isRebaseInProgressOnDisk` in
+ * `pre-push-rebase.ts`, async because everything in this module is.
+ */
+async function isRebaseInProgressInWorktree(worktreePath: string): Promise<boolean> {
+  for (const dir of ['rebase-merge', 'rebase-apply']) {
+    try {
+      await fs.access(path.join(worktreePath, '.git', dir));
+      return true;
+    } catch {
+      /* not present — keep probing */
+    }
+  }
+  return false;
+}
+
+/**
+ * Uncommitted changes to TRACKED files (unstaged or staged) — exactly the
+ * set that makes `git rebase` refuse to start. Untracked files are excluded
+ * (`-uno`) because they don't block a rebase unless they collide, and a
+ * collision surfaces through git's own stderr instead.
+ */
+async function listDirtyTrackedFiles(
+  runGit: RunGit,
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<string[]> {
+  try {
+    const { stdout } = await runGit(['status', '--porcelain', '--untracked-files=no'], {
+      cwd,
+      env,
+      timeoutMs: 30_000,
+    });
+    return stdout
+      .split('\n')
+      .map((l) => l.trimEnd())
+      .filter(Boolean)
+      .map((l) => l.slice(3));
+  } catch {
+    // Status failing is itself a sign of a broken worktree — report "not
+    // dirty" so the caller falls through to the aborted path with git's
+    // original rebase stderr.
+    return [];
+  }
+}
+
+/** Flatten an execFile-style error into `stderr + stdout + message`. */
+function formatGitError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stderrOut =
+    typeof (err as { stderr?: unknown })?.stderr === 'string'
+      ? ((err as { stderr: string }).stderr as string)
+      : '';
+  const stdoutOut =
+    typeof (err as { stdout?: unknown })?.stdout === 'string'
+      ? ((err as { stdout: string }).stdout as string)
+      : '';
+  return [stderrOut, stdoutOut, msg]
+    .map((s) => (s ?? '').toString().trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 async function safeAbort(runGit: RunGit, cwd: string, env?: NodeJS.ProcessEnv): Promise<void> {
   try {
     await runGit(['rebase', '--abort'], { cwd, env, timeoutMs: 30_000 });
@@ -670,9 +799,35 @@ export function buildConflictDispatchMessage(
   ].join('\n');
 }
 
+/**
+ * Message dispatched into the session when the rebase can't even start
+ * because the worktree has uncommitted tracked changes. Exported so tests
+ * can pin the wording.
+ */
+export function buildDirtyWorktreeDispatchMessage(
+  files: string[],
+  baseBranch: string,
+  gitDetail?: string,
+): string {
+  const fileList = files.map((f) => `- \`${f}\``).join('\n');
+  return [
+    `## Finalize Code Changes: uncommitted changes are blocking the rebase`,
+    '',
+    `I need to rebase your branch onto \`origin/${baseBranch}\`, but \`git rebase\` refuses to start because the worktree has uncommitted changes to tracked files:`,
+    '',
+    fileList,
+    '',
+    `Please either commit these changes (if they belong in this branch) or revert them (\`git checkout -- <file>\`) if they're leftovers. When your turn ends I'll retry the rebase and continue the Finalize pipeline.`,
+    ...(gitDetail ? ['', '```', gitDetail, '```'] : []),
+  ].join('\n');
+}
+
 export const __test = {
   attemptInlineConflictFix,
   listConflictedFiles,
+  listDirtyTrackedFiles,
+  isRebaseInProgressInWorktree,
+  formatGitError,
   setPhase,
   terminate,
   REBASE_ATTEMPT_ACTIVE_SECONDS,

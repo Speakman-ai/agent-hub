@@ -491,6 +491,156 @@ describe('runRebasePhase — dispatch path', () => {
   });
 });
 
+describe('runRebasePhase — rebase fails with zero conflicted files', () => {
+  /** Build an execFile-style error carrying git's stderr. */
+  function gitError(stderr: string): Error & { stderr: string } {
+    const e = new Error(`Command failed: git rebase\n${stderr}`) as Error & { stderr: string };
+    e.stderr = stderr;
+    return e;
+  }
+
+  it('dirty worktree: dispatches commit-or-revert message to session, retries, succeeds', async () => {
+    // Regression: a worktree with uncommitted tracked changes makes
+    // `git rebase` refuse to start (exit 1, zero --diff-filter=U files).
+    // This used to fail terminal with the misleading detail "rebase paused
+    // with no conflicted files (possibly an empty commit)" — chronic on
+    // Resolve PR sessions. It must instead dispatch into the session.
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const rebase = vi
+      .fn<(opts: unknown) => Promise<RebaseOutcome>>()
+      .mockResolvedValueOnce({ kind: 'conflict', detail: 'cannot rebase' })
+      .mockResolvedValueOnce({ kind: 'rebased', commitsBehind: 1 });
+
+    const runGit = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
+        throw gitError('error: cannot rebase: You have unstaged changes.');
+      }
+      if (args[0] === 'diff' && args.includes('--diff-filter=U')) {
+        return { stdout: '', stderr: '' };
+      }
+      if (args[0] === 'status' && args.includes('--untracked-files=no')) {
+        return { stdout: ' M package-lock.json\nM  src/app.ts\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    const dispatch = vi.fn(async (args: { sessionId: string; cardId: string; body: string }) => {
+      expect(args.body).toContain('uncommitted changes are blocking the rebase');
+      expect(args.body).toContain('package-lock.json');
+      expect(args.body).toContain('src/app.ts');
+      expect(args.body).toContain('You have unstaged changes');
+      return { userMessagePersisted: true };
+    });
+
+    const result = await runRebasePhase(
+      { stmts: stmts as never, broadcast, dispatchAndWaitForTurnEnd: dispatch, rebase, runGit },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe('success');
+    if (result.kind === 'success') {
+      expect(result.requiredFix).toBe(true);
+      expect(result.conflictsDispatchedCount).toBe(1);
+    }
+    // No rebase was in progress — nothing to abort.
+    const calls = runGit.mock.calls.map((c) => c[0] as string[]);
+    expect(calls).not.toEqual(expect.arrayContaining([expect.arrayContaining(['--abort'])]));
+  });
+
+  it('never-started with clean tree: fails with git stderr, not the empty-commit guess', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const rebase = vi
+      .fn<(opts: unknown) => Promise<RebaseOutcome>>()
+      .mockResolvedValueOnce({ kind: 'conflict', detail: 'x' });
+
+    const runGit = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
+        throw gitError('fatal: invalid upstream origin/main');
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    const result = await runRebasePhase(
+      {
+        stmts: stmts as never,
+        broadcast,
+        dispatchAndWaitForTurnEnd: vi.fn(),
+        rebase,
+        runGit,
+      },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('rebase_aborted');
+      expect(result.detail).toContain('rebase could not start');
+      expect(result.detail).toContain('fatal: invalid upstream origin/main');
+      expect(result.detail).not.toContain('possibly an empty commit');
+    }
+  });
+
+  it('genuinely paused rebase (rebase-merge on disk): aborts and keeps the empty-commit hint plus stderr', async () => {
+    // A rebase that actually started and stopped with no unmerged paths
+    // (e.g. an empty commit). The .git/rebase-merge dir marks it.
+    await fs.mkdir(path.join(tmpRoot, '.git', 'rebase-merge'), { recursive: true });
+
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const rebase = vi
+      .fn<(opts: unknown) => Promise<RebaseOutcome>>()
+      .mockResolvedValueOnce({ kind: 'conflict', detail: 'x' });
+
+    const runGit = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rebase' && args.includes('origin/main')) {
+        throw gitError('hint: you might want to skip this patch');
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    const result = await runRebasePhase(
+      {
+        stmts: stmts as never,
+        broadcast,
+        dispatchAndWaitForTurnEnd: vi.fn(),
+        rebase,
+        runGit,
+      },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.detail).toContain('possibly an empty commit');
+      expect(result.detail).toContain('you might want to skip this patch');
+    }
+    // The paused rebase was aborted to unstick the worktree.
+    const calls = runGit.mock.calls.map((c) => c[0] as string[]);
+    expect(calls).toEqual(expect.arrayContaining([expect.arrayContaining(['--abort'])]));
+  });
+});
+
 describe('runRebasePhase — budget exhaustion', () => {
   it('terminates with timed_out when active seconds exceed budget', async () => {
     const stmts = makeStmts();
