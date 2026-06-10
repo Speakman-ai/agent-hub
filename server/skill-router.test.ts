@@ -8,7 +8,7 @@ const ALL_SKILLS = [
   { id: 'design', name: 'design', description: 'Design Studio authoring' },
   { id: 'designs', name: 'designs', description: 'Read design artifacts' },
   { id: 'agent-hub', name: 'agent-hub', description: 'Agent Hub platform' },
-  { id: 'clawhub-sync', name: 'ClawHub Sync', description: 'Custom installed skill' },
+  { id: 'custom-sync', name: 'Custom Sync', description: 'Custom installed skill' },
 ];
 
 describe('routeSkillFromMessage', () => {
@@ -85,10 +85,10 @@ describe('routeSkillFromMessage', () => {
 
   it('routes explicit skill mention for new installed skills', () => {
     const result = routeSkillFromMessage({
-      message: 'Use clawhub-sync skill for this import.',
+      message: 'Use custom-sync skill for this import.',
       skills: ALL_SKILLS,
     });
-    expect(result?.skillId).toBe('clawhub-sync');
+    expect(result?.skillId).toBe('custom-sync');
     expect(result?.reason).toContain('explicit');
   });
 

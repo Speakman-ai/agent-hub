@@ -67,7 +67,6 @@ import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
-import createClawhubRoutes from './routes/clawhub.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -295,8 +294,7 @@ try {
 }
 
 // Sync default + per-project skill dirs to the Claude Code CLI so both
-// bundled skills and ClawHub-installed project skills register at startup.
-// (Per-install syncs happen in server/routes/clawhub.ts.)
+// bundled and per-project skills register at startup.
 try {
   const projectSkillDirs = getProjects()
     .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
@@ -828,7 +826,6 @@ app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
-app.use(createClawhubRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));

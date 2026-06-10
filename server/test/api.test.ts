@@ -1879,41 +1879,6 @@ describe('Session advisors', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Skills Registry
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Skills Registry', () => {
-  describe('GET /api/skills/registry', () => {
-    it('lists all registry skills', async () => {
-      const res = await request.get('/api/skills/registry').expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
-  });
-
-  describe('CRUD lifecycle', () => {
-    it('creates, gets, and deletes a registry skill', async () => {
-      const createRes = await request
-        .post('/api/skills/registry')
-        .send({
-          name: 'Test Skill',
-          description: 'A test skill for testing',
-          category: 'development',
-          content: '# Test Skill\n\nDo testing things.',
-        })
-        .expect(201);
-
-      expect(createRes.body).toHaveProperty('id');
-      const id = createRes.body.id as string;
-
-      const getRes = await request.get(`/api/skills/registry/${id}`).expect(200);
-      expect(getRes.body.name).toBe('Test Skill');
-
-      await request.delete(`/api/skills/registry/${id}`).expect(200);
-    });
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
 // Config
 // ═══════════════════════════════════════════════════════════════════
 

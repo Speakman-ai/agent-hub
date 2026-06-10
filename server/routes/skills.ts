@@ -11,10 +11,9 @@ import {
   rmdirSync,
   cpSync,
 } from 'fs';
-import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
-import type { RouteDeps, SkillRegistryRow, AgentSkillOverrideRow } from '../types.js';
+import type { RouteDeps, AgentSkillOverrideRow } from '../types.js';
 import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
 // The unfiltered options list used by the Settings allowlist editor lives in
 // agent-skills-list (built on collectSkillsFromDir below). Importing it here
@@ -48,24 +47,14 @@ export interface SkillWithSource extends SkillInfo {
   source: 'project' | 'default';
 }
 
-interface PluginSkillInfo {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  version: string | null;
-  keepCodingInstructions: boolean;
-}
-
 /**
  * Merge-sync skills from DEFAULT_SKILLS_DIR and any extra skill directories
  * (e.g. per-project skillsDir entries) into the Claude Code CLI's
  * `~/.claude/plugins/local/agent-hub-skills` plugin target (or the
  * `~/.claude/commands/` fallback when no plugin scaffolding exists).
  *
- * Called at server startup with every project's skillsDir, and again by
- * the ClawHub install route so freshly-installed project skills register
- * with the CLI without requiring a server restart.
+ * Called at server startup with every project's skillsDir so bundled and
+ * per-project skills register with the CLI.
  *
  * Later sources in `extraSkillDirs` override earlier ones when skill IDs
  * collide — later iterations simply `cpSync` on top of the destination.
@@ -280,117 +269,6 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
-  router.get('/api/skills/registry', (req: Request, res: Response) => {
-    try {
-      const S = stmts;
-      if (req.query.q) {
-        const q = `%${req.query.q}%`;
-        res.json(S.searchSkillRegistry.all(q, q) as SkillRegistryRow[]);
-      } else if (req.query.category) {
-        res.json(S.getSkillRegistryByCategory.all(req.query.category) as SkillRegistryRow[]);
-      } else {
-        res.json(S.getSkillRegistry.all() as SkillRegistryRow[]);
-      }
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/skills/registry/:id', (req: Request, res: Response) => {
-    try {
-      const item = stmts.getSkillRegistryItem.get(req.params.id) as SkillRegistryRow | undefined;
-      if (!item) return res.status(404).json({ error: 'Skill not found in registry' });
-      res.json(item);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.post('/api/skills/registry', (req: Request, res: Response) => {
-    try {
-      const { id, name, description, category, author, source_url, repo_url, version, content } =
-        req.body;
-      if (!name) return res.status(400).json({ error: 'name is required' });
-      const skillId = id || (name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const credCheck = extractCredentialsFromSkillContent((content as string) ?? '');
-      if (credCheck.error) {
-        return res.status(400).json({
-          error: `invalid credentials in SKILL.md frontmatter: ${credCheck.error}`,
-        });
-      }
-      stmts.createSkillRegistryItem.run(
-        skillId,
-        name,
-        description || '',
-        category || 'general',
-        author || '',
-        source_url || null,
-        repo_url || null,
-        version || null,
-        content || '',
-      );
-      const created = stmts.getSkillRegistryItem.get(skillId) as SkillRegistryRow;
-      broadcast({ type: 'skills_update', payload: { action: 'registry_add', skill: created } });
-      res.status(201).json(created);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.delete('/api/skills/registry/:id', (req: Request, res: Response) => {
-    try {
-      const item = stmts.getSkillRegistryItem.get(req.params.id) as SkillRegistryRow | undefined;
-      if (!item) return res.status(404).json({ error: 'Not found' });
-      stmts.deleteSkillRegistryItem.run(req.params.id);
-      broadcast({
-        type: 'skills_update',
-        payload: { action: 'registry_remove', skillId: req.params.id },
-      });
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.post('/api/projects/:projectId/skills/install', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (!project.ahw) return res.status(400).json({ error: 'Project has no agent workspace' });
-
-    const { skillId } = req.body;
-    if (!skillId) return res.status(400).json({ error: 'skillId required' });
-
-    try {
-      const registryItem = stmts.getSkillRegistryItem.get(skillId) as SkillRegistryRow | undefined;
-      if (!registryItem) return res.status(404).json({ error: 'Skill not found in registry' });
-
-      const skillsDir = path.join(project.ahw, 'skills', skillId);
-      if (!existsSync(path.join(project.ahw, 'skills'))) {
-        mkdirSync(path.join(project.ahw, 'skills'), { recursive: true });
-      }
-      if (!existsSync(skillsDir)) {
-        mkdirSync(skillsDir, { recursive: true });
-      }
-      writeFileSync(path.join(skillsDir, 'SKILL.md'), registryItem.content);
-
-      const userCmdDir = path.join(homedir(), '.claude', 'commands');
-      if (existsSync(userCmdDir)) {
-        const destDir = path.join(userCmdDir, skillId);
-        if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
-        writeFileSync(path.join(destDir, 'SKILL.md'), registryItem.content);
-      }
-
-      stmts.incrementSkillInstallCount.run(skillId);
-      broadcast({
-        type: 'skills_update',
-        payload: { action: 'installed', skillId, projectId: req.params.projectId },
-      });
-      res.json({ ok: true, path: skillsDir });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
   router.delete('/api/projects/:projectId/skills/:skillId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -417,55 +295,6 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
-  router.post('/api/skills/import-github', async (req: Request, res: Response) => {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'url required' });
-
-    try {
-      let rawUrl: string = url;
-      if (url.includes('github.com') && !url.includes('raw.githubusercontent.com')) {
-        rawUrl = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/');
-      }
-      if (rawUrl.match(/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/?$/)) {
-        rawUrl = rawUrl.replace(/\/?$/, '/main/SKILL.md');
-      }
-
-      const response = await fetch(rawUrl);
-      if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
-      const content = await response.text();
-
-      const credImport = extractCredentialsFromSkillContent(content);
-      if (credImport.error) {
-        return res.status(400).json({
-          error: `invalid credentials in SKILL.md frontmatter: ${credImport.error}`,
-        });
-      }
-
-      const { data } = matter(content);
-      const name = (data.name as string) || path.basename(url).replace('.md', '');
-      const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const description = (data.description as string) || '';
-      const category = (data.category as string) || 'general';
-
-      stmts.createSkillRegistryItem.run(
-        id,
-        name,
-        description,
-        category,
-        '',
-        url,
-        url,
-        '1.0.0',
-        content,
-      );
-      const created = stmts.getSkillRegistryItem.get(id) as SkillRegistryRow;
-      broadcast({ type: 'skills_update', payload: { action: 'registry_add', skill: created } });
-      res.status(201).json(created);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
   router.put('/api/agents/:agentId/skills/:skillId/toggle', (req: Request, res: Response) => {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -485,83 +314,6 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         },
       });
       res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/skills/plugin-info', (_req: Request, res: Response) => {
-    try {
-      const pluginJsonPath = path.join(PLUGIN_DIR, '.claude-plugin', 'plugin.json');
-      if (!existsSync(pluginJsonPath)) {
-        return res.status(404).json({ error: 'Plugin not found' });
-      }
-      const meta = JSON.parse(readFileSync(pluginJsonPath, 'utf-8')) as Record<string, unknown>;
-      const skillsDirPath = path.join(PLUGIN_DIR, 'skills');
-      const skills: PluginSkillInfo[] = existsSync(skillsDirPath)
-        ? readdirSync(skillsDirPath, { withFileTypes: true })
-            .filter((e) => e.isDirectory())
-            .map((e) => {
-              const fm = readSkillFrontmatter(path.join(skillsDirPath, e.name));
-              return {
-                id: e.name,
-                name: fm?.name || e.name,
-                description: fm?.description || '',
-                category: fm?.category || 'general',
-                version: fm?.version || null,
-                keepCodingInstructions: fm?.keepCodingInstructions || false,
-              };
-            })
-        : [];
-      res.json({ ...meta, skills });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.post('/api/skills/export-plugin', (req: Request, res: Response) => {
-    const { name, description, skillIds } = req.body;
-    if (!name) return res.status(400).json({ error: 'name is required' });
-
-    try {
-      const pluginId = (name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const home = process.env.HOME || process.env.USERPROFILE;
-      const exportDir = path.join(home!, '.claude', 'plugins', 'local', pluginId);
-
-      mkdirSync(path.join(exportDir, '.claude-plugin'), { recursive: true });
-      mkdirSync(path.join(exportDir, 'skills'), { recursive: true });
-
-      const pluginMeta = {
-        name: pluginId,
-        version: '1.0.0',
-        description: description || `${name} skills plugin`,
-        author: { name: 'Agent Hub' },
-      };
-      writeFileSync(
-        path.join(exportDir, '.claude-plugin', 'plugin.json'),
-        JSON.stringify(pluginMeta, null, 2),
-      );
-
-      const allSkills = collectSkillsFromDir(DEFAULT_SKILLS_DIR);
-      const selectedSkills = skillIds
-        ? allSkills.filter((s) => (skillIds as string[]).includes(s.id))
-        : allSkills;
-
-      const exported: Array<{ id: string; name: string }> = [];
-      for (const skill of selectedSkills) {
-        const srcMd = path.join(skill.path, 'SKILL.md');
-        if (!existsSync(srcMd)) continue;
-        const destDir = path.join(exportDir, 'skills', skill.id);
-        mkdirSync(destDir, { recursive: true });
-        writeFileSync(path.join(destDir, 'SKILL.md'), readFileSync(srcMd, 'utf-8'));
-        exported.push({ id: skill.id, name: skill.name });
-      }
-
-      broadcast({
-        type: 'skills_update',
-        payload: { action: 'plugin_exported', pluginId, skills: exported },
-      });
-      res.json({ ok: true, pluginId, path: exportDir, skills: exported });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
