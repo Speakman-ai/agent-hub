@@ -16,6 +16,13 @@ import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 import type { RouteDeps, SkillRegistryRow, AgentSkillOverrideRow } from '../types.js';
 import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
+// The unfiltered options list used by the Settings allowlist editor lives in
+// agent-skills-list (built on collectSkillsFromDir below). Importing it here
+// keeps the merge defined once; the FS primitive `collectSkillsFromDir` stays
+// the seam prompt-builder tests mock. (agent-skills-list re-imports that
+// primitive from this module — an ESM-safe cycle: both bindings are only read
+// inside functions, never at module top level.)
+import { listMergedSkills } from '../agent-skills-list.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
@@ -37,7 +44,7 @@ export interface SkillInfo {
   path: string;
 }
 
-interface SkillWithSource extends SkillInfo {
+export interface SkillWithSource extends SkillInfo {
   source: 'project' | 'default';
 }
 
@@ -176,18 +183,12 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     const { project } = found;
 
     try {
-      const projectSkills: SkillWithSource[] = (
-        project.ahw ? collectSkillsFromDir(path.join(project.ahw, 'skills')) : []
-      ).map((s) => ({ ...s, source: 'project' as const }));
-      const defaultSkills: SkillWithSource[] = collectSkillsFromDir(DEFAULT_SKILLS_DIR).map(
-        (s) => ({
-          ...s,
-          source: 'default' as const,
-        }),
-      );
-      const projectIds = new Set(projectSkills.map((s) => s.id));
-      const merged = [...projectSkills, ...defaultSkills.filter((s) => !projectIds.has(s.id))];
-      res.json(merged);
+      // This is the management/options list that backs the Settings allowlist
+      // editor — it MUST stay the UNFILTERED merge so operators can re-add a
+      // previously denied skill. Deliberately uses `listMergedSkills`, NOT
+      // `listEnabledSkills` (which applies the agent's overrides + allowlist).
+      const skillsDir = project.ahw ? path.join(project.ahw, 'skills') : '';
+      res.json(listMergedSkills(skillsDir));
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

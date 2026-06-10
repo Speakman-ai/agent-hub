@@ -5002,6 +5002,11 @@ paths:
                 browserPageLoadTimeoutMs:
                   type: number
                   nullable: true
+                allowedSkills:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
               required:
                 - id
                 - projectId
@@ -5092,6 +5097,11 @@ paths:
                 browserPageLoadTimeoutMs:
                   type: number
                   nullable: true
+                allowedSkills:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
       responses:
         "200":
           description: Updated agent.

@@ -2,6 +2,7 @@ import path from 'path';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import { isSkillAllowed } from './agent-skills-list.js';
 import type { BroadcastFn, Stmts } from './types.js';
 import {
   detectTagBlockInLastFence,
@@ -75,6 +76,12 @@ interface HandleSkillInvokeArgs {
   sessionId: string;
   stmts: Stmts;
   broadcast: BroadcastFn;
+  /**
+   * The agent's skill allowlist. `null`/`undefined` => unrestricted (any skill
+   * may load). An array restricts loadable skills to its ids — a triggered
+   * skill outside the list fails with a clear "not allowed" error.
+   */
+  allowedSkills?: string[] | null;
 }
 
 interface LoadSkillByNameArgs {
@@ -84,6 +91,8 @@ interface LoadSkillByNameArgs {
   sessionId: string;
   stmts: Stmts;
   broadcast: BroadcastFn;
+  /** See {@link HandleSkillInvokeArgs.allowedSkills}. */
+  allowedSkills?: string[] | null;
 }
 
 function collectReferenceFiles(dir: string, root = dir): string[] {
@@ -425,11 +434,46 @@ export function handleSkillInvoke(args: HandleSkillInvokeArgs): string {
     sessionId,
     stmts,
     broadcast,
+    allowedSkills: args.allowedSkills,
   });
 }
 
 export function loadSkillByName(args: LoadSkillByNameArgs): string {
-  const { name, reason, paths, sessionId, stmts, broadcast } = args;
+  const { name, reason, paths, sessionId, stmts, broadcast, allowedSkills } = args;
+
+  // Enforce the per-agent skill allowlist before touching disk. A restricted
+  // agent triggering a skill outside its list gets a clear error and the
+  // attempt is audited (recorded as not-found — the only non-loaded status the
+  // skill_invocations CHECK constraint permits — with a distinct message).
+  if (!isSkillAllowed(name, allowedSkills)) {
+    const injection = `## Skill Load Error\nSkill \`${name}\` is not in this agent's allowed-skills list and cannot be loaded. Pick a skill from your Available Skills list, or ask an operator to grant access under Settings → Agents → Allowed skills.`;
+    try {
+      stmts.insertSkillInvocation.run(
+        uuidv4(),
+        sessionId,
+        name,
+        null,
+        reason || null,
+        'not-found',
+        Buffer.byteLength(injection, 'utf-8'),
+      );
+      broadcast({
+        type: 'skill_invocation',
+        sessionId,
+        skill_id: name,
+        status: 'not-found',
+      });
+    } catch (err) {
+      console.log(
+        '[skill-invoke] failed to record not-allowed invocation:',
+        (err as Error).message,
+      );
+    }
+    console.log(
+      `[skill-invoke] blocked skill "${name}" for session ${sessionId} (not in allowlist)`,
+    );
+    return injection;
+  }
 
   const loaded = loadSkillBody(name, paths);
   if (!loaded) {

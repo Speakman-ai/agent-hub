@@ -1793,6 +1793,15 @@ export interface Agent {
    * Falls back to project then the server default (30s).
    */
   browserPageLoadTimeoutMs?: number;
+  /**
+   * Per-agent skill allowlist. When set to an array, only these skill ids are
+   * listed in the agent's Available Skills prompt block and only these may be
+   * loaded via the `<agenthub:skill>` trigger — every other skill fails to
+   * load with a clear error. When `undefined` (the default), the agent sees
+   * and can trigger every project + bundled skill (restriction is opt-in, so
+   * existing agents are unchanged). An empty array means no skills at all.
+   */
+  allowedSkills?: string[];
   hooks?: Record<string, HookConfig[]>;
   mcpServers?: Record<string, McpServerConfig>;
   installCommand?: string;

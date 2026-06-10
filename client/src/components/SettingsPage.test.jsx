@@ -30,6 +30,7 @@ vi.mock('../utils/api.js', () => ({
     ),
     deleteMyAgentEngineOverride: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
     getMcpServers: vi.fn().mockResolvedValue({ mcpServers: {} }),
+    getSkills: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -808,5 +809,138 @@ describe('AgentConfigSection — per-user override saves are race-safe', () => {
     expect(api.putMyAgentModelOverride).toHaveBeenCalledWith('agent-b', {
       model: 'claude-opus-4-8',
     });
+  });
+});
+
+describe('AgentConfigSection — allowed-skills multi-select', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });
+    api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
+    });
+    api.getMyAgentModelOverrides.mockResolvedValue({ agentModelOverrides: {} });
+    api.getMyAgentEngineOverrides.mockResolvedValue({ agentEngineOverrides: {} });
+    api.getSkills.mockResolvedValue([
+      { id: 'kanban', name: 'kanban', description: 'manage cards' },
+      { id: '1password', name: '1password', description: 'secrets' },
+      { id: 'aws-cli', name: 'aws-cli', description: 'aws' },
+    ]);
+    api.updateAgent.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const baseAgent = {
+    id: 'agent-a',
+    name: 'Agent A',
+    role: 'lead',
+    engine: 'claude-code',
+    active: true,
+    projectId: 'p1',
+  };
+
+  function renderSection(agents) {
+    return render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={agents}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+  }
+
+  it('defaults to ALL (unrestricted) and hides the checkbox list', async () => {
+    const { findByText, getByTestId, queryByTestId } = renderSection([baseAgent]);
+    fireEvent.click(await findByText('Agent A'));
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('ALL');
+    expect(queryByTestId('agent-allowed-skills-list')).toBeNull();
+  });
+
+  it('enabling restriction seeds with every skill and lets you remove one', async () => {
+    const { findByText, getByTestId, findByTestId } = renderSection([baseAgent]);
+    fireEvent.click(await findByText('Agent A'));
+    // Toggle is disabled until the skill list loads — wait for that.
+    await waitFor(() => expect(getByTestId('agent-allowed-skills-toggle')).not.toBeDisabled());
+
+    // Turn restriction ON — seeds the allowlist with all known skill ids.
+    fireEvent.click(getByTestId('agent-allowed-skills-toggle'));
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('RESTRICTED');
+    const list = await findByTestId('agent-allowed-skills-list');
+    const boxes = within(list).getAllByRole('checkbox');
+    expect(boxes).toHaveLength(3);
+    expect(boxes.every((b) => b.checked)).toBe(true);
+
+    // Uncheck 1password, then save.
+    fireEvent.click(boxes[1]);
+    fireEvent.click(await findByText('Save'));
+
+    await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
+    const payload = api.updateAgent.mock.calls[0][1];
+    expect(payload.allowedSkills).toEqual(['kanban', 'aws-cli']);
+  });
+
+  it('an already-restricted agent renders only its allowed boxes checked', async () => {
+    const { findByText, getByTestId, findByTestId } = renderSection([
+      { ...baseAgent, allowedSkills: ['kanban'] },
+    ]);
+    fireEvent.click(await findByText('Agent A'));
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('RESTRICTED');
+    const list = await findByTestId('agent-allowed-skills-list');
+    const boxes = within(list).getAllByRole('checkbox');
+    expect(boxes[0].checked).toBe(true); // kanban
+    expect(boxes[1].checked).toBe(false); // 1password
+    expect(boxes[2].checked).toBe(false); // aws-cli
+  });
+
+  it('toggling RESTRICTED off clears the allowlist (sends null)', async () => {
+    const { findByText, getByTestId } = renderSection([
+      { ...baseAgent, allowedSkills: ['kanban'] },
+    ]);
+    fireEvent.click(await findByText('Agent A'));
+    await waitFor(() => expect(getByTestId('agent-allowed-skills-toggle')).not.toBeDisabled());
+    fireEvent.click(getByTestId('agent-allowed-skills-toggle'));
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('ALL');
+    fireEvent.click(await findByText('Save'));
+    await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
+    expect(api.updateAgent.mock.calls[0][1].allowedSkills).toBeNull();
+  });
+
+  it('keeps the toggle disabled and shows an error when the skill list fails to load', async () => {
+    // Regression: a transient /agents/:id/skills failure must NOT enable the
+    // ALL->RESTRICTED toggle with an empty allowlist (a save would then write
+    // allowedSkills: [] and wipe every skill).
+    api.getSkills.mockRejectedValueOnce(new Error('boom'));
+    const { findByText, getByTestId, findByTestId, queryByTestId } = renderSection([baseAgent]);
+    fireEvent.click(await findByText('Agent A'));
+
+    await findByTestId('agent-allowed-skills-error');
+    expect(getByTestId('agent-allowed-skills-toggle')).toBeDisabled();
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('ALL');
+
+    // Clicking the disabled toggle must not flip to RESTRICTED.
+    fireEvent.click(getByTestId('agent-allowed-skills-toggle'));
+    expect(getByTestId('agent-allowed-skills-toggle').textContent).toBe('ALL');
+    expect(queryByTestId('agent-allowed-skills-list')).toBeNull();
+  });
+
+  it('Retry re-fetches and enables restriction after a failed load', async () => {
+    api.getSkills.mockRejectedValueOnce(new Error('boom'));
+    const { findByText, getByTestId, findByTestId } = renderSection([baseAgent]);
+    fireEvent.click(await findByText('Agent A'));
+
+    await findByTestId('agent-allowed-skills-error');
+    // Next fetch (triggered by Retry) succeeds.
+    fireEvent.click(getByTestId('agent-allowed-skills-retry'));
+
+    await waitFor(() => expect(getByTestId('agent-allowed-skills-toggle')).not.toBeDisabled());
+    fireEvent.click(getByTestId('agent-allowed-skills-toggle'));
+    const list = await findByTestId('agent-allowed-skills-list');
+    expect(within(list).getAllByRole('checkbox')).toHaveLength(3);
   });
 });

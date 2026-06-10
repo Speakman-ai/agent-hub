@@ -231,6 +231,15 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (parsed.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = parsed.browserToolsEnabled;
     }
+    // Skill allowlist: `null` clears the restriction (back to all skills),
+    // an array restricts to those ids, `undefined` preserves the current value.
+    if (parsed.allowedSkills !== undefined) {
+      if (parsed.allowedSkills === null) {
+        delete (agent as Record<string, unknown>).allowedSkills;
+      } else {
+        agent.allowedSkills = parsed.allowedSkills;
+      }
+    }
     applyOptionalAgentNumeric(
       agent,
       'browserViewportWidth',
@@ -303,6 +312,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (role) agent.role = role;
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled;
+    }
+    if (Array.isArray(parsed.allowedSkills)) {
+      agent.allowedSkills = parsed.allowedSkills;
     }
     applyOptionalAgentNumeric(
       agent,

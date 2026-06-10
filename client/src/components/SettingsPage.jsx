@@ -3898,6 +3898,16 @@ export function AgentConfigSection({
   );
   const [agents, setAgents] = useState(initialAgents);
   const [expanded, setExpanded] = useState(null);
+  // Full merged skill list (project + bundled) per agent, lazily fetched when
+  // an agent row is expanded. Backs the "Allowed skills" multi-select. The
+  // `/agents/:id/skills` endpoint returns every skill (unfiltered by the
+  // allowlist) so removed skills can still be re-added. `agentSkills[id]` is set
+  // ONLY on a successful load (an array — possibly empty); a fetch failure sets
+  // `agentSkillsError[id]` instead and leaves the list undefined, so a transient
+  // error is never mistaken for "no skills" (which could let a save write
+  // `allowedSkills: []` and wipe the agent's skills).
+  const [agentSkills, setAgentSkills] = useState({});
+  const [agentSkillsError, setAgentSkillsError] = useState({});
   const [saving, setSaving] = useState({});
   const [saveStatus, setSaveStatus] = useState({});
   const [edits, setEdits] = useState({});
@@ -3953,6 +3963,42 @@ export function AgentConfigSection({
       .then(setModelConfig)
       .catch(() => {});
   }, []);
+
+  // Lazily load the skill list for whichever agent is expanded so the
+  // "Allowed skills" multi-select has options. Cached per agent id. Skips when
+  // already loaded or in a known error state (cleared by the Retry button).
+  useEffect(() => {
+    if (!expanded) return;
+    if (Array.isArray(agentSkills[expanded]) || agentSkillsError[expanded]) return;
+    let cancelled = false;
+    api
+      .getSkills(expanded)
+      .then((list) => {
+        if (!cancelled) {
+          setAgentSkills((prev) => ({
+            ...prev,
+            [expanded]: Array.isArray(list) ? list : [],
+          }));
+        }
+      })
+      .catch(() => {
+        // Distinct error state — do NOT collapse a failure into an empty list,
+        // which would enable the restriction toggle with an empty allowlist.
+        if (!cancelled) setAgentSkillsError((prev) => ({ ...prev, [expanded]: true }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, agentSkills, agentSkillsError]);
+
+  // Clear the error so the effect above re-fetches the agent's skill list.
+  const retryLoadSkills = (agentId) => {
+    setAgentSkillsError((prev) => {
+      const next = { ...prev };
+      delete next[agentId];
+      return next;
+    });
+  };
 
   const parseModelMap = (body) =>
     body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
@@ -5410,6 +5456,131 @@ export function AgentConfigSection({
                               </div>
                             </div>
                           )}
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="border-t border-gray-700 pt-3">
+                    {(() => {
+                      const skillList = agentSkills[agent.id];
+                      const skillsLoaded = Array.isArray(skillList);
+                      const skillsLoadError = !!agentSkillsError[agent.id];
+                      const allowed =
+                        edit.allowedSkills !== undefined ? edit.allowedSkills : agent.allowedSkills;
+                      const restricted = Array.isArray(allowed);
+                      const allowedSet = new Set(restricted ? allowed : []);
+                      const allIds = skillsLoaded ? skillList.map((s) => s.id) : [];
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <label className="text-xs text-gray-400 font-medium">
+                              Allowed skills
+                            </label>
+                            <button
+                              type="button"
+                              data-testid="agent-allowed-skills-toggle"
+                              // Disabled until the skill list successfully loads.
+                              // This both avoids seeding an empty-lockout on the
+                              // initial-load race AND prevents a fetch FAILURE
+                              // (distinct error state) from enabling restriction
+                              // with an empty allowlist that a save would persist
+                              // as `allowedSkills: []`, wiping every skill.
+                              disabled={!skillsLoaded}
+                              onClick={() => {
+                                // OFF -> null clears the restriction (all skills).
+                                // ON  -> seed with every known skill id so enabling
+                                // the restriction is not an instant lockout; the
+                                // operator then unchecks what to remove.
+                                setEdit(agent.id, 'allowedSkills', restricted ? null : allIds);
+                              }}
+                              className={`text-xs px-2.5 py-1 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                                restricted
+                                  ? 'bg-amber-800/50 text-amber-300 hover:bg-amber-800'
+                                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                              }`}
+                            >
+                              {restricted ? 'RESTRICTED' : 'ALL'}
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500 mb-2">
+                            When set to <span className="font-medium">ALL</span>, this agent sees
+                            and can trigger every project + bundled skill. When{' '}
+                            <span className="font-medium">RESTRICTED</span>, only the checked skills
+                            are listed in its prompt and loadable via{' '}
+                            <code className="font-mono">&lt;agenthub:skill&gt;</code> — every other
+                            skill fails to load. Useful for trimming prompt noise and for keeping
+                            sensitive skills (e.g. <code className="font-mono">1password</code>,{' '}
+                            <code className="font-mono">aws-cli</code>) off agents that should never
+                            touch them.
+                          </p>
+                          {skillsLoadError && (
+                            <div
+                              className="flex items-center gap-2 mb-1"
+                              data-testid="agent-allowed-skills-error"
+                            >
+                              <p className="text-xs text-red-400">
+                                Couldn’t load this agent’s skill list — restriction editing is
+                                disabled to avoid accidentally removing skills.
+                              </p>
+                              <button
+                                type="button"
+                                data-testid="agent-allowed-skills-retry"
+                                onClick={() => retryLoadSkills(agent.id)}
+                                className="text-xs px-2 py-0.5 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600"
+                              >
+                                Retry
+                              </button>
+                            </div>
+                          )}
+                          {restricted &&
+                            !skillsLoadError &&
+                            (!skillsLoaded ? (
+                              <p className="text-xs text-gray-500">Loading skills…</p>
+                            ) : allIds.length === 0 ? (
+                              <p className="text-xs text-gray-500">
+                                No skills available for this agent.
+                              </p>
+                            ) : (
+                              <div
+                                className="space-y-1 max-h-56 overflow-y-auto pr-1"
+                                data-testid="agent-allowed-skills-list"
+                              >
+                                {skillList.map((s) => (
+                                  <label
+                                    key={s.id}
+                                    className="flex items-start gap-2 py-1 px-2 rounded hover:bg-gray-800 cursor-pointer"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={allowedSet.has(s.id)}
+                                      onChange={() => {
+                                        const next = new Set(allowedSet);
+                                        if (next.has(s.id)) next.delete(s.id);
+                                        else next.add(s.id);
+                                        // Preserve the on-disk skill order.
+                                        setEdit(
+                                          agent.id,
+                                          'allowedSkills',
+                                          allIds.filter((id) => next.has(id)),
+                                        );
+                                      }}
+                                      className="mt-0.5 rounded border-gray-600 bg-gray-900 text-indigo-500"
+                                    />
+                                    <span className="min-w-0">
+                                      <span className="text-sm text-gray-200 font-mono">
+                                        {s.id}
+                                      </span>
+                                      {s.description ? (
+                                        <span className="block text-xs text-gray-500 truncate">
+                                          {s.description}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                            ))}
                         </>
                       );
                     })()}

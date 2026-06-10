@@ -29,7 +29,16 @@ export function mergeSkillCredentialSpawnEnv(
   if (!ownerId) return;
   try {
     const skillsRoot = project.ahw ? path.join(project.ahw, 'skills') : '';
-    const enabled = listEnabledSkills(agentId, skillsRoot);
+    // Resolve the agent's allowlist from the project we already hold (the
+    // authoritative record). Access boundary: if the agent can't be resolved
+    // from its project, fail CLOSED (empty allowlist → no skills → no
+    // credentials) rather than granting every skill's credentials. A resolved
+    // agent with no `allowedSkills` is legitimately unrestricted (`null`).
+    const spawningAgent = project.agents?.find((a) => a.id === agentId);
+    const allowedSkills: string[] | null = spawningAgent
+      ? (spawningAgent.allowedSkills ?? null)
+      : [];
+    const enabled = listEnabledSkills(agentId, skillsRoot, allowedSkills);
     const skillIds = enabled.map((s) => s.id);
     const projectWorkspaces = project.ahw ? [project.ahw] : [];
     const allowedKeysBySkillId = new Map<string, ReadonlySet<string>>();

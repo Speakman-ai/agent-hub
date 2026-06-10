@@ -759,7 +759,7 @@ Do not print access keys or session tokens. Prefer the Hub SSO login API over ru
   }
 
   {
-    const allSkills = listEnabledSkills(agent.id, paths.skillsDir);
+    const allSkills = listEnabledSkills(agent.id, paths.skillsDir, agent.allowedSkills ?? null);
     if (allSkills.length > 0) {
       const skillsList = allSkills.map(
         (s) => `- **${s.name}**: ${compressSkillDescription(s.description)}`,
@@ -2050,7 +2050,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let routedSkillSuffix = '';
       const loadedRoutedSkillIds = new Set<string>();
       if (!slashResult && !isAutoContinuation) {
-        const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
+        const availableSkills = listEnabledSkills(
+          agent.id,
+          paths.skillsDir,
+          agent.allowedSkills ?? null,
+        );
         // Seed the dedupe set from the pending-skill suffix so we don't
         // re-inject a skill the previous `<agenthub:skill>` block already
         // queued. The header format is `## Loaded Skill: <skill-id>` —
@@ -3853,6 +3857,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 sessionId,
                 stmts: stmts as Stmts,
                 broadcast,
+                allowedSkills: agent.allowedSkills ?? null,
               });
               if (injection.trim()) {
                 assistantContextToAppend = assistantContextToAppend
@@ -3929,6 +3934,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   sessionId,
                   stmts: stmts as Stmts,
                   broadcast,
+                  allowedSkills: agent.allowedSkills ?? null,
                 });
                 if (injection.trim()) {
                   assistantContextToAppend = assistantContextToAppend
@@ -3987,6 +3993,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   sessionId,
                   stmts: stmts as Stmts,
                   broadcast,
+                  allowedSkills: agent.allowedSkills ?? null,
                 });
                 if (injection.trim()) {
                   assistantContextToAppend = assistantContextToAppend

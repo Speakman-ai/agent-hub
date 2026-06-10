@@ -348,6 +348,57 @@ describe('skill-invoke', () => {
     expect(statuses).toContain('malformed');
   });
 
+  it('enforces the per-agent skill allowlist on the trigger', () => {
+    makeSkill(projectSkillsDir, 'ok-skill');
+    makeSkill(projectSkillsDir, 'secret-skill');
+
+    const rows: unknown[][] = [];
+    const broadcasts: Record<string, unknown>[] = [];
+    const stmts = {
+      insertSkillInvocation: { run: (...args: unknown[]) => rows.push(args) },
+    } as unknown as import('./types.js').Stmts;
+
+    // Allowed skill loads normally.
+    const allowed = handleSkillInvoke({
+      rawBlock: '<agenthub:skill>{"name":"ok-skill"}</agenthub:skill>',
+      paths: { skillsDir: projectSkillsDir },
+      sessionId: 's1',
+      stmts,
+      broadcast: (e) => broadcasts.push(e as Record<string, unknown>),
+      allowedSkills: ['ok-skill'],
+    });
+
+    // Skill outside the allowlist is blocked with a clear error, never touching disk.
+    const blocked = handleSkillInvoke({
+      rawBlock: '<agenthub:skill>{"name":"secret-skill"}</agenthub:skill>',
+      paths: { skillsDir: projectSkillsDir },
+      sessionId: 's1',
+      stmts,
+      broadcast: (e) => broadcasts.push(e as Record<string, unknown>),
+      allowedSkills: ['ok-skill'],
+    });
+
+    // Unrestricted agent (no allowlist) can still load anything.
+    const unrestricted = handleSkillInvoke({
+      rawBlock: '<agenthub:skill>{"name":"secret-skill"}</agenthub:skill>',
+      paths: { skillsDir: projectSkillsDir },
+      sessionId: 's1',
+      stmts,
+      broadcast: (e) => broadcasts.push(e as Record<string, unknown>),
+      allowedSkills: null,
+    });
+
+    expect(allowed).toContain('## Loaded Skill');
+    expect(blocked).toContain('Skill Load Error');
+    expect(blocked).toContain("not in this agent's allowed-skills list");
+    expect(unrestricted).toContain('## Loaded Skill');
+
+    // The blocked attempt is audited (status not-found, the only non-loaded
+    // status the CHECK constraint allows).
+    const blockedRow = rows.find((r) => r[2] === 'secret-skill' && r[5] === 'not-found');
+    expect(blockedRow).toBeTruthy();
+  });
+
   it('integration-style: close-handler flow stashes injection for next turn and then consumes it', () => {
     makeSkill(projectSkillsDir, 'kanban');
 

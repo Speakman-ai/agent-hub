@@ -151,6 +151,16 @@ const BrowserToolsEnabled = z
   .boolean({ error: 'browserToolsEnabled must be a boolean' })
   .optional();
 
+/**
+ * Per-agent skill allowlist. `undefined` (key omitted) => preserve; `null` =>
+ * clear the restriction (agent sees every skill); an array => restrict the
+ * agent to exactly those skill ids (empty array means no skills).
+ */
+const AllowedSkills = z
+  .array(z.string({ error: 'allowedSkills entries must be strings' }))
+  .nullable()
+  .optional();
+
 export const HeartbeatConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -177,6 +187,7 @@ export const CreateAgentRequestSchema = z.object({
   browserViewportWidth: BrowserDim(320, 3840),
   browserViewportHeight: BrowserDim(240, 2160),
   browserPageLoadTimeoutMs: BrowserPageLoadTimeoutMs,
+  allowedSkills: AllowedSkills,
 });
 
 /**
@@ -201,6 +212,7 @@ export const UpdateAgentRequestSchema = z.object({
   browserViewportWidth: BrowserDim(320, 3840),
   browserViewportHeight: BrowserDim(240, 2160),
   browserPageLoadTimeoutMs: BrowserPageLoadTimeoutMs,
+  allowedSkills: AllowedSkills,
 });
 
 export const BulkEngineRequestSchema = z.object({
