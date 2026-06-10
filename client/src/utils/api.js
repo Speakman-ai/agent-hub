@@ -560,83 +560,14 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
-  // Skill Registry / Marketplace
-  getRegistry: (category, q) => {
-    const params = new URLSearchParams();
-    if (category) params.set('category', category);
-    if (q) params.set('q', q);
-    const qs = params.toString();
-    return fetchJSON(`/skills/registry${qs ? '?' + qs : ''}`);
-  },
-  getRegistrySkill: (id) => fetchJSON(`/skills/registry/${id}`),
-  addToRegistry: (data) =>
-    fetchJSON('/skills/registry', { method: 'POST', body: JSON.stringify(data) }),
-  removeFromRegistry: (id) => fetchJSON(`/skills/registry/${id}`, { method: 'DELETE' }),
-  installSkill: (projectId, skillId) =>
-    fetchJSON(`/projects/${projectId}/skills/install`, {
-      method: 'POST',
-      body: JSON.stringify({ skillId }),
-    }),
   uninstallSkill: (projectId, skillId) =>
     fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
-  importGithubSkill: (url) =>
-    fetchJSON('/skills/import-github', { method: 'POST', body: JSON.stringify({ url }) }),
   toggleSkill: (agentId, skillId, enabled) =>
     fetchJSON(`/agents/${agentId}/skills/${skillId}/toggle`, {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
   getSkillOverrides: (agentId) => fetchJSON(`/agents/${agentId}/skills/overrides`),
-
-  // ClawHub Registry (proxied via /api/clawhub/*)
-  clawhubSearch: (q, limit) => {
-    const params = new URLSearchParams();
-    if (q) params.set('q', q);
-    if (limit) params.set('limit', String(limit));
-    const qs = params.toString();
-    return fetchJSON(`/clawhub/search${qs ? '?' + qs : ''}`);
-  },
-  clawhubListSkills: (limit) => {
-    const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
-    return fetchJSON(`/clawhub/skills${qs}`);
-  },
-  clawhubGetSkill: (slug) => fetchJSON(`/clawhub/skills/${encodeURIComponent(slug)}`),
-  clawhubGetVersions: (slug) => fetchJSON(`/clawhub/skills/${encodeURIComponent(slug)}/versions`),
-  clawhubInstall: async ({ slug, version, target, agentId }) => {
-    // We bypass fetchJSON here so the `stderrTail` field from a 500
-    // response can be surfaced on the thrown error (fetchJSON would
-    // strip it).
-    const base = getApiBase();
-    const headers = {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    };
-    const res = await fetch(`${base}/clawhub/install`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ slug, version, target, agentId }),
-      signal: AbortSignal.timeout(120000),
-    });
-    let body = null;
-    try {
-      body = await res.json();
-    } catch {
-      /* non-JSON */
-    }
-    if (!res.ok) {
-      const message = body?.error || body?.message || `API error: ${res.status}`;
-      const err = new Error(`${res.status}: ${message}`);
-      if (body?.stderrTail) err.stderrTail = body.stderrTail;
-      err.status = res.status;
-      throw err;
-    }
-    return body;
-  },
-
-  // Plugin packaging
-  getPluginInfo: () => fetchJSON('/skills/plugin-info'),
-  exportPlugin: (data) =>
-    fetchJSON('/skills/export-plugin', { method: 'POST', body: JSON.stringify(data) }),
 
   // Upload
   uploadImage: (dataUrl, filename) =>
@@ -1128,19 +1059,4 @@ export const api = {
   // Container pool observability (W4)
   getPoolMetrics: (windowHours = 24) => fetchJSON(`/pool/metrics?windowHours=${windowHours}`),
   getPoolAlerts: (status = 'active') => fetchJSON(`/pool/alerts?status=${status}`),
-
-  // MCP servers (per-user). Replaces the deleted Nango integration surface;
-  // configured under Skills & Context → MCP (not Settings).
-  // Distinct from the per-agent MCP methods above (`getMcpServers` etc.) —
-  // those manage the agent's template under `/agents/:id/mcp-servers`; these
-  // manage the authenticated user's personal connections under `/mcp-servers`.
-  // Secrets round-trip masked (`••••••••`) so the UI can save partial edits
-  // without re-typing values that haven't changed.
-  getMcpCatalog: () => fetchJSON('/mcp-catalog'),
-  listUserMcpServers: () => fetchJSON('/mcp-servers'),
-  createUserMcpServer: (payload) =>
-    fetchJSON('/mcp-servers', { method: 'POST', body: JSON.stringify(payload) }),
-  updateUserMcpServer: (id, payload) =>
-    fetchJSON(`/mcp-servers/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteUserMcpServer: (id) => fetchJSON(`/mcp-servers/${id}`, { method: 'DELETE' }),
 };

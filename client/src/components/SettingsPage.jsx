@@ -6695,12 +6695,9 @@ export default function SettingsPage({
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Legacy MCP location was Settings → Integrations; MCP now lives under Skills & Context → MCP.
-  useEffect(() => {
-    if (initialTab === 'integrations' && typeof onNavigate === 'function') {
-      onNavigate('skills:mcp');
-    }
-  }, [initialTab, onNavigate]);
+  // Legacy `?tab=integrations` deep-link (the old MCP location). MCP is now
+  // configured per-agent in each agent's config form below, so the link just
+  // falls back to the General tab (handled by the `tab` initializer above).
 
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
   useEffect(() => {

@@ -7,24 +7,12 @@ import {
   TextInput,
   StyleSheet,
   ActivityIndicator,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-
-const CATEGORIES = [
-  { id: 'all', label: 'All' },
-  { id: 'platform', label: 'Platform' },
-  { id: 'development', label: 'Development' },
-  { id: 'documentation', label: 'Documentation' },
-  { id: 'automation', label: 'Automation' },
-  { id: 'git', label: 'Git' },
-  { id: 'monitoring', label: 'Monitoring' },
-  { id: 'general', label: 'General' },
-];
 
 const CATEGORY_STYLES = {
   platform: { bg: colors.indigo900_40, fg: colors.indigo400 },
@@ -151,151 +139,6 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   );
 }
 
-function RegistryCard({ skill, installedIds, onInstall, installing }) {
-  const [expanded, setExpanded] = useState(false);
-  const isInstalled = installedIds.has(skill.id);
-  const isBusy = installing === skill.id;
-
-  return (
-    <View style={styles.card}>
-      <TouchableOpacity style={styles.cardHeader} onPress={() => setExpanded(!expanded)}>
-        <View style={styles.cardHeaderContent}>
-          <View style={styles.cardTitleRow}>
-            <Text style={styles.cardTitle} numberOfLines={1}>
-              {skill.name}
-            </Text>
-            <CategoryBadge category={skill.category || 'general'} />
-            {skill.install_count > 0 && (
-              <Text style={styles.installCount}>{skill.install_count} installs</Text>
-            )}
-          </View>
-          {skill.description && (
-            <Text style={styles.cardDescription} numberOfLines={2}>
-              {skill.description}
-            </Text>
-          )}
-        </View>
-        <View style={styles.cardHeaderActions}>
-          <TouchableOpacity
-            onPress={(e) => {
-              e.stopPropagation?.();
-              if (!isInstalled && !isBusy) onInstall(skill.id);
-            }}
-            disabled={isInstalled || isBusy}
-            style={[
-              styles.installButton,
-              (isInstalled || isBusy) && styles.installButtonDisabled,
-            ]}
-          >
-            {isBusy ? (
-              <ActivityIndicator size="small" color={colors.white} />
-            ) : (
-              <Text
-                style={[
-                  styles.installButtonText,
-                  isInstalled && styles.installButtonTextDisabled,
-                ]}
-              >
-                {isInstalled ? 'Installed' : '↓ Install'}
-              </Text>
-            )}
-          </TouchableOpacity>
-          <Text style={styles.expandIcon}>{expanded ? '▲' : '▼'}</Text>
-        </View>
-      </TouchableOpacity>
-      {expanded && (
-        <View style={styles.cardBody}>
-          <ScrollView style={styles.cardScroll} nestedScrollEnabled>
-            <Markdown style={markdownStyles}>{skill.content || ''}</Markdown>
-            {skill.author && (
-              <Text style={styles.metaText}>Author: {skill.author}</Text>
-            )}
-            {skill.source_url && (
-              <Text style={styles.metaText} numberOfLines={1}>
-                Source: {skill.source_url}
-              </Text>
-            )}
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
-}
-
-function ImportGithubModal({ visible, onClose, onImported }) {
-  const [url, setUrl] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleImport = async () => {
-    if (!url.trim()) return;
-    setLoading(true);
-    setError('');
-    try {
-      const result = await api.importGithubSkill(url.trim());
-      onImported(result);
-      setUrl('');
-      onClose();
-    } catch (err) {
-      setError(err.message || 'Failed to import');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalContent}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Import from GitHub</Text>
-            <TouchableOpacity onPress={onClose} hitSlop={8}>
-              <Text style={styles.modalClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.modalHint}>
-            Paste a GitHub URL to a SKILL.md file, a repo URL, or a raw file URL.
-          </Text>
-          <TextInput
-            value={url}
-            onChangeText={setUrl}
-            placeholder="https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md"
-            placeholderTextColor={colors.gray600}
-            style={styles.modalInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {error ? <Text style={styles.modalError}>{error}</Text> : null}
-          <View style={styles.modalActions}>
-            <TouchableOpacity onPress={onClose} style={styles.modalButtonSecondary}>
-              <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleImport}
-              disabled={loading || !url.trim()}
-              style={[
-                styles.modalButtonPrimary,
-                (loading || !url.trim()) && styles.modalButtonDisabled,
-              ]}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color={colors.white} />
-              ) : (
-                <Text style={styles.modalButtonPrimaryText}>Import</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 function ContextFilePanel({ filename, content, agentId, onSaved }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -376,19 +219,12 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
 
 export default function SkillsScreen() {
   const { agents, projects } = useApp();
-  const [activeTab, setActiveTab] = useState('installed');
   const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
   const [skills, setSkills] = useState([]);
   const [context, setContext] = useState({});
   const [overrides, setOverrides] = useState([]);
-  const [registry, setRegistry] = useState([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [loadingContext, setLoadingContext] = useState(false);
-  const [loadingRegistry, setLoadingRegistry] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('all');
-  const [showImport, setShowImport] = useState(false);
-  const [installing, setInstalling] = useState(null);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
@@ -423,18 +259,6 @@ export default function SkillsScreen() {
       .catch(() => setOverrides([]));
   }, [activeAgentId]);
 
-  // Load registry when tab is active or filters change
-  useEffect(() => {
-    if (activeTab !== 'registry') return;
-    setLoadingRegistry(true);
-    const cat = categoryFilter === 'all' ? undefined : categoryFilter;
-    api
-      .getRegistry(cat, searchQuery || undefined)
-      .then(setRegistry)
-      .catch(() => setRegistry([]))
-      .finally(() => setLoadingRegistry(false));
-  }, [activeTab, categoryFilter, searchQuery]);
-
   const handleToggle = useCallback(
     async (skillId, enabled) => {
       try {
@@ -458,28 +282,6 @@ export default function SkillsScreen() {
     [activeAgentId],
   );
 
-  const handleInstall = useCallback(
-    async (skillId) => {
-      if (!currentProjectId) return;
-      setInstalling(skillId);
-      try {
-        await api.installSkill(currentProjectId, skillId);
-        // Refresh installed skills
-        const updated = await api.getSkills(activeAgentId);
-        setSkills(updated);
-        // Refresh registry to update install count
-        const cat = categoryFilter === 'all' ? undefined : categoryFilter;
-        const reg = await api.getRegistry(cat, searchQuery || undefined);
-        setRegistry(reg);
-      } catch (err) {
-        console.error('Failed to install skill:', err);
-      } finally {
-        setInstalling(null);
-      }
-    },
-    [currentProjectId, activeAgentId, categoryFilter, searchQuery],
-  );
-
   const handleUninstall = useCallback(
     async (skillId) => {
       if (!currentProjectId) return;
@@ -497,82 +299,39 @@ export default function SkillsScreen() {
     setContext((prev) => ({ ...prev, [filename]: newContent }));
   };
 
-  const installedIds = useMemo(() => new Set(skills.map((s) => s.id)), [skills]);
-
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.pageTitle}>📚 Skills & Context</Text>
 
-        {/* Main tabs: Installed | Registry */}
-        <View style={styles.mainTabs}>
-          <TouchableOpacity
-            onPress={() => setActiveTab('installed')}
-            style={[
-              styles.mainTab,
-              activeTab === 'installed' && styles.mainTabActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.mainTabText,
-                activeTab === 'installed' && styles.mainTabTextActive,
-              ]}
+        {/* Agent tabs */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.agentTabs}
+          contentContainerStyle={styles.agentTabsContent}
+        >
+          {agents.map((agent) => (
+            <TouchableOpacity
+              key={agent.id}
+              style={[styles.agentTab, activeAgentId === agent.id && styles.agentTabActive]}
+              onPress={() => setActiveAgentId(agent.id)}
             >
-              🧩 Installed
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setActiveTab('registry')}
-            style={[
-              styles.mainTab,
-              activeTab === 'registry' && styles.mainTabActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.mainTabText,
-                activeTab === 'registry' && styles.mainTabTextActive,
-              ]}
-            >
-              📦 Registry
-            </Text>
-          </TouchableOpacity>
-        </View>
+              <View style={[styles.tabDot, { backgroundColor: agent.color }]} />
+              <Text
+                style={[
+                  styles.agentTabText,
+                  activeAgentId === agent.id && styles.agentTabTextActive,
+                ]}
+              >
+                {agent.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
 
-        {activeTab === 'installed' && (
+        {activeAgent && (
           <>
-            {/* Agent tabs */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.agentTabs}
-              contentContainerStyle={styles.agentTabsContent}
-            >
-              {agents.map((agent) => (
-                <TouchableOpacity
-                  key={agent.id}
-                  style={[
-                    styles.agentTab,
-                    activeAgentId === agent.id && styles.agentTabActive,
-                  ]}
-                  onPress={() => setActiveAgentId(agent.id)}
-                >
-                  <View style={[styles.tabDot, { backgroundColor: agent.color }]} />
-                  <Text
-                    style={[
-                      styles.agentTabText,
-                      activeAgentId === agent.id && styles.agentTabTextActive,
-                    ]}
-                  >
-                    {agent.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {activeAgent && (
-              <>
                 {/* Skills section */}
                 <View style={styles.section}>
                   <View style={styles.sectionHeader}>
@@ -589,7 +348,7 @@ export default function SkillsScreen() {
                     <View style={styles.emptyCard}>
                       <Text style={styles.emptyText}>No skills installed</Text>
                       <Text style={styles.emptyHint}>
-                        Browse the Registry tab to install skills
+                        Add skills to {activeAgent.workspace}/skills/
                       </Text>
                     </View>
                   ) : (
@@ -644,97 +403,7 @@ export default function SkillsScreen() {
                 </View>
               </>
             )}
-          </>
-        )}
-
-        {activeTab === 'registry' && (
-          <>
-            {/* Search bar */}
-            <View style={styles.searchRow}>
-              <TextInput
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholder="Search skills..."
-                placeholderTextColor={colors.gray600}
-                style={styles.searchInput}
-                autoCapitalize="none"
-              />
-            </View>
-
-            {/* Category pills */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.categoryRow}
-              contentContainerStyle={styles.categoryRowContent}
-            >
-              {CATEGORIES.map((c) => (
-                <TouchableOpacity
-                  key={c.id}
-                  style={[
-                    styles.categoryPill,
-                    categoryFilter === c.id && styles.categoryPillActive,
-                  ]}
-                  onPress={() => setCategoryFilter(c.id)}
-                >
-                  <Text
-                    style={[
-                      styles.categoryPillText,
-                      categoryFilter === c.id && styles.categoryPillTextActive,
-                    ]}
-                  >
-                    {c.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {/* Import from GitHub button */}
-            <TouchableOpacity
-              style={styles.importButton}
-              onPress={() => setShowImport(true)}
-            >
-              <Text style={styles.importButtonText}>🔗 Import from GitHub</Text>
-            </TouchableOpacity>
-
-            {/* Registry list */}
-            {loadingRegistry ? (
-              <ActivityIndicator
-                size="small"
-                color={colors.gray500}
-                style={{ marginVertical: 40 }}
-              />
-            ) : registry.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No skills found</Text>
-                <Text style={styles.emptyHint}>
-                  Try a different search or import from GitHub
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.cardList}>
-                {registry.map((skill) => (
-                  <RegistryCard
-                    key={skill.id}
-                    skill={skill}
-                    installedIds={installedIds}
-                    onInstall={handleInstall}
-                    installing={installing}
-                  />
-                ))}
-              </View>
-            )}
-          </>
-        )}
       </ScrollView>
-
-      <ImportGithubModal
-        visible={showImport}
-        onClose={() => setShowImport(false)}
-        onImported={(newSkill) => {
-          setRegistry((prev) => [newSkill, ...prev]);
-        }}
-      />
     </SafeAreaView>
   );
 }

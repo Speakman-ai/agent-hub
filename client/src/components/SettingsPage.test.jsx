@@ -103,9 +103,11 @@ describe('SettingsPage — tab labels', () => {
     expect(queryByRole('button', { name: /^Integrations$/ })).toBeNull();
   });
 
-  it('redirects legacy Settings → Integrations deep link to Skills MCP', async () => {
+  it('lands the legacy Settings → Integrations deep link on General (no Skills MCP redirect)', async () => {
+    // MCP moved off the Skills page into per-agent config; the old
+    // `?tab=integrations` link must no longer bounce to `skills:mcp`.
     const onNavigate = vi.fn();
-    render(
+    const { findByRole } = render(
       <SettingsPage
         projects={[]}
         agents={[]}
@@ -114,9 +116,8 @@ describe('SettingsPage — tab labels', () => {
         onNavigate={onNavigate}
       />,
     );
-    await waitFor(() => {
-      expect(onNavigate).toHaveBeenCalledWith('skills:mcp');
-    });
+    expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
+    expect(onNavigate).not.toHaveBeenCalledWith('skills:mcp');
   });
 
   it('no longer exposes Preview or Finalize tabs (moved to per-project sidebar)', async () => {

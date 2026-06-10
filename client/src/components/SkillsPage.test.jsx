@@ -7,22 +7,11 @@ vi.mock('../utils/api.js', () => ({
     getSkills: vi.fn(),
     getContext: vi.fn(),
     getSkillOverrides: vi.fn(),
-    getRegistry: vi.fn(),
     getSkill: vi.fn(),
     toggleSkill: vi.fn(),
-    installSkill: vi.fn(),
     uninstallSkill: vi.fn(),
     saveContext: vi.fn(),
-    importGithubSkill: vi.fn(),
-    getPluginInfo: vi.fn(),
-    exportPlugin: vi.fn(),
-    clawhubSearch: vi.fn(),
-    clawhubListSkills: vi.fn(),
-    clawhubGetSkill: vi.fn(),
-    clawhubGetVersions: vi.fn(),
-    clawhubInstall: vi.fn(),
-    listUserMcpServers: vi.fn(),
-    getMcpCatalog: vi.fn(),
+    getSkillCredentials: vi.fn(),
   },
 }));
 
@@ -47,12 +36,7 @@ describe('SkillsPage error surfacing', () => {
     api.getSkills.mockReset();
     api.getContext.mockReset();
     api.getSkillOverrides.mockReset();
-    api.getRegistry.mockReset();
-    api.getPluginInfo.mockReset();
     api.getSkillOverrides.mockResolvedValue([]);
-    api.getPluginInfo.mockResolvedValue(null);
-    api.listUserMcpServers.mockResolvedValue({ servers: [] });
-    api.getMcpCatalog.mockResolvedValue({ entries: [] });
   });
 
   afterEach(() => {
@@ -71,7 +55,6 @@ describe('SkillsPage error surfacing', () => {
   it('renders an inline error with the failure message when getSkills rejects', async () => {
     api.getSkills.mockRejectedValue(new Error('500 Internal Server Error'));
     api.getContext.mockResolvedValue({});
-    api.getRegistry.mockResolvedValue([]);
 
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
@@ -83,15 +66,13 @@ describe('SkillsPage error surfacing', () => {
     expect(alert.textContent).toContain('Retry');
 
     // The misleading "No skills installed" empty state must NOT render
-    // alongside the error — we want the user to see the cause, not a hint
-    // to browse the registry.
+    // alongside the error — we want the user to see the cause.
     expect(screen.queryByText('No skills installed')).not.toBeInTheDocument();
   });
 
   it('renders an inline error when getContext rejects, separately from skills', async () => {
     api.getSkills.mockResolvedValue([]);
     api.getContext.mockRejectedValue(new Error('ENOENT: workspace missing'));
-    api.getRegistry.mockResolvedValue([]);
 
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
@@ -105,7 +86,6 @@ describe('SkillsPage error surfacing', () => {
   it('clicking Retry re-invokes getSkills and clears the error on success', async () => {
     api.getSkills.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce([]);
     api.getContext.mockResolvedValue({});
-    api.getRegistry.mockResolvedValue([]);
 
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
@@ -121,51 +101,51 @@ describe('SkillsPage error surfacing', () => {
     expect(screen.queryByTestId('skills-load-error-skills')).not.toBeInTheDocument();
     expect(api.getSkills).toHaveBeenCalledTimes(2);
   });
+});
 
-  it('surfaces install failures via a transient action-error banner', async () => {
-    api.getSkills.mockResolvedValue([]);
-    api.getContext.mockResolvedValue({});
-    api.getRegistry.mockResolvedValue([
-      {
-        id: 'kanban',
-        name: 'Kanban',
-        description: 'Manage cards',
-        category: 'platform',
-        install_count: 3,
-      },
+describe('SkillsPage is skill management only', () => {
+  beforeEach(() => {
+    api.getSkills.mockReset();
+    api.getContext.mockReset();
+    api.getSkillOverrides.mockReset();
+    api.getSkillOverrides.mockResolvedValue([]);
+    api.getSkills.mockResolvedValue([
+      { id: 'kanban', name: 'Kanban', description: 'Manage cards', category: 'platform' },
     ]);
-    api.installSkill.mockRejectedValue(new Error('write failed'));
+    api.getContext.mockResolvedValue({ 'SOUL.md': '# soul' });
+  });
 
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('renders the Skills and Context Files sections', async () => {
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
 
-    // Switch to Registry tab. There may be multiple "Registry" buttons (the
-    // tab itself, plus the inline link in the empty-state hint), so disambiguate
-    // by selecting the one that lives inside the tab strip.
-    const registryButtons = screen.getAllByRole('button', { name: /Registry/i });
-    fireEvent.click(registryButtons[0]);
-    await flush();
-
-    // Install button on the rendered registry card.
-    const installButtons = screen.getAllByRole('button', { name: /Install/i });
-    fireEvent.click(installButtons[installButtons.length - 1]);
-    await flush();
-
-    const errorBanner = await screen.findByTestId('skills-action-error');
-    expect(errorBanner.textContent).toContain('Failed to install skill kanban');
-    expect(errorBanner.textContent).toContain('write failed');
+    expect(screen.getByRole('heading', { name: /Skills\s*\(\d+ total\)/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /Context Files\s*\(workspace identity\)/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Kanban')).toBeInTheDocument();
   });
 
-  it('shows MCP servers when initialSkillsTab is mcp', async () => {
-    api.getSkills.mockResolvedValue([]);
-    api.getContext.mockResolvedValue({});
-    api.getRegistry.mockResolvedValue([]);
-    api.listUserMcpServers.mockResolvedValue({ servers: [] });
-    api.getMcpCatalog.mockResolvedValue({ entries: [] });
-
-    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} initialSkillsTab="mcp" />);
+  it('does not render MCP, Registry, Plugin, or ClawHub tabs', async () => {
+    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
 
-    expect(await screen.findByRole('heading', { name: /^MCP Servers$/ })).toBeInTheDocument();
+    for (const label of [/^MCP$/i, /^Registry$/i, /^Plugin$/i, /^ClawHub$/i]) {
+      expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument();
+    }
+    // The GitHub-import affordance lived on the removed Registry tab.
+    expect(screen.queryByRole('button', { name: /Import from GitHub/i })).not.toBeInTheDocument();
   });
 });

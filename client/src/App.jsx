@@ -4371,15 +4371,7 @@ export default function App({ initialView } = {}) {
                   }}
                 />
               ) : currentView === 'skills' || currentView.startsWith('skills:') ? (
-                <SkillsPage
-                  agents={agents}
-                  projects={projects}
-                  initialSkillsTab={
-                    currentView.startsWith('skills:')
-                      ? currentView.slice('skills:'.length) || undefined
-                      : undefined
-                  }
-                />
+                <SkillsPage agents={agents} projects={projects} />
               ) : currentView === 'designs' ? (
                 <DesignsList
                   designs={designs}
