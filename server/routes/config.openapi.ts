@@ -58,13 +58,17 @@ export const AppConfigComponent = registerComponent(
       openaiApiKeySet: z.boolean().openapi({
         description: 'Whether the host OpenAI API key is configured.',
       }),
-      transcriptionProvider: z.enum(['openai', 'gemini']).openapi({
+      transcriptionProvider: z.enum(['xai', 'openai', 'gemini']).openapi({
         description:
-          'Provider used by /api/transcribe for chat voice transcription. `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.',
+          'Provider used by /api/transcribe for chat voice transcription. `xai` (default) uses the xAI Grok speech-to-text endpoint; `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.',
       }),
       geminiApiKeySet: z.boolean().openapi({
         description:
           'Whether the host Gemini API key is configured (used for Gemini transcription).',
+      }),
+      xaiApiKeySet: z.boolean().openapi({
+        description:
+          'Whether the host xAI (Grok) API key is configured (used for the default xAI transcription provider).',
       }),
       personalOAuth: z.object({
         configured: z.boolean(),

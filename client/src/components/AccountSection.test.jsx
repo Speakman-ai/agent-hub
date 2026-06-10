@@ -175,7 +175,8 @@ function pluginSectionHandlers(extra = []) {
           openaiApiKey: '',
           openaiApiKeySet: false,
           geminiApiKeySet: false,
-          transcriptionProvider: 'openai',
+          xaiApiKeySet: false,
+          transcriptionProvider: 'xai',
         }),
     },
     {
@@ -198,7 +199,11 @@ describe('PluginApiKeysSection', () => {
     render(<PluginApiKeysSection />);
 
     expect(screen.getByText('Plugin API keys')).toBeInTheDocument();
-    expect(await screen.findByText('Gemini API key')).toBeInTheDocument();
+    expect(await screen.findByText('xAI API key')).toBeInTheDocument();
+    expect(
+      screen.getByText('Used for voice transcription (the default provider).'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Gemini API key')).toBeInTheDocument();
     expect(screen.getByText('Used for voice transcription and wiki RAG.')).toBeInTheDocument();
     expect(screen.getByText('OpenAI API key')).toBeInTheDocument();
     expect(
@@ -227,7 +232,8 @@ describe('PluginApiKeysSection', () => {
     fireEvent.change(screen.getByLabelText('OpenAI API key'), {
       target: { value: ' sk-test-openai ' },
     });
-    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[1]);
+    // Key rows render in order: xAI (0), Gemini (1), OpenAI (2).
+    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[2]);
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
@@ -235,6 +241,38 @@ describe('PluginApiKeysSection', () => {
         expect.objectContaining({
           method: 'PATCH',
           body: JSON.stringify({ openaiApiKey: 'sk-test-openai' }),
+        }),
+      ),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved');
+  });
+
+  it('saves the host xAI API key through PATCH /api/config', async () => {
+    const fetchMock = mockFetchByUrl(
+      pluginSectionHandlers([
+        {
+          match: (u, m) => u.endsWith('/api/config') && m === 'PATCH',
+          response: () => jsonResponse({ ok: true, updated: { xaiApiKey: '••••••••' } }),
+        },
+      ]),
+    );
+
+    render(<PluginApiKeysSection />);
+
+    expect(await screen.findByText('xAI API key')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('xAI API key'), {
+      target: { value: ' xai-test-key ' },
+    });
+    // Key rows render in order: xAI (0), Gemini (1), OpenAI (2).
+    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[0]);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/config',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ xaiApiKey: 'xai-test-key' }),
         }),
       ),
     );
@@ -258,7 +296,8 @@ describe('PluginApiKeysSection', () => {
     fireEvent.change(screen.getByLabelText('Gemini API key'), {
       target: { value: ' AIza-test ' },
     });
-    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[0]);
+    // Key rows render in order: xAI (0), Gemini (1), OpenAI (2).
+    fireEvent.click(screen.getAllByRole('button', { name: /save api key/i })[1]);
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
@@ -274,6 +313,44 @@ describe('PluginApiKeysSection', () => {
 });
 
 describe('TranscriptionProviderRow', () => {
+  it('selects xAI Grok by default and persists it when chosen', async () => {
+    const fetchMock = mockFetchByUrl([
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'GET',
+        response: () =>
+          jsonResponse({
+            transcriptionProvider: 'xai',
+            xaiApiKeySet: true,
+            openaiApiKeySet: false,
+            geminiApiKeySet: false,
+          }),
+      },
+      {
+        match: (u, m) => u.endsWith('/api/config') && m === 'PATCH',
+        response: () => jsonResponse({ ok: true, updated: { transcriptionProvider: 'openai' } }),
+      },
+    ]);
+
+    render(<TranscriptionProviderRow />);
+
+    const xaiOption = await screen.findByRole('radio', { name: /xAI Grok/i });
+    expect(xaiOption).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('xAI API key set')).toBeInTheDocument();
+
+    // Switching away then back exercises the xai PATCH path.
+    const openaiOption = screen.getByRole('radio', { name: /OpenAI Whisper/i });
+    fireEvent.click(openaiOption);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/config',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ transcriptionProvider: 'openai' }),
+        }),
+      ),
+    );
+  });
+
   it('renders the current provider and per-provider key status from config', async () => {
     mockFetchByUrl([
       {

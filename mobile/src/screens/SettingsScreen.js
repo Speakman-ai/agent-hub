@@ -271,6 +271,17 @@ function OrganizationsSection() {
 
 const PLUGIN_API_KEYS = [
   {
+    id: 'xai',
+    label: 'xAI API key',
+    placeholder: 'xai-...',
+    description: 'Used for voice transcription (the default provider).',
+    load: () => api.getConfig(),
+    loadConfigured: (body) => !!body.xaiApiKeySet || !!body.xaiApiKey,
+    save: (value) => api.updateConfig({ xaiApiKey: value }),
+    clear: () => api.updateConfig({ xaiApiKey: '' }),
+    savedConfigured: (body) => !!body?.updated?.xaiApiKey,
+  },
+  {
     id: 'gemini',
     label: 'Gemini API key',
     placeholder: 'AIza...',

@@ -121,7 +121,10 @@ describe('PATCH /api/config — engine bin paths', () => {
   });
 
   it('uses the saved openaiApiKey for the already-mounted transcription route', async () => {
-    await request.patch('/api/config').send({ openaiApiKey: 'sk-openai-live' }).expect(200);
+    await request
+      .patch('/api/config')
+      .send({ openaiApiKey: 'sk-openai-live', transcriptionProvider: 'openai' })
+      .expect(200);
 
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -152,12 +155,28 @@ describe('PATCH /api/config — engine bin paths', () => {
     }
   });
 
+  it('persists xaiApiKey, masks responses, and exposes configured status', async () => {
+    await request.patch('/api/config').send({ xaiApiKey: ' xai-live-key ' }).expect(200);
+
+    const configured = await request.get('/api/config').expect(200);
+    expect(readFileConfig().xaiApiKey).toBe('xai-live-key');
+    expect(configured.body.xaiApiKeySet).toBe(true);
+
+    const cleared = await request.patch('/api/config').send({ xaiApiKey: '' }).expect(200);
+    expect(cleared.body.updated).toEqual({ xaiApiKey: null });
+    expect(readFileConfig().xaiApiKey).toBeNull();
+
+    const afterClear = await request.get('/api/config').expect(200);
+    expect(afterClear.body.xaiApiKeySet).toBe(false);
+  });
+
   it('persists transcriptionProvider and exposes it (plus key status) on GET', async () => {
-    // Defaults to 'openai'; the settings page surfaces it so the selector can
+    // Defaults to 'xai'; the settings page surfaces it so the selector can
     // render the current choice.
     const initial = await request.get('/api/config').expect(200);
-    expect(['openai', 'gemini']).toContain(initial.body.transcriptionProvider);
+    expect(['xai', 'openai', 'gemini']).toContain(initial.body.transcriptionProvider);
     expect(typeof initial.body.geminiApiKeySet).toBe('boolean');
+    expect(typeof initial.body.xaiApiKeySet).toBe('boolean');
 
     const saved = await request
       .patch('/api/config')
@@ -182,13 +201,23 @@ describe('PATCH /api/config — engine bin paths', () => {
     await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
   });
 
+  it('accepts xai as the transcriptionProvider', async () => {
+    const res = await request
+      .patch('/api/config')
+      .send({ transcriptionProvider: '  XAI  ' })
+      .expect(200);
+    expect(res.body.updated).toEqual({ transcriptionProvider: 'xai' });
+    expect(readFileConfig().transcriptionProvider).toBe('xai');
+    await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
+  });
+
   it('rejects an invalid transcriptionProvider with 400', async () => {
     const res = await request
       .patch('/api/config')
       .send({ transcriptionProvider: 'deepgram' })
       .expect(400);
     expect(res.body.error).toMatch(/Invalid transcriptionProvider/i);
-    expect(res.body.accepted).toEqual(['openai', 'gemini']);
+    expect(res.body.accepted).toEqual(['xai', 'openai', 'gemini']);
   });
 
   it('still rejects updates with no allowlisted fields', async () => {

@@ -2100,12 +2100,16 @@ components:
         transcriptionProvider:
           type: string
           enum:
+            - xai
             - openai
             - gemini
-          description: Provider used by /api/transcribe for chat voice transcription. `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.
+          description: Provider used by /api/transcribe for chat voice transcription. `xai` (default) uses the xAI Grok speech-to-text endpoint; `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.
         geminiApiKeySet:
           type: boolean
           description: Whether the host Gemini API key is configured (used for Gemini transcription).
+        xaiApiKeySet:
+          type: boolean
+          description: Whether the host xAI (Grok) API key is configured (used for the default xAI transcription provider).
         personalOAuth:
           type: object
           properties:
@@ -2175,6 +2179,7 @@ components:
         - openaiApiKeySet
         - transcriptionProvider
         - geminiApiKeySet
+        - xaiApiKeySet
         - personalOAuth
         - botGithubToken
         - botGithubTokenSet

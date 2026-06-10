@@ -2334,13 +2334,18 @@ export interface PersonalOAuthConfig {
 }
 
 /**
- * Voice-transcription providers selectable for `/api/transcribe`. `'openai'`
+ * Voice-transcription providers selectable for `/api/transcribe`. `'xai'` (the
+ * default) uses the xAI Grok speech-to-text endpoint (`/v1/stt`); `'openai'`
  * uses OpenAI Whisper; `'gemini'` uses the Gemini audio-understanding path.
  */
-export type TranscriptionProvider = 'openai' | 'gemini';
+export type TranscriptionProvider = 'xai' | 'openai' | 'gemini';
 
 /** Allowed transcription providers, exported for runtime validation. */
-export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = ['openai', 'gemini'];
+export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = [
+  'xai',
+  'openai',
+  'gemini',
+];
 
 export interface AppConfig {
   port: number;
@@ -2419,8 +2424,16 @@ export interface AppConfig {
    */
   geminiApiKey: string | null;
   /**
+   * Host-wide xAI (Grok) API key. Powers the default `/api/transcribe`
+   * provider via the xAI speech-to-text endpoint (`POST https://api.x.ai/v1/stt`).
+   * Not an agent-engine credential. Configure via `xaiApiKey` in config.json,
+   * `PATCH /api/config`, or env `XAI_API_KEY`.
+   */
+  xaiApiKey: string | null;
+  /**
    * Which provider `/api/transcribe` uses for chat-composer voice
-   * transcription. `'openai'` (the default) calls OpenAI Whisper with
+   * transcription. `'xai'` (the default) calls the xAI Grok speech-to-text
+   * endpoint with `xaiApiKey`; `'openai'` calls OpenAI Whisper with
    * `openaiApiKey`; `'gemini'` calls the Gemini audio-understanding path with
    * `geminiApiKey`. Selectable on the settings page (Account → Plugin API
    * keys). The chosen provider's key must be configured or `/api/transcribe`

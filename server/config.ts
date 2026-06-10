@@ -383,14 +383,16 @@ const config: AppConfig = {
   // titles; `geminiApiKey` backs wiki embeddings + the Gemini CLI.
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
-  // Which provider /api/transcribe uses. Anything other than 'gemini' falls
-  // back to 'openai' so a typo never disables transcription silently.
-  transcriptionProvider:
-    String(resolve('TRANSCRIPTION_PROVIDER', 'transcriptionProvider', 'openai'))
+  xaiApiKey: resolve('XAI_API_KEY', 'xaiApiKey', null),
+  // Which provider /api/transcribe uses. Recognized values are 'xai' (default),
+  // 'openai', and 'gemini'. Anything unknown falls back to the default so a typo
+  // never disables transcription silently.
+  transcriptionProvider: ((): 'xai' | 'openai' | 'gemini' => {
+    const v = String(resolve('TRANSCRIPTION_PROVIDER', 'transcriptionProvider', 'xai'))
       .trim()
-      .toLowerCase() === 'gemini'
-      ? 'gemini'
-      : 'openai',
+      .toLowerCase();
+    return v === 'openai' ? 'openai' : v === 'gemini' ? 'gemini' : 'xai';
+  })(),
   // Optional Codex CLI profile name — when set, every `codex exec` spawn
   // gets `--profile <name>` appended so the CLI loads the matching profile
   // from `~/.codex/config.toml`. Empty / whitespace is treated as unset by

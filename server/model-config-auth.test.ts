@@ -40,6 +40,7 @@ function makeConfig(): AppConfig {
     apiKey: null,
     openaiApiKey: null,
     geminiApiKey: null,
+    xaiApiKey: null,
     transcriptionProvider: 'openai',
     codexProfile: null,
     codexDangerBypass: true,

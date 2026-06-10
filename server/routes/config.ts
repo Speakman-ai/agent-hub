@@ -234,6 +234,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       // `*Set` flags let the UI warn when the chosen provider's key is missing.
       transcriptionProvider: config.transcriptionProvider,
       geminiApiKeySet: !!config.geminiApiKey,
+      xaiApiKeySet: !!config.xaiApiKey,
       // Wildcard subdomain base for "subdomain preview" mode (Phase 4
       // of the session-previews RFC). When non-empty, the UI builds
       // iframe URLs as `<sessionId>.<base>` so the app sees itself at
@@ -304,6 +305,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'port',
       'apiKey',
       'openaiApiKey',
+      'xaiApiKey',
       'transcriptionProvider',
       'publicUrl',
       'codexDangerBypass',
@@ -330,17 +332,28 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       }
     }
     if (updates.transcriptionProvider !== undefined) {
-      // Only 'openai' | 'gemini' are valid. Reject anything else with 400 so a
-      // bad value can't silently land in config.json.
+      // Only 'xai' | 'openai' | 'gemini' are valid. Reject anything else with
+      // 400 so a bad value can't silently land in config.json.
       const raw = updates.transcriptionProvider;
       const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-      if (normalized === 'openai' || normalized === 'gemini') {
+      if (normalized === 'xai' || normalized === 'openai' || normalized === 'gemini') {
         updates.transcriptionProvider = normalized;
       } else {
         return res.status(400).json({
           error: 'Invalid transcriptionProvider',
-          accepted: ['openai', 'gemini'],
+          accepted: ['xai', 'openai', 'gemini'],
         });
+      }
+    }
+    if (updates.xaiApiKey !== undefined) {
+      const raw = updates.xaiApiKey;
+      if (raw == null) {
+        updates.xaiApiKey = null;
+      } else if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        updates.xaiApiKey = trimmed.length > 0 ? trimmed : null;
+      } else {
+        delete updates.xaiApiKey;
       }
     }
     if (updates.codexProfile !== undefined) {
@@ -413,7 +426,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       updated: Object.fromEntries(
         Object.entries(updates).map(([key, value]) => [
           key,
-          key === 'openaiApiKey' ? (value ? '••••••••' : null) : value,
+          key === 'openaiApiKey' || key === 'xaiApiKey' ? (value ? '••••••••' : null) : value,
         ]),
       ),
     });

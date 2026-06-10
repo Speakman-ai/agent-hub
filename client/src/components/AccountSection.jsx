@@ -337,6 +337,17 @@ export default function AccountSection() {
 
 const PLUGIN_API_KEYS = [
   {
+    id: 'xai',
+    label: 'xAI API key',
+    placeholder: 'xai-...',
+    description: 'Used for voice transcription (the default provider).',
+    loadConfigured: (body) => !!body.xaiApiKeySet || !!body.xaiApiKey,
+    load: () => api.getConfig(),
+    save: (value) => api.updateConfig({ xaiApiKey: value }),
+    clear: () => api.updateConfig({ xaiApiKey: '' }),
+    savedConfigured: (body) => !!body?.updated?.xaiApiKey,
+  },
+  {
     id: 'gemini',
     label: 'Gemini API key',
     placeholder: 'AIza...',
@@ -487,9 +498,17 @@ function PluginApiKeyRow({ item }) {
 
 const TRANSCRIPTION_PROVIDERS = [
   {
+    id: 'xai',
+    label: 'xAI Grok',
+    description:
+      'Uses the xAI Grok speech-to-text model. xAI does not accept WebM (what Chrome/Electron record), so those recordings fall back to OpenAI Whisper when an OpenAI key is set. Recommended (default).',
+    keyField: 'xaiApiKeySet',
+    keyLabel: 'xAI API key',
+  },
+  {
     id: 'openai',
     label: 'OpenAI Whisper',
-    description: 'Works in every browser and for all recorded formats. Recommended.',
+    description: 'Works in every browser and for all recorded formats.',
     keyField: 'openaiApiKeySet',
     keyLabel: 'OpenAI API key',
   },
@@ -503,6 +522,10 @@ const TRANSCRIPTION_PROVIDERS = [
   },
 ];
 
+/** Recognized transcription provider ids; anything else falls back to the default. */
+const KNOWN_TRANSCRIPTION_PROVIDERS = TRANSCRIPTION_PROVIDERS.map((p) => p.id);
+const DEFAULT_TRANSCRIPTION_PROVIDER = 'xai';
+
 /**
  * Lets an admin choose which provider /api/transcribe uses for chat voice
  * transcription. Persists to host config via PATCH /api/config and warns when
@@ -510,8 +533,12 @@ const TRANSCRIPTION_PROVIDERS = [
  */
 export function TranscriptionProviderRow() {
   const [loading, setLoading] = useState(true);
-  const [provider, setProvider] = useState('openai');
-  const [keyStatus, setKeyStatus] = useState({ openaiApiKeySet: false, geminiApiKeySet: false });
+  const [provider, setProvider] = useState(DEFAULT_TRANSCRIPTION_PROVIDER);
+  const [keyStatus, setKeyStatus] = useState({
+    xaiApiKeySet: false,
+    openaiApiKeySet: false,
+    geminiApiKeySet: false,
+  });
   const [saving, setSaving] = useState(null);
   const [status, setStatus] = useState(null);
 
@@ -519,8 +546,13 @@ export function TranscriptionProviderRow() {
     setStatus(null);
     try {
       const cfg = await api.getConfig();
-      setProvider(cfg?.transcriptionProvider === 'gemini' ? 'gemini' : 'openai');
+      setProvider(
+        KNOWN_TRANSCRIPTION_PROVIDERS.includes(cfg?.transcriptionProvider)
+          ? cfg.transcriptionProvider
+          : DEFAULT_TRANSCRIPTION_PROVIDER,
+      );
       setKeyStatus({
+        xaiApiKeySet: !!cfg?.xaiApiKeySet || !!cfg?.xaiApiKey,
         openaiApiKeySet: !!cfg?.openaiApiKeySet || !!cfg?.openaiApiKey,
         geminiApiKeySet: !!cfg?.geminiApiKeySet,
       });
@@ -579,6 +611,9 @@ export function TranscriptionProviderRow() {
                 type="button"
                 role="radio"
                 aria-checked={selected}
+                // Pin the accessible name to the provider label so it stays
+                // stable even when a description mentions another provider.
+                aria-label={opt.label}
                 disabled={!!saving}
                 onClick={() => choose(opt.id)}
                 className={`w-full text-left rounded-lg border px-3 py-2 transition-colors disabled:opacity-60 ${
