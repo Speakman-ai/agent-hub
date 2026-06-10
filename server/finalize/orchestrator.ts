@@ -173,6 +173,14 @@ export interface PushAndCreatePrArgs {
   headSha: string;
   card: KanbanCardRow;
   project: Project;
+  /**
+   * Session that owns this push. When set, the push/PR step prefers the
+   * session owner's personal GitHub token over the org-owner token, so the
+   * push and `gh pr create` are attributed to the triggering user rather than
+   * an arbitrary org Owner. Falls back to the org owner when the session owner
+   * has no usable token (e.g. no connected GitHub identity).
+   */
+  sessionId?: string | null;
   env?: NodeJS.ProcessEnv;
 }
 

@@ -11,14 +11,29 @@ vi.mock('child_process', () => ({
 
 vi.mock('../auto-git.js', () => ({
   resolveOrgOwnerGithubToken: vi.fn().mockResolvedValue('ghs_fake_token'),
-  autoGitChildEnv: vi.fn().mockReturnValue({ PATH: '/usr/bin', GH_TOKEN: 'ghs_fake_token' }),
+  resolveAutoGitGithubToken: vi.fn().mockResolvedValue(null),
+  // Reflect the chosen token into the env so tests can assert *which* token
+  // (session owner vs org owner) the push authenticated with.
+  autoGitChildEnv: vi.fn((token: string | null) => ({ PATH: '/usr/bin', GH_TOKEN: token })),
 }));
 
 import { execFile } from 'child_process';
+import {
+  resolveOrgOwnerGithubToken,
+  resolveAutoGitGithubToken,
+  autoGitChildEnv,
+} from '../auto-git.js';
 import { createPushAndCreatePr, __test } from './push-and-create-pr.js';
 import type { KanbanCardRow, Project } from '../types.js';
 
 const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
+const mockResolveOrgOwnerGithubToken = resolveOrgOwnerGithubToken as unknown as ReturnType<
+  typeof vi.fn
+>;
+const mockResolveAutoGitGithubToken = resolveAutoGitGithubToken as unknown as ReturnType<
+  typeof vi.fn
+>;
+const mockAutoGitChildEnv = autoGitChildEnv as unknown as ReturnType<typeof vi.fn>;
 
 function mkCard(): KanbanCardRow {
   return {
@@ -268,5 +283,115 @@ describe('createPushAndCreatePr', () => {
         project: mkProject(),
       }),
     ).rejects.toThrow(/no parseable PR URL/);
+  });
+});
+
+/**
+ * Regression for card 2657c2a7 — Finalize push must be attributed to the
+ * user who triggered it, not an arbitrary org Owner. Before the fix the push
+ * always resolved the org-owner token, so a non-owner (e.g. "Kevin") pushed
+ * and opened PRs as the owner ("Speakmanra"). The push now prefers the
+ * session owner's personal token, falling back to the org owner only when the
+ * session owner has no usable GitHub identity.
+ */
+describe('createPushAndCreatePr — GitHub identity attribution', () => {
+  // After the push, `gh pr list` reports an open PR so the flow short-circuits
+  // (push + list only) — keeps these tests focused on token resolution.
+  function mockExistingPr(): void {
+    mockExecFile.mockImplementation(
+      (
+        cmd,
+        args,
+        _opts,
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, { stdout: '[{"url":"https://github.com/acme/proj/pull/9"}]\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    mockExecFile.mockReset();
+    mockResolveOrgOwnerGithubToken.mockReset().mockResolvedValue('ghs_org_owner_token');
+    mockResolveAutoGitGithubToken.mockReset().mockResolvedValue(null);
+    mockAutoGitChildEnv
+      .mockReset()
+      .mockImplementation((token: string | null) => ({ PATH: '/usr/bin', GH_TOKEN: token }));
+    mockExistingPr();
+  });
+
+  it('pushes with the session owner token when the session owner has a connected GitHub identity', async () => {
+    mockResolveAutoGitGithubToken.mockResolvedValue('ghs_kevin_token');
+
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await push({
+      runId: 'run-kevin',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/kevin',
+      baseBranch: 'main',
+      headSha: 'deadbeef',
+      card: mkCard(),
+      project: mkProject(),
+      sessionId: 'sess-kevin',
+    });
+
+    // Session owner's token is resolved for this session...
+    expect(mockResolveAutoGitGithubToken).toHaveBeenCalledWith('sess-kevin', expect.anything());
+    // ...and the org-owner token is never consulted when a session token exists.
+    expect(mockResolveOrgOwnerGithubToken).not.toHaveBeenCalled();
+    // The git push runs with Kevin's token, so GitHub attributes it to Kevin.
+    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(pushOpts.env.GH_TOKEN).toBe('ghs_kevin_token');
+  });
+
+  it('falls back to the org owner token when the session owner has no usable token', async () => {
+    mockResolveAutoGitGithubToken.mockResolvedValue(null);
+
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await push({
+      runId: 'run-fallback',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/fallback',
+      baseBranch: 'main',
+      headSha: 'deadbeef',
+      card: mkCard(),
+      project: mkProject(),
+      sessionId: 'sess-no-token',
+    });
+
+    expect(mockResolveAutoGitGithubToken).toHaveBeenCalledWith('sess-no-token', expect.anything());
+    expect(mockResolveOrgOwnerGithubToken).toHaveBeenCalledTimes(1);
+    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(pushOpts.env.GH_TOKEN).toBe('ghs_org_owner_token');
+  });
+
+  it('uses the org owner token when there is no session scope at all', async () => {
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await push({
+      runId: 'run-no-session',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/no-session',
+      baseBranch: 'main',
+      headSha: 'deadbeef',
+      card: mkCard(),
+      project: mkProject(),
+      // no sessionId
+    });
+
+    // No session scope → don't even attempt per-user resolution.
+    expect(mockResolveAutoGitGithubToken).not.toHaveBeenCalled();
+    expect(mockResolveOrgOwnerGithubToken).toHaveBeenCalledTimes(1);
+    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(pushOpts.env.GH_TOKEN).toBe('ghs_org_owner_token');
   });
 });

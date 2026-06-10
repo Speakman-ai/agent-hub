@@ -5,8 +5,11 @@
  * `git push --force-with-lease -u origin <branch>` + `gh pr create` pair.
  *
  * v0 contract (intentionally minimal):
- *   - Auth via {@link resolveOrgOwnerGithubToken}, shaped with
- *     {@link autoGitChildEnv} (token scrub + helper isolation, see auto-git.ts).
+ *   - Auth prefers the session owner's personal token
+ *     ({@link resolveAutoGitGithubToken}), falling back to the org-owner token
+ *     ({@link resolveOrgOwnerGithubToken}) when the session owner has no usable
+ *     GitHub identity — shaped with {@link autoGitChildEnv} (token scrub +
+ *     helper isolation, see auto-git.ts).
  *   - Title and body are derived from the implementation commit(s), with the
  *     owning kanban card preserved as original-task context.
  *   - Existing PR branches are updated in place. After the push succeeds,
@@ -18,7 +21,11 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { AppConfig } from '../types.js';
-import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
+import {
+  autoGitChildEnv,
+  resolveAutoGitGithubToken,
+  resolveOrgOwnerGithubToken,
+} from '../auto-git.js';
 import type {
   PushAndCreatePrArgs,
   PushAndCreatePrFn,
@@ -223,7 +230,18 @@ export function createPushAndCreatePr(deps: {
   config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
 }): PushAndCreatePrFn {
   return async function pushAndCreatePr(args: PushAndCreatePrArgs): Promise<PushAndCreatePrResult> {
-    const token = await resolveOrgOwnerGithubToken(deps.config, args.project.githubRepo ?? null);
+    // Prefer the session owner's personal GitHub token so the push and the
+    // `gh pr create` are attributed to the user who triggered Finalize — not
+    // an arbitrary org Owner. Falls back to the org-owner token only when the
+    // session owner has no usable token (no connected GitHub identity, or no
+    // session scope at all). Mirrors the resolution in finalize-git-env.ts so
+    // every Finalize git phase authenticates as the same identity.
+    const sessionToken = args.sessionId
+      ? await resolveAutoGitGithubToken(args.sessionId, deps.config)
+      : null;
+    const token =
+      sessionToken ??
+      (await resolveOrgOwnerGithubToken(deps.config, args.project.githubRepo ?? null));
     const env = autoGitChildEnv(token);
 
     // git push --force-with-lease -u origin <branch>

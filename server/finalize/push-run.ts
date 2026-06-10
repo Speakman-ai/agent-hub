@@ -209,6 +209,7 @@ async function executePush(args: {
       headSha: validatedHeadSha,
       card,
       project,
+      sessionId: session.id,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -547,6 +548,7 @@ export async function runSessionPushToGithub(
       headSha: currentHead,
       card,
       project,
+      sessionId: session.id,
     });
     if (!pushResult.prUrl) {
       console.error(
