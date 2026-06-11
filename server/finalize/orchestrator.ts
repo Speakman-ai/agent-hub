@@ -1595,6 +1595,7 @@ export async function runFinalize(
             runId,
             validatedHeadSha: gateOutcome.validatedHeadSha,
             round: loopCount,
+            host: opts.project.gitHost === 'agenthub' ? 'agenthub' : 'github',
           });
           // Push/merge automation only fires on full validation — auto-pushing
           // a single-phase run would ship code that skipped the other gate. The

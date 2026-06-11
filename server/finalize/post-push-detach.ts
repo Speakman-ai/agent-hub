@@ -85,7 +85,12 @@ import { pickDoneColumn } from '../card-auto-close.js';
  * directly today, so the comment is the only place a human-in-the-loop
  * sees the difference).
  */
-export type PostPushTriggerSource = 'ui_button' | 'agent_block';
+/**
+ * `git_push` is included for type-compatibility with `FinalizeRunRow`
+ * (push-CI rows reuse the table) but can never reach the post-push
+ * detach path — push-CI runs have no push step and no real card.
+ */
+export type PostPushTriggerSource = 'ui_button' | 'agent_block' | 'git_push' | 'pr_push';
 
 export interface PostPushDetachDeps {
   stmts: Pick<

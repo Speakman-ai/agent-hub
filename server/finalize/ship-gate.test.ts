@@ -156,7 +156,8 @@ describe('evaluateFinalizeShipGate', () => {
     expect(gate.allowed).toBe(false);
     expect(gate.code).toBe('must_use_finalize');
     expect(gate.run_id).toBe('run-2');
-    expect(gate.message).toContain('Push to GitHub');
+    // Host-neutral wording — the Push button itself carries the host label.
+    expect(gate.message).toContain('click **Push** on the session');
   });
 
   it('gates on a failed re-run even when an earlier attempt reached ready_to_push', async () => {

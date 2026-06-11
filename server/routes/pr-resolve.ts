@@ -106,6 +106,7 @@ export function buildPrContextHeader(
   checks: CheckRecord[],
   comments: CommentRecord[],
   repoFullName: string,
+  opts: { native?: boolean; headBranch?: string | null } = {},
 ): string {
   const lines: string[] = [];
   lines.push(`## PR Context`);
@@ -135,16 +136,29 @@ export function buildPrContextHeader(
     lines.push('');
     lines.push(`## Setup — required first step`);
     lines.push('');
-    lines.push(
-      'This session runs in a **shallow** clone (`--depth 1`). A shallow clone is what makes `gh pr checkout` flaky — the PR head and the base branch share no history locally, so the checkout, tracking setup, and any rebase against the base fail or behave erratically. Deepen history first, then check out the PR branch:',
-    );
-    lines.push('');
-    lines.push('```bash');
-    lines.push('# 1. Unshallow so the PR head and base branch share history.');
-    lines.push('git fetch --unshallow origin 2>/dev/null || git fetch --depth=1000 origin');
-    lines.push('# 2. Check out the PR head branch (retry once after the fetch if it fails).');
-    lines.push(`gh pr checkout ${prNumber} --force`);
-    lines.push('```');
+    if (opts.native && opts.headBranch) {
+      // Agent Hub-hosted repo: origin IS the Hub — no `gh` involved. Plain
+      // git is sufficient to land on the PR's head branch.
+      lines.push(
+        'This repository is hosted on Agent Hub (origin is the Hub repo, not GitHub — do not use `gh`). Deepen history, then check out the PR head branch so your commits append to the existing PR:',
+      );
+      lines.push('');
+      lines.push('```bash');
+      lines.push('git fetch --unshallow origin 2>/dev/null || git fetch --depth=1000 origin');
+      lines.push(`git checkout -B "${opts.headBranch}" "origin/${opts.headBranch}"`);
+      lines.push('```');
+    } else {
+      lines.push(
+        'This session runs in a **shallow** clone (`--depth 1`). A shallow clone is what makes `gh pr checkout` flaky — the PR head and the base branch share no history locally, so the checkout, tracking setup, and any rebase against the base fail or behave erratically. Deepen history first, then check out the PR branch:',
+      );
+      lines.push('');
+      lines.push('```bash');
+      lines.push('# 1. Unshallow so the PR head and base branch share history.');
+      lines.push('git fetch --unshallow origin 2>/dev/null || git fetch --depth=1000 origin');
+      lines.push('# 2. Check out the PR head branch (retry once after the fetch if it fails).');
+      lines.push(`gh pr checkout ${prNumber} --force`);
+      lines.push('```');
+    }
     lines.push('');
     lines.push(
       "This positions your local checkout on the PR's head branch with enough history that commits append to the existing PR and conflict resolution / rebase against the base branch succeeds. Without this step, your commits land on a fresh session branch and will not be pushed to the PR when the session ends.",
@@ -200,8 +214,9 @@ export function buildResolvePrompt(
   comments: CommentRecord[],
   repoFullName: string,
   kinds: AutofixKind[],
+  opts: { native?: boolean; headBranch?: string | null } = {},
 ): string {
-  const header = buildPrContextHeader(pr, reviews, checks, comments, repoFullName);
+  const header = buildPrContextHeader(pr, reviews, checks, comments, repoFullName, opts);
   const sections = [header, ...kinds.map((k) => loadAutofixTemplate(k))];
   return sections.join('\n\n---\n\n');
 }
@@ -216,8 +231,9 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
+      const native = project.gitHost === 'agenthub' && Boolean(deps.nativePr);
       const repo = parseRepoFullName(project.githubRepo as string | undefined);
-      if (!repo) {
+      if (!native && !repo) {
         return res.status(400).json({
           error: 'Project has no githubRepo configured',
           hint: 'Set project.githubRepo to "owner/repo" to enable the Resolve PR action.',
@@ -237,11 +253,17 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: `Unknown agent: ${agentId}` });
 
-      // Fetch PR snapshot — bubbles up as 502 on failure so the UI can retry.
+      // Fetch PR snapshot — Hub-hosted projects read the native PR
+      // in-process; GitHub projects fetch via the user's token (502 on
+      // failure so the UI can retry).
       let detail;
       try {
-        const userToken = await resolveUserToken(req, config);
-        detail = await fetchPrDetail(config, repo, num, { userAccessToken: userToken });
+        if (native) {
+          detail = await deps.nativePr!.getDetail({ project, number: num });
+        } else {
+          const userToken = await resolveUserToken(req, config);
+          detail = await fetchPrDetail(config, repo!, num, { userAccessToken: userToken });
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         // If the fetch failed with a 404-ish message, surface that as 404
@@ -267,8 +289,13 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       // for whatever it discovers locally.
       const promptKinds = detected.length > 0 ? detected : [...AUTOFIX_KINDS];
 
-      const repoFullName = `${repo.owner}/${repo.repo}`;
-      const prompt = buildResolvePrompt(pr, reviews, checks, comments, repoFullName, promptKinds);
+      const repoFullName = native
+        ? `${project.id} (Agent Hub-hosted)`
+        : `${repo!.owner}/${repo!.repo}`;
+      const prompt = buildResolvePrompt(pr, reviews, checks, comments, repoFullName, promptKinds, {
+        native,
+        headBranch: typeof pr.head === 'string' ? pr.head : null,
+      });
 
       const taskId = uuidv4();
       const sessionId = uuidv4();

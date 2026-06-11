@@ -391,7 +391,7 @@ export async function triggerFinalizeRun(
           run_id: outcome.runId,
           status: 'ready_to_push',
           message:
-            'Checks already passed for this commit. Click **Push to GitHub** on the session, or cancel and re-run Finalize after new changes.',
+            'Checks already passed for this commit. Click **Push** on the session, or cancel and re-run Finalize after new changes.',
         },
       };
     case 'in_flight':

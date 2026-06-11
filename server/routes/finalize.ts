@@ -476,7 +476,14 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       if (!sessionId) {
         return res.json({ run_id: runId, step_index: stepIndex, lines: [] });
       }
-      if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+      // Push-CI runs (trigger_source 'git_push') log under a sentinel
+      // session with no owner — authorize via project access (this route
+      // sits behind the project visibility gate) instead of session
+      // ownership, which would 404 for everyone.
+      if (
+        run.trigger_source !== 'git_push' &&
+        !userCanReadSession(req as AuthenticatedRequest, sessionId)
+      ) {
         return res.status(404).json({ error: 'Session not found' });
       }
 

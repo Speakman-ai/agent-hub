@@ -62,8 +62,14 @@ export const FINALIZE_TIMEOUT_MIN_MINUTES = 1;
 /** Default for `timeout_minutes` when the field is omitted entirely. */
 export const FINALIZE_TIMEOUT_DEFAULT_MINUTES = FINALIZE_BUDGET_DEFAULT_SECONDS / 60;
 
-/** Triggers the orchestrator recognises at v1. */
-export const SUPPORTED_TRIGGERS = ['finalize', 'manual'] as const;
+/**
+ * Triggers the parser accepts. `finalize`/`manual` gate the Finalize
+ * orchestrator; `push` marks configs intended for "CI on push" against
+ * Agent Hub-hosted repos (server/git-host/push-ci.ts) — actual gating is
+ * the project-level `ciOnPush.enabled` toggle, the trigger value just
+ * keeps such configs parseable.
+ */
+export const SUPPORTED_TRIGGERS = ['finalize', 'manual', 'push'] as const;
 export type CiTrigger = (typeof SUPPORTED_TRIGGERS)[number];
 
 /** Top-level keys the parser accepts. Anything else fails closed. */

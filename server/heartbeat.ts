@@ -18,6 +18,7 @@ import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
 import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
+import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { resolveCronEngine } from './cron-engine.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
 import type {
@@ -162,6 +163,13 @@ interface RunClaudeOptions {
    * When set, merges decrypted per-user skill credentials into the spawn env
    * (same contract as interactive chat).
    */
+  /**
+   * Fully-resolved spawn env override. When set, runClaude uses it as the
+   * child env verbatim instead of building one (callers that resolved
+   * per-user CLI credentials themselves, e.g. via
+   * `resolveSessionCliSpawnEnv`). `skillCredentialMerge` still applies.
+   */
+  spawnEnv?: NodeJS.ProcessEnv;
   skillCredentialMerge?: {
     ownerId: string | null;
     agentId: string;
@@ -225,9 +233,11 @@ export function runClaude(
     let errorOutput = '';
     const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
-    const heartbeatEnv = buildSpawnEnv(config, {
-      userId: options.skillCredentialMerge?.ownerId ?? null,
-    });
+    const heartbeatEnv =
+      options.spawnEnv ??
+      buildSpawnEnv(config, {
+        userId: options.skillCredentialMerge?.ownerId ?? null,
+      });
     if (options.skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
       // sessionId: null — heartbeats are scheduled, not driven by an
@@ -380,6 +390,7 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       hbProject?.repoUrl ?? null,
       hbProject?.id,
       hbProject?.githubRepo ?? null,
+      hbProject ? hostedBarePathForProject(hbProject) : null,
     );
     const isDocsAgent = agent.role === 'docs';
     const timeoutMs =
@@ -593,6 +604,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       cronProject?.repoUrl ?? null,
       cronProject?.id,
       cronProject?.githubRepo ?? null,
+      cronProject ? hostedBarePathForProject(cronProject) : null,
     );
     const cronSkillAgentId = cronProject
       ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)

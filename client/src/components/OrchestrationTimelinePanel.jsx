@@ -177,16 +177,29 @@ export default function OrchestrationTimelinePanel({ entries, sessionId, compact
             <div className="pb-2 mb-2 border-b border-gray-700/50">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <GitPullRequest size={12} className="text-gray-400 shrink-0" />
-                <a
-                  href={prSummary.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sky-400 hover:text-sky-300 text-[11px] font-medium truncate"
-                  title={prSummary.title || prSummary.url}
-                >
-                  #{prSummary.prNum}
-                  {prSummary.title ? ` · ${prSummary.title}` : ''}
-                </a>
+                {/^https?:\/\//i.test(prSummary.url || '') ? (
+                  <a
+                    href={prSummary.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-400 hover:text-sky-300 text-[11px] font-medium truncate"
+                    title={prSummary.title || prSummary.url}
+                  >
+                    #{prSummary.prNum}
+                    {prSummary.title ? ` · ${prSummary.title}` : ''}
+                  </a>
+                ) : (
+                  /* Agent Hub-native PR (relative client route) — no external
+                     tab to open; the linked-PR card in the session sidebar is
+                     the in-app navigation surface. */
+                  <span
+                    className="text-gray-200 text-[11px] font-medium truncate"
+                    title={prSummary.title || prSummary.url}
+                  >
+                    #{prSummary.prNum}
+                    {prSummary.title ? ` · ${prSummary.title}` : ''}
+                  </span>
+                )}
               </div>
 
               {/* State + review status pills */}

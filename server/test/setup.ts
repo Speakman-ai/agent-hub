@@ -34,6 +34,11 @@ if (!TEST_DATA_DIR.startsWith(os.tmpdir())) {
 // Override BEFORE the test file body imports anything from server/.
 process.env.AGENT_HUB_DATA_DIR = TEST_DATA_DIR;
 delete process.env.AGENT_HUB_API_KEY;
+// App-wired push-CI / PR-CI triggers (smart-HTTP onPush, native PR create
+// hooks) must never spawn the REAL finalize job runner in tests — it
+// would `docker run --privileged`. Engine tests inject a mock
+// `runJobPhase`, which bypasses this guard (see git-host/push-ci.ts).
+process.env.AGENT_HUB_DISABLE_PUSH_CI = '1';
 // Fresh deploy bootstrap env must not leak from the host (Agent Hub
 // sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
 // server boot, auth.json exists, and authMiddleware rejects unauthenticated

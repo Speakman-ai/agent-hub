@@ -124,6 +124,22 @@ describe('finalizeRunnerEnv', () => {
     expect(env.NODE_ENV).toBeUndefined();
     expect(env.FOO).toBe('bar');
   });
+
+  it('strips macOS TMPDIR/TMP/TEMP so Linux runners use their own tmp', () => {
+    // macOS hosts set TMPDIR=/var/folders/… — Cypress's installer (and
+    // anything honoring TMPDIR) fails with EACCES mkdir /var/folders inside
+    // the Ubuntu runner container.
+    const env = finalizeRunnerEnv({
+      TMPDIR: '/var/folders/zz/abc/T/',
+      TMP: '/var/folders/zz/abc/T/',
+      TEMP: '/var/folders/zz/abc/T/',
+      FOO: 'bar',
+    });
+    expect(env.TMPDIR).toBeUndefined();
+    expect(env.TMP).toBeUndefined();
+    expect(env.TEMP).toBeUndefined();
+    expect(env.FOO).toBe('bar');
+  });
 });
 
 describe('buildExecJobStepArgv', () => {

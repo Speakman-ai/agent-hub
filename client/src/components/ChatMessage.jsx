@@ -373,6 +373,8 @@ function ChatMessage({
   message,
   agentColor,
   projectId,
+  /** True when the project's repo is Agent Hub-hosted (gitHost 'agenthub'). */
+  hosted = false,
   onDequeue,
   onEditQueued,
   onEditInComposer,
@@ -422,10 +424,10 @@ function ChatMessage({
       return <FinalizeChecksRoundBlock message={message} projectId={projectId} />;
     }
     if (finalizeKind === 'finalize_ready_to_push') {
-      return <FinalizeReadyToPushBlock message={message} />;
+      return <FinalizeReadyToPushBlock message={message} hosted={hosted} />;
     }
     if (finalizeKind === 'finalize_run_terminal') {
-      return <FinalizeTerminalBlock message={message} />;
+      return <FinalizeTerminalBlock message={message} hosted={hosted} />;
     }
     if (finalizeKind === 'finalize_fix_dispatch') {
       return <FinalizeFixDispatchBlock message={message} />;

@@ -42,6 +42,12 @@ const RUNNER_ENV_BLOCKLIST = new Set([
   // missing cypress). CI runners must install dev deps — keep NODE_ENV unset.
   'NODE_ENV',
   'HOME',
+  // macOS Hub hosts set TMPDIR=/var/folders/… — a path that does not
+  // exist in the Linux runner. Tools that honor it (Cypress's installer,
+  // anything using os.tmpdir()) fail with EACCES mkdir /var/folders.
+  'TMPDIR',
+  'TMP',
+  'TEMP',
   'AGENT_HUB_DATA_DIR',
   'AGENT_HUB_HOST',
   'AGENT_HUB_PORT',

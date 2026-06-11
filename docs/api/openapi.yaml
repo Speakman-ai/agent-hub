@@ -9876,6 +9876,325 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BugReportsErrorResponse"
+  /api/projects/{projectId}/ci-runs:
+    get:
+      tags:
+        - Projects
+      summary: List past CI runs for a project (Runners page history)
+      description: Finalize runs and push-CI runs (trigger_source git_push) newest first, each with per-job results. Filter by trigger via ?trigger=.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - all
+              - ui_button
+              - agent_block
+              - git_push
+              - pr_push
+          required: false
+          name: trigger
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Run history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        branch:
+                          type: string
+                        head_sha:
+                          type: string
+                        status:
+                          type: string
+                        mode:
+                          type: string
+                        trigger_source:
+                          type: string
+                        failure_reason:
+                          type: string
+                          nullable: true
+                        started_at:
+                          type: number
+                        ended_at:
+                          type: number
+                          nullable: true
+                        jobs:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              job_id:
+                                type: string
+                              matrix_key:
+                                type: string
+                              state:
+                                type: string
+                              exit_code:
+                                type: number
+                                nullable: true
+                              started_at:
+                                type: number
+                                nullable: true
+                              ended_at:
+                                type: number
+                                nullable: true
+                            required:
+                              - job_id
+                              - matrix_key
+                              - state
+                              - exit_code
+                              - started_at
+                              - ended_at
+                      required:
+                        - id
+                        - branch
+                        - head_sha
+                        - status
+                        - mode
+                        - trigger_source
+                        - failure_reason
+                        - started_at
+                        - ended_at
+                        - jobs
+                required:
+                  - runs
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/ci-runs/{runId}:
+    get:
+      tags:
+        - Projects
+      summary: Single CI run with job and step rows
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Run detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      branch:
+                        type: string
+                      head_sha:
+                        type: string
+                      status:
+                        type: string
+                      mode:
+                        type: string
+                      trigger_source:
+                        type: string
+                      failure_reason:
+                        type: string
+                        nullable: true
+                      started_at:
+                        type: number
+                      ended_at:
+                        type: number
+                        nullable: true
+                      jobs:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            job_id:
+                              type: string
+                            matrix_key:
+                              type: string
+                            state:
+                              type: string
+                            exit_code:
+                              type: number
+                              nullable: true
+                            started_at:
+                              type: number
+                              nullable: true
+                            ended_at:
+                              type: number
+                              nullable: true
+                          required:
+                            - job_id
+                            - matrix_key
+                            - state
+                            - exit_code
+                            - started_at
+                            - ended_at
+                    required:
+                      - id
+                      - branch
+                      - head_sha
+                      - status
+                      - mode
+                      - trigger_source
+                      - failure_reason
+                      - started_at
+                      - ended_at
+                      - jobs
+                  steps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        step_index:
+                          type: number
+                        name:
+                          type: string
+                        state:
+                          type: string
+                        exit_code:
+                          type: number
+                          nullable: true
+                        started_at:
+                          type: number
+                          nullable: true
+                        ended_at:
+                          type: number
+                          nullable: true
+                        job_id:
+                          type: string
+                          nullable: true
+                        matrix_key:
+                          type: string
+                          nullable: true
+                      required:
+                        - step_index
+                        - name
+                        - state
+                        - exit_code
+                        - started_at
+                        - ended_at
+                        - job_id
+                        - matrix_key
+                required:
+                  - run
+                  - steps
+        "404":
+          description: Unknown project or run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/ci-runs/{runId}/rerun:
+    post:
+      tags:
+        - Projects
+      summary: Re-run a finished CI run (all jobs, or one job)
+      description: GitHub-style re-run for push / pr-ci runs against the SAME commit. Pass jobId to re-run a single job. Finalize runs are excluded (400) — re-run those via the Finalize button.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                jobId:
+                  type: string
+      responses:
+        "202":
+          description: Re-run queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Not a re-runnable CI run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Run still in progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/code-index:
     post:
       tags:
@@ -11542,6 +11861,681 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
+  /api/projects/{projectId}/git-host:
+    get:
+      tags:
+        - Projects
+      summary: Git hosting status for a project
+      description: "Reports whether the project uses Agent Hub-hosted git (gitHost: agenthub), the clone URL, default branch, import progress, and the GitHub mirror policy."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Hosting status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  cloneUrl:
+                    type: string
+                    nullable: true
+                  defaultBranch:
+                    type: string
+                    nullable: true
+                  branchCount:
+                    type: number
+                  importState:
+                    type: object
+                    nullable: true
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - importing
+                          - ready
+                          - error
+                      startedAt:
+                        type: number
+                      finishedAt:
+                        type: number
+                      error:
+                        type: string
+                      importedFrom:
+                        type: string
+                        enum:
+                          - github
+                          - cwd
+                          - empty
+                    required:
+                      - status
+                      - startedAt
+                  mirror:
+                    type: object
+                    nullable: true
+                    properties:
+                      enabled:
+                        type: boolean
+                      refs:
+                        type: string
+                        enum:
+                          - default-branch
+                          - all
+                    required:
+                      - enabled
+                      - refs
+                required:
+                  - enabled
+                  - cloneUrl
+                  - defaultBranch
+                  - branchCount
+                  - importState
+                  - mirror
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/enable:
+    post:
+      tags:
+        - Projects
+      summary: Enable Agent Hub git hosting for a project
+      description: Creates the hosted bare repo (importing from GitHub via repoUrl, from the project cwd, or empty), rewrites the project cwd origin to the hosted repo, and flips gitHost to agenthub. The import runs in the background — poll GET /git-host for progress. Requires Admin.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                importFrom:
+                  type: string
+                  enum:
+                    - auto
+                    - github
+                    - cwd
+                    - empty
+      responses:
+        "202":
+          description: Import started (or already running).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  cloneUrl:
+                    type: string
+                    nullable: true
+                  defaultBranch:
+                    type: string
+                    nullable: true
+                  branchCount:
+                    type: number
+                  importState:
+                    type: object
+                    nullable: true
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - importing
+                          - ready
+                          - error
+                      startedAt:
+                        type: number
+                      finishedAt:
+                        type: number
+                      error:
+                        type: string
+                      importedFrom:
+                        type: string
+                        enum:
+                          - github
+                          - cwd
+                          - empty
+                    required:
+                      - status
+                      - startedAt
+                  mirror:
+                    type: object
+                    nullable: true
+                    properties:
+                      enabled:
+                        type: boolean
+                      refs:
+                        type: string
+                        enum:
+                          - default-branch
+                          - all
+                    required:
+                      - enabled
+                      - refs
+                required:
+                  - enabled
+                  - cloneUrl
+                  - defaultBranch
+                  - branchCount
+                  - importState
+                  - mirror
+        "400":
+          description: Invalid importFrom.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Hosting already enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/disable:
+    post:
+      tags:
+        - Projects
+      summary: Disable Agent Hub git hosting for a project
+      description: Flips gitHost back to github and restores the project cwd origin to repoUrl when set. The hosted bare repo is retained on disk. Requires Admin.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Hosting disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  cloneUrl:
+                    type: string
+                    nullable: true
+                  defaultBranch:
+                    type: string
+                    nullable: true
+                  branchCount:
+                    type: number
+                  importState:
+                    type: object
+                    nullable: true
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - importing
+                          - ready
+                          - error
+                      startedAt:
+                        type: number
+                      finishedAt:
+                        type: number
+                      error:
+                        type: string
+                      importedFrom:
+                        type: string
+                        enum:
+                          - github
+                          - cwd
+                          - empty
+                    required:
+                      - status
+                      - startedAt
+                  mirror:
+                    type: object
+                    nullable: true
+                    properties:
+                      enabled:
+                        type: boolean
+                      refs:
+                        type: string
+                        enum:
+                          - default-branch
+                          - all
+                    required:
+                      - enabled
+                      - refs
+                required:
+                  - enabled
+                  - cloneUrl
+                  - defaultBranch
+                  - branchCount
+                  - importState
+                  - mirror
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Hosting not enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/branches:
+    get:
+      tags:
+        - Projects
+      summary: List branches of an Agent Hub-hosted repo
+      description: "Branches of the hosted bare repo, newest-commit first, with ahead/behind counts relative to the default branch. Repository-page surface; 404 unless the project uses gitHost: agenthub."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Branch list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  defaultBranch:
+                    type: string
+                    nullable: true
+                  branches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        sha:
+                          type: string
+                        subject:
+                          type: string
+                        author:
+                          type: string
+                        date:
+                          type: string
+                        isDefault:
+                          type: boolean
+                        ahead:
+                          type: number
+                          nullable: true
+                        behind:
+                          type: number
+                          nullable: true
+                      required:
+                        - name
+                        - sha
+                        - subject
+                        - author
+                        - date
+                        - isDefault
+                        - ahead
+                        - behind
+                required:
+                  - defaultBranch
+                  - branches
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/branches/{branch}:
+    delete:
+      tags:
+        - Projects
+      summary: Delete a branch from the hosted repo
+      description: Admin only. Refuses the default branch and branches backing an open native PR (409).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: branch
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid branch name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or unknown branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Default branch or backs an open PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/default-branch:
+    post:
+      tags:
+        - Projects
+      summary: Set the hosted repo's default branch (HEAD symref)
+      description: Admin only. Moves HEAD to the given existing branch and re-syncs branch protection (the pre-receive push block follows the default branch).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch:
+                  type: string
+              required:
+                - branch
+      responses:
+        "200":
+          description: Updated git-host status.
+        "400":
+          description: Invalid branch name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or unknown branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/recent-pushes:
+    get:
+      tags:
+        - Projects
+      summary: Recently pushed branches without an open pull request
+      description: Feeds the "Compare & pull request"-style banner on the Pulls page. In-memory, ~2h window; excludes the default branch and branches already covered by an open native PR.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Recent pushes, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pushes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        branch:
+                          type: string
+                        pushedAt:
+                          type: number
+                      required:
+                        - branch
+                        - pushedAt
+                required:
+                  - pushes
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/commits:
+    get:
+      tags:
+        - Projects
+      summary: Commit log of an Agent Hub-hosted repo branch
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Defaults to the default branch.
+          required: false
+          description: Defaults to the default branch.
+          name: branch
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Commit log, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch:
+                    type: string
+                  commits:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sha:
+                          type: string
+                        subject:
+                          type: string
+                        author:
+                          type: string
+                        date:
+                          type: string
+                      required:
+                        - sha
+                        - subject
+                        - author
+                        - date
+                required:
+                  - branch
+                  - commits
+        "400":
+          description: Invalid branch name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or unknown branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/commits/{sha}:
+    get:
+      tags:
+        - Projects
+      summary: Single-commit detail (stat + patch) from an Agent Hub-hosted repo
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: sha
+          in: path
+      responses:
+        "200":
+          description: Commit metadata, diffstat, and unified patch (capped at 1 MiB).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sha:
+                    type: string
+                  subject:
+                    type: string
+                  body:
+                    type: string
+                  author:
+                    type: string
+                  date:
+                    type: string
+                  parents:
+                    type: array
+                    items:
+                      type: string
+                  stat:
+                    type: string
+                  patch:
+                    type: string
+                  patchTruncated:
+                    type: boolean
+                required:
+                  - sha
+                  - subject
+                  - body
+                  - author
+                  - date
+                  - parents
+                  - stat
+                  - patch
+                  - patchTruncated
+        "404":
+          description: Unknown project/commit.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/auth/github/start:
     get:
       tags:
@@ -13860,6 +14854,588 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+  /api/projects/{projectId}/pulls:
+    post:
+      tags:
+        - Projects
+      summary: Create (or reuse) a native pull request on an Agent Hub-hosted project
+      description: Creates a DB-backed Hub PR for a branch already pushed to the hosted repo. Idempotent per open head branch. 400 for projects not hosted on Agent Hub — use gh pr create there.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+                  description: Defaults to the default branch.
+                title:
+                  type: string
+                  minLength: 1
+                body:
+                  type: string
+              required:
+                - headBranch
+                - title
+      responses:
+        "201":
+          description: PR created (or reused when one was already open for the branch).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prUrl:
+                    type: string
+                  number:
+                    type: number
+                  created:
+                    type: boolean
+                required:
+                  - prUrl
+                  - number
+                  - created
+        "400":
+          description: Not Hub-hosted, invalid branch, or missing fields.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or head branch not pushed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}:
+    patch:
+      tags:
+        - Projects
+      summary: Edit the title/body of an open native pull request
+      description: Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body must be supplied.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                body:
+                  type: string
+      responses:
+        "200":
+          description: Updated PR summary (same shape as the list rows).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - pr
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reopen:
+    post:
+      tags:
+        - Projects
+      summary: Reopen a closed native pull request
+      description: Closed → open. Merged PRs are immutable (409). Agent Hub-hosted projects only.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Reopened PR summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - pr
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or already open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/request-review:
+    post:
+      tags:
+        - Projects
+      summary: Flag (or unflag) a native pull request for human review
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requested:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated PR summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - pr
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reviews:
+    post:
+      tags:
+        - Projects
+      summary: Submit a human review on a native pull request
+      description: "state: approved | changes_requested | commented. A verdict (approve/request changes) clears any outstanding review-request flag. Reviews render in the PR detail and feed the Autofix context."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state:
+                  type: string
+                  enum:
+                    - approved
+                    - changes_requested
+                    - commented
+                body:
+                  type: string
+              required:
+                - state
+      responses:
+        "201":
+          description: The recorded review (GitHub review-object shape).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - review
+        "400":
+          description: Invalid state or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/comments:
+    post:
+      tags:
+        - Projects
+      summary: Add an inline (per-line) diff comment to a native pull request
+      description: Anchored to a file + line in the PR diff. side 'new' = post-image line number (additions/context), 'old' = pre-image (deletions). Rendered inside the Files-changed diff and included in the Autofix context.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filePath:
+                  type: string
+                  minLength: 1
+                line:
+                  type: integer
+                  minimum: 1
+                side:
+                  type: string
+                  enum:
+                    - old
+                    - new
+                body:
+                  type: string
+                  minLength: 1
+              required:
+                - filePath
+                - line
+                - body
+      responses:
+        "201":
+          description: The recorded comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - comment
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/comments/{commentId}:
+    delete:
+      tags:
+        - Projects
+      summary: Delete an inline diff comment from a native pull request
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: commentId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/generate-description:
+    post:
+      tags:
+        - Projects
+      summary: Generate a PR title and description from a branch diff (AI)
+      description: Runs the configured model over the branch diff + commit subjects and returns a suggested title and body. Used by the optional "Generate" button on the PR creation form — fields stay editable.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+              required:
+                - headBranch
+      responses:
+        "200":
+          description: Suggested PR text.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  body:
+                    type: string
+                required:
+                  - title
+                  - body
+        "400":
+          description: Invalid branch or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: Model invocation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/releases:
     get:
       tags:

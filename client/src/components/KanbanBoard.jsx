@@ -870,19 +870,32 @@ export default function KanbanBoard({
                                 (card.labels &&
                                   card.labels.split(',').filter(Boolean).length > 0)) && (
                                 <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-white/[0.05] flex-wrap">
-                                  {card.pr_url && (
-                                    <a
-                                      href={card.pr_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 transition-colors"
-                                      title={card.pr_url}
-                                    >
-                                      <GitPullRequest size={12} />#
-                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                    </a>
-                                  )}
+                                  {card.pr_url &&
+                                    (/^https?:\/\//i.test(card.pr_url) ? (
+                                      <a
+                                        href={card.pr_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                                        title={card.pr_url}
+                                      >
+                                        <GitPullRequest size={12} />#
+                                        {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                      </a>
+                                    ) : (
+                                      /* Agent Hub-native PR (relative client
+                                         route) — no external tab; the Pull
+                                         Requests page shows it in-app. */
+                                      <span
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="text-[11px] text-gray-500 flex items-center gap-1"
+                                        title={card.pr_url}
+                                      >
+                                        <GitPullRequest size={12} />#
+                                        {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                      </span>
+                                    ))}
                                   {card.review_status && (
                                     <span
                                       className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${

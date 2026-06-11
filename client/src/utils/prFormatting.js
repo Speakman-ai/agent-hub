@@ -16,14 +16,42 @@ const TOKEN = {
 };
 
 /**
- * Extract the numeric ID from a PR URL.
+ * Extract the numeric ID from a PR URL. Matches both GitHub (`/pull/N`)
+ * and Agent Hub-native (`/pulls/N`) URL shapes.
  * @param {string} prUrl
  * @returns {string|null}
  */
 export function prNumberFromUrl(prUrl) {
   if (!prUrl || typeof prUrl !== 'string') return null;
-  const m = prUrl.match(/\/pull\/(\d+)(?:$|[?#/])/);
+  const m = prUrl.match(/\/pulls?\/(\d+)(?:$|[?#/])/);
   return m ? m[1] : null;
+}
+
+/**
+ * Parse an Agent Hub-native PR URL (`/projects/<id>/pulls/<n>`, with or
+ * without an http(s) origin). These are emitted by the server for
+ * projects hosted on Agent Hub (`gitHost: 'agenthub'`) and should open
+ * the in-app PR detail view instead of an external tab.
+ * @param {string|null|undefined} prUrl
+ * @returns {{projectId: string, number: number}|null}
+ */
+export function parseNativePrUrl(prUrl) {
+  if (!prUrl || typeof prUrl !== 'string') return null;
+  const m = prUrl
+    .trim()
+    .match(/^(?:https?:\/\/[^/]+)?\/projects\/([^/\s]+)\/pulls\/(\d+)(?:[?#].*)?$/);
+  if (!m) return null;
+  const number = Number.parseInt(m[2], 10);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return { projectId: m[1], number };
+}
+
+/**
+ * True when `prUrl` is an Agent Hub-native PR URL.
+ * @param {string|null|undefined} prUrl
+ */
+export function isNativePrUrl(prUrl) {
+  return parseNativePrUrl(prUrl) !== null;
 }
 
 /**
@@ -203,6 +231,9 @@ export function mergeButtonState(pr) {
   if (pr.draft) return { enabled: false, reason: 'PR is a draft' };
   const s = (pr.state || '').toLowerCase();
   if (s && s !== 'open') return { enabled: false, reason: `PR is ${s}` };
+  // Branch protection (native PRs): the server-computed block reason wins
+  // over mergeability — the merge endpoint would 409 with this message.
+  if (pr.merge_blocked_reason) return { enabled: false, reason: pr.merge_blocked_reason };
   if (pr.mergeable === true) return { enabled: true, reason: 'Squash and merge this PR' };
   if (pr.mergeable === false) return { enabled: false, reason: 'PR has merge conflicts' };
   return { enabled: false, reason: 'GitHub is still computing mergeability — try Refresh' };

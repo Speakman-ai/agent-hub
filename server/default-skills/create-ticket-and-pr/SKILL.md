@@ -25,6 +25,27 @@ Finalize ship gate. Instead:
 Only use the legacy workflow below when there is **no** `.agent-hub/ci.yaml` in the
 worktree.
 
+## Agent Hub-hosted repositories
+
+Check the remote first: `git remote get-url origin`. If it is **not** a
+`github.com` URL (a local path under `.agent-hub/data/git/` or a Hub URL
+containing `/git/<project>.git`), this project's repository is hosted on
+Agent Hub itself. Push as normal (step 6 below — `origin` IS the Hub),
+but do **not** use `gh pr create` (there is no GitHub repo to receive it).
+Create the pull request via the Agent Hub API instead:
+
+```bash
+ah-api.sh POST "/api/projects/$PROJECT_ID/pulls" '{
+  "headBranch": "'"$(git rev-parse --abbrev-ref HEAD)"'",
+  "title": "<concise title under 70 chars>",
+  "body": "## Summary\n…\n\n## Test plan\n…"
+}'
+```
+
+The response contains `prUrl` (an in-app URL like `/projects/<id>/pulls/<n>`)
+— use it for the card comment and the Review move in step 8. The call is
+idempotent: an open Hub PR for the branch is reused and refreshed.
+
 ## Guardrails
 
 - Never commit to `main`.
@@ -49,7 +70,8 @@ git rebase origin/main
 ```bash
 git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
 ```
-7. Open PR with `gh pr create` (or the github skill) using:
+7. Open PR — `gh pr create` (or the github skill) for GitHub-hosted repos, or the
+   Agent Hub API call from the "Agent Hub-hosted repositories" section above — using:
    - Title under 70 chars.
    - Body sections: `## Summary` and `## Test plan`.
    - Kanban link (card id/URL) when the session is card-linked.

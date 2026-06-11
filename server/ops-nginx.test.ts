@@ -78,4 +78,29 @@ describe('ops/nginx/agent-hub.conf', () => {
     // Only /design-files/ opts out (by declaring its own add_header set).
     expect(CONF).toMatch(/add_header\s+X-Frame-Options\s+"DENY"\s+always;/);
   });
+
+  describe('/git/ smart-HTTP location (Agent Hub-hosted repos)', () => {
+    it('defines the /git/ location proxying to the Express upstream', () => {
+      const body = extractLocation('/git/');
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_pass\s+http:\/\/127\.0\.0\.1:3051/);
+    });
+
+    it('streams both directions: request and response buffering off, HTTP/1.1 upstream', () => {
+      const body = extractLocation('/git/')!;
+      // receive-pack reads bodies incrementally; buffering a multi-GB push
+      // to disk first would stall it (and clones would buffer in nginx).
+      expect(body).toMatch(/proxy_request_buffering\s+off;/);
+      expect(body).toMatch(/proxy_buffering\s+off;/);
+      // Required when request buffering is off.
+      expect(body).toMatch(/proxy_http_version\s+1\.1;/);
+    });
+
+    it('removes the body-size cap and extends timeouts for large pushes/clones', () => {
+      const body = extractLocation('/git/')!;
+      expect(body).toMatch(/client_max_body_size\s+0;/);
+      expect(body).toMatch(/proxy_read_timeout\s+3600s;/);
+      expect(body).toMatch(/proxy_send_timeout\s+3600s;/);
+    });
+  });
 });

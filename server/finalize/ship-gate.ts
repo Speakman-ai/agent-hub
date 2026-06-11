@@ -222,7 +222,7 @@ export async function evaluateFinalizeShipGate(
       allowed: false,
       code: 'must_use_finalize',
       message:
-        'Checks passed — click **Push to GitHub** on the session to open the PR (do not run `gh pr create` directly).',
+        'Checks passed — click **Push** on the session to open the PR (do not run `gh pr create` directly).',
       run_id: existing.id,
     };
   }

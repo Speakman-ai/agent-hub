@@ -11,6 +11,7 @@ import { ClipboardCheck, Loader2, AlertCircle, Sparkles, Key } from 'lucide-reac
 import { api } from '../utils/api.js';
 import { envRowsFromDraftAndSecrets } from '../utils/projectEnvRows.js';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
+import CiRunsSection from './CiRunsSection.jsx';
 
 export default function FinalizeSettingsSection({
   projects = [],
@@ -119,6 +120,10 @@ export default function FinalizeSettingsSection({
           read AWS keys, database creds, and other env vars at run time.
         </p>
       </div>
+
+      {/* Run history + CI-on-push config — GHA-style view of every CI
+          execution (Finalize and push-triggered) for this project. */}
+      <CiRunsSection project={project} onProjectsChange={onProjectsChange} />
 
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
         <div className="flex items-start justify-between gap-4">

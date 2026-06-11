@@ -17,6 +17,7 @@ import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import PerUserModelSelect from './PerUserModelSelect.jsx';
 import PerUserEngineSelect from './PerUserEngineSelect.jsx';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
+import GitHostSettingsSection from './GitHostSettingsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import { isElectron } from '../utils/isElectron.js';
@@ -1083,6 +1084,15 @@ export function ProjectsSection({
   const projectSettingsBody = (p) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
       <ProjectSecretsEditor projectId={p.id} />
+
+      {/* Agent Hub git hosting — host the repo on the Hub itself; GitHub
+          becomes an optional downstream mirror. Self-contained: fetches
+          its own status and hides when the endpoint is unavailable. */}
+      <GitHostSettingsSection
+        project={p}
+        showToast={showToast}
+        onProjectsChange={onProjectsChange}
+      />
 
       {/* AWS toggle — when enabled, an "AWS" entry appears in the
                         per-project sidebar where SSO profiles are managed. */}

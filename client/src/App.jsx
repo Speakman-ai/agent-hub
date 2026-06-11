@@ -62,6 +62,7 @@ import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
+import RepositoryPage from './components/RepositoryPage.jsx';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection.jsx';
@@ -1872,6 +1873,18 @@ export default function App({ initialView } = {}) {
           }
           break;
 
+        case 'native_pr_update':
+          // Native PR changed (opened/edited/reviewed/commented/merged/…) —
+          // keep the Pulls page live without a manual refresh.
+          if (
+            data.projectId &&
+            pullsProjectIdRef.current === data.projectId &&
+            currentViewRef.current === 'pulls'
+          ) {
+            setPullsListRefreshNonce((n) => n + 1);
+          }
+          break;
+
         case 'projects_updated':
           // Server added/changed an agent or project (e.g. GitHub App auto-setup
           // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
@@ -2051,6 +2064,15 @@ export default function App({ initialView } = {}) {
         case 'finalize_run_active_seconds':
         case 'finalize_run_created':
         case 'finalize_run_completed':
+          // Live PR checks: CI runs (pr_push / push) broadcast these as
+          // jobs progress — refresh the Pulls page so check rows update
+          // in real time without a manual refresh.
+          if (
+            currentViewRef.current === 'pulls' &&
+            data.type !== 'finalize_run_active_seconds' // seconds tick is noise
+          ) {
+            setPullsListRefreshNonce((n) => n + 1);
+          }
           // Keep the sidebar "ready to push" indicator live. Only the
           // phase-change / completed events carry a status worth mirroring;
           // they include session_id (see orchestrator.ts ready_to_push emit).
@@ -4348,6 +4370,17 @@ export default function App({ initialView } = {}) {
                   initialPrNumber={pullsOpenPrNumber}
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
+                  onOpenCard={() => setCurrentView(`kanban:${pullsProjectId}`)}
+                />
+              ) : currentView.startsWith('repo:') ? (
+                <RepositoryPage
+                  projectId={currentView.slice('repo:'.length)}
+                  project={projects.find((p) => p.id === currentView.slice('repo:'.length))}
+                  onOpenPulls={(projectId) => {
+                    setPullsProjectId(projectId);
+                    setCurrentView('pulls');
+                  }}
+                  onToast={showToast}
                 />
               ) : currentView === 'releases' ? (
                 <ReleasesView />
@@ -4555,6 +4588,7 @@ export default function App({ initialView } = {}) {
                                       message={msg}
                                       agentColor={chatAccentColor}
                                       projectId={activeChatProject?.id}
+                                      hosted={activeChatProject?.gitHost === 'agenthub'}
                                     />
                                   ),
                                 )}
@@ -4799,6 +4833,7 @@ export default function App({ initialView } = {}) {
                                 branchLabel={activeSession?.worktree_branch || ''}
                                 pendingChanges={changesReady[activeSessionId] ?? null}
                                 onError={(msg) => showToast(msg, 'error', 8000)}
+                                hosted={activeChatProject?.gitHost === 'agenthub'}
                               />
                             </>
                           ) : null}

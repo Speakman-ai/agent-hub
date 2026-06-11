@@ -93,6 +93,12 @@ export function parseFinalizeReadyToPushMetadata(metadataString) {
     runId: parsed.runId ?? parsed.run_id ?? null,
     validatedHeadSha: typeof parsed.validatedHeadSha === 'string' ? parsed.validatedHeadSha : null,
     round: typeof parsed.round === 'number' ? parsed.round : 0,
+    // 'agenthub' when the project repo is Hub-hosted; pre-feature
+    // messages lack the field and default to GitHub wording.
+    host: parsed.host === 'agenthub' ? 'agenthub' : 'github',
+    // False for pre-feature messages — lets the block fall back to the
+    // live project state instead of trusting the default.
+    hostStamped: parsed.host === 'agenthub' || parsed.host === 'github',
   };
 }
 

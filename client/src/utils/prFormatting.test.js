@@ -20,6 +20,8 @@ import {
   prListRowSuggestsResolvableWork,
   prListRowResolveDisabledHeuristic,
   buildPrActivityTimeline,
+  parseNativePrUrl,
+  isNativePrUrl,
 } from './prFormatting.js';
 
 describe('prNumberFromUrl', () => {
@@ -31,11 +33,46 @@ describe('prNumberFromUrl', () => {
     expect(prNumberFromUrl('https://github.com/owner/repo/pull/42/files')).toBe('42');
   });
 
+  it('extracts number from Agent Hub-native PR URLs (/pulls/N)', () => {
+    expect(prNumberFromUrl('/projects/my-proj/pulls/7')).toBe('7');
+    expect(prNumberFromUrl('https://hub.example.com/projects/my-proj/pulls/12')).toBe('12');
+  });
+
   it('returns null for invalid input', () => {
     expect(prNumberFromUrl('')).toBeNull();
     expect(prNumberFromUrl(null)).toBeNull();
     expect(prNumberFromUrl(undefined)).toBeNull();
     expect(prNumberFromUrl('https://example.com/no-pr')).toBeNull();
+  });
+});
+
+describe('parseNativePrUrl / isNativePrUrl', () => {
+  it('parses relative and absolute native PR URLs', () => {
+    expect(parseNativePrUrl('/projects/my-proj/pulls/7')).toEqual({
+      projectId: 'my-proj',
+      number: 7,
+    });
+    expect(parseNativePrUrl('https://hub.example.com/projects/p1/pulls/3')).toEqual({
+      projectId: 'p1',
+      number: 3,
+    });
+    expect(parseNativePrUrl('/projects/p1/pulls/3?tab=files#diff')).toEqual({
+      projectId: 'p1',
+      number: 3,
+    });
+  });
+
+  it('rejects GitHub URLs and garbage', () => {
+    expect(parseNativePrUrl('https://github.com/owner/repo/pull/5')).toBeNull();
+    expect(parseNativePrUrl('/projects/p1/pulls/abc')).toBeNull();
+    expect(parseNativePrUrl(null)).toBeNull();
+    expect(parseNativePrUrl('')).toBeNull();
+    expect(isNativePrUrl('/projects/p1/pulls/1')).toBe(true);
+    expect(isNativePrUrl('https://github.com/o/r/pull/1')).toBe(false);
+  });
+
+  it('native URLs still allow the project-scoped detail fetch', () => {
+    expect(shouldFetchProjectPullDetail('/projects/p1/pulls/1', 'owner/repo')).toBe(true);
   });
 });
 

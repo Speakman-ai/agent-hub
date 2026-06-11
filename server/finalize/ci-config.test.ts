@@ -62,8 +62,8 @@ describe('parseCiConfig — exported constants', () => {
     expect(FINALIZE_TIMEOUT_DEFAULT_MINUTES).toBe(240);
   });
 
-  it('locks the supported trigger set at v1', () => {
-    expect([...SUPPORTED_TRIGGERS]).toEqual(['finalize', 'manual']);
+  it('locks the supported trigger set (push added for Hub-hosted CI on push)', () => {
+    expect([...SUPPORTED_TRIGGERS]).toEqual(['finalize', 'manual', 'push']);
   });
 });
 
@@ -400,8 +400,8 @@ steps:
     expect(result.error.path).toBe('on[0]');
   });
 
-  it('rejects push / workflow_dispatch / schedule (other GH-Actions triggers)', () => {
-    for (const bad of ['push', 'workflow_dispatch', 'schedule']) {
+  it('rejects workflow_dispatch / schedule (unsupported GH-Actions triggers)', () => {
+    for (const bad of ['workflow_dispatch', 'schedule']) {
       const result = parseCiConfig(`
 version: 1
 on: [${bad}]
@@ -412,6 +412,18 @@ steps:
       if (result.ok) return;
       expect(result.error.code).toBe('invalid_on_value');
     }
+  });
+
+  it('accepts push (Hub-hosted CI on push)', () => {
+    const result = parseCiConfig(`
+version: 1
+on: [push]
+steps:
+  - run: npm test
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.on).toEqual(['push']);
   });
 
   it('rejects non-string entries in on:', () => {

@@ -444,6 +444,32 @@ async function getRemoteUrl(cwd: string): Promise<string | null> {
   }
 }
 
+/**
+ * Heal a clone's `origin` to point at the project's Agent Hub-hosted bare
+ * repo. Clones created BEFORE a project enabled git hosting still carry
+ * the old GitHub origin — without this, their pushes (auto-git "Create
+ * PR", session commits) keep landing on GitHub. Called on every worktree
+ * ensure/reuse for hosted projects; cheap no-op when origin already
+ * matches. Best-effort: a failure here surfaces on the next push instead.
+ */
+export async function ensureOriginPointsAtHostedRepo(
+  dir: string,
+  hostedBarePath: string,
+): Promise<void> {
+  try {
+    const current = await getRemoteUrl(dir);
+    if (current === hostedBarePath) return;
+    await runGit(['remote', current ? 'set-url' : 'add', 'origin', hostedBarePath], { cwd: dir });
+    console.log(`[Workspace] origin → hosted repo for ${dir} (was ${current ?? '(none)'})`);
+  } catch (err: unknown) {
+    console.warn(
+      `[Workspace] origin heal failed for ${dir}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
 function projectSlug(projectCwd: string): string {
   return path.basename(projectCwd).replace(/[^a-zA-Z0-9_-]/g, '-');
 }
@@ -986,6 +1012,48 @@ export async function ensureProjectRepoCloned(
   return true;
 }
 
+/**
+ * Self-heal counterpart of {@link ensureProjectRepoCloned} for projects
+ * hosted on Agent Hub (`gitHost: 'agenthub'`): clone `projectCwd` from the
+ * Hub's bare repo (a local path — no auth, no GitHub). The resulting
+ * clone's `origin` is the bare path, which is exactly the post-opt-in
+ * origin contract, so session worktrees branched off this cwd push to
+ * the Hub with no further rewriting.
+ */
+export async function ensureProjectCwdFromHostedRepo(
+  projectCwd: string,
+  hostedBarePath: string,
+  options: { projectId?: string } = {},
+): Promise<boolean> {
+  if (existsSync(projectCwd) && (await isGitRepo(projectCwd))) {
+    return false;
+  }
+  if (!existsSync(hostedBarePath)) {
+    throw new Error(
+      `Auto-clone failed for project ${options.projectId ?? '<unknown>'}: hosted repo missing at ${hostedBarePath}`,
+    );
+  }
+
+  // Existing zombie (path exists but not a git repo) → wipe before clone.
+  if (existsSync(projectCwd)) {
+    rmSync(projectCwd, { recursive: true, force: true });
+  }
+  const parentDir = path.dirname(projectCwd);
+  if (!existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
+  }
+
+  await cloneWithRetry(
+    ['clone', '--quiet', hostedBarePath, projectCwd],
+    { timeoutMs: CLONE_TIMEOUT_MS },
+    projectCwd,
+  );
+  console.log(
+    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from hosted repo ${hostedBarePath} → ${projectCwd}`,
+  );
+  return true;
+}
+
 export type ProjectCloneUpdateStatus = 'updated' | 'noop' | 'skipped' | 'error';
 
 export interface ProjectCloneUpdateResult {
@@ -1096,18 +1164,31 @@ export async function getOrCreateProcessWorktree(
    * and cron process worktrees authenticate private GitHub HTTPS remotes.
    */
   githubRepo?: string | null,
+  /**
+   * Bare repo path for Agent Hub-hosted projects (`gitHost: 'agenthub'`).
+   * When set, self-heal clones from this local path instead of GitHub —
+   * the Hub repo is canonical and `repoUrl` is only the mirror target.
+   */
+  hostedBarePath?: string | null,
 ): Promise<string> {
   const { userToken, authArgs, tokenOwnerId } = await resolveProcessWorktreeAuth(githubRepo);
 
   // Self-heal: if the project has a `repoUrl` and the cwd is missing or
   // not a git repo, auto-clone before falling through to the legacy
   // existsSync fallback. Public-repo / no-token cases are tolerated.
-  if (repoUrl) {
+  if (hostedBarePath || repoUrl) {
     try {
-      await ensureProjectRepoCloned(projectCwd, repoUrl, {
-        projectId,
-        requestingUserId: tokenOwnerId,
-      });
+      if (hostedBarePath) {
+        await ensureProjectCwdFromHostedRepo(projectCwd, hostedBarePath, { projectId });
+        // Heal a pre-hosting cwd whose origin still points at GitHub —
+        // process worktrees inherit this remote when cloned.
+        await ensureOriginPointsAtHostedRepo(projectCwd, hostedBarePath);
+      } else {
+        await ensureProjectRepoCloned(projectCwd, repoUrl, {
+          projectId,
+          requestingUserId: tokenOwnerId,
+        });
+      }
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
       const message = redactAuthHeader(redactToken(raw, userToken));
@@ -1158,6 +1239,11 @@ export async function getOrCreateProcessWorktree(
   const cloneDir = path.join(wsDir, safeName);
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+    if (hostedBarePath) {
+      // Process worktrees created before hosting was enabled still point
+      // at GitHub — repoint so heartbeat/cron pushes land on the Hub.
+      await ensureOriginPointsAtHostedRepo(cloneDir, hostedBarePath);
+    }
     try {
       await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
@@ -1599,6 +1685,12 @@ export async function ensureSessionWorkspace(
    * `resolveOwnerWithRepoAccess` in `repo-aware-token.ts`.
    */
   githubRepo?: string | null,
+  /**
+   * Bare repo path for Agent Hub-hosted projects (`gitHost: 'agenthub'`).
+   * When set, self-heal clones from this local path instead of GitHub —
+   * the Hub repo is canonical and `repoUrl` is only the mirror target.
+   */
+  hostedBarePath?: string | null,
 ): Promise<string> {
   if (Number(session.use_worktree) !== 1) {
     return projectCwd;
@@ -1630,12 +1722,19 @@ export async function ensureSessionWorkspace(
   // — is unchanged when auto-clone fails. The session owner's PAT is
   // threaded through as a fallback so private-repo first-time clones
   // succeed for self-hosters without the GitHub App installed.
-  if (repoUrl) {
+  if (hostedBarePath || repoUrl) {
     try {
-      await ensureProjectRepoCloned(projectCwd, repoUrl, {
-        projectId,
-        requestingUserId: sessionOwnerId,
-      });
+      if (hostedBarePath) {
+        await ensureProjectCwdFromHostedRepo(projectCwd, hostedBarePath, { projectId });
+        // The cwd may predate hosting enablement (origin still GitHub) —
+        // fresh session clones inherit this remote, so heal it first.
+        await ensureOriginPointsAtHostedRepo(projectCwd, hostedBarePath);
+      } else {
+        await ensureProjectRepoCloned(projectCwd, repoUrl, {
+          projectId,
+          requestingUserId: sessionOwnerId,
+        });
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Workspace] ${message}`);
@@ -1676,6 +1775,11 @@ export async function ensureSessionWorkspace(
   // Must refresh remotes on every ensure — previously this path returned early
   // without fetching, so origin/main stayed stale after merges landed.
   if (session.worktree_path && existsSync(session.worktree_path)) {
+    if (hostedBarePath) {
+      // Worktrees created before the project enabled Agent Hub hosting
+      // still push to GitHub — repoint them at the hosted bare repo.
+      await ensureOriginPointsAtHostedRepo(session.worktree_path, hostedBarePath);
+    }
     await refreshSessionCloneRemotes({
       cloneDir: session.worktree_path,
       projectCwd,

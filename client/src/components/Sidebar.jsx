@@ -4,8 +4,6 @@ import {
   Settings,
   Clock,
   LayoutGrid,
-  FileText,
-  StickyNote,
   Trash2,
   GitFork,
   ExternalLink,
@@ -28,7 +26,7 @@ import {
   ChevronRight,
   ChevronDown,
   Bot,
-  FolderGit2,
+  GitBranch,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -82,8 +80,6 @@ export default function Sidebar({
    */
   onReorderProjects,
   cronSessions = [],
-  wikiProjectId,
-  notesProjectId,
   reviewerProjectId,
   threadsProjectId,
   pullsProjectId,
@@ -189,17 +185,17 @@ export default function Sidebar({
   };
 
   const isProjectMenuRoute = (view, pid) =>
-    view === `project-agents:${pid}` ||
     view === `project-settings:${pid}` ||
+    view === `project-agents:${pid}` ||
     view === `project-crons:${pid}` ||
     view === `runners:${pid}` ||
     view === `preview:${pid}` ||
     view === `aws:${pid}` ||
-    (view === 'wiki' && wikiProjectId === pid) ||
+    view === `kanban:${pid}` ||
+    view === `repo:${pid}` ||
     view === `epics:${pid}` ||
     (typeof view === 'string' && view.startsWith(`epic:${pid}:`)) ||
     (view === 'reviewer' && reviewerProjectId === pid) ||
-    (view === 'notes' && notesProjectId === pid) ||
     (view.startsWith('threads') && threadsProjectId === pid) ||
     (view === 'pulls' && pullsProjectId === pid);
 
@@ -207,6 +203,9 @@ export default function Sidebar({
     `w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
       active ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
     }`;
+
+  const projectMenuHeadingClass =
+    'px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-600 uppercase tracking-wider first:pt-0';
 
   // Move `sourceId` into the slot currently occupied by `targetId`,
   // preserving the order of every other project. Hands the resulting
@@ -507,16 +506,6 @@ export default function Sidebar({
                         {isCollapsed ? '▸' : '▾'}
                       </span>
                     )}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onNavigate('kanban:' + project.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity p-0.5"
-                    title="Board"
-                  >
-                    <LayoutGrid size={14} />
                   </button>
                 </div>
 
@@ -969,7 +958,7 @@ export default function Sidebar({
                               <ChevronDown size={14} className="flex-shrink-0" />
                             )}
                             <Settings size={14} className="flex-shrink-0" />
-                            <span className="truncate">{project.name} Menu</span>
+                            <span className="truncate">{project.name} Settings</span>
                           </button>
 
                           {!isMenuCollapsed && (
@@ -978,14 +967,62 @@ export default function Sidebar({
                                 type="button"
                                 onClick={() => {
                                   expandProjectMenu(project.id);
-                                  onNavigate('wiki', project.id);
+                                  onNavigate(`project-settings:${project.id}`);
                                 }}
                                 className={projectMenuLinkClass(
-                                  currentView === 'wiki' && wikiProjectId === project.id,
+                                  currentView === `project-settings:${project.id}`,
                                 )}
                               >
-                                <FileText size={14} className="flex-shrink-0" />
-                                <span className="truncate">Wiki</span>
+                                <Settings size={14} className="flex-shrink-0" />
+                                <span className="truncate">Project Settings</span>
+                              </button>
+
+                              <div className={projectMenuHeadingClass}>Lifecycle</div>
+
+                              {project.gitHost === 'agenthub' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate(`repo:${project.id}`);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === `repo:${project.id}`,
+                                  )}
+                                >
+                                  <GitBranch size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Repository</span>
+                                </button>
+                              )}
+
+                              {project.mode !== 'workflow' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate('pulls', project.id);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === 'pulls' && pullsProjectId === project.id,
+                                  )}
+                                >
+                                  <ListOrdered size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Pulls</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`kanban:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `kanban:${project.id}`,
+                                )}
+                              >
+                                <LayoutGrid size={14} className="flex-shrink-0" />
+                                <span className="truncate">Board</span>
                               </button>
 
                               <button
@@ -1024,20 +1061,6 @@ export default function Sidebar({
                                 type="button"
                                 onClick={() => {
                                   expandProjectMenu(project.id);
-                                  onNavigate('notes', project.id);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === 'notes' && notesProjectId === project.id,
-                                )}
-                              >
-                                <StickyNote size={14} className="flex-shrink-0" />
-                                <span className="truncate">Notes</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
                                   onNavigate('threads', project.id);
                                 }}
                                 className={projectMenuLinkClass(
@@ -1056,21 +1079,21 @@ export default function Sidebar({
                                 )}
                               </button>
 
-                              {project.mode !== 'workflow' && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    expandProjectMenu(project.id);
-                                    onNavigate('pulls', project.id);
-                                  }}
-                                  className={projectMenuLinkClass(
-                                    currentView === 'pulls' && pullsProjectId === project.id,
-                                  )}
-                                >
-                                  <ListOrdered size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Pulls</span>
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`project-crons:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `project-crons:${project.id}`,
+                                )}
+                              >
+                                <Clock size={14} className="flex-shrink-0" />
+                                <span className="truncate">Cron Jobs</span>
+                              </button>
+
+                              <div className={projectMenuHeadingClass}>Configuration</div>
 
                               <button
                                 type="button"
@@ -1084,34 +1107,6 @@ export default function Sidebar({
                               >
                                 <Bot size={14} className="flex-shrink-0" />
                                 <span className="truncate">Agents</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate(`project-settings:${project.id}`);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === `project-settings:${project.id}`,
-                                )}
-                              >
-                                <FolderGit2 size={14} className="flex-shrink-0" />
-                                <span className="truncate">Project settings</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate(`project-crons:${project.id}`);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === `project-crons:${project.id}`,
-                                )}
-                              >
-                                <Clock size={14} className="flex-shrink-0" />
-                                <span className="truncate">Cron Jobs</span>
                               </button>
 
                               <button
@@ -1139,7 +1134,7 @@ export default function Sidebar({
                                 )}
                               >
                                 <Monitor size={14} className="flex-shrink-0" />
-                                <span className="truncate">Preview</span>
+                                <span className="truncate">Previews</span>
                               </button>
 
                               {project.awsEnabled && (

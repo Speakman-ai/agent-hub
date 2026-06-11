@@ -301,11 +301,12 @@ export function applyReviewerRoleLock(env: NodeJS.ProcessEnv, role: string | und
  * malformed inherited value doesn't clobber prior entries; idempotent
  * on the index bookkeeping.
  *
- * Exposed-as-private (no export) to keep both isolation and credential
- * helpers using the same append semantics — preserves the precedence
- * ordering described in `applyReviewerSpawnIsolation` effect (4).
+ * Exported so the Agent Hub git-host credential helper
+ * (`server/git-host/spawn-credentials.ts`) appends with the same
+ * semantics — preserves the precedence ordering described in
+ * `applyReviewerSpawnIsolation` effect (4).
  */
-function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string): void {
+export function appendGitConfigEntry(env: NodeJS.ProcessEnv, key: string, value: string): void {
   const prevCountRaw = env.GIT_CONFIG_COUNT;
   const prevCount = (() => {
     if (typeof prevCountRaw !== 'string') return 0;

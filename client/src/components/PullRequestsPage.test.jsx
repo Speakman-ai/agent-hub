@@ -23,6 +23,13 @@ vi.mock('../utils/api.js', () => ({
     getProjectPulls: vi.fn(),
     getProjectPullDetail: vi.fn(),
     resolvePR: vi.fn(),
+    getPrDiffText: vi.fn(async () => 'diff --git a/x.txt b/x.txt\n+x'),
+    updateNativePr: vi.fn(),
+    getGitHostRecentPushes: vi.fn(async () => ({ pushes: [] })),
+    getGitHostBranches: vi.fn(async () => ({ defaultBranch: 'main', branches: [] })),
+    generatePrDescription: vi.fn(),
+    rerunCiRun: vi.fn(),
+    createNativePr: vi.fn(),
   },
 }));
 
@@ -347,5 +354,119 @@ describe('<PullRequestsPage /> — listRefreshNonce (live sync from App)', () =>
 
     rerender(<PullRequestsPage projectId="proj-1" project={project} listRefreshNonce={1} />);
     await waitFor(() => expect(api.getProjectPulls).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('<PullRequestsPage /> — recent-pushes banner (hosted projects)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows a banner for a recent push and creates a PR from it', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [] });
+    api.getGitHostRecentPushes.mockResolvedValue({
+      pushes: [{ branch: 'feature/fast-fix', pushedAt: Date.now() - 60_000 }],
+    });
+    api.createNativePr.mockResolvedValue({
+      prUrl: '/projects/proj-1/pulls/4',
+      number: 4,
+      created: true,
+    });
+    api.getProjectPullDetail.mockResolvedValue({
+      source: 'agenthub',
+      pr: { ...prSummary, number: 4, html_url: '/projects/proj-1/pulls/4' },
+      checks: [],
+      reviews: [],
+      comments: [],
+      inline_comments: [],
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} onToast={vi.fn()} />);
+
+    // Banner renders with the branch + create button.
+    await screen.findByTestId('recent-push-feature/fast-fix');
+    fireEvent.click(screen.getByTestId('recent-push-create-feature/fast-fix'));
+
+    // Form prefills a humanized title from the branch name.
+    const form = await screen.findByTestId('recent-push-form-feature/fast-fix');
+    expect(form.querySelector('input').value).toBe('Fast fix');
+
+    fireEvent.click(screen.getByTestId('recent-push-submit-feature/fast-fix'));
+    await waitFor(() =>
+      expect(api.createNativePr).toHaveBeenCalledWith('proj-1', {
+        headBranch: 'feature/fast-fix',
+        title: 'Fast fix',
+        body: '',
+      }),
+    );
+    // Navigates into the new PR's detail.
+    await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalledWith('proj-1', 4));
+  });
+
+  it('does not fetch recent pushes for GitHub-hosted projects', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    await screen.findByText('Fix the flaky test');
+    expect(api.getGitHostRecentPushes).not.toHaveBeenCalled();
+  });
+});
+
+describe('<PullRequestsPage /> — New pull request panel (hosted projects)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('picks an existing branch, generates text with AI, and creates the PR', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [] });
+    api.getGitHostRecentPushes.mockResolvedValue({ pushes: [] });
+    api.getGitHostBranches.mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [{ name: 'main' }, { name: 'feature/picker' }],
+    });
+    api.generatePrDescription.mockResolvedValue({
+      title: 'Add the picker',
+      body: '## Summary\n- picker',
+    });
+    api.createNativePr.mockResolvedValue({
+      prUrl: '/projects/proj-1/pulls/9',
+      number: 9,
+      created: true,
+    });
+    api.getProjectPullDetail.mockResolvedValue({
+      source: 'agenthub',
+      pr: { ...prSummary, number: 9, html_url: '/projects/proj-1/pulls/9' },
+      checks: [],
+      reviews: [],
+      comments: [],
+      inline_comments: [],
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} onToast={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button'));
+    const select = await screen.findByTestId('new-pr-branch');
+    // Default branch excluded from candidates.
+    await waitFor(() =>
+      expect(select.querySelectorAll('option')).toHaveLength(2 /* placeholder + feature */),
+    );
+    fireEvent.change(select, { target: { value: 'feature/picker' } });
+
+    fireEvent.click(screen.getByTestId('new-pr-generate'));
+    await waitFor(() =>
+      expect(api.generatePrDescription).toHaveBeenCalledWith('proj-1', 'feature/picker'),
+    );
+
+    fireEvent.click(screen.getByTestId('new-pr-submit'));
+    await waitFor(() =>
+      expect(api.createNativePr).toHaveBeenCalledWith('proj-1', {
+        headBranch: 'feature/picker',
+        title: 'Add the picker',
+        body: '## Summary\n- picker',
+      }),
+    );
+    // Panel closes after creation.
+    await waitFor(() => expect(screen.queryByTestId('new-pr-panel')).toBeNull());
   });
 });

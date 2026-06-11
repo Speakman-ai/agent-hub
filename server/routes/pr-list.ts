@@ -19,6 +19,8 @@ import { CONNECT_GITHUB_HINT } from '../github-auth-policy.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { enrichPullListRowsWithGraphql } from '../pr-pull-list-enrichment.js';
+import { isAgentHubHosted } from '../native-pr/host.js';
+import { NativePrError } from '../native-pr/errors.js';
 
 const ALLOWED_STATES = new Set(['open', 'closed', 'all']);
 const DEFAULT_LIST_LIMIT = 30;
@@ -143,6 +145,30 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
+      const stateParam = typeof req.query.state === 'string' ? req.query.state : 'open';
+      const state = ALLOWED_STATES.has(stateParam) ? stateParam : 'open';
+      let limit = Number.parseInt((req.query.limit as string) || '', 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIST_LIMIT;
+      if (limit > MAX_LIST_LIMIT) limit = MAX_LIST_LIMIT;
+
+      // Agent Hub-hosted projects serve from the native PR table — no
+      // GitHub token involved; project access alone (visibility gate on
+      // the /api/projects/:projectId mount) is the authz.
+      if (isAgentHubHosted(project) && deps.nativePr) {
+        try {
+          const pulls = deps.nativePr.listPulls({
+            project,
+            state: state as 'open' | 'closed' | 'all',
+            limit,
+          });
+          return res.json({ repo: project.id, state, source: 'agenthub', pulls });
+        } catch (err: unknown) {
+          const status = err instanceof NativePrError ? err.status : 500;
+          const msg = err instanceof Error ? err.message : String(err);
+          return res.status(status).json({ error: msg });
+        }
+      }
+
       const repo = parseRepoFullName(project.githubRepo as string | undefined);
       if (!repo) {
         return res.status(400).json({
@@ -150,12 +176,6 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
           hint: 'Set project.githubRepo to "owner/repo" to enable the PR viewer.',
         });
       }
-
-      const stateParam = typeof req.query.state === 'string' ? req.query.state : 'open';
-      const state = ALLOWED_STATES.has(stateParam) ? stateParam : 'open';
-      let limit = Number.parseInt((req.query.limit as string) || '', 10);
-      if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIST_LIMIT;
-      if (limit > MAX_LIST_LIMIT) limit = MAX_LIST_LIMIT;
 
       const listPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&sort=updated&direction=desc`;
 
@@ -205,14 +225,25 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
-      const repo = parseRepoFullName(project.githubRepo as string | undefined);
-      if (!repo) {
-        return res.status(400).json({ error: 'Project has no githubRepo configured' });
-      }
-
       const num = Number.parseInt(String(req.params.number), 10);
       if (!Number.isFinite(num) || num <= 0) {
         return res.status(400).json({ error: 'Invalid PR number' });
+      }
+
+      if (isAgentHubHosted(project) && deps.nativePr) {
+        try {
+          const detail = await deps.nativePr.getDetail({ project, number: num });
+          return res.json({ repo: project.id, ...detail });
+        } catch (err: unknown) {
+          const status = err instanceof NativePrError ? err.status : 500;
+          const msg = err instanceof Error ? err.message : String(err);
+          return res.status(status).json({ error: msg });
+        }
+      }
+
+      const repo = parseRepoFullName(project.githubRepo as string | undefined);
+      if (!repo) {
+        return res.status(400).json({ error: 'Project has no githubRepo configured' });
       }
 
       try {

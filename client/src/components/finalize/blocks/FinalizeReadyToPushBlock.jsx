@@ -3,9 +3,13 @@ import { parseFinalizeReadyToPushMetadata } from '../../../utils/finalizeTimelin
 import { shortSha } from '../../../utils/prMessage.js';
 import { relativeTime } from '../../../utils/time.js';
 
-export default function FinalizeReadyToPushBlock({ message }) {
+export default function FinalizeReadyToPushBlock({ message, hosted = false }) {
   const meta = parseFinalizeReadyToPushMetadata(message.metadata);
   if (!meta) return null;
+  // Messages written before host stamping default to 'github' in the
+  // parser — let the live project state override so hosted projects
+  // never show "GitHub" on old messages.
+  const isHub = meta.hostStamped ? meta.host === 'agenthub' : hosted;
 
   return (
     <div className="flex justify-center mb-4" data-testid="finalize-ready-to-push-block">
@@ -13,7 +17,9 @@ export default function FinalizeReadyToPushBlock({ message }) {
         <div className="flex items-center gap-2">
           <Upload className="w-4 h-4 text-emerald-400 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-emerald-200">Ready to push to GitHub</p>
+            <p className="text-sm font-medium text-emerald-200">
+              Ready to push to {isHub ? 'Agent Hub' : 'GitHub'}
+            </p>
             {meta.validatedHeadSha ? (
               <p className="text-xs text-emerald-200/70 mt-0.5">
                 Validated{' '}

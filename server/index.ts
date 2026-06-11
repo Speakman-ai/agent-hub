@@ -15,6 +15,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { stmts, initDb, getDb } from './db.js';
+import { createGitSmartHttpRoutes } from './git-host/smart-http.js';
+import createGitHostRoutes from './routes/git-host.js';
+import createCiRunsRoutes from './routes/ci-runs.js';
+import createPullsNativeRoutes from './routes/pulls-native.js';
+import { refreshGitHostNotifyConfigs } from './git-host/lifecycle.js';
+import { hostedBarePathForProject } from './git-host/repo-store.js';
+import { notifyMirrorPush } from './git-host/mirror.js';
+import { maybeRunPushCi, maybeRunPrCi, handleHostedRepoPush } from './git-host/push-ci.js';
+import { recordRecentPush } from './git-host/recent-pushes.js';
+import { createNativePrService } from './native-pr/service.js';
 import {
   initProjects,
   migrateAhwDirectories,
@@ -331,6 +341,8 @@ function ensureWorktree(
    * `resolveOwnerWithRepoAccess`.
    */
   githubRepo?: string | null,
+  /** Hosted bare repo path for `gitHost: 'agenthub'` projects (self-heal source). */
+  hostedBarePath?: string | null,
 ): Promise<string> {
   if (!sessionUsesWorktree(session)) {
     return Promise.resolve(projectCwd);
@@ -357,6 +369,7 @@ function ensureWorktree(
     projectId,
     onBaseBranchAdvanced,
     githubRepo ?? null,
+    hostedBarePath ?? null,
   );
 }
 
@@ -378,6 +391,26 @@ function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
 }
 
+// Git smart-HTTP transport for Agent Hub-hosted repos (/git/<id>.git).
+// MUST stay mounted before `express.json`: clone/push bodies are piped
+// verbatim into spawned `git upload-pack` / `git receive-pack` processes
+// and a body parser would consume the stream. `/git` is outside `/api`,
+// so `authMiddleware` never gates it — the router self-authenticates via
+// HTTP Basic + ahub_ API keys (see server/git-host/auth.ts).
+app.use(
+  createGitSmartHttpRoutes({
+    findProject,
+    broadcast,
+    // Default-branch "CI on push" + PR-level CI for moved branches that
+    // back an open native PR (external pushes, "push anyway" bypasses).
+    // Fire-and-forget — the push-CI module guards/serializes internally.
+    onPush: (project, refs) => {
+      recordRecentPush(project.id, refs); // feeds the "Create pull request" banner
+      handleHostedRepoPush(project, refs, { stmts: stmts!, broadcast });
+    },
+  }),
+);
+
 app.use(
   express.json({
     limit: '20mb',
@@ -396,11 +429,39 @@ app.use(createHealthRoute({ allAgents, getProjects, config }));
 // nice-to-have for local dev and self-hosted instances.
 app.use(createApiDocsRoutes());
 
+// Native PR service for Agent Hub-hosted projects. The afterMerge hook is
+// the ONLY mirror trigger for merges — `git update-ref` in the bare repo
+// does not fire the post-receive hook (only receive-pack does), so the
+// merge path pushes the moved base branch to the GitHub mirror itself.
+// Constructed before initAutoGit so the session "Create PR" flow can
+// create native PRs too.
+const nativePr = createNativePrService({
+  stmts: stmts!,
+  broadcast,
+  afterMerge: async ({ project, baseBranch }) => {
+    // Native merges move the base branch via `update-ref` — no
+    // post-receive hook fires — so BOTH downstream reactions to "default
+    // branch moved" hang off this hook: the GitHub mirror push and CI on
+    // push.
+    void maybeRunPushCi(project, [`refs/heads/${baseBranch}`], { stmts: stmts!, broadcast });
+    await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
+  },
+  // PR head changed (created or reused with a new sha): if Finalize
+  // already fully validated this exact sha the PR inherits that result;
+  // otherwise run PR-level CI so the PR still shows check status. Covers
+  // the create-time race where the push hook fired before the PR row
+  // existed.
+  onPrHeadChanged: (project, row) => {
+    void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
+  },
+});
+
 initAutoGit({
   stmts: stmts!,
   broadcast,
   getConfig: () => config,
   DEFAULT_SKILLS_DIR,
+  nativePr,
 });
 
 initDelegation({
@@ -735,6 +796,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
 export const routeDeps: RouteDeps = {
   stmts: stmts!,
   broadcast,
+  nativePr,
   findProject,
   findAgent,
   getEnrichedAgent,
@@ -805,6 +867,7 @@ export const routeDeps: RouteDeps = {
       project.id,
       undefined,
       project.githubRepo ?? null,
+      hostedBarePathForProject(project),
     );
   },
 };
@@ -834,6 +897,9 @@ app.use(createFinalizeParityRoutes(routeDeps));
 app.use(createFinalizeQuarantineRoutes(routeDeps));
 app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
+app.use(createGitHostRoutes(routeDeps));
+app.use(createCiRunsRoutes(routeDeps));
+app.use(createPullsNativeRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createPreviewWizardRoutes(routeDeps));
@@ -1264,6 +1330,14 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     setActualPort(actualPort);
     console.log(`Agent Hub server running on http://localhost:${actualPort}`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
+
+    // Hosted-git notify hooks embed this process's port — refresh on every
+    // boot so post-receive notifications reach the current process.
+    try {
+      refreshGitHostNotifyConfigs(getProjects());
+    } catch (e) {
+      console.error('[git-host] notify refresh on boot failed:', (e as Error).message);
+    }
 
     const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();
 

@@ -14,12 +14,18 @@
  */
 
 import { Router, Request, Response } from 'express';
-import type { RouteDeps } from '../types.js';
+import type { Project, RouteDeps } from '../types.js';
+import type { AuthenticatedRequest } from '../auth.js';
 import { githubUserApiRequest } from '../github-oauth.js';
 import { resolveUserToken } from './pr-list.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { fetchPrDiff, fetchPrFiles } from '../pr-read-fetch.js';
 import { CONNECT_GITHUB_HINT } from '../github-auth-policy.js';
+import { parseNativePrUrl } from '../native-pr/url.js';
+import { NativePrError } from '../native-pr/errors.js';
+import type { NativePrService } from '../native-pr/service.js';
+import { canViewProject } from '../project-visibility.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 
 interface PrActionBody {
   prUrl: string;
@@ -32,10 +38,45 @@ interface ParsedPR {
   number: string;
 }
 
+/** Native PR reference (Agent Hub-hosted project) resolved from a prUrl. */
+interface ParsedNativePR {
+  kind: 'agenthub';
+  projectId: string;
+  number: number;
+}
+
 function parsePrUrl(prUrl: string | null | undefined): ParsedPR | null {
   const match = prUrl?.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!match) return null;
   return { owner: match[1], repo: match[2], number: match[3] };
+}
+
+/**
+ * Native-PR resolution for the /api/pr/* surface (which is keyed on
+ * `prUrl`, not project-scoped, so the project visibility gate does not
+ * run). Resolves the URL → project, enforces visibility (mask as null →
+ * 400/404 to the caller), and requires the project to still be hosted.
+ */
+function resolveNativePrRef(
+  req: Request,
+  prUrl: string | null | undefined,
+  deps: Pick<RouteDeps, 'findProject' | 'nativePr'>,
+): { ref: ParsedNativePR; project: Project; nativePr: NativePrService } | null {
+  const parsed = parseNativePrUrl(prUrl);
+  if (!parsed || !deps.nativePr) return null;
+  const project = deps.findProject(parsed.projectId);
+  if (!project || project.gitHost !== 'agenthub') return null;
+  if (!canViewProject(project, resolveVisibilityCaller(req))) return null;
+  return {
+    ref: { kind: 'agenthub', projectId: parsed.projectId, number: parsed.number },
+    project,
+    nativePr: deps.nativePr,
+  };
+}
+
+function nativeActor(req: Request): string {
+  const areq = req as AuthenticatedRequest;
+  return areq.authUser ?? areq.authUserId ?? 'unknown';
 }
 
 const ALLOWED_MERGE_METHODS = new Set(['squash', 'merge', 'rebase']);
@@ -48,12 +89,41 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
   router.post('/api/pr/merge', async (req: Request, res: Response) => {
     const { prUrl, mergeMethod = 'squash' } = req.body as PrActionBody;
+    if (!ALLOWED_MERGE_METHODS.has(mergeMethod)) {
+      return res.status(400).json({ error: 'Invalid merge method' });
+    }
+
+    const native = resolveNativePrRef(req, prUrl, deps);
+    if (native) {
+      if (mergeMethod === 'rebase') {
+        return res
+          .status(400)
+          .json({ error: 'rebase merges are not supported for Agent Hub-hosted projects' });
+      }
+      try {
+        const result = await native.nativePr.merge({
+          project: native.project,
+          number: native.ref.number,
+          mergeMethod,
+          actor: nativeActor(req),
+        });
+        if (!result.ok) {
+          return res.status(result.status).json({
+            error: result.error,
+            ...(result.mergeable === false ? { mergeable: false } : {}),
+          });
+        }
+        return res.json({ ok: true, method: 'agenthub', pr: String(native.ref.number) });
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 500;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `Merge failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const pr = parsePrUrl(prUrl);
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
-    }
-    if (!ALLOWED_MERGE_METHODS.has(mergeMethod)) {
-      return res.status(400).json({ error: 'Invalid merge method' });
     }
 
     const userToken = await resolveUserToken(req, config);
@@ -97,6 +167,19 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
   router.post('/api/pr/close', async (req: Request, res: Response) => {
     const { prUrl } = req.body as PrActionBody;
+
+    const native = resolveNativePrRef(req, prUrl, deps);
+    if (native) {
+      try {
+        native.nativePr.close({ project: native.project, number: native.ref.number });
+        return res.json({ ok: true, method: 'agenthub', pr: String(native.ref.number) });
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 500;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `Close failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const pr = parsePrUrl(prUrl);
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
@@ -125,6 +208,35 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
   router.get('/api/pr/status', async (req: Request, res: Response) => {
     const prUrl = req.query.prUrl as string;
+
+    const native = resolveNativePrRef(req, prUrl, deps);
+    if (native) {
+      try {
+        const detail = await native.nativePr.getDetail({
+          project: native.project,
+          number: native.ref.number,
+        });
+        const pr = detail.pr as Record<string, unknown>;
+        return res.json({
+          number: String(native.ref.number),
+          state: pr.state,
+          mergeable: pr.mergeable,
+          mergeable_state: pr.mergeable_state,
+          title: pr.title,
+          user: pr.user,
+          head: pr.head,
+          base: pr.base,
+          additions: pr.additions,
+          deletions: pr.deletions,
+          changed_files: pr.changed_files,
+        });
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 500;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `Status check failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const pr = parsePrUrl(prUrl);
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL (pass as ?prUrl=...)' });
@@ -188,8 +300,35 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     return { owner, repo, number };
   }
 
+  // Shared native branch for the read proxies — they all key on ?prUrl.
+  function nativeFromQuery(req: Request) {
+    const prUrlRaw = (req.query.prUrl ?? req.query.url) as string | undefined;
+    return prUrlRaw ? resolveNativePrRef(req, prUrlRaw, deps) : null;
+  }
+
   // GET /api/pr/data — full PR detail (metadata + reviews + comments + checks)
   router.get('/api/pr/data', async (req: Request, res: Response) => {
+    const native = nativeFromQuery(req);
+    if (native) {
+      try {
+        const detail = await native.nativePr.getDetail({
+          project: native.project,
+          number: native.ref.number,
+        });
+        return res.json({
+          source: detail.source,
+          pr: detail.pr,
+          reviews: detail.reviews,
+          comments: detail.comments,
+          checks: detail.checks,
+        });
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `PR data fetch failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const parsed = parsePrQuery(req);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
 
@@ -216,6 +355,23 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
   // GET /api/pr/diff — unified diff (text/plain)
   router.get('/api/pr/diff', async (req: Request, res: Response) => {
+    const native = nativeFromQuery(req);
+    if (native) {
+      try {
+        const result = await native.nativePr.diff({
+          project: native.project,
+          number: native.ref.number,
+        });
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('X-PR-Source', result.source);
+        return res.send(result.diff);
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `PR diff fetch failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const parsed = parsePrQuery(req);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
 
@@ -238,6 +394,26 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
   // GET /api/pr/files — changed-files list (paginated, capped)
   router.get('/api/pr/files', async (req: Request, res: Response) => {
+    const native = nativeFromQuery(req);
+    if (native) {
+      try {
+        const result = await native.nativePr.files({
+          project: native.project,
+          number: native.ref.number,
+        });
+        return res.json({
+          source: result.source,
+          truncated: false,
+          files: result.files,
+          count: result.files.length,
+        });
+      } catch (err: unknown) {
+        const status = err instanceof NativePrError ? err.status : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(status).json({ error: `PR files fetch failed: ${msg.split('\n')[0]}` });
+      }
+    }
+
     const parsed = parsePrQuery(req);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
 

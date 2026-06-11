@@ -44,6 +44,7 @@ import {
 } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
+import { archiveHostedRepo, refreshBranchProtection } from '../git-host/repo-store.js';
 
 const execAsync = promisify(exec);
 import type {
@@ -2196,6 +2197,101 @@ This workspace has no git repo and no PR automation — your job is planning, or
         (project as Record<string, unknown>).prEnv = result.value;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'gitHost')) {
+      // gitHost transitions have filesystem side effects (bare repo
+      // creation/import, cwd origin rewrite) that a plain field write
+      // would skip — they only happen via the dedicated endpoints.
+      return res.status(400).json({
+        error:
+          'gitHost cannot be set directly — use POST /api/projects/:projectId/git-host/enable or /disable.',
+      });
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'gitMirror')) {
+      const rawMirror = (req.body as Record<string, unknown>).gitMirror;
+      if (rawMirror === null) {
+        delete (project as Record<string, unknown>).gitMirror;
+      } else if (typeof rawMirror !== 'object' || Array.isArray(rawMirror)) {
+        return res.status(400).json({ error: 'gitMirror must be an object or null' });
+      } else {
+        const m = rawMirror as Record<string, unknown>;
+        const next: { enabled?: boolean; refs?: 'default-branch' | 'all' } = {};
+        if (m.enabled !== undefined) {
+          if (typeof m.enabled !== 'boolean') {
+            return res.status(400).json({ error: 'gitMirror.enabled must be a boolean' });
+          }
+          next.enabled = m.enabled;
+        }
+        if (m.refs !== undefined) {
+          if (m.refs !== 'default-branch' && m.refs !== 'all') {
+            return res
+              .status(400)
+              .json({ error: 'gitMirror.refs must be "default-branch" or "all"' });
+          }
+          next.refs = m.refs;
+        }
+        (project as Record<string, unknown>).gitMirror = {
+          ...(project.gitMirror ?? {}),
+          ...next,
+        };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'ciOnPush')) {
+      const rawCi = (req.body as Record<string, unknown>).ciOnPush;
+      if (rawCi === null) {
+        delete (project as Record<string, unknown>).ciOnPush;
+      } else if (typeof rawCi !== 'object' || Array.isArray(rawCi)) {
+        return res.status(400).json({ error: 'ciOnPush must be an object or null' });
+      } else {
+        const enabled = (rawCi as Record<string, unknown>).enabled;
+        if (enabled !== undefined && typeof enabled !== 'boolean') {
+          return res.status(400).json({ error: 'ciOnPush.enabled must be a boolean' });
+        }
+        (project as Record<string, unknown>).ciOnPush = {
+          ...(project.ciOnPush ?? {}),
+          ...(enabled !== undefined ? { enabled } : {}),
+        };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'deleteBranchOnMerge')) {
+      const rawDel = (req.body as Record<string, unknown>).deleteBranchOnMerge;
+      if (rawDel === null) {
+        delete (project as Record<string, unknown>).deleteBranchOnMerge;
+      } else if (typeof rawDel !== 'boolean') {
+        return res.status(400).json({ error: 'deleteBranchOnMerge must be a boolean or null' });
+      } else {
+        (project as Record<string, unknown>).deleteBranchOnMerge = rawDel;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'branchProtection')) {
+      const rawBp = (req.body as Record<string, unknown>).branchProtection;
+      if (rawBp === null) {
+        delete (project as Record<string, unknown>).branchProtection;
+      } else if (typeof rawBp !== 'object' || Array.isArray(rawBp)) {
+        return res.status(400).json({ error: 'branchProtection must be an object or null' });
+      } else {
+        const merged: Record<string, boolean> = {
+          ...((project.branchProtection ?? {}) as Record<string, boolean>),
+        };
+        for (const key of ['requiredChecks', 'requiredReview', 'blockDirectPushes'] as const) {
+          const v = (rawBp as Record<string, unknown>)[key];
+          if (v === undefined) continue;
+          if (typeof v !== 'boolean') {
+            return res.status(400).json({ error: `branchProtection.${key} must be a boolean` });
+          }
+          merged[key] = v;
+        }
+        (project as Record<string, unknown>).branchProtection = merged;
+      }
+      // The pre-receive push block lives as a config file inside the bare
+      // repo — sync it whenever the setting changes (no-op if not hosted).
+      void refreshBranchProtection(project).catch((err: unknown) => {
+        console.error(
+          `[git-host] branch-protection refresh failed for ${project.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'repoUrl')) {
       // Accept null / empty string → clear the field. Otherwise must be a
       // recognised github-https URL. SSH URLs and other hosts are rejected
@@ -2387,6 +2483,19 @@ This workspace has no git repo and no PR automation — your job is planning, or
     }
 
     deleteProjectScopedRows(stmts, project);
+
+    // Hosted bare repo (gitHost: 'agenthub') is archived by rename, never
+    // deleted — recovering a project's history must stay possible.
+    try {
+      const archived = archiveHostedRepo(project.id);
+      if (archived) console.log(`[git-host] archived hosted repo for ${project.id}: ${archived}`);
+    } catch (err: unknown) {
+      console.warn(
+        `[git-host] archive on delete failed for ${project.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
     projects.splice(idx, 1);
     saveProjects();

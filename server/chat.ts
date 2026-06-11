@@ -124,6 +124,8 @@ import {
 } from './finalize/turn-end.js';
 import { applySessionGitGuards } from './finalize/spawn-ship-guards.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
+import { hostedBarePathForProject } from './git-host/repo-store.js';
+import { applyAgentHubGitSpawnCredentials } from './git-host/spawn-credentials.js';
 import {
   detectWikiRequestBlock,
   parseWikiRequestBlock,
@@ -382,6 +384,7 @@ export interface ChatHandlerDeps {
     projectId?: string,
     onBaseBranchAdvanced?: import('./worktree.js').OnBaseBranchAdvancedFn,
     githubRepo?: string | null,
+    hostedBarePath?: string | null,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
@@ -877,6 +880,14 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
     } catch {}
   }
 
+  // Agent Hub-hosted repos (gitHost 'agenthub') have the full branch/PR
+  // lifecycle without GitHub: origin is the Hub's repo and PRs are
+  // native. Treat them as "connected" for lifecycle guidance and label
+  // the push target accordingly.
+  const repoHostedOnHub = (project as Project).gitHost === 'agenthub';
+  if (repoHostedOnHub) isGitHubConnected = true;
+  const pushTargetLabel = repoHostedOnHub ? 'Agent Hub' : 'GitHub';
+
   const finalizeConfigured = options.finalizeConfigured === true;
   const finalizeTargetedTestGuidance =
     'When the Finalize runner is configured, only run tests you added or changed while debugging them. Existing tests and broader lint/check suites run in the runner/reviewer workflow.';
@@ -885,7 +896,7 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
   if (isFirstMessage) {
     if (finalizeConfigured && isGitHubConnected && projectMode !== 'workflow') {
       prompt += `\n\n## Finalize Code Changes — No Direct Ship
-This project has \`.agent-hub/ci.yaml\` configured. **You must not run \`git push\` or \`gh pr create\`** — the spawn environment blocks them until the human operator completes **Finalize Code Changes** on the session (rebase, review, tests) and clicks **Push to GitHub**.
+This project has \`.agent-hub/ci.yaml\` configured. **You must not run \`git push\` or \`gh pr create\`** — the spawn environment blocks them until the human operator completes **Finalize Code Changes** on the session (rebase, review, tests) and clicks **Push to ${pushTargetLabel}**.
 
 Your job ends at a clean local commit on the feature branch after tests pass. Do not ask permission to push or open a PR.`;
       if (promptWorktree && options.sessionWorktreePath) {
@@ -926,7 +937,7 @@ ${lifecycleStep1}
 2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${finalizeConfigured ? `Run **targeted** tests only while iterating. ${finalizeTargetedTestGuidance} **Do not run the full \`.agent-hub/ci.yaml\` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.` : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
-5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ' **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to GitHub** after gates pass.' : ' Commit, push, and open the PR with `gh pr create` yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and add a comment on the card containing the PR URL.'} Never merge your own PR.
+5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ` **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to ${pushTargetLabel}** after gates pass.` : ` Commit, push, and open the PR ${repoHostedOnHub ? 'via the Agent Hub API (`ah-api.sh POST "/api/projects/$PROJECT_ID/pulls"` with headBranch/title/body — this repo is hosted on Agent Hub, do NOT use `gh pr create`)' : 'with `gh pr create`'} yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and add a comment on the card containing the PR URL.`} Never merge your own PR.
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
@@ -2308,6 +2319,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             baseBranchAdvanced = info;
           },
           (project as Project).githubRepo ?? null,
+          hostedBarePathForProject(project as Project),
         );
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (session) {
@@ -3054,6 +3066,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // the credential cannot be used to forge commits or open PRs.
         applyReviewerRoleLock(base, agent.role);
         applyGithubSpawnCredentials(base, tokenToInject);
+        // Hub-hosted git remotes (gitHost: 'agenthub'): register a git
+        // credential helper for the Hub's own /git/<id>.git origins that
+        // derefs AGENT_HUB_API_KEY (injected by buildSpawnEnv). Harmless
+        // for GitHub-hosted projects — the helper only matches Hub origins.
+        applyAgentHubGitSpawnCredentials(base, config);
         // AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR are now injected by
         // `buildSpawnEnv` (server/config.ts) so every spawn site —
         // heartbeat, cron, delegation, room-chat, etc. — picks them up

@@ -17,6 +17,7 @@ import {
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
+import { parseNativePrUrl } from '../utils/prFormatting.js';
 
 /**
  * Org-wide dashboard. Renders the response from
@@ -456,6 +457,13 @@ function RecentActivity({
     }
     if (item.type === 'card_created' || item.type === 'card_updated') {
       const prUrl = meta.prUrl != null ? String(meta.prUrl) : '';
+      // Agent Hub-native PR URLs open the in-app Pull Requests view —
+      // they're client routes, not external pages.
+      const native = parseNativePrUrl(prUrl);
+      if (native && onOpenPulls) {
+        onOpenPulls(native.projectId);
+        return;
+      }
       if (prUrl && onOpenExternalUrl) {
         onOpenExternalUrl(prUrl);
         return;

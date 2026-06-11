@@ -298,7 +298,7 @@ export function createCardLifecycle(
     },
     onReadyToPush({ runId }) {
       postComment(
-        `Checks passed — click **Push to GitHub** on the session when you are ready to open the PR (run ${runId})`,
+        `Checks passed — click **Push** on the session when you are ready to open the PR (run ${runId})`,
       );
     },
     onTerminalFailed({ runId, status, failureReason, detail }) {

@@ -28,6 +28,10 @@ import {
 import { createTemplateExecutor } from '../provisioning/template-executor.js';
 import { createGithubExecutor } from '../provisioning/github.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
+import { bootstrapHostedGit } from '../provisioning/hosted-git-bootstrap.js';
+import { resolveTemplateId } from '../provisioning/stack-defaults.js';
+import { getTemplate } from '../provisioning/templates.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 /**
  * Injectable executor resolver — tests swap in fakes via this hook.
@@ -317,6 +321,38 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       project,
       saveProjects,
       broadcast,
+    });
+
+    // Agent Hub-originating dev projects are Hub-native out of the box:
+    // when the scaffold finishes, seed a starter ci.yaml from the
+    // template manifest, commit the tree, enable CI-on-push and Agent Hub
+    // git hosting. GitHub (when the wizard's integration ran) becomes the
+    // mirror; otherwise it can be linked later. Skipped entirely when the
+    // job errors out.
+    const requestingUserId = (req as AuthenticatedRequest).authUserId ?? null;
+    let manifest: { setup: string[]; test: string; lint: string } | null = null;
+    try {
+      manifest = getTemplate(resolveTemplateId(payload.appType, payload.stack)).manifest;
+    } catch {
+      manifest = null; // unknown stack — placeholder ci.yaml
+    }
+    let bootstrapped = false;
+    subscribeToJob(jobId, (ev) => {
+      if (bootstrapped || ev.type !== 'done') return;
+      // `partial` means the LOCAL scaffold succeeded and only an optional
+      // gh-* phase failed — exactly the case where Hub hosting matters
+      // most. Only a fatal (non-partial) failure skips the bootstrap.
+      const d = ev as { error?: unknown; partial?: boolean };
+      if (d.error && !d.partial) return;
+      bootstrapped = true;
+      void bootstrapHostedGit({
+        project,
+        workspaceDir: path.join(dataDir, 'workspace'),
+        manifest,
+        saveProjects,
+        broadcast,
+        requestingUserId,
+      });
     });
 
     return res.status(201).json({ jobId, wsUrl, projectId });

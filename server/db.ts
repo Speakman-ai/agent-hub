@@ -778,6 +778,87 @@ function initDb(dataDir: string): void {
   // `server/finalize/parity-store.ts`.
   db.exec(FINALIZE_PARITY_SCHEMA);
 
+  // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
+  // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,
+  // merge) is computed against the hosted bare repo (server/git-host/);
+  // this table is the metadata + numbering authority. `number` is
+  // per-project and allocated transactionally in server/native-pr/store.ts.
+  // status: 'open' | 'merged' | 'closed'. Timestamps are epoch ms
+  // (serialized to ISO at the API edge for GitHub-shape compatibility).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pull_requests (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      head_branch TEXT NOT NULL,
+      base_branch TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      author TEXT NOT NULL,
+      merged_sha TEXT,
+      merged_by TEXT,
+      merge_method TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      merged_at INTEGER,
+      closed_at INTEGER,
+      review_requested_at INTEGER,
+      review_requested_by TEXT,
+      UNIQUE(project_id, number)
+    );
+    CREATE INDEX IF NOT EXISTS pull_requests_project
+      ON pull_requests(project_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS pull_requests_head
+      ON pull_requests(project_id, head_branch);
+
+    -- Human reviews on native PRs (approve / request changes / comment).
+    -- Shape mirrors GitHub's review objects so the existing client review
+    -- UI (badges, activity timeline, autofix context) renders them
+    -- unchanged. The Finalize reviewer agent remains a separate system.
+    CREATE TABLE IF NOT EXISTS pull_request_reviews (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      reviewer TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('approved', 'changes_requested', 'commented')),
+      body TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pull_request_reviews_pr
+      ON pull_request_reviews(project_id, pr_number, created_at ASC);
+
+    -- Inline (per-line) review comments on native PR diffs, anchored to a
+    -- file + line in the PR's unified diff. side 'new' anchors to the
+    -- post-image line number (additions/context), 'old' to the pre-image
+    -- (deletions). Rendered inside the Files-changed diff and folded into
+    -- the Autofix prompt context.
+    CREATE TABLE IF NOT EXISTS pull_request_comments (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      author TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      side TEXT NOT NULL DEFAULT 'new' CHECK(side IN ('old', 'new')),
+      body TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pull_request_comments_pr
+      ON pull_request_comments(project_id, pr_number, file_path, line);
+  `);
+
+  // The pull_requests table shipped without the review-request columns in
+  // the same dev cycle — heal existing local DBs (no-op once present).
+  for (const col of ['review_requested_at INTEGER', 'review_requested_by TEXT']) {
+    try {
+      db.exec(`ALTER TABLE pull_requests ADD COLUMN ${col}`);
+    } catch {
+      /* column already exists */
+    }
+  }
+
   try {
     db.prepare('SELECT step_index FROM finalize_run_steps LIMIT 1').get();
   } catch {
@@ -3854,6 +3935,15 @@ function initDb(dataDir: string): void {
         WHERE run_id = ?
         ORDER BY job_id ASC, matrix_key ASC`,
     ),
+    // Run-history list for the Runners page (all triggers: finalize,
+    // autonomous, push-CI). Newest first, capped by the route.
+    listFinalizeRunsForProject: db.prepare(
+      `SELECT * FROM finalize_runs
+        WHERE project_id = ?
+          AND (? = 'all' OR trigger_source = ?)
+        ORDER BY started_at DESC
+        LIMIT ?`,
+    ),
     upsertFinalizeRunJobAttempt: db.prepare(
       `INSERT INTO finalize_run_job_attempts (
         run_id, job_id, matrix_key, round, state, exit_code, head_sha, recorded_at
@@ -3995,6 +4085,106 @@ function initDb(dataDir: string): void {
           AND observed_at >= ?
           AND observed_at < ?
         ORDER BY observed_at DESC`,
+    ),
+
+    // pull_requests — native PRs for Agent Hub-hosted projects. Number
+    // allocation (`maxPullRequestNumberForProject` + insert) MUST run
+    // inside a transaction — see server/native-pr/store.ts.
+    insertPullRequest: db.prepare(
+      `INSERT INTO pull_requests (
+        id, project_id, number, title, body, head_branch, base_branch,
+        head_sha, status, author, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+    ),
+    maxPullRequestNumberForProject: db.prepare(
+      'SELECT COALESCE(MAX(number), 0) AS max_number FROM pull_requests WHERE project_id = ?',
+    ),
+    getPullRequestByNumber: db.prepare(
+      'SELECT * FROM pull_requests WHERE project_id = ? AND number = ?',
+    ),
+    listPullRequestsForProject: db.prepare(
+      `SELECT * FROM pull_requests
+        WHERE project_id = ?
+          AND (? = 'all' OR (? = 'open' AND status = 'open') OR (? = 'closed' AND status != 'open'))
+        ORDER BY updated_at DESC
+        LIMIT ?`,
+    ),
+    getOpenPullRequestByHeadBranch: db.prepare(
+      `SELECT * FROM pull_requests
+        WHERE project_id = ? AND head_branch = ? AND status = 'open'
+        ORDER BY number DESC LIMIT 1`,
+    ),
+    updatePullRequestHead: db.prepare(
+      'UPDATE pull_requests SET head_sha = ?, title = ?, body = ?, updated_at = ? WHERE id = ?',
+    ),
+    // Title/body edit from the PR detail UI — open PRs only.
+    updatePullRequestText: db.prepare(
+      `UPDATE pull_requests SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    ),
+    markPullRequestMerged: db.prepare(
+      `UPDATE pull_requests
+          SET status = 'merged', merged_sha = ?, merged_by = ?, merge_method = ?,
+              merged_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'open'`,
+    ),
+    markPullRequestClosed: db.prepare(
+      `UPDATE pull_requests
+          SET status = 'closed', closed_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'open'`,
+    ),
+    // Guarded closed → open transition (merged PRs stay closed forever).
+    markPullRequestReopened: db.prepare(
+      `UPDATE pull_requests
+          SET status = 'open', closed_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'closed'`,
+    ),
+    // Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id).
+    setPullRequestReviewRequested: db.prepare(
+      'UPDATE pull_requests SET review_requested_at = ?, review_requested_by = ?, updated_at = ? WHERE id = ?',
+    ),
+    insertPullRequestReview: db.prepare(
+      `INSERT INTO pull_request_reviews (id, project_id, pr_number, reviewer, state, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    listPullRequestReviewsForPr: db.prepare(
+      `SELECT * FROM pull_request_reviews
+        WHERE project_id = ? AND pr_number = ?
+        ORDER BY created_at ASC`,
+    ),
+    insertPullRequestComment: db.prepare(
+      `INSERT INTO pull_request_comments (id, project_id, pr_number, author, file_path, line, side, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    listPullRequestCommentsForPr: db.prepare(
+      `SELECT * FROM pull_request_comments
+        WHERE project_id = ? AND pr_number = ?
+        ORDER BY created_at ASC`,
+    ),
+    getPullRequestComment: db.prepare('SELECT * FROM pull_request_comments WHERE id = ?'),
+    deletePullRequestComment: db.prepare('DELETE FROM pull_request_comments WHERE id = ?'),
+    // "Was this exact sha fully validated by Finalize?" — review + checks
+    // both passed (mode 'full' reaching ready_to_push/pushed). Drives the
+    // PR-level validation passthrough: validated heads skip PR CI.
+    getValidatedFinalizeRunForSha: db.prepare(
+      `SELECT * FROM finalize_runs
+        WHERE project_id = ? AND branch = ? AND validated_head_sha = ?
+          AND mode = 'full' AND status IN ('ready_to_push', 'pushed')
+        ORDER BY started_at DESC LIMIT 1`,
+    ),
+    // Latest CI-bearing run for a commit regardless of trigger (finalize,
+    // branch push CI, PR CI) — feeds the PR detail's checks rows.
+    getLatestFinalizeRunForSha: db.prepare(
+      `SELECT * FROM finalize_runs
+        WHERE project_id = ? AND (head_sha = ? OR validated_head_sha = ?)
+        ORDER BY started_at DESC LIMIT 1`,
+    ),
+    // ALL runs for a commit, newest first — per-job re-runs create runs
+    // holding a single job, so PR checks merge the newest result per job
+    // across runs (GitHub's per-check-name semantics).
+    listFinalizeRunsForSha: db.prepare(
+      `SELECT * FROM finalize_runs
+        WHERE project_id = ? AND (head_sha = ? OR validated_head_sha = ?)
+        ORDER BY started_at DESC LIMIT 20`,
     ),
   } as Stmts;
 

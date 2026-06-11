@@ -14,7 +14,9 @@ import {
   Wrench,
   Eye,
 } from 'lucide-react';
+import { Pencil, Check, X, Sparkles, SquareKanban } from 'lucide-react';
 import { api } from '../utils/api.js';
+import FileDiffView from './FileDiffView.jsx';
 import {
   relativePrTime,
   diffSummary,
@@ -115,6 +117,15 @@ function PrListItem({
           {pr.user ? `@${pr.user}` : ''}
           {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
         </div>
+        {pr.linked_card && (
+          <div
+            className="mt-1 flex items-center gap-1.5 text-xs text-sky-300/90"
+            data-testid={`pr-linked-card-${pr.number}`}
+          >
+            <SquareKanban size={12} className="flex-shrink-0" />
+            <span className="truncate">{pr.linked_card.title}</span>
+          </div>
+        )}
         {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
         {(ciBadge || reviewB || mBadge.show || pipeB) && (
           <div className="mt-2 flex flex-wrap gap-1.5 items-center">
@@ -224,7 +235,7 @@ function SectionHeader({ children }) {
   );
 }
 
-function CheckRow({ chk }) {
+function CheckRow({ chk, onRerunJob = null }) {
   const style = checkRowStyle(chk);
   const Icon = CHECK_ICONS[style.iconKey] || AlertCircle;
   const label = (chk.conclusion || chk.status || '').toLowerCase();
@@ -233,6 +244,7 @@ function CheckRow({ chk }) {
   const rowProps = clickable
     ? { href: chk.html_url, target: '_blank', rel: 'noopener noreferrer' }
     : {};
+  const rerunnable = typeof onRerunJob === 'function' && chk.job_id && chk.status === 'completed';
   return (
     <RowTag
       {...rowProps}
@@ -243,6 +255,21 @@ function CheckRow({ chk }) {
       <Icon size={16} className={`flex-shrink-0 ${style.color}`} />
       <span className="flex-1 text-sm text-white truncate">{chk.name || 'unnamed'}</span>
       <span className="text-xs text-gray-500">{label}</span>
+      {rerunnable && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRerunJob(chk.job_id);
+          }}
+          title={`Re-run ${chk.job_id}`}
+          data-testid={`check-rerun-${chk.job_id}`}
+          className="p-1 rounded text-gray-500 hover:text-gray-200 transition-colors flex-shrink-0"
+        >
+          <RefreshCw size={12} />
+        </button>
+      )}
     </RowTag>
   );
 }
@@ -405,6 +432,53 @@ function PrActivityTimeline({ pr, detail }) {
   );
 }
 
+/**
+ * Lazy-loaded "Files changed" section — works for GitHub and Hub PRs.
+ * For native PRs, inline review comments render in the diff and lines
+ * are commentable (hover "+").
+ */
+function PrFilesChanged({
+  prUrl,
+  inlineComments = [],
+  onAddComment = null,
+  onDeleteComment = null,
+}) {
+  const [diff, setDiff] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setDiff(null);
+    setError(null);
+    if (!prUrl) return;
+    try {
+      api
+        .getPrDiffText(prUrl)
+        .then(setDiff)
+        .catch((err) => setError(String(err?.message || err || 'Failed to load diff')));
+    } catch (err) {
+      setError(String(err?.message || err || 'Failed to load diff'));
+    }
+  }, [prUrl]);
+
+  if (error) return <p className="text-sm text-red-400">{error}</p>;
+  if (diff === null) {
+    return (
+      <p className="text-sm text-gray-500 flex items-center gap-2">
+        <Loader2 size={14} className="animate-spin" /> Loading diff…
+      </p>
+    );
+  }
+  return (
+    <FileDiffView
+      patch={diff}
+      emptyLabel="No file changes."
+      comments={inlineComments}
+      onAddComment={onAddComment}
+      onDeleteComment={onDeleteComment}
+    />
+  );
+}
+
 function PrDetail({
   detail,
   onBack,
@@ -417,9 +491,126 @@ function PrDetail({
   agentId,
   spawnedSessionId,
   onOpenSession,
+  projectId,
+  onToast,
+  onOpenCard,
 }) {
   const pr = detail?.pr;
+  const isNative = detail?.source === 'agenthub';
+  const isOpen = (pr?.state || '').toLowerCase() === 'open';
+  const isMerged = Boolean(pr?.merged_at);
+  const editable = isNative && isOpen;
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editBody, setEditBody] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const [togglingReview, setTogglingReview] = useState(false);
+  const [reviewVerdict, setReviewVerdict] = useState('approved');
+  const [reviewBody, setReviewBody] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
   if (!pr) return null;
+
+  const toastErr = (err) => {
+    if (onToast) onToast(String(err?.message || err || 'Request failed'), 'error', 6000);
+  };
+
+  const handleClose = async () => {
+    setClosing(true);
+    try {
+      await api.closePr(pr.html_url);
+      if (onToast) onToast(`PR #${pr.number} closed.`, 'success', 4000);
+      onRefresh();
+    } catch (err) {
+      toastErr(err);
+    } finally {
+      setClosing(false);
+    }
+  };
+
+  const handleReopen = async () => {
+    setReopening(true);
+    try {
+      await api.reopenNativePr(projectId, pr.number);
+      if (onToast) onToast(`PR #${pr.number} reopened.`, 'success', 4000);
+      onRefresh();
+    } catch (err) {
+      toastErr(err);
+    } finally {
+      setReopening(false);
+    }
+  };
+
+  const handleToggleReviewRequest = async () => {
+    setTogglingReview(true);
+    try {
+      await api.requestNativePrReview(projectId, pr.number, !pr.review_requested);
+      onRefresh();
+    } catch (err) {
+      toastErr(err);
+    } finally {
+      setTogglingReview(false);
+    }
+  };
+
+  // Re-run the backing CI run (all jobs, or one) — GitHub's re-run UX.
+  const ciRun = detail?.ci_run ?? null;
+  const ciRerunnable = isNative && ciRun && ciRun.status !== 'queued' && ciRun.status !== 'running';
+  const handleRerunChecks = async (jobId) => {
+    try {
+      await api.rerunCiRun(projectId, ciRun.id, jobId);
+      if (onToast) {
+        onToast(jobId ? `Re-running ${jobId}…` : 'Re-running all checks…', 'success', 4000);
+      }
+      // Give the queued run a beat to appear, then refresh; the live
+      // polling takes over once checks show as in progress.
+      setTimeout(() => onRefresh(), 1500);
+    } catch (err) {
+      toastErr(err);
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    if (reviewVerdict === 'commented' && !reviewBody.trim()) return;
+    setSubmittingReview(true);
+    try {
+      await api.submitNativePrReview(projectId, pr.number, {
+        state: reviewVerdict,
+        body: reviewBody,
+      });
+      setReviewBody('');
+      if (onToast) onToast('Review submitted.', 'success', 4000);
+      onRefresh();
+    } catch (err) {
+      toastErr(err);
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const startEdit = () => {
+    setEditTitle(pr.title || '');
+    setEditBody(pr.body || '');
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    if (!editTitle.trim()) return;
+    setSaving(true);
+    try {
+      await api.updateNativePr(projectId, pr.number, {
+        title: editTitle.trim(),
+        body: editBody,
+      });
+      setEditing(false);
+      onRefresh();
+    } catch (err) {
+      if (onToast) onToast(String(err?.message || err || 'Failed to save'), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const state = prStateBadge(pr);
   const checksSummary = summarizeChecks(detail.checks);
@@ -440,12 +631,12 @@ function PrDetail({
   const mergeTitle = merging
     ? 'Merging…'
     : !pr.html_url
-      ? 'No GitHub URL on this PR'
+      ? 'No PR URL available'
       : mergeState.reason;
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-4 md:p-6">
+      <div className="w-full p-4 md:p-6">
         <div className="flex items-center gap-3 mb-4">
           <button
             type="button"
@@ -482,21 +673,66 @@ function PrDetail({
               Resolve PR
             </button>
           )}
-          <button
-            type="button"
-            onClick={onMerge}
-            disabled={mergeDisabled}
-            title={mergeTitle}
-            aria-label={`Merge PR #${pr.number}`}
-            className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {merging ? (
-              <Loader2 size={14} className="animate-spin text-emerald-300" />
-            ) : (
-              <GitMerge size={14} className="text-emerald-300" />
-            )}
-            Merge
-          </button>
+          {isNative && isOpen && (
+            <button
+              type="button"
+              onClick={handleToggleReviewRequest}
+              disabled={togglingReview}
+              title={
+                pr.review_requested
+                  ? 'Clear the review-request flag'
+                  : 'Flag this PR for human review'
+              }
+              data-testid="pr-request-review-button"
+              className="flex items-center gap-1.5 text-sm text-amber-300 hover:text-amber-100 transition-colors disabled:opacity-50"
+            >
+              {togglingReview ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+              {pr.review_requested ? 'Review requested' : 'Request review'}
+            </button>
+          )}
+          {isOpen && (
+            <button
+              type="button"
+              onClick={handleClose}
+              disabled={closing || !pr.html_url}
+              title="Close this PR without merging"
+              data-testid="pr-close-button"
+              className="flex items-center gap-1.5 text-sm text-red-300 hover:text-red-100 transition-colors disabled:opacity-50"
+            >
+              {closing ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+              Close
+            </button>
+          )}
+          {isNative && !isOpen && !isMerged && (
+            <button
+              type="button"
+              onClick={handleReopen}
+              disabled={reopening}
+              title="Reopen this PR"
+              data-testid="pr-reopen-button"
+              className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors disabled:opacity-50"
+            >
+              {reopening ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Reopen
+            </button>
+          )}
+          {isOpen && (
+            <button
+              type="button"
+              onClick={onMerge}
+              disabled={mergeDisabled}
+              title={mergeTitle}
+              aria-label={`Merge PR #${pr.number}`}
+              className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {merging ? (
+                <Loader2 size={14} className="animate-spin text-emerald-300" />
+              ) : (
+                <GitMerge size={14} className="text-emerald-300" />
+              )}
+              Merge
+            </button>
+          )}
           <button
             type="button"
             onClick={onRefresh}
@@ -511,8 +747,57 @@ function PrDetail({
         <div className="flex items-center gap-2 mb-2">
           <Badge label={state.label} color={state.color} bg={state.bg} />
           <span className="text-xs font-medium text-gray-400">#{pr.number}</span>
+          {editable && !editing && (
+            <button
+              type="button"
+              onClick={startEdit}
+              title="Edit title and description"
+              data-testid="pr-edit-button"
+              className="ml-1 p-1 rounded text-gray-500 hover:text-gray-200 transition-colors"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
         </div>
-        <h2 className="text-xl font-semibold text-white mb-2">{pr.title}</h2>
+        {editing ? (
+          <div className="space-y-2 mb-2" data-testid="pr-edit-form">
+            <input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-lg font-semibold text-white focus:outline-none focus:border-gray-600"
+              placeholder="PR title"
+            />
+            <textarea
+              value={editBody}
+              onChange={(e) => setEditBody(e.target.value)}
+              rows={10}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+              placeholder="Description (markdown)"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={saving || !editTitle.trim()}
+                data-testid="pr-edit-save"
+                className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 px-3 py-1.5 transition-colors"
+              >
+                <X size={13} />
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <h2 className="text-xl font-semibold text-white mb-2">{pr.title}</h2>
+        )}
 
         <div className="text-xs text-gray-400">
           {pr.user ? `@${pr.user}` : 'unknown'}
@@ -525,6 +810,19 @@ function PrDetail({
           </div>
         )}
         <div className="text-xs text-gray-400 tabular-nums mt-1">{diffSummary(pr)}</div>
+        {pr.linked_card && (
+          <button
+            type="button"
+            onClick={() => onOpenCard && onOpenCard(pr.linked_card.id)}
+            disabled={typeof onOpenCard !== 'function'}
+            title="Open the kanban board"
+            data-testid="pr-detail-linked-card"
+            className="mt-2 inline-flex items-center gap-1.5 text-xs text-sky-300 hover:text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 px-2 py-1 rounded-lg transition-colors disabled:cursor-default disabled:hover:bg-sky-500/10"
+          >
+            <SquareKanban size={12} />
+            <span className="truncate max-w-[28rem]">{pr.linked_card.title}</span>
+          </button>
+        )}
 
         {Array.isArray(pr.labels) && pr.labels.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1">
@@ -539,7 +837,9 @@ function PrDetail({
           </div>
         )}
 
-        {pr.html_url && (
+        {/* External link only for real GitHub URLs — native PR URLs are
+            in-app client routes with nothing external to open. */}
+        {pr.html_url && /^https?:\/\//i.test(pr.html_url) && (
           <a
             href={pr.html_url}
             target="_blank"
@@ -551,8 +851,25 @@ function PrDetail({
           </a>
         )}
 
+        {!editing && pr.body && (
+          <>
+            <SectionHeader>Description</SectionHeader>
+            <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans bg-gray-900/40 border border-gray-800 rounded-lg p-3">
+              {pr.body}
+            </pre>
+          </>
+        )}
+
         {/* Summary strip: checks + reviews + mergeable */}
         <div className="flex flex-wrap gap-2 mt-5">
+          {pr.finalize_validated && (
+            <Badge
+              label="✓ Validated by Finalize"
+              color="text-emerald-300"
+              bg="bg-emerald-500/15"
+              title="This exact commit already passed review and CI checks in its Finalize run — PR-level CI is skipped."
+            />
+          )}
           <Badge label={cBadge.label} color={cBadge.color} bg={cBadge.bg} />
           <Badge label={rBadge.label} color={rBadge.color} bg={rBadge.bg} />
           {mBadge.show && (
@@ -564,26 +881,450 @@ function PrDetail({
           )}
         </div>
 
+        <SectionHeader>Files changed</SectionHeader>
+        <PrFilesChanged
+          prUrl={pr.html_url}
+          inlineComments={isNative ? (detail.inline_comments ?? []) : []}
+          onAddComment={
+            editable
+              ? async ({ filePath, line, side, body }) => {
+                  try {
+                    await api.addNativePrComment(projectId, pr.number, {
+                      filePath,
+                      line,
+                      side,
+                      body,
+                    });
+                    onRefresh();
+                  } catch (err) {
+                    toastErr(err);
+                  }
+                }
+              : null
+          }
+          onDeleteComment={
+            editable
+              ? async (comment) => {
+                  try {
+                    await api.deleteNativePrComment(projectId, pr.number, comment.id);
+                    onRefresh();
+                  } catch (err) {
+                    toastErr(err);
+                  }
+                }
+              : null
+          }
+        />
+
+        {isNative && (
+          <>
+            <SectionHeader>Reviews</SectionHeader>
+            {pr.review_requested && (
+              <p className="text-xs text-amber-300 mb-2" data-testid="pr-review-requested-hint">
+                Review requested{pr.review_requested_by ? ` by ${pr.review_requested_by}` : ''} —
+                awaiting a verdict.
+              </p>
+            )}
+            {(!detail.reviews || detail.reviews.length === 0) && (
+              <p className="text-sm text-gray-500 mb-2">No reviews yet.</p>
+            )}
+            {Array.isArray(detail.reviews) && detail.reviews.length > 0 && (
+              <div className="space-y-2 mb-3" data-testid="pr-reviews-list">
+                {detail.reviews.map((r) => (
+                  <div key={r.id} className="bg-gray-900/40 border border-gray-800 rounded-lg p-3">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-gray-300 font-medium">@{r.user || 'unknown'}</span>
+                      <span className={reviewStateColor(r.state)}>
+                        {String(r.state || '')
+                          .toLowerCase()
+                          .replace('_', ' ')}
+                      </span>
+                      <span className="ml-auto text-gray-600">
+                        {relativePrTime(r.submitted_at)}
+                      </span>
+                    </div>
+                    {r.body && (
+                      <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans mt-1.5">
+                        {r.body}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Autofix — hand the PR (incl. review feedback) to an agent. */}
+            {isOpen && (
+              <button
+                type="button"
+                onClick={onResolve}
+                disabled={resolveDisabled}
+                title={
+                  resolveTitle === 'Resolving…'
+                    ? resolveTitle
+                    : 'Spawn a session to address the review feedback, conflicts, or failing checks, then auto-push the fix to this PR'
+                }
+                data-testid="pr-autofix-button"
+                className="flex items-center gap-1.5 text-sm bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-3"
+              >
+                {resolving ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
+                Autofix from review
+              </button>
+            )}
+
+            {/* Review composer */}
+            {isOpen && (
+              <div
+                className="bg-gray-900/40 border border-gray-800 rounded-lg p-3 space-y-2"
+                data-testid="pr-review-composer"
+              >
+                <div className="flex items-center gap-2">
+                  <select
+                    value={reviewVerdict}
+                    onChange={(e) => setReviewVerdict(e.target.value)}
+                    className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                    data-testid="pr-review-verdict"
+                  >
+                    <option value="approved">Approve</option>
+                    <option value="changes_requested">Request changes</option>
+                    <option value="commented">Comment</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleSubmitReview}
+                    disabled={
+                      submittingReview || (reviewVerdict === 'commented' && !reviewBody.trim())
+                    }
+                    data-testid="pr-review-submit"
+                    className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    {submittingReview ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <CheckCircle2 size={13} />
+                    )}
+                    Submit review
+                  </button>
+                </div>
+                <textarea
+                  value={reviewBody}
+                  onChange={(e) => setReviewBody(e.target.value)}
+                  rows={3}
+                  placeholder="Review notes (required for comments, optional otherwise)…"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                />
+              </div>
+            )}
+          </>
+        )}
+
         <SectionHeader>Activity</SectionHeader>
         <p className="text-xs text-gray-500 mb-3">
-          Chronological history from GitHub (open/merge/close, checks, reviews, and issue comments).
+          Chronological history{isNative ? '' : ' from GitHub'} (open/merge/close, checks, reviews,
+          and comments).
         </p>
         <PrActivityTimeline pr={pr} detail={detail} />
 
         {/* CI Checks */}
-        <SectionHeader>CI Checks</SectionHeader>
+        <div className="flex items-center gap-3">
+          <SectionHeader>CI Checks</SectionHeader>
+          {ciRerunnable && (
+            <button
+              type="button"
+              onClick={() => handleRerunChecks()}
+              title="Re-run all checks against this commit"
+              data-testid="pr-rerun-checks"
+              className="mt-6 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              <RefreshCw size={12} />
+              Re-run all checks
+            </button>
+          )}
+        </div>
         {(!detail.checks || detail.checks.length === 0) && (
-          <p className="text-sm text-gray-500">No checks reported.</p>
+          <p className="text-sm text-gray-500" data-testid="pr-checks-empty-note">
+            {detail.checks_note || 'No checks reported.'}
+          </p>
         )}
         {Array.isArray(detail.checks) && detail.checks.length > 0 && (
           <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
             {detail.checks.map((chk, i) => (
-              <CheckRow key={chk.id || chk.name || i} chk={chk} />
+              <CheckRow
+                key={chk.id || chk.name || i}
+                chk={chk}
+                onRerunJob={ciRerunnable ? (jobId) => handleRerunChecks(jobId) : null}
+              />
             ))}
           </div>
         )}
 
         <div className="h-10" />
+      </div>
+    </div>
+  );
+}
+
+/** Default PR title from a branch name: last segment, separators → spaces. */
+function titleFromBranch(branch) {
+  const last = String(branch || '')
+    .split('/')
+    .pop()
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  return last ? last.charAt(0).toUpperCase() + last.slice(1) : branch;
+}
+
+/**
+ * GitHub-style "Compare & pull request" banner for a recently pushed
+ * branch with no open PR. Expands into an inline create form.
+ */
+function RecentPushBanner({ push, onCreate, projectId }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(() => titleFromBranch(push.branch));
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async () => {
+    if (!title.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate(push.branch, { title: title.trim(), body });
+    } catch (err) {
+      setError(String(err?.message || err || 'Failed to create PR'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Optional AI assist — fills the fields, which stay fully editable.
+  const generate = async () => {
+    if (generating) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const r = await api.generatePrDescription(projectId, push.branch);
+      if (r?.title) setTitle(r.title);
+      if (typeof r?.body === 'string') setBody(r.body);
+    } catch (err) {
+      setError(String(err?.message || err || 'Generation failed'));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div
+      className="bg-amber-950/20 border border-amber-700/40 rounded-lg p-3 mb-2"
+      data-testid={`recent-push-${push.branch}`}
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <GitPullRequest size={14} className="text-amber-400 flex-shrink-0" />
+        <code className="text-xs text-amber-200 bg-gray-900/60 px-1.5 py-0.5 rounded">
+          {push.branch}
+        </code>
+        <span className="text-xs text-amber-200/80">
+          had a recent push {relativePrTime(new Date(push.pushedAt).toISOString())}
+        </span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          data-testid={`recent-push-create-${push.branch}`}
+          className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+        >
+          {open ? 'Cancel' : 'Create pull request'}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2" data-testid={`recent-push-form-${push.branch}`}>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="PR title"
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600"
+          />
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={10}
+            placeholder={'## Summary\n…\n\n## Test plan\n…'}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+          />
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || !title.trim()}
+              data-testid={`recent-push-submit-${push.branch}`}
+              className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+            >
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />}
+              Create pull request
+            </button>
+            <button
+              type="button"
+              onClick={generate}
+              disabled={generating || busy}
+              title="Generate a title and description from the branch diff (you can still edit them)"
+              data-testid={`recent-push-generate-${push.branch}`}
+              className="flex items-center gap-1.5 text-sm text-purple-300 hover:text-purple-100 border border-purple-700/40 bg-purple-950/20 hover:bg-purple-950/40 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+              {generating ? 'Generating…' : 'Generate with AI'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * GitHub-style "New pull request" for any existing branch: pick a head
+ * branch, optionally AI-generate the text, create. Base is the default
+ * branch (matching the create endpoint's default).
+ */
+function NewPrPanel({ projectId, onCreate, onClose }) {
+  const [branchData, setBranchData] = useState(null);
+  const [branch, setBranch] = useState('');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getGitHostBranches(projectId)
+      .then((d) => alive && setBranchData(d))
+      .catch(() => alive && setBranchData({ defaultBranch: null, branches: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  const defaultBranch = branchData?.defaultBranch || 'main';
+  const candidates = (branchData?.branches || [])
+    .map((b) => b.name)
+    .filter((name) => name !== defaultBranch);
+
+  const pick = (name) => {
+    setBranch(name);
+    if (!title.trim()) setTitle(titleFromBranch(name));
+  };
+
+  const submit = async () => {
+    if (!branch || !title.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate(branch, { title: title.trim(), body });
+      onClose();
+    } catch (err) {
+      setError(String(err?.message || err || 'Failed to create PR'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const generate = async () => {
+    if (!branch || generating) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const r = await api.generatePrDescription(projectId, branch);
+      if (r?.title) setTitle(r.title);
+      if (typeof r?.body === 'string') setBody(r.body);
+    } catch (err) {
+      setError(String(err?.message || err || 'Generation failed'));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div
+      className="bg-gray-900 border border-gray-700 rounded-lg p-4 mb-4 space-y-2"
+      data-testid="new-pr-panel"
+    >
+      <div className="flex items-center gap-2">
+        <GitPullRequest size={15} className="text-gray-400" />
+        <span className="text-sm font-medium text-white">New pull request</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-500 hover:text-gray-300 transition-colors"
+          aria-label="Close new pull request panel"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex items-center gap-2 text-sm">
+        <select
+          value={branch}
+          onChange={(e) => pick(e.target.value)}
+          data-testid="new-pr-branch"
+          className="bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600 max-w-[50%]"
+        >
+          <option value="">{branchData === null ? 'Loading branches…' : 'Select a branch…'}</option>
+          {candidates.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <span className="text-gray-500">→</span>
+        <code className="text-xs bg-gray-800/60 px-1.5 py-0.5 rounded text-gray-300">
+          {defaultBranch}
+        </code>
+      </div>
+      {branchData !== null && candidates.length === 0 && (
+        <p className="text-xs text-gray-500">
+          No branches besides {defaultBranch} — push a branch first.
+        </p>
+      )}
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="PR title"
+        className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600"
+      />
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={10}
+        placeholder={'## Summary\n…\n\n## Test plan\n…'}
+        className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+      />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy || !branch || !title.trim()}
+          data-testid="new-pr-submit"
+          className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+        >
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <GitPullRequest size={13} />}
+          Create pull request
+        </button>
+        <button
+          type="button"
+          onClick={generate}
+          disabled={generating || busy || !branch}
+          title="Generate a title and description from the branch diff (you can still edit them)"
+          data-testid="new-pr-generate"
+          className="flex items-center gap-1.5 text-sm text-purple-300 hover:text-purple-100 border border-purple-700/40 bg-purple-950/20 hover:bg-purple-950/40 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+        >
+          {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+          {generating ? 'Generating…' : 'Generate with AI'}
+        </button>
       </div>
     </div>
   );
@@ -596,6 +1337,8 @@ export default function PullRequestsPage({
   project,
   onOpenSession,
   onToast,
+  /** Navigate to the kanban board (linked-card chip). */
+  onOpenCard = null,
   /** Bumped from App when GitHub/kanban activity should re-sync the open PR list. */
   listRefreshNonce = 0,
   /** When set, opens this PR's detail view on mount (e.g. from session summary). */
@@ -664,14 +1407,61 @@ export default function PullRequestsPage({
   const loadListRef = useRef(loadList);
   loadListRef.current = loadList;
 
+  // Recently pushed branches without an open PR — the GitHub-style
+  // "Compare & pull request" banner (Hub-hosted projects only).
+  const isHostedProject = project?.gitHost === 'agenthub';
+  const [showNewPr, setShowNewPr] = useState(false);
+  const [recentPushes, setRecentPushes] = useState([]);
+  const loadRecentPushes = useCallback(async () => {
+    if (!projectId || !isHostedProject) return;
+    try {
+      const data = await api.getGitHostRecentPushes(projectId);
+      setRecentPushes(data.pushes || []);
+    } catch {
+      setRecentPushes([]);
+    }
+  }, [projectId, isHostedProject]);
+
+  const handleCreatePrFromBranch = useCallback(
+    async (branch, { title, body }) => {
+      const res = await api.createNativePr(projectId, {
+        headBranch: branch,
+        title,
+        body,
+      });
+      if (typeof onToast === 'function') {
+        onToast(
+          res.created
+            ? `PR #${res.number} opened for ${branch}.`
+            : `PR #${res.number} already open.`,
+          'success',
+          5000,
+        );
+      }
+      loadRecentPushes();
+      loadListRef.current({ soft: true });
+      setSelectedNumber(res.number);
+      setDetail(null);
+      loadDetailRef.current?.(res.number);
+      return res;
+    },
+    [projectId, onToast, loadRecentPushes],
+  );
+  const loadDetailRef = useRef(null);
+
   useEffect(() => {
     loadList({ soft: false });
-  }, [loadList]);
+    loadRecentPushes();
+  }, [loadList, loadRecentPushes]);
 
+  const selectedNumberRef = useRef(null);
   useEffect(() => {
     if (!listRefreshNonce) return;
     loadListRef.current({ soft: true });
-  }, [listRefreshNonce]);
+    loadRecentPushes();
+    // Keep an open detail view live too — CI job/PR events bump this nonce.
+    if (selectedNumberRef.current) loadDetailRef.current?.(selectedNumberRef.current);
+  }, [listRefreshNonce, loadRecentPushes]);
 
   const loadDetail = useCallback(
     async (number) => {
@@ -705,6 +1495,20 @@ export default function PullRequestsPage({
     setDetail(null);
     loadDetail(n);
   }, [initialPrNumber, projectId, loadDetail]);
+
+  loadDetailRef.current = loadDetail;
+  selectedNumberRef.current = selectedNumber;
+
+  // Poll while checks are running so job states tick over even if a WS
+  // event is missed (mirrors the Runners page's live polling).
+  const hasLiveChecks =
+    Array.isArray(detail?.checks) &&
+    detail.checks.some((c) => c.status === 'queued' || c.status === 'in_progress');
+  useEffect(() => {
+    if (!hasLiveChecks || !selectedNumber) return undefined;
+    const t = setInterval(() => loadDetailRef.current?.(selectedNumber), 8000);
+    return () => clearInterval(t);
+  }, [hasLiveChecks, selectedNumber]);
 
   const handleSelect = (pr) => {
     setSelectedNumber(pr.number);
@@ -979,6 +1783,9 @@ export default function PullRequestsPage({
           agentId={resolveAgentId}
           spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
           onOpenSession={onOpenSession}
+          projectId={projectId}
+          onToast={onToast}
+          onOpenCard={onOpenCard}
         />
       );
     }
@@ -987,7 +1794,7 @@ export default function PullRequestsPage({
   // ── List view ──
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
-      <div className="max-w-4xl mx-auto">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
             <h2 className="text-2xl font-bold text-white flex items-center gap-3">
@@ -1032,8 +1839,37 @@ export default function PullRequestsPage({
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
               Refresh
             </button>
+            {isHostedProject && (
+              <button
+                type="button"
+                onClick={() => setShowNewPr((v) => !v)}
+                data-testid="new-pr-button"
+                className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <GitPullRequest size={14} />
+                New pull request
+              </button>
+            )}
           </div>
         </div>
+
+        {showNewPr && isHostedProject && (
+          <NewPrPanel
+            projectId={projectId}
+            onCreate={handleCreatePrFromBranch}
+            onClose={() => setShowNewPr(false)}
+          />
+        )}
+
+        {/* GitHub-style "Compare & pull request" banners for recent pushes */}
+        {recentPushes.map((push) => (
+          <RecentPushBanner
+            key={push.branch}
+            push={push}
+            onCreate={handleCreatePrFromBranch}
+            projectId={projectId}
+          />
+        ))}
 
         {/* State tabs */}
         <div className="flex gap-2 mb-4">

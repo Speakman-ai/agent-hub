@@ -45,6 +45,8 @@ export default function FinalizeButton({
   pendingChanges = null,
   onError,
   variant = 'default',
+  /** True when the project's repo is hosted on Agent Hub (gitHost 'agenthub'). */
+  hosted = false,
 }) {
   const { run, steps, phases, status, phase, activeSeconds } = useFinalizeRun({
     sessionId,
@@ -323,10 +325,10 @@ export default function FinalizeButton({
               : !hasCommittableChanges
                 ? noChangesHint
                 : fullyValidated
-                  ? 'Review and checks passed — push branch and open PR on GitHub'
+                  ? `Review and checks passed — push branch and open PR on ${hosted ? 'Agent Hub' : 'GitHub'}`
                   : 'Push anyway (review and checks have not both passed)'
           }
-          aria-label="Push to GitHub"
+          aria-label={hosted ? 'Push to Agent Hub' : 'Push to GitHub'}
           aria-busy={pushPending}
           data-testid="finalize-push-to-github-button"
           className={pushClasses}
@@ -336,7 +338,7 @@ export default function FinalizeButton({
           ) : (
             <Upload size={compact ? 12 : 14} />
           )}
-          Push to GitHub
+          {hosted ? 'Push to Agent Hub' : 'Push to GitHub'}
         </button>
       ) : null}
     </div>

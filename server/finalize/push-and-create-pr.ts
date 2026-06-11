@@ -26,6 +26,8 @@ import {
   resolveAutoGitGithubToken,
   resolveOrgOwnerGithubToken,
 } from '../auto-git.js';
+import type { NativePrService } from '../native-pr/service.js';
+import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
 import type {
   PushAndCreatePrArgs,
   PushAndCreatePrFn,
@@ -42,7 +44,7 @@ const execFileAsync = promisify(execFile);
  * Finalize push path otherwise discards. Folding it in here is what makes the
  * `[finalize-push] github_push_5xx ...` server log line actionable.
  */
-async function execGit(
+export async function execGit(
   file: string,
   argv: string[],
   opts: Parameters<typeof execFileAsync>[2],
@@ -106,7 +108,7 @@ function normalizeTitle(rawTitle: string): string {
     : stripped;
 }
 
-async function collectPrCommits(
+export async function collectPrCommits(
   worktreePath: string,
   baseBranch: string,
   env: NodeJS.ProcessEnv,
@@ -138,7 +140,7 @@ async function collectPrCommits(
   return [];
 }
 
-async function collectPrDiffStat(
+export async function collectPrDiffStat(
   worktreePath: string,
   baseBranch: string,
   env: NodeJS.ProcessEnv,
@@ -160,7 +162,11 @@ async function collectPrDiffStat(
   return '';
 }
 
-function buildPrDetails(args: PushAndCreatePrArgs, commits: CommitInfo[], diffStat: string) {
+export function buildPrDetails(
+  args: PushAndCreatePrArgs,
+  commits: CommitInfo[],
+  diffStat: string,
+): { title: string; body: string } {
   const firstCommit = commits[0];
   const title = normalizeTitle(firstCommit?.subject ?? args.card.title);
   const cardDescription = args.card.description?.trim() ?? '';
@@ -225,11 +231,31 @@ function buildPrDetails(args: PushAndCreatePrArgs, commits: CommitInfo[], diffSt
 /**
  * Build a real {@link PushAndCreatePrFn} bound to the supplied `AppConfig`.
  * The orchestrator calls the returned function once per finalize run.
+ *
+ * Host selection happens per-project inside the returned function (NOT a
+ * top-level backend interface): the seam already receives `args.project`,
+ * and Agent Hub-hosted projects (`gitHost: 'agenthub'`) push to the Hub's
+ * bare repo + create a native PR (push-and-create-pr-agenthub.ts) while
+ * everything else keeps the GitHub `git push` + `gh pr create` path
+ * byte-for-byte.
  */
 export function createPushAndCreatePr(deps: {
   config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+  /** Required when any project opts into `gitHost: 'agenthub'`. */
+  nativePr?: NativePrService;
 }): PushAndCreatePrFn {
   return async function pushAndCreatePr(args: PushAndCreatePrArgs): Promise<PushAndCreatePrResult> {
+    // Agent Hub-hosted projects push to the Hub's bare repo and create a
+    // native PR — no GitHub token involved.
+    if (args.project.gitHost === 'agenthub') {
+      if (!deps.nativePr) {
+        throw new Error(
+          `project ${args.project.id} uses gitHost 'agenthub' but the native PR service is not wired`,
+        );
+      }
+      return pushAndCreateNativePr(deps.nativePr, args);
+    }
+
     // Prefer the session owner's personal GitHub token so the push and the
     // `gh pr create` are attributed to the user who triggered Finalize — not
     // an arbitrary org Owner. Falls back to the org-owner token only when the

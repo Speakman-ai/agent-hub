@@ -91,6 +91,33 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Agent Hub-hosted git (gitHost: 'agenthub') — see server/routes/git-host.ts
+  getGitHostStatus: (projectId) => fetchJSON(`/projects/${projectId}/git-host`),
+  enableGitHost: (projectId, importFrom) =>
+    fetchJSON(`/projects/${projectId}/git-host/enable`, {
+      method: 'POST',
+      body: JSON.stringify(importFrom ? { importFrom } : {}),
+    }),
+  disableGitHost: (projectId) =>
+    fetchJSON(`/projects/${projectId}/git-host/disable`, { method: 'POST' }),
+  getGitHostBranches: (projectId) => fetchJSON(`/projects/${projectId}/git-host/branches`),
+  deleteGitHostBranch: (projectId, branch) =>
+    fetchJSON(`/projects/${projectId}/git-host/branches/${encodeURIComponent(branch)}`, {
+      method: 'DELETE',
+    }),
+  setGitHostDefaultBranch: (projectId, branch) =>
+    fetchJSON(`/projects/${projectId}/git-host/default-branch`, {
+      method: 'POST',
+      body: JSON.stringify({ branch }),
+    }),
+  getGitHostCommits: (projectId, { branch, limit = 50 } = {}) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    params.set('limit', String(limit));
+    return fetchJSON(`/projects/${projectId}/git-host/commits?${params}`);
+  },
+  getGitHostCommitDetail: (projectId, sha) =>
+    fetchJSON(`/projects/${projectId}/git-host/commits/${encodeURIComponent(sha)}`),
   getProjectSecrets: (projectId) => fetchJSON(`/projects/${projectId}/secrets`),
   putProjectSecrets: (projectId, secrets) =>
     fetchJSON(`/projects/${projectId}/secrets`, {
@@ -334,6 +361,64 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ force }),
     }),
+  // Unified diff for a PR (text/plain) — GitHub or Agent Hub-native by URL.
+  getPrDiffText: async (prUrl) => {
+    const res = await fetch(`${getApiBase()}/pr/diff?prUrl=${encodeURIComponent(prUrl)}`, {
+      headers: { ...getAuthHeaders() },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw new Error(`Diff fetch failed (${res.status})`);
+    return res.text();
+  },
+  // Edit a native (Agent Hub-hosted) pull request's title/body.
+  updateNativePr: (projectId, number, data) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  // Create (or reuse) a native PR for a branch already pushed to the Hub.
+  createNativePr: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/pulls`, { method: 'POST', body: JSON.stringify(data) }),
+  // AI-suggested PR title/body from the branch diff (60-90s model call).
+  generatePrDescription: (projectId, headBranch) =>
+    fetchJSON(`/projects/${projectId}/pulls/generate-description`, {
+      method: 'POST',
+      body: JSON.stringify({ headBranch }),
+      timeout: 120000,
+    }),
+  // Recently pushed branches without an open PR (Compare & PR banner).
+  getGitHostRecentPushes: (projectId) => fetchJSON(`/projects/${projectId}/git-host/recent-pushes`),
+  reopenNativePr: (projectId, number) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/reopen`, { method: 'POST' }),
+  requestNativePrReview: (projectId, number, requested = true) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/request-review`, {
+      method: 'POST',
+      body: JSON.stringify({ requested }),
+    }),
+  submitNativePrReview: (projectId, number, { state, body = '' }) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify({ state, body }),
+    }),
+  addNativePrComment: (projectId, number, { filePath, line, side = 'new', body }) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ filePath, line, side, body }),
+    }),
+  deleteNativePrComment: (projectId, number, commentId) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/comments/${commentId}`, {
+      method: 'DELETE',
+    }),
+  // Re-run a finished push/pr-ci run — all jobs, or one job when jobId set.
+  rerunCiRun: (projectId, runId, jobId) =>
+    fetchJSON(`/projects/${projectId}/ci-runs/${runId}/rerun`, {
+      method: 'POST',
+      body: JSON.stringify(jobId ? { jobId } : {}),
+    }),
+  // Run history (Runners page) — finalize + push-CI runs.
+  getCiRuns: (projectId, { trigger = 'all', limit = 30 } = {}) =>
+    fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
+  getCiRunDetail: (projectId, runId) => fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
   getFinalizeStepOutput: (projectId, runId, stepIndex, opts = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/steps/${stepIndex}/output`, {
       signal: opts.signal,

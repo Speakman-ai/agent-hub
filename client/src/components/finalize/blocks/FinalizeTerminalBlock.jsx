@@ -3,10 +3,10 @@ import { parseFinalizeTerminalMetadata } from '../../../utils/finalizeTimeline.j
 import { prNumberFromUrl } from '../../../utils/prFormatting.js';
 import { relativeTime } from '../../../utils/time.js';
 
-function labelForStatus(status, failureReason) {
+function labelForStatus(status, failureReason, hostLabel) {
   switch (status) {
     case 'pushed':
-      return 'Pushed to GitHub';
+      return `Pushed to ${hostLabel}`;
     case 'cancelled':
       return 'Cancelled';
     case 'ready_to_push':
@@ -20,7 +20,7 @@ function labelForStatus(status, failureReason) {
   }
 }
 
-export default function FinalizeTerminalBlock({ message }) {
+export default function FinalizeTerminalBlock({ message, hosted = false }) {
   const meta = parseFinalizeTerminalMetadata(message.metadata);
   if (!meta) return null;
 
@@ -40,6 +40,16 @@ export default function FinalizeTerminalBlock({ message }) {
 
   const prUrl = meta.status === 'pushed' ? meta.prUrl : null;
   const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
+  // Native PR URLs are in-app client routes (no http origin) — the push
+  // landed on the Hub, not GitHub. When there's no PR URL to infer from
+  // (failures, old messages), fall back to the live project state.
+  const hostLabel = prUrl
+    ? /^https?:\/\//i.test(prUrl)
+      ? 'GitHub'
+      : 'Agent Hub'
+    : hosted
+      ? 'Agent Hub'
+      : 'GitHub';
   const linkTone = isWarn
     ? 'text-amber-300 hover:text-amber-200'
     : 'text-emerald-300 hover:text-emerald-200';
@@ -51,8 +61,8 @@ export default function FinalizeTerminalBlock({ message }) {
           <Icon className={`w-4 h-4 shrink-0 ${tone}`} />
           <p className={`text-sm font-medium ${tone}`}>
             {bypassedPush
-              ? 'Pushed to GitHub without tests or review'
-              : labelForStatus(meta.status, meta.failureReason)}
+              ? `Pushed to ${hostLabel} without tests or review`
+              : labelForStatus(meta.status, meta.failureReason, hostLabel)}
           </p>
         </div>
         {bypassedPush ? (
@@ -61,16 +71,30 @@ export default function FinalizeTerminalBlock({ message }) {
           </p>
         ) : null}
         {prUrl ? (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium underline ${linkTone}`}
-            data-testid="finalize-terminal-pr-link"
-          >
-            <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
-            {prNumber ? `View PR #${prNumber}` : 'View pull request'}
-          </a>
+          /^https?:\/\//i.test(prUrl) ? (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium underline ${linkTone}`}
+              data-testid="finalize-terminal-pr-link"
+            >
+              <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+              {prNumber ? `View PR #${prNumber}` : 'View pull request'}
+            </a>
+          ) : (
+            /* Agent Hub-native PR — a relative client route, not an external
+               page. Shown as a labelled chip; the Pull Requests page is the
+               in-app navigation surface. */
+            <span
+              className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium ${linkTone}`}
+              data-testid="finalize-terminal-pr-link"
+              title={prUrl}
+            >
+              <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+              {prNumber ? `PR #${prNumber} (Pull Requests page)` : 'Pull request created'}
+            </span>
+          )
         ) : null}
         {message.created_at ? (
           <div className="text-[11px] text-gray-600 mt-1.5">{relativeTime(message.created_at)}</div>

@@ -269,6 +269,63 @@ export interface SlackBotRow {
   updated_at: string;
 }
 
+/**
+ * Native pull request row (Agent Hub-hosted projects, `gitHost:
+ * 'agenthub'`). Metadata lives here; diffs/files/merges are computed
+ * against the hosted bare repo in `server/native-pr/`. Timestamps are
+ * epoch ms — serialized to ISO at the API edge so responses stay
+ * GitHub-shape-compatible for the existing client.
+ */
+export interface PullRequestRow {
+  id: string;
+  project_id: string;
+  /** Per-project sequence allocated transactionally on insert. */
+  number: number;
+  title: string;
+  body: string;
+  head_branch: string;
+  base_branch: string;
+  head_sha: string;
+  status: 'open' | 'merged' | 'closed';
+  /** userId or 'finalize' for orchestrator-created PRs. */
+  author: string;
+  merged_sha: string | null;
+  merged_by: string | null;
+  merge_method: 'squash' | 'merge' | null;
+  created_at: number;
+  updated_at: number;
+  merged_at: number | null;
+  closed_at: number | null;
+  /** Set when a human flagged the PR for review (cleared by approve/changes-requested). */
+  review_requested_at: number | null;
+  review_requested_by: string | null;
+}
+
+/** Inline (per-line) review comment on a native PR diff. */
+export interface PullRequestCommentRow {
+  id: string;
+  project_id: string;
+  pr_number: number;
+  author: string;
+  file_path: string;
+  /** Line number on the chosen side of the diff. */
+  line: number;
+  side: 'old' | 'new';
+  body: string;
+  created_at: number;
+}
+
+/** Human review on a native PR (see pull_request_reviews DDL). */
+export interface PullRequestReviewRow {
+  id: string;
+  project_id: string;
+  pr_number: number;
+  reviewer: string;
+  state: 'approved' | 'changes_requested' | 'commented';
+  body: string;
+  created_at: number;
+}
+
 export interface DelegationRow {
   id: string;
   session_id: string;
@@ -806,7 +863,12 @@ export interface FinalizeRunRow {
   idempotency_key: string;
   status: FinalizeRunStatus;
   phase: FinalizeRunPhase | null;
-  trigger_source: 'ui_button' | 'agent_block';
+  /**
+   * `git_push` = report-only "CI on push" run against the default branch;
+   * `pr_push` = PR-level CI fallback for an unvalidated PR head
+   * (server/git-host/push-ci.ts).
+   */
+  trigger_source: 'ui_button' | 'agent_block' | 'git_push' | 'pr_push';
   worktree_path: string | null;
   triggered_by_user_id: string;
   /** Snapshot of the triggering user's git identity at start time. */
@@ -884,6 +946,8 @@ export type FinalizeRunStatus =
   | 'pushing'
   | 'ready_to_push'
   | 'pushed'
+  /** Terminal green for report-only push-CI runs (trigger_source 'git_push') — no push step follows. */
+  | 'succeeded'
   | 'failed'
   | 'timed_out'
   | 'infra_error'
@@ -1712,6 +1776,45 @@ export interface Stmts {
    * `(project_id, from_inclusive_ms, to_exclusive_ms)`.
    */
   listFinalizeParityInRange: Stmt;
+
+  // ── pull_requests — native PRs for Agent Hub-hosted projects ──────
+  /** Insert an open PR row. Number allocation must be transactional — see `server/native-pr/store.ts`. */
+  insertPullRequest: Stmt;
+  /** `SELECT COALESCE(MAX(number), 0)` for per-project number allocation. */
+  maxPullRequestNumberForProject: Stmt;
+  getPullRequestByNumber: Stmt;
+  /** Params: (project_id, state, state, state, limit) where state ∈ 'open'|'closed'|'all'. */
+  listPullRequestsForProject: Stmt;
+  /** Newest open PR for (project_id, head_branch) — finalize idempotent reuse. */
+  getOpenPullRequestByHeadBranch: Stmt;
+  /** Refresh head_sha/title/body on reuse. Params: (head_sha, title, body, updated_at, id). */
+  updatePullRequestHead: Stmt;
+  /** Title/body edit (open PRs only). Params: (title, body, updated_at, id). */
+  updatePullRequestText: Stmt;
+  /** Guarded `status='open'` → 'merged' transition. */
+  markPullRequestMerged: Stmt;
+  /** Guarded `status='open'` → 'closed' transition. */
+  markPullRequestClosed: Stmt;
+  /** Guarded `status='closed'` → 'open' transition (merged stays closed). */
+  markPullRequestReopened: Stmt;
+  /** Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id). */
+  setPullRequestReviewRequested: Stmt;
+  /** Insert a human review row. Params: (id, project_id, pr_number, reviewer, state, body, created_at). */
+  insertPullRequestReview: Stmt;
+  listPullRequestReviewsForPr: Stmt;
+  /** Inline diff comment. Params: (id, project_id, pr_number, author, file_path, line, side, body, created_at). */
+  insertPullRequestComment: Stmt;
+  listPullRequestCommentsForPr: Stmt;
+  getPullRequestComment: Stmt;
+  deletePullRequestComment: Stmt;
+  /** Fully-validated finalize run for (project, branch, sha) — PR validation passthrough. */
+  getValidatedFinalizeRunForSha: Stmt;
+  /** Latest run carrying CI jobs for (project, sha, sha) — PR checks display. */
+  getLatestFinalizeRunForSha: Stmt;
+  /** All runs for (project, sha, sha) newest first — per-job merge for PR checks. */
+  listFinalizeRunsForSha: Stmt;
+  /** Run-history list (Runners page). Params: (project_id, trigger, trigger, limit) — trigger 'all' disables the filter. */
+  listFinalizeRunsForProject: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
@@ -2171,6 +2274,59 @@ export interface Project {
    * `githubRepo` (an `owner/repo` string used by webhook config).
    */
   repoUrl?: string | null;
+  /**
+   * Which host is the canonical git remote for this project. Absent or
+   * `'github'` = legacy behavior (origin → GitHub, PRs via `gh`/REST).
+   * `'agenthub'` = the Hub hosts the canonical bare repo under
+   * `<dataDir>/git/<projectId>.git` (see `server/git-host/repo-store.ts`),
+   * session pushes land there, and PRs are native Hub entities
+   * (`server/native-pr/`). State transitions happen ONLY via the
+   * git-host enable/disable routes — they have filesystem side effects
+   * (bare repo creation, cwd origin rewrite) — so the projects PATCH
+   * endpoint rejects direct writes to this field.
+   */
+  gitHost?: 'agenthub' | 'github';
+  /**
+   * One-way Hub → GitHub mirror policy for `gitHost: 'agenthub'` projects.
+   * `refs: 'default-branch'` (default) pushes only the default branch (+
+   * tags) after it moves — enough to keep GitHub Actions/deploys working.
+   * `'all'` mirrors every branch. Mirror failures never block Hub pushes;
+   * see `server/git-host/mirror.ts`.
+   */
+  gitMirror?: { enabled?: boolean; refs?: 'default-branch' | 'all' };
+  /**
+   * "CI on push" for Agent Hub-hosted projects: when enabled and the
+   * default branch moves (smart-HTTP push or native PR merge), the repo's
+   * `.agent-hub/ci.yaml` (version 2) jobs run against the new commit and
+   * results land in finalize_runs with `trigger_source: 'git_push'` —
+   * report-only (no reviewer / fix-dispatch / push step). See
+   * `server/git-host/push-ci.ts` and the Runners settings section.
+   */
+  ciOnPush?: { enabled?: boolean };
+  /**
+   * Branch protection for the hosted repo's default branch (Agent
+   * Hub-hosted projects only).
+   * - `requiredChecks`: PRs into the default branch merge only when the
+   *   head sha is Finalize-validated or its CI run succeeded (vacuous
+   *   when the commit carries no `.agent-hub/ci.yaml`).
+   * - `requiredReview`: merge requires an approving human review or
+   *   Finalize validation (which includes the in-hub reviewer);
+   *   changes-requested blocks regardless.
+   * - `blockDirectPushes`: a pre-receive hook rejects direct pushes to
+   *   the default branch — it only moves via PR merges (update-ref does
+   *   not run hooks).
+   */
+  branchProtection?: {
+    requiredChecks?: boolean;
+    requiredReview?: boolean;
+    blockDirectPushes?: boolean;
+  } | null;
+  /**
+   * Delete a native PR's head branch after merging (GitHub's
+   * "automatically delete head branches"). Default TRUE — agent session
+   * branches accumulate fast; set false to keep merged branches.
+   */
+  deleteBranchOnMerge?: boolean | null;
   githubWorkflow?: GithubWorkflowSettings;
   /**
    * Shell commands run in the session worktree cwd after an initial `git add`
@@ -2817,6 +2973,12 @@ export interface WebSocketDeps {
 export interface RouteDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
+  /**
+   * Native PR service for Agent Hub-hosted projects (`gitHost:
+   * 'agenthub'`). Constructed once in index.ts; consumed by the
+   * pr-list/pr-actions route branches and the Finalize push step.
+   */
+  nativePr?: import('./native-pr/service.js').NativePrService;
   findProject: (projectId: string) => Project | null;
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;

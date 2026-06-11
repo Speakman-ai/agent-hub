@@ -285,16 +285,20 @@ export function writeFinalizeReadyToPushTimeline(
     runId: string;
     validatedHeadSha: string;
     round: number;
+    /** 'agenthub' for Hub-hosted projects — drives the client block label. */
+    host?: 'agenthub' | 'github';
   },
 ): string | null {
+  const hostLabel = args.host === 'agenthub' ? 'Agent Hub' : 'GitHub';
   return writeFinalizeTimelineMessage(deps, {
     sessionId: args.sessionId,
     kind: 'finalize_ready_to_push',
-    content: 'Ready to push to GitHub',
+    content: `Ready to push to ${hostLabel}`,
     payload: {
       runId: args.runId,
       round: args.round,
       validatedHeadSha: args.validatedHeadSha,
+      host: args.host ?? 'github',
     },
   });
 }

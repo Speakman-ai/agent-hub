@@ -1,7 +1,18 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+// Promisify lazily (not at module load): this module is now reachable
+// from import chains that tests load with a partial `child_process`
+// mock (spawn/execFile only) — a module-level `promisify(exec)` throws
+// "No exec export is defined" before the test even runs.
+let execAsyncCached: ((cmd: string, opts: { cwd: string }) => Promise<{ stdout: string }>) | null =
+  null;
+function execAsync(cmd: string, opts: { cwd: string }): Promise<{ stdout: string }> {
+  if (!execAsyncCached) {
+    execAsyncCached = promisify(exec) as unknown as typeof execAsyncCached;
+  }
+  return execAsyncCached!(cmd, opts);
+}
 
 /**
  * Resolve the repo's default branch from a worktree checkout.

@@ -841,26 +841,29 @@ describe('Sidebar — per-project settings menu', () => {
 
   it('renders a collapsed project menu by default', () => {
     render(<Sidebar {...buildProps()} />);
-    expect(screen.getByRole('button', { name: 'Test Project Menu' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test Project Settings' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Agents' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Wiki' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Board' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Epics' })).toBeNull();
   });
 
-  it('expands to show project navigation and settings links', () => {
+  it('expands to show lifecycle and configuration navigation links', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
     expandMenu();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Wiki' }));
-    expect(onNavigate).toHaveBeenCalledWith('wiki', PROJECT_ID);
+    expect(screen.getByText('Lifecycle')).toBeInTheDocument();
+    expect(screen.getByText('Configuration')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project Settings' }));
+    expect(onNavigate).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Board' }));
+    expect(onNavigate).toHaveBeenCalledWith(`kanban:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Epics' }));
     expect(onNavigate).toHaveBeenCalledWith(`epics:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
-    expect(onNavigate).toHaveBeenCalledWith('notes', PROJECT_ID);
 
     fireEvent.click(screen.getByRole('button', { name: 'Threads' }));
     expect(onNavigate).toHaveBeenCalledWith('threads', PROJECT_ID);
@@ -871,14 +874,11 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Runners' }));
     expect(onNavigate).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Previews' }));
     expect(onNavigate).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Agents' }));
     expect(onNavigate).toHaveBeenCalledWith(`project-agents:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Project settings' }));
-    expect(onNavigate).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }));
     expect(onNavigate).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);

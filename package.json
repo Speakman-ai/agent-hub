@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "cd server && npx tsx index.ts",
+    "dev:server": "cd server && npx tsx watch index.ts",
     "dev:client": "cd client && npx vite --port 3050",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",

@@ -84,7 +84,10 @@ export function buildOrchestratorDeps(
     transactional: <T>(fn: () => T): T => getDb().transaction(fn)(),
     runReviewer,
     turnEnd: finalizeTurnEndSubscriber,
-    pushAndCreatePr: createPushAndCreatePr({ config: routeDeps.config }),
+    pushAndCreatePr: createPushAndCreatePr({
+      config: routeDeps.config,
+      nativePr: routeDeps.nativePr,
+    }),
     dispatchAndWaitForTurnEnd,
     spawnFixTurn: createSpawnFinalizeFixTurn({
       stmts: routeDeps.stmts,

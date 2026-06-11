@@ -29,7 +29,14 @@ import {
 } from './spawn-github-credentials.js';
 import { getSessionOwner } from './session-ownership.js';
 import { getActiveAccessToken } from './github-connections-store.js';
-import { ensureSessionWorktreeDependenciesInstalled } from './worktree.js';
+import {
+  ensureSessionWorktreeDependenciesInstalled,
+  ensureOriginPointsAtHostedRepo,
+} from './worktree.js';
+import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from './native-pr/host.js';
+import { buildNativePrUrl } from './native-pr/url.js';
+import type { NativePrService } from './native-pr/service.js';
+import type { PullRequestRow } from './types.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 import {
   shouldAutoShipSessionAtEnd,
@@ -782,6 +789,13 @@ interface AutoGitDeps {
   getConfig: () => AppConfig;
   DEFAULT_SKILLS_DIR: string;
   triggerAutoSessionShip?: TriggerAutoSessionShipFn;
+  /**
+   * Native PR service for Agent Hub-hosted projects (`gitHost:
+   * 'agenthub'`) — `commitPushAndCreatePR` creates Hub PRs through this
+   * instead of `gh pr create`. Optional for tests; required in
+   * production once any project opts into hosting.
+   */
+  nativePr?: NativePrService;
 }
 
 let triggerAutoSessionShipImpl: TriggerAutoSessionShipFn | null = null;
@@ -1544,13 +1558,26 @@ async function commitPushAndCreatePR(
 ): Promise<CommitPushPrResult> {
   const d = getDeps();
 
+  // Agent Hub-hosted projects (gitHost 'agenthub'): pushes go to the
+  // Hub's bare repo and the PR is a native Hub PR — no GitHub token, no
+  // `gh`. The commit/rebase/push machinery below is host-agnostic (it
+  // all targets `origin`); only the PR-create step branches.
+  const hosted = isAgentHubHosted(project) && hostedRepoExists(project.id);
+  if (hosted) {
+    // Worktrees created before hosting was enabled still have a GitHub
+    // origin — repoint so THIS push lands on the Hub (the worktree
+    // ensure path also heals, but "Create PR" can fire without it).
+    await ensureOriginPointsAtHostedRepo(effectiveCwd, bareRepoPath(project.id));
+  }
+
   // Resolve the session owner's GitHub token ONCE per invocation. Threaded
   // into every `git ls-remote` / `git push` / `gh` spawn so HTTPS probes,
   // pushes, and PR opens authenticate as the human owner of the repo.
   // Closes the "Authentication failed for 'https://github.com/<user>/repo.git/'"
   // failure mode for autonomous-dispatch sessions whose spawn env was deliberately
-  // stripped of GitHub credentials.
-  const githubToken = await resolveAutoGitGithubToken(sessionId, d.getConfig());
+  // stripped of GitHub credentials. Skipped for Hub-hosted projects —
+  // file-path remotes need no credential.
+  const githubToken = hosted ? null : await resolveAutoGitGithubToken(sessionId, d.getConfig());
 
   // ── PR base-branch override (hoisted) ─────────────────────────────
   //
@@ -1627,6 +1654,24 @@ async function commitPushAndCreatePR(
     console.log(
       `[auto-commit] Session ${sessionId} — skipping commit/push (no changes)${card ? ` [card: "${card.title}"]` : ''}`,
     );
+    if (hosted) {
+      // Native equivalent of the `gh pr view` lookup below: an open Hub
+      // PR for this branch means "already published" — surface it.
+      const open = d.stmts.getOpenPullRequestByHeadBranch.get(project.id, changes.branch) as
+        | PullRequestRow
+        | undefined;
+      if (open) {
+        const prUrl = buildNativePrUrl(project.id, open.number);
+        console.log(`[auto-commit] Found existing open Hub PR: ${prUrl} — moving card to Review`);
+        if (card) moveCardToReview(card, project, prUrl);
+        return { ok: true, prUrl };
+      }
+      return {
+        ok: false,
+        error: 'No local changes to publish and no open pull request for this branch.',
+        code: 'nothing_to_publish',
+      };
+    }
     try {
       const { stdout: prOut } = await runGh(
         ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
@@ -1684,7 +1729,7 @@ async function commitPushAndCreatePR(
   };
 
   try {
-    prLog('## Publishing to GitHub\n');
+    prLog(hosted ? '## Publishing to Agent Hub\n' : '## Publishing to GitHub\n');
 
     const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
     const rawTitle = (card?.title ?? session?.name ?? '').trim();
@@ -1920,7 +1965,8 @@ async function commitPushAndCreatePR(
         } catch {
           /* commit SHA is best-effort — the marker is still useful without it */
         }
-        const prNumberMatch = prUrl.match(/\/pull\/(\d+)/);
+        // /pull/N (GitHub) or /pulls/N (Agent Hub-native PR URLs).
+        const prNumberMatch = prUrl.match(/\/pulls?\/(\d+)/);
         const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
         const msgId = crypto.randomUUID();
         const metadata = JSON.stringify({
@@ -1978,7 +2024,7 @@ async function commitPushAndCreatePR(
 
       // Project + dashboard activity feeds (kanban Reviews panel, org dashboard).
       try {
-        const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
+        const prNumMatch = prUrl.match(/\/pulls?\/(\d+)/);
         const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
         const inserted = d.stmts.createPrCreationLog.run(
           crypto.randomUUID(),
@@ -2000,17 +2046,69 @@ async function commitPushAndCreatePR(
 
       // Fire-and-forget: enable GitHub native auto-merge if the project or
       // per-PR override requests it. Failure here never blocks PR creation.
-      enableAutoMergeIfNeeded(
-        prUrl,
-        project,
-        options?.autoMergeOverride,
-        effectiveCwd,
-        githubToken,
-      ).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
-      });
+      // Hub-hosted PRs have no auto-merge equivalent (v1) — skip.
+      if (!hosted) {
+        enableAutoMergeIfNeeded(
+          prUrl,
+          project,
+          options?.autoMergeOverride,
+          effectiveCwd,
+          githubToken,
+        ).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
+        });
+      }
     };
+
+    // ── Agent Hub-hosted: create/reuse the native PR and stop ─────────
+    // The push above already landed on the Hub's bare repo (origin was
+    // healed at the top). PR creation is an in-process call — idempotent
+    // on the open PR for this head branch, mirroring the `gh pr view`
+    // pre-check the GitHub path does below.
+    if (hosted) {
+      const nativePr = d.nativePr;
+      if (!nativePr) {
+        return {
+          ok: false,
+          error: 'Agent Hub git hosting is enabled but the native PR service is not wired.',
+          code: 'pr_failed',
+          branch: changes.branch,
+        };
+      }
+      let headSha = '';
+      try {
+        const { stdout: shaOut } = await execAsync('git rev-parse HEAD', {
+          cwd: effectiveCwd,
+          timeout: 5000,
+        });
+        headSha = shaOut.trim();
+      } catch {
+        /* head sha is metadata on the PR row; push already succeeded */
+      }
+      const baseBranch = resolvedBaseBranch ?? (await resolveDefaultBranch(effectiveCwd)) ?? 'main';
+      try {
+        const { prUrl, created } = nativePr.createOrGetOpenPr({
+          project,
+          headBranch: changes.branch,
+          baseBranch,
+          headSha,
+          title: prTitle,
+          body: prBody,
+          author: agent.name || 'session',
+        });
+        prLog(`\n${created ? 'Created' : 'Updated'} Agent Hub pull request: ${prUrl}\n`);
+        console.log(
+          `[auto-commit] ${created ? 'Created' : 'Reused'} native PR ${prUrl} for branch ${changes.branch}`,
+        );
+        await broadcastAndMove(prUrl);
+        return { ok: true, prUrl };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[auto-commit] Native PR creation failed: ${msg}`);
+        return { ok: false, error: msg, code: 'pr_failed', branch: changes.branch };
+      }
+    }
 
     // ── Pre-check: existing open PR for this branch ───────────────────
     //
@@ -2338,7 +2436,9 @@ export async function autoCommitAndPR(
     // a single read. Downstream checks (`effectiveCwd === project.cwd` and
     // `git remote -v`) would also reject these, but only after spending
     // time walking through worktree / card / ad-hoc branching.
-    if (!project.githubRepo) {
+    // Agent Hub-hosted projects have a PR lifecycle WITHOUT a GitHub repo
+    // (native Hub PRs) — they pass this gate regardless of githubRepo.
+    if (!project.githubRepo && !isAgentHubHosted(project)) {
       console.log(
         `[auto-commit] Session ${sessionId} — skipping (project has no githubRepo, tasks-only)`,
       );
