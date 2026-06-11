@@ -71,10 +71,21 @@ export function buildOrchestratorDeps(
     activeProcesses: routeDeps.activeProcesses,
   });
 
+  // One spawn helper, shared by both dispatch seams: the fix-dispatch loop
+  // (failed step / reviewer changes) and the rebase-conflict dispatch. Both
+  // must actually trigger the session agent — otherwise the run hangs on a
+  // turn-end that never fires until the active-time budget expires.
+  const spawnFixTurn = createSpawnFinalizeFixTurn({
+    stmts: routeDeps.stmts,
+    findAgent: routeDeps.findAgent,
+    handleChat: routeDeps.handleChat,
+  });
+
   const dispatchAndWaitForTurnEnd = createDispatchAndWaitForTurnEnd({
     stmts: routeDeps.stmts,
     broadcast: routeDeps.broadcast,
     turnEnd: finalizeTurnEndSubscriber,
+    spawnTurn: spawnFixTurn,
   });
 
   return {
@@ -89,11 +100,7 @@ export function buildOrchestratorDeps(
       nativePr: routeDeps.nativePr,
     }),
     dispatchAndWaitForTurnEnd,
-    spawnFixTurn: createSpawnFinalizeFixTurn({
-      stmts: routeDeps.stmts,
-      findAgent: routeDeps.findAgent,
-      handleChat: routeDeps.handleChat,
-    }),
+    spawnFixTurn,
     cardLifecycle: createCardLifecycle(
       { stmts: routeDeps.stmts, broadcast: routeDeps.broadcast },
       { cardId: card.id, projectId, moveToDoneOnPush: routeDeps.config.cardDoneOnPush !== false },
