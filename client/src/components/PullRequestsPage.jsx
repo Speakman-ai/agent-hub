@@ -14,7 +14,7 @@ import {
   Wrench,
   Eye,
 } from 'lucide-react';
-import { Pencil, Check, X, Sparkles, SquareKanban } from 'lucide-react';
+import { Pencil, Check, X, Sparkles, SquareKanban, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../utils/api.js';
 import FileDiffView from './FileDiffView.jsx';
 import {
@@ -1058,8 +1058,49 @@ function PrDetail({
           </div>
         )}
 
+        {/* Commits — deliberately LAST and collapsed by default: long
+            session branches accumulate dozens of commits that would
+            otherwise dominate the page. */}
+        {Array.isArray(detail.commits) && detail.commits.length > 0 && (
+          <PrCommitsSection commits={detail.commits} />
+        )}
+
         <div className="h-10" />
       </div>
+    </div>
+  );
+}
+
+/** Collapsed-by-default commit list for the PR detail tail. */
+function PrCommitsSection({ commits }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-6" data-testid="pr-commits-section">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        data-testid="pr-commits-toggle"
+        className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors"
+      >
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        Commits ({commits.length})
+      </button>
+      {open && (
+        <div className="mt-2 bg-gray-900/40 border border-gray-800 rounded-lg divide-y divide-gray-800 overflow-hidden">
+          {commits.map((c) => (
+            <div key={c.sha} className="flex items-center gap-3 px-3 py-2 text-sm">
+              <code className="text-[11px] text-gray-500 font-mono flex-shrink-0">
+                {String(c.sha || '').slice(0, 8)}
+              </code>
+              <span className="text-gray-200 truncate flex-1" title={c.subject}>
+                {c.subject}
+              </span>
+              <span className="text-xs text-gray-500 flex-shrink-0">{c.author}</span>
+              <span className="text-xs text-gray-600 flex-shrink-0">{relativePrTime(c.date)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -265,6 +265,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // AI-suggest name/appType/stack from a description (wizard idk-fill).
+  suggestProjectSetup: (data) =>
+    fetchJSON('/projects/provision/suggest', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeout: 90000,
+    }),
   createProjectWorkflow: (projectId, body) =>
     fetchJSON(`/projects/${projectId}/workflows`, {
       method: 'POST',

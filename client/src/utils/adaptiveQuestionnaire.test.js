@@ -126,8 +126,11 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
       // stack idk -> integrations
       d = advance({ ...d, stack: IDK });
       expect(STEP_IDS[d.step]).toBe('integrations');
-      // integrations without auth -> skip to identity
+      // integrations without auth -> skip to hosting
       d = advance({ ...d, integrations: ['github'] });
+      expect(STEP_IDS[d.step]).toBe('hosting');
+      // hosting -> identity
+      d = advance({ ...d, hosting: 'agenthub' });
       expect(STEP_IDS[d.step]).toBe('identity');
       // identity -> review
       d = advance({ ...d, name: 'acme', visibility: 'private' });
@@ -147,6 +150,8 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
       d = advance(d);
       expect(STEP_IDS[d.step]).toBe('auth');
       d = advance({ ...d, authDetail: IDK });
+      expect(STEP_IDS[d.step]).toBe('hosting');
+      d = advance({ ...d, hosting: IDK });
       expect(STEP_IDS[d.step]).toBe('identity');
     });
 
@@ -159,7 +164,9 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
         step: STEP_IDS.indexOf('identity'),
       };
       const prev = goBack(d);
-      expect(STEP_IDS[prev.step]).toBe('integrations');
+      expect(STEP_IDS[prev.step]).toBe('hosting');
+      // hosting -> back -> integrations (auth still skipped)
+      expect(STEP_IDS[goBack(prev).step]).toBe('integrations');
     });
 
     it('goBack is a no-op on step 0', () => {
@@ -175,9 +182,9 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
         integrations: ['github'],
         step: STEP_IDS.indexOf('identity'),
       };
-      // identity is the 5th visible step (0-based index 4 when auth skipped):
-      // description, appType, stack, integrations, identity, review
-      expect(currentVisibleStep(d)).toBe(4);
+      // identity is the 6th visible step (0-based index 5 when auth skipped):
+      // description, appType, stack, integrations, hosting, identity, review
+      expect(currentVisibleStep(d)).toBe(5);
     });
   });
 
@@ -219,7 +226,16 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
         authDetail: { provider: 'oauth', userModel: IDK },
         name: IDK,
         visibility: 'private',
+        hostOnAgentHub: true, // idk/unset hosting defaults to Agent Hub
+        generationModel: null,
       });
+    });
+
+    it('hostOnAgentHub is false only for an explicit github choice', () => {
+      const base = { ...initialDraft(), description: 'x' };
+      expect(toProvisioningPayload({ ...base, hosting: 'github' }).hostOnAgentHub).toBe(false);
+      expect(toProvisioningPayload({ ...base, hosting: 'agenthub' }).hostOnAgentHub).toBe(true);
+      expect(toProvisioningPayload({ ...base, hosting: IDK }).hostOnAgentHub).toBe(true);
     });
   });
 });

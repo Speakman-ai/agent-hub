@@ -470,3 +470,31 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     await waitFor(() => expect(screen.queryByTestId('new-pr-panel')).toBeNull());
   });
 });
+
+describe('<PullRequestsPage /> — commits section', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders commits collapsed by default at the end of the detail page', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    api.getProjectPullDetail.mockResolvedValue({
+      ...detailResponse,
+      commits: [
+        { sha: 'abc1234def', subject: 'feat: one', author: 'ryan', date: '2026-06-11T00:00:00Z' },
+        { sha: 'def5678abc', subject: 'fix: two', author: 'ryan', date: '2026-06-11T01:00:00Z' },
+      ],
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test'));
+
+    const toggle = await screen.findByTestId('pr-commits-toggle');
+    expect(toggle).toHaveTextContent('Commits (2)');
+    // Collapsed: no commit rows visible yet.
+    expect(screen.queryByText('feat: one')).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText('feat: one')).toBeInTheDocument();
+    expect(screen.getByText('fix: two')).toBeInTheDocument();
+  });
+});

@@ -29,9 +29,55 @@ import { createTemplateExecutor } from '../provisioning/template-executor.js';
 import { createGithubExecutor } from '../provisioning/github.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { bootstrapHostedGit } from '../provisioning/hosted-git-bootstrap.js';
-import { resolveTemplateId } from '../provisioning/stack-defaults.js';
+import { kickoffInitialBuild } from '../provisioning/initial-build.js';
+import {
+  resolveTemplateId,
+  isKnownTemplateId,
+  KNOWN_TEMPLATE_IDS,
+} from '../provisioning/stack-defaults.js';
 import { getTemplate } from '../provisioning/templates.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { z, registerPath } from '../openapi/registry.js';
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/provision/suggest',
+  tags: ['Projects'],
+  summary: 'AI-suggest a project name / app type / stack from a description',
+  description:
+    'Fills "idk" questionnaire answers using the requesting user\'s connected Claude account. Already-chosen appType/stack are echoed back unchanged; suggestions are clamped to known option ids.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            description: z.string().min(1),
+            appType: z.string().optional(),
+            stack: z.string().optional(),
+            model: z.string().optional().openapi({ description: 'Claude model id override.' }),
+          }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: 'Suggested values (null when the model produced none for a field).',
+      content: {
+        'application/json': {
+          schema: z.object({
+            name: z.string().nullable(),
+            appType: z.string().nullable(),
+            stack: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: { description: 'Missing description or no connected Claude account.' },
+    502: { description: 'Model invocation failed.' },
+  },
+});
 
 /**
  * Injectable executor resolver — tests swap in fakes via this hook.
@@ -210,6 +256,71 @@ export function subscribePreviewDetection(deps: PreviewDetectionDeps): () => voi
   return unsubscribe ?? (() => {});
 }
 
+/** Valid answers the AI suggestion may return (clamped server-side). */
+const SUGGEST_APP_TYPES = ['web-app', 'api', 'cli', 'mobile', 'desktop', 'ml', 'library'];
+
+type SuggestGenerator = (
+  prompt: string,
+  systemPrompt: string,
+  model: string | null,
+) => Promise<string>;
+
+let suggestGeneratorOverride: SuggestGenerator | null = null;
+export function __setSuggestGeneratorForTests(fn: SuggestGenerator | null): void {
+  suggestGeneratorOverride = fn;
+}
+
+async function runSuggestGenerator(
+  prompt: string,
+  systemPrompt: string,
+  model: string | null,
+  userId: string | null,
+): Promise<string> {
+  if (suggestGeneratorOverride) return suggestGeneratorOverride(prompt, systemPrompt, model);
+  const [{ runClaude }, { resolveSessionCliSpawnEnv }, { default: config }, os] = await Promise.all(
+    [
+      import('../heartbeat.js'),
+      import('../per-user-cli-spawn.js'),
+      import('../config.js'),
+      import('os'),
+    ],
+  );
+  const spawnEnv = resolveSessionCliSpawnEnv({
+    cfg: config,
+    ownerId: userId,
+    credsOwnerId: userId,
+    sessionId: null,
+    engine: 'claude-code',
+  });
+  return runClaude(prompt, os.tmpdir(), systemPrompt, { timeoutMs: 60_000, model, spawnEnv });
+}
+
+/** Parse the model's JSON (tolerates fenced/prose-wrapped output). */
+export function parseSuggestResponse(raw: string): {
+  name: string | null;
+  appType: string | null;
+  stack: string | null;
+} {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return { name: null, appType: null, stack: null };
+  try {
+    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    const name =
+      typeof parsed.name === 'string' && parsed.name.trim()
+        ? parsed.name.trim().slice(0, 60)
+        : null;
+    const appType =
+      typeof parsed.appType === 'string' && SUGGEST_APP_TYPES.includes(parsed.appType)
+        ? parsed.appType
+        : null;
+    const stack =
+      typeof parsed.stack === 'string' && isKnownTemplateId(parsed.stack) ? parsed.stack : null;
+    return { name, appType, stack };
+  } catch {
+    return { name: null, appType: null, stack: null };
+  }
+}
+
 function resolveWsBase(req: Request): string {
   const forwardedProto = req.get('x-forwarded-proto');
   const proto = forwardedProto ? forwardedProto.split(',')[0]!.trim() : req.protocol;
@@ -221,6 +332,53 @@ function resolveWsBase(req: Request): string {
 export default function createProvisioningRoutes(deps: RouteDeps): Router {
   const { stmts, broadcast, findProject, getProjects, saveProjects, getProjectDataDir } = deps;
   const router = Router();
+
+  // AI-fill for "idk" questionnaire answers: given the project
+  // description (plus any concrete answers), suggest a name, app type,
+  // and stack. Runs the requesting user's connected Claude account; the
+  // wizard shows the suggestions as editable values before provisioning.
+  router.post('/api/projects/provision/suggest', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const description = typeof body.description === 'string' ? body.description.trim() : '';
+    if (!description) return res.status(400).json({ error: 'description is required' });
+    const knownAppType =
+      typeof body.appType === 'string' && body.appType !== 'idk' ? body.appType : null;
+    const knownStack = typeof body.stack === 'string' && body.stack !== 'idk' ? body.stack : null;
+    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
+
+    const systemPrompt =
+      'You name and classify software projects. Respond with ONLY a JSON object, no prose:\n' +
+      `{"name": "<short memorable project name, 2-4 words>", "appType": <one of ${JSON.stringify(
+        SUGGEST_APP_TYPES,
+      )}>, "stack": <one of ${JSON.stringify([...KNOWN_TEMPLATE_IDS])}>}`;
+    const prompt =
+      `Project description: ${description.slice(0, 2000)}\n` +
+      (knownAppType ? `App type (already chosen, echo it back): ${knownAppType}\n` : '') +
+      (knownStack ? `Stack (already chosen, echo it back): ${knownStack}\n` : '');
+
+    const userId = (req as AuthenticatedRequest).authUserId ?? null;
+    try {
+      const raw = await runSuggestGenerator(prompt, systemPrompt, model, userId);
+      const suggested = parseSuggestResponse(raw);
+      if (!suggested.name && !suggested.appType && !suggested.stack) {
+        return res.status(502).json({ error: 'Model returned no usable suggestion' });
+      }
+      return res.json({
+        name: suggested.name,
+        appType: knownAppType ?? suggested.appType,
+        stack: knownStack ?? suggested.stack,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof Error && err.name === 'EngineAuthRequiredError') {
+        return res.status(400).json({
+          error:
+            'Your Claude account is not connected — add it under Settings → Account, then try again.',
+        });
+      }
+      return res.status(502).json({ error: `Suggestion failed: ${msg.split('\n')[0]}` });
+    }
+  });
 
   router.post('/api/projects/provision', (req: Request, res: Response) => {
     const payload = (req.body ?? {}) as ProvisioningPayload;
@@ -336,23 +494,40 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
     } catch {
       manifest = null; // unknown stack — placeholder ci.yaml
     }
-    let bootstrapped = false;
+    // The wizard's hosting question: anything but an explicit false opts
+    // the new project into Hub hosting (the recommended default).
+    const hostOnAgentHub = (payload as { hostOnAgentHub?: unknown }).hostOnAgentHub !== false;
+    let completed = false;
     subscribeToJob(jobId, (ev) => {
-      if (bootstrapped || ev.type !== 'done') return;
+      if (completed || ev.type !== 'done') return;
       // `partial` means the LOCAL scaffold succeeded and only an optional
-      // gh-* phase failed — exactly the case where Hub hosting matters
-      // most. Only a fatal (non-partial) failure skips the bootstrap.
+      // gh-* phase failed — the local project is fully usable. Only a
+      // fatal (non-partial) failure skips post-scaffold work.
       const d = ev as { error?: unknown; partial?: boolean };
       if (d.error && !d.partial) return;
-      bootstrapped = true;
-      void bootstrapHostedGit({
-        project,
-        workspaceDir: path.join(dataDir, 'workspace'),
-        manifest,
-        saveProjects,
-        broadcast,
-        requestingUserId,
-      });
+      completed = true;
+      void (async () => {
+        if (hostOnAgentHub) {
+          await bootstrapHostedGit({
+            project,
+            workspaceDir: path.join(dataDir, 'workspace'),
+            manifest,
+            saveProjects,
+            broadcast,
+            requestingUserId,
+          });
+        }
+        // The description is the BASELINE: dispatch the first build
+        // session so the user lands on a project that's being built,
+        // not just an empty scaffold. Hosting (when enabled) is set up
+        // first so the session worktree clones from the hosted repo.
+        kickoffInitialBuild({
+          project,
+          description: rawDescription,
+          deps,
+          requestingUserId,
+        });
+      })();
     });
 
     return res.status(201).json({ jobId, wsUrl, projectId });

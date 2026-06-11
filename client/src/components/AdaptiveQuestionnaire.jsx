@@ -7,6 +7,7 @@ import {
   APP_TYPE_OPTIONS,
   INTEGRATION_OPTIONS,
   AUTH_PROVIDER_OPTIONS,
+  HOSTING_OPTIONS,
   ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY,
   initialDraft,
   isDescriptionValid,
@@ -19,6 +20,7 @@ import {
   recommendedStack,
   toProvisioningPayload,
 } from '../utils/adaptiveQuestionnaire.js';
+import { api } from '../utils/api.js';
 
 /**
  * Adaptive Questionnaire.
@@ -102,6 +104,41 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }) {
     setDraft((d) => ({ ...d, [field]: IDK }));
   }, []);
 
+  // ---- AI fill for idk answers ----
+  // Entering the review step with any idk (or blank-name) answers kicks a
+  // one-shot suggestion call; results land in the draft as ordinary,
+  // editable values (Back still works to change them by hand).
+  const [suggesting, setSuggesting] = useState(false);
+  const suggestedRef = useRef(false);
+  useEffect(() => {
+    if (stepId !== 'review' || suggestedRef.current) return;
+    const needsName = draft.name === IDK || !String(draft.name || '').trim();
+    const needsAppType = draft.appType === IDK;
+    const needsStack = draft.stack === IDK;
+    if (!needsName && !needsAppType && !needsStack) return;
+    suggestedRef.current = true;
+    setSuggesting(true);
+    api
+      .suggestProjectSetup({
+        description: draft.description,
+        appType: needsAppType ? undefined : draft.appType,
+        stack: needsStack ? undefined : draft.stack,
+        model: draft.generationModel || undefined,
+      })
+      .then((r) => {
+        setDraft((d) => ({
+          ...d,
+          ...(needsName && r?.name ? { name: r.name } : {}),
+          ...(needsAppType && r?.appType ? { appType: r.appType } : {}),
+          ...(needsStack && r?.stack ? { stack: r.stack } : {}),
+        }));
+      })
+      .catch(() => {
+        /* fall back to idk semantics — provisioning has its own defaults */
+      })
+      .finally(() => setSuggesting(false));
+  }, [stepId, draft]);
+
   return (
     <div
       className="flex flex-col w-full h-full bg-gray-950 text-white"
@@ -150,8 +187,11 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }) {
           {stepId === 'auth' && (
             <AuthStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('authDetail')} />
           )}
+          {stepId === 'hosting' && (
+            <HostingStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('hosting')} />
+          )}
           {stepId === 'identity' && <IdentityStep draft={draft} setDraft={setDraft} />}
-          {stepId === 'review' && <ReviewStep draft={draft} />}
+          {stepId === 'review' && <ReviewStep draft={draft} suggesting={suggesting} />}
         </div>
       </div>
 
@@ -277,6 +317,21 @@ function IdkButton({ onClick, selected }) {
 
 function DescriptionStep({ draft, setDraft }) {
   const invalid = draft.description.length > 0 && !isDescriptionValid(draft.description);
+  const [models, setModels] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    try {
+      api
+        .getModelConfig()
+        .then((cfg) => alive && setModels(cfg?.engineValidModels?.['claude-code'] || []))
+        .catch(() => alive && setModels([]));
+    } catch {
+      setModels([]);
+    }
+    return () => {
+      alive = false;
+    };
+  }, []);
   return (
     <div>
       <StepTitle
@@ -302,6 +357,28 @@ function DescriptionStep({ draft, setDraft }) {
           Description can&apos;t be empty — tell us what you&apos;re building.
         </p>
       )}
+      <div className="mt-4 flex items-center gap-3">
+        <label htmlFor="aq-generation-model" className="text-xs text-gray-400">
+          AI model for generated answers
+        </label>
+        <select
+          id="aq-generation-model"
+          value={draft.generationModel || ''}
+          onChange={(e) => setDraft((d) => ({ ...d, generationModel: e.target.value || null }))}
+          data-testid="aq-generation-model"
+          className="bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-emerald-500"
+        >
+          <option value="">Default</option>
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="mt-1 text-xs text-gray-600">
+        Used when you answer &ldquo;idk&rdquo; — the AI fills those in for you at the review step.
+      </p>
     </div>
   );
 }
@@ -542,6 +619,42 @@ function AuthStep({ draft, setDraft, onIdk }) {
   );
 }
 
+function HostingStep({ draft, setDraft, onIdk }) {
+  return (
+    <div>
+      <StepTitle
+        title="Where should your code live?"
+        subtitle="Agent Hub hosting gives you native pull requests, CI, and branch protection with zero external setup."
+      />
+      <div className="space-y-2">
+        {HOSTING_OPTIONS.map((opt) => {
+          const selected = draft.hosting === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setDraft((d) => ({ ...d, hosting: opt.value }))}
+              data-testid={`aq-hosting-${opt.value}`}
+              className={`w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                selected
+                  ? 'border-emerald-500 bg-emerald-500/10'
+                  : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
+              }`}
+            >
+              <div className="flex-1">
+                <div className="text-sm font-medium text-white">{opt.label}</div>
+                <div className="text-xs text-gray-400 mt-0.5">{opt.blurb}</div>
+              </div>
+              {selected && <Check size={16} className="text-emerald-400" aria-hidden="true" />}
+            </button>
+          );
+        })}
+        <IdkButton onClick={onIdk} selected={draft.hosting === IDK} />
+      </div>
+    </div>
+  );
+}
+
 function IdentityStep({ draft, setDraft }) {
   const nameIsIdk = draft.name === IDK;
   return (
@@ -617,7 +730,7 @@ function IdentityStep({ draft, setDraft }) {
   );
 }
 
-function ReviewStep({ draft }) {
+function ReviewStep({ draft, suggesting = false }) {
   const payload = toProvisioningPayload(draft);
   const rows = [
     ['What', payload.description],
@@ -625,6 +738,7 @@ function ReviewStep({ draft }) {
     ['Stack', formatValue(payload.stack)],
     ['Integrations', formatValue(payload.integrations)],
     ['Auth', payload.authDetail == null ? '—' : formatAuth(payload.authDetail)],
+    ['Hosting', payload.hostOnAgentHub ? 'Agent Hub' : 'GitHub only'],
     ['Name', formatValue(payload.name)],
     ['Visibility', formatValue(payload.visibility)],
   ];
@@ -634,6 +748,11 @@ function ReviewStep({ draft }) {
         title="Review & confirm"
         subtitle="Anything marked idk will be filled in by the provisioning agent with a sensible default."
       />
+      {suggesting && (
+        <p className="mb-3 text-xs text-indigo-300" data-testid="aq-suggesting">
+          ✨ Filling in your idk answers with AI…
+        </p>
+      )}
       <dl className="divide-y divide-gray-800 border border-gray-800 rounded-lg overflow-hidden">
         {rows.map(([label, value]) => (
           <div

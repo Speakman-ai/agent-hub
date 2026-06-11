@@ -265,11 +265,17 @@ export function resolveTemplateForPayload(payload: ProvisioningPayload): Templat
 }
 
 export function hasGithubIntegration(payload: ProvisioningPayload): boolean {
+  // The hosting choice is the single source of truth for repo creation:
+  // Agent Hub-hosted projects (the default, incl. idk) never spin up a
+  // GitHub repo — GitHub can be connected later from Settings. Only an
+  // explicit "GitHub only" hosting answer runs the gh-* phases.
+  if ((payload as { hostOnAgentHub?: unknown }).hostOnAgentHub !== false) {
+    return false;
+  }
   const integrations = payload.integrations;
   if (integrations === 'idk' || integrations == null) {
-    // 'idk' defers to the agent — we default to including GitHub so the
-    // happy path is covered. Callers who want to disable GH explicitly
-    // must pass an array without 'github'.
+    // GitHub hosting was chosen explicitly; 'idk' integrations still get
+    // the repo (that's the whole point of the hosting choice).
     return true;
   }
   if (Array.isArray(integrations)) {

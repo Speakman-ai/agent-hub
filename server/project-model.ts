@@ -405,16 +405,23 @@ Keep it short. Don't repeat the full description back.`,
  * emits an in-session verdict (it does NOT post formal reviews to GitHub). It
  * is deliberately decoupled from autonomous-mode dispatch.
  */
-function ensureReviewerAgents(): boolean {
+function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
   const typedStmts = stmts as Stmts;
   let changed = false;
 
   for (const project of projects) {
+    // `onlyHosted` scopes a run to Agent Hub-hosted projects (boot +
+    // hosting-enable callers) so the deprecated retroactive backfill for
+    // plain GitHub projects stays off.
+    if (opts.onlyHosted && project.gitHost !== 'agenthub') continue;
     if (!project.agents || project.agents.length === 0) continue;
     if (project.agents.some((a) => a.role === 'reviewer')) continue;
 
-    // Only seed for projects with GitHub integration.
+    // Seed for projects with a review surface: GitHub integration, a
+    // webhook, or Agent Hub git hosting (the Finalize review phase and
+    // native PR reviews both need the project Reviewer).
     const hasGithubRepo = Boolean(project.githubRepo);
+    const hostedOnHub = project.gitHost === 'agenthub';
     let hasWebhook = false;
     try {
       const configs = typedStmts.getWebhookConfigsByProject.all(project.id) as WebhookConfigRow[];
@@ -422,7 +429,7 @@ function ensureReviewerAgents(): boolean {
     } catch {
       // table might not exist on a brand-new install — ignore
     }
-    if (!hasGithubRepo && !hasWebhook) continue;
+    if (!hasGithubRepo && !hasWebhook && !hostedOnHub) continue;
 
     const reviewerId = `${project.id}-reviewer`;
     if (findAgent(reviewerId)) continue;

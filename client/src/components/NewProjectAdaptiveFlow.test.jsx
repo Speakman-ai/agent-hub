@@ -39,23 +39,24 @@ vi.mock('../utils/auditClient.js', () => ({
 }));
 
 describe('inferWithGithub', () => {
-  it('returns true when integrations is the idk sentinel', () => {
-    expect(inferWithGithub({ integrations: 'idk' })).toBe(true);
+  it('is false for Agent Hub-hosted projects regardless of integrations', () => {
+    // The hosting answer is the single source of truth — Hub-hosted
+    // projects never create a GitHub repo (connect later in Settings).
+    expect(inferWithGithub({ integrations: 'idk' })).toBe(false);
+    expect(inferWithGithub({ integrations: ['github', 'aws'] })).toBe(false);
+    expect(inferWithGithub({ integrations: ['github'], hostOnAgentHub: true })).toBe(false);
   });
 
-  it('returns true when integrations is null or absent', () => {
-    expect(inferWithGithub({ integrations: null })).toBe(true);
-    expect(inferWithGithub({})).toBe(true);
+  it('honors integrations when GitHub hosting was chosen explicitly', () => {
+    expect(inferWithGithub({ hostOnAgentHub: false, integrations: 'idk' })).toBe(true);
+    expect(inferWithGithub({ hostOnAgentHub: false, integrations: null })).toBe(true);
+    expect(inferWithGithub({ hostOnAgentHub: false, integrations: ['github', 'aws'] })).toBe(true);
+    expect(inferWithGithub({ hostOnAgentHub: false, integrations: ['aws', 'db'] })).toBe(false);
+    expect(inferWithGithub({ hostOnAgentHub: false, integrations: [] })).toBe(false);
+  });
+
+  it('defaults to true for a missing payload (legacy caller safety)', () => {
     expect(inferWithGithub(null)).toBe(true);
-  });
-
-  it('returns true when integrations array includes "github"', () => {
-    expect(inferWithGithub({ integrations: ['github', 'aws'] })).toBe(true);
-  });
-
-  it('returns false when integrations array omits "github"', () => {
-    expect(inferWithGithub({ integrations: ['aws', 'db'] })).toBe(false);
-    expect(inferWithGithub({ integrations: [] })).toBe(false);
   });
 });
 
@@ -113,7 +114,10 @@ describe('NewProjectAdaptiveFlow', () => {
       fireEvent.click(screen.getByTestId('aq-integration-db'));
     }
     fireEvent.click(screen.getByTestId('aq-continue'));
-    // step 5 — identity (auth not selected → step skipped)
+    // step 5 — hosting (Agent Hub default)
+    fireEvent.click(screen.getByTestId('aq-hosting-agenthub'));
+    fireEvent.click(screen.getByTestId('aq-continue'));
+    // step 6 — identity (auth not selected → step skipped)
     fireEvent.change(screen.getByTestId('aq-name-input'), { target: { value: 'my-proj' } });
     fireEvent.click(screen.getByTestId('aq-visibility-private'));
     fireEvent.click(screen.getByTestId('aq-continue'));

@@ -39,6 +39,10 @@ delete process.env.AGENT_HUB_API_KEY;
 // would `docker run --privileged`. Engine tests inject a mock
 // `runJobPhase`, which bypasses this guard (see git-host/push-ci.ts).
 process.env.AGENT_HUB_DISABLE_PUSH_CI = '1';
+// Provisioning's initial-build kickoff dispatches a real agent session via
+// the chat handler (CLI spawn) — same hard rule as above. Unit tests for
+// the module pass `force: true` with mocked deps instead.
+process.env.AGENT_HUB_DISABLE_INITIAL_BUILD = '1';
 // Fresh deploy bootstrap env must not leak from the host (Agent Hub
 // sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
 // server boot, auth.json exists, and authMiddleware rejects unauthenticated

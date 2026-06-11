@@ -62,7 +62,7 @@ export const APP_TYPE_DEFAULTS: Record<string, TemplateId> = {
   backend: 'python-fastapi-uv',
 };
 
-function isKnownTemplateId(value: unknown): value is TemplateId {
+export function isKnownTemplateId(value: unknown): value is TemplateId {
   return typeof value === 'string' && (KNOWN_TEMPLATE_IDS as readonly string[]).includes(value);
 }
 

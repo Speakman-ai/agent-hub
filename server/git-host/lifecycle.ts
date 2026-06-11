@@ -128,6 +128,16 @@ export function enableGitHost(project: Project, deps: EnableGitHostDeps): GitHos
       }
       deps.saveProjects();
 
+      // Hosted projects need the project Reviewer (Finalize review +
+      // native PR reviews). Lazy import — project-model is a heavier
+      // module than this lifecycle helper should pull at load time.
+      try {
+        const { ensureReviewerAgents } = await import('../project-model.js');
+        ensureReviewerAgents({ onlyHosted: true });
+      } catch {
+        /* roster seeding is best-effort; boot also retries */
+      }
+
       state.status = 'ready';
       state.finishedAt = Date.now();
       state.importedFrom = result.importedFrom;

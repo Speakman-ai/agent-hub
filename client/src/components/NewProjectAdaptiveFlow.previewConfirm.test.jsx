@@ -67,6 +67,9 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
     fireEvent.click(screen.getByTestId('aq-continue'));
     fireEvent.click(screen.getByTestId('aq-integration-db'));
     fireEvent.click(screen.getByTestId('aq-continue'));
+    // hosting step (Agent Hub default)
+    fireEvent.click(screen.getByTestId('aq-hosting-agenthub'));
+    fireEvent.click(screen.getByTestId('aq-continue'));
     fireEvent.change(screen.getByTestId('aq-name-input'), { target: { value: 'my-proj' } });
     fireEvent.click(screen.getByTestId('aq-visibility-private'));
     fireEvent.click(screen.getByTestId('aq-continue'));

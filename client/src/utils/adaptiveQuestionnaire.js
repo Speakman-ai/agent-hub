@@ -18,6 +18,7 @@ export const STEP_IDS = [
   'stack',
   'integrations',
   'auth',
+  'hosting',
   'identity',
   'review',
 ];
@@ -29,6 +30,7 @@ export const STEP_LABELS = {
   stack: 'Stack',
   integrations: 'Integrations',
   auth: 'Auth',
+  hosting: 'Hosting',
   identity: 'Name',
   review: 'Review',
 };
@@ -87,6 +89,21 @@ export const AUTH_PROVIDER_OPTIONS = [
 
 /** Optional per-app-type stack recommendations. `stack` in step 3 defaults
  *  to the first entry. Users may edit freely or pick "idk". */
+/** Hosting options (step: hosting). Agent Hub is the recommended default. */
+export const HOSTING_OPTIONS = [
+  {
+    value: 'agenthub',
+    label: 'Agent Hub (recommended)',
+    blurb:
+      'Repo lives in Agent Hub — native PRs, CI, branch protection out of the box. GitHub can mirror or be linked later.',
+  },
+  {
+    value: 'github',
+    label: 'GitHub only',
+    blurb: 'Classic setup: the repo lives on GitHub and Agent Hub talks to it via the GitHub API.',
+  },
+];
+
 export const STACK_RECOMMENDATIONS = {
   'web-app': [
     {
@@ -156,7 +173,9 @@ export function initialDraft() {
     stack: null,
     integrations: null,
     authDetail: null,
+    hosting: null,
     name: '',
+    generationModel: null,
     visibility: null,
   };
 }
@@ -231,6 +250,8 @@ export function canContinue(draft) {
       );
     case 'auth':
       return draft.authDetail !== null;
+    case 'hosting':
+      return draft.hosting !== null;
     case 'identity':
       return (
         (draft.name === IDK || (typeof draft.name === 'string' && draft.name.trim().length > 0)) &&
@@ -274,6 +295,9 @@ export function toProvisioningPayload(draft) {
     authDetail: draft.authDetail,
     name: draft.name === IDK ? IDK : String(draft.name || '').trim(),
     visibility: draft.visibility,
+    // idk → Hub hosting (the recommended default).
+    hostOnAgentHub: draft.hosting !== 'github',
+    generationModel: draft.generationModel || null,
   };
 }
 

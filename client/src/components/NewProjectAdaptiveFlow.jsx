@@ -475,6 +475,11 @@ export default function NewProjectAdaptiveFlow({
  */
 export function inferWithGithub(payload) {
   if (!payload) return true;
+  // Mirrors the server's hasGithubIntegration: the hosting answer is the
+  // single source of truth — Agent Hub-hosted projects never create a
+  // GitHub repo (connect one later in Settings). Only explicit
+  // GitHub-only hosting shows/runs the gh-* phases.
+  if (payload.hostOnAgentHub !== false) return false;
   const { integrations } = payload;
   if (integrations === 'idk' || integrations == null) return true;
   if (Array.isArray(integrations)) return integrations.includes('github');

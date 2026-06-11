@@ -100,7 +100,13 @@ describe('AdaptiveQuestionnaire', () => {
       );
       fireEvent.click(screen.getByTestId('aq-integration-github'));
       fireEvent.click(screen.getByTestId('aq-continue'));
-      // Should land on identity, not auth
+      // Should land on hosting, not auth
+      expect(
+        screen.getByRole('heading', { name: /where should your code live/i }),
+      ).toBeInTheDocument();
+      // …and hosting → identity.
+      fireEvent.click(screen.getByTestId('aq-hosting-agenthub'));
+      fireEvent.click(screen.getByTestId('aq-continue'));
       expect(screen.getByRole('heading', { name: /name & visibility/i })).toBeInTheDocument();
     });
 

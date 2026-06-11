@@ -15,9 +15,15 @@ import {
 
 describe('hasGithubIntegration', () => {
   it('treats idk as opt-in so the happy path includes GitHub', () => {
-    expect(hasGithubIntegration({ integrations: 'idk' })).toBe(true);
-    expect(hasGithubIntegration({ integrations: null })).toBe(true);
-    expect(hasGithubIntegration({})).toBe(true);
+    // Hosting choice gates everything: explicit GitHub hosting + idk
+    // integrations still gets the repo…
+    expect(hasGithubIntegration({ integrations: 'idk', hostOnAgentHub: false })).toBe(true);
+    expect(hasGithubIntegration({ integrations: null, hostOnAgentHub: false })).toBe(true);
+    expect(hasGithubIntegration({ hostOnAgentHub: false })).toBe(true);
+    // …but Agent Hub hosting (the default, incl. unset) never does.
+    expect(hasGithubIntegration({ integrations: 'idk' })).toBe(false);
+    expect(hasGithubIntegration({ integrations: ['github'] })).toBe(false);
+    expect(hasGithubIntegration({})).toBe(false);
   });
 
   it('respects an explicit array that omits github', () => {
@@ -25,7 +31,7 @@ describe('hasGithubIntegration', () => {
   });
 
   it('includes gh when the array lists it', () => {
-    expect(hasGithubIntegration({ integrations: ['github'] })).toBe(true);
+    expect(hasGithubIntegration({ integrations: ['github'], hostOnAgentHub: false })).toBe(true);
   });
 });
 
@@ -51,7 +57,7 @@ describe('plannedPhases', () => {
   });
 
   it('marks nothing as skipped when the user kept GitHub in', () => {
-    const plan = plannedPhases({ integrations: ['github', 'db'] });
+    const plan = plannedPhases({ integrations: ['github', 'db'], hostOnAgentHub: false });
     expect(plan.every((p) => !p.skip)).toBe(true);
   });
 });
@@ -97,7 +103,7 @@ describe('orchestrator', () => {
 
     startProvisioningJob({
       jobId: 'job-1',
-      payload: { description: 'a new thing', integrations: ['github'] },
+      payload: { description: 'a new thing', integrations: ['github'], hostOnAgentHub: false },
       projectId: 'proj-1',
       executor,
     });
@@ -176,7 +182,7 @@ describe('orchestrator', () => {
 
     startProvisioningJob({
       jobId: 'job-fail-early',
-      payload: { description: 'x', integrations: ['github'] },
+      payload: { description: 'x', integrations: ['github'], hostOnAgentHub: false },
       projectId: 'proj-3',
       executor,
     });
@@ -214,7 +220,7 @@ describe('orchestrator', () => {
 
     startProvisioningJob({
       jobId: 'job-partial',
-      payload: { description: 'x', integrations: ['github'] },
+      payload: { description: 'x', integrations: ['github'], hostOnAgentHub: false },
       projectId: 'proj-4',
       executor,
     });

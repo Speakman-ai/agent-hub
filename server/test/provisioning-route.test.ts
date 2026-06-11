@@ -100,6 +100,7 @@ describe('POST /api/projects/provision', () => {
       .send({
         description: 'Scaffolds a thing',
         integrations: ['github'],
+        hostOnAgentHub: false, // explicit GitHub hosting → gh phases run
       })
       .expect(201);
 
@@ -219,5 +220,78 @@ describe('defaultExecutorFactory — AGENT_HUB_PROVISIONING_STUB hook', () => {
     // Guardrail: only the exact string "1" flips the switch. Prevents
     // accidental enablement from truthy-but-unexpected values.
     expect(executor).not.toBe(stubExecutor);
+  });
+});
+
+describe('POST /api/projects/provision/suggest', () => {
+  it('fills idk fields via the generator, clamped to known ids', async () => {
+    const { __setSuggestGeneratorForTests } = await import('../routes/provisioning.js');
+    let seenPrompt = '';
+    __setSuggestGeneratorForTests(async (prompt) => {
+      seenPrompt = prompt;
+      return 'Here you go:\n{"name": "Score Keeper", "appType": "web-app", "stack": "typescript-node-tsx"}';
+    });
+    try {
+      const res = await request
+        .post('/api/projects/provision/suggest')
+        .send({ description: 'a realtime scoreboard for game nights' })
+        .expect(200);
+      expect(res.body).toEqual({
+        name: 'Score Keeper',
+        appType: 'web-app',
+        stack: 'typescript-node-tsx',
+      });
+      expect(seenPrompt).toContain('realtime scoreboard');
+
+      // Known answers are echoed back, not overridden by the model.
+      __setSuggestGeneratorForTests(
+        async () => '{"name": "X", "appType": "cli", "stack": "go-cobra"}',
+      );
+      const echo = await request
+        .post('/api/projects/provision/suggest')
+        .send({ description: 'thing', appType: 'api', stack: 'python-fastapi-uv' })
+        .expect(200);
+      expect(echo.body).toMatchObject({ appType: 'api', stack: 'python-fastapi-uv' });
+
+      // Invalid ids from the model are clamped to null.
+      __setSuggestGeneratorForTests(
+        async () => '{"name": "Y", "appType": "spaceship", "stack": "cobol-mainframe"}',
+      );
+      const clamped = await request
+        .post('/api/projects/provision/suggest')
+        .send({ description: 'thing' })
+        .expect(200);
+      expect(clamped.body).toEqual({ name: 'Y', appType: null, stack: null });
+
+      // No usable output → 502; missing description → 400.
+      __setSuggestGeneratorForTests(async () => 'I cannot help with that.');
+      await request
+        .post('/api/projects/provision/suggest')
+        .send({ description: 'thing' })
+        .expect(502);
+      await request.post('/api/projects/provision/suggest').send({}).expect(400);
+    } finally {
+      __setSuggestGeneratorForTests(null);
+    }
+  });
+});
+
+describe('hostOnAgentHub provisioning gate', () => {
+  it('skips the hosted-git bootstrap when hostOnAgentHub is false', async () => {
+    setProvisioningExecutorFactory(() => stubExecutor);
+    const res = await request
+      .post('/api/projects/provision')
+      .send({
+        description: 'a github-only project',
+        name: `gh-only-${Date.now()}`,
+        hostOnAgentHub: false,
+      })
+      .expect(201);
+    const projectId = res.body.projectId as string;
+    // Give the stub job time to finish all phases.
+    await new Promise((r) => setTimeout(r, 1500));
+    const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+    expect(proj.body.gitHost).toBeUndefined();
+    expect(proj.body.ciOnPush).toBeUndefined();
   });
 });

@@ -290,6 +290,10 @@ migrateAhwDirectories();
 // invoked when a project is wired up to GitHub so the Finalize review
 // phase has a reviewer agent to spawn.
 ensureContextFiles();
+// Exception to the no-backfill rule: Agent Hub-HOSTED projects need the
+// Reviewer (Finalize review phase + native PR reviews), and hosting can
+// be enabled at any time — seed any hosted project that is missing one.
+ensureReviewerAgents({ onlyHosted: true });
 
 // Pre-create the empty `GH_CONFIG_DIR` reviewer spawns are routed to.
 // `applyReviewerSpawnIsolation` resolves the same path; doing the mkdir

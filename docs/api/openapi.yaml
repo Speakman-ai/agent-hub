@@ -14854,6 +14854,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+  /api/projects/provision/suggest:
+    post:
+      tags:
+        - Projects
+      summary: AI-suggest a project name / app type / stack from a description
+      description: Fills "idk" questionnaire answers using the requesting user's connected Claude account. Already-chosen appType/stack are echoed back unchanged; suggestions are clamped to known option ids.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description:
+                  type: string
+                  minLength: 1
+                appType:
+                  type: string
+                stack:
+                  type: string
+                model:
+                  type: string
+                  description: Claude model id override.
+              required:
+                - description
+      responses:
+        "200":
+          description: Suggested values (null when the model produced none for a field).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    nullable: true
+                  appType:
+                    type: string
+                    nullable: true
+                  stack:
+                    type: string
+                    nullable: true
+                required:
+                  - name
+                  - appType
+                  - stack
+        "400":
+          description: Missing description or no connected Claude account.
+        "502":
+          description: Model invocation failed.
   /api/projects/{projectId}/pulls:
     post:
       tags:

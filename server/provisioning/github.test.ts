@@ -482,6 +482,7 @@ describe('orchestrator integration — GitHub phases wired through the executor'
         name: 'integrated',
         visibility: 'private',
         integrations: ['github'],
+        hostOnAgentHub: false,
       },
       projectId: 'integrated',
       executor: github,
@@ -517,7 +518,7 @@ describe('orchestrator integration — GitHub phases wired through the executor'
 
     startProvisioningJob({
       jobId: 'partial',
-      payload: { description: 'x', name: 'taken', integrations: ['github'] },
+      payload: { description: 'x', name: 'taken', integrations: ['github'], hostOnAgentHub: false },
       projectId: 'p',
       executor: github,
     });
