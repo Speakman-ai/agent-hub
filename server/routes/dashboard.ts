@@ -65,8 +65,16 @@ interface PrCreationActivityRow {
   created_at: string;
 }
 
-interface DoneColumnRow {
-  id: string;
+interface OpenPrRow {
+  cardId: string;
+  cardTitle: string;
+  prUrl: string;
+  priority: string;
+  updatedAt: string;
+  projectId: string;
+  prNumber: number | null;
+  prTitle: string | null;
+  authorAgent: string | null;
 }
 
 /** Same semantics as headline "open" work: Done-ish columns + shipped lanes. */
@@ -225,6 +233,65 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
           )
           .get(...doneColumnIds) as { c: number }
       ).c || 0;
+
+    // ── Open PRs (detail list) ─────────────────────────────────────
+    // The headline `openPRs` counter is the same set, just counted: kanban
+    // cards carrying a non-empty `pr_url` that are not yet in a Done-ish /
+    // shipped column. The panel wants the rows themselves so it can list
+    // each PR and deep-link into the in-app PR view (native URLs) or the
+    // external host (GitHub). Enriched per-row from `pr_creation_logs` (PR
+    // number / title / author) when a creation log exists for that URL,
+    // falling back to the card title when it doesn't.
+    //
+    // Org scoping: like `activeSessions` above, we don't lean solely on the
+    // per-org DB handle — we explicitly restrict to the org's *current*
+    // project roster (`getProjects()` is reloaded per-org from this org's
+    // projects.json). This walks card → board → project → org so a board row
+    // left behind by a since-deleted project can't surface its PR/card
+    // metadata in the list, keeping it consistent with the rest of the
+    // payload. With no projects there is nothing to list.
+    const OPEN_PR_LIMIT = 30;
+    const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
+    const projectIds = [...projectNameById.keys()];
+    const projectPlaceholders = projectIds.map(() => '?').join(',');
+
+    const openPrRows = projectIds.length
+      ? (db
+          .prepare(
+            `SELECT k.id as cardId, k.title as cardTitle, k.pr_url as prUrl, k.priority as priority,
+                k.updated_at as updatedAt, b.project_id as projectId,
+                (SELECT pr_number FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as prNumber,
+                (SELECT pr_title FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as prTitle,
+                (SELECT author_agent FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as authorAgent
+         FROM kanban_cards k
+         JOIN kanban_boards b ON b.id = k.board_id
+         WHERE k.pr_url IS NOT NULL AND k.pr_url != ''
+           AND k.column_id NOT IN (${placeholders})
+           AND b.project_id IN (${projectPlaceholders})
+         ORDER BY k.updated_at DESC
+         LIMIT ?`,
+          )
+          .all(...doneColumnIds, ...projectIds, OPEN_PR_LIMIT) as OpenPrRow[])
+      : [];
+
+    const openPRsList = openPrRows.map((r) => ({
+      cardId: r.cardId,
+      projectId: r.projectId,
+      projectName: projectNameById.get(r.projectId) || r.projectId,
+      prUrl: r.prUrl,
+      prNumber: r.prNumber,
+      // Prefer the richer "PR #123: title" form when a creation log exists;
+      // otherwise fall back to the card's own title so external/legacy PRs
+      // (no creation log) still render a meaningful label.
+      title:
+        r.prNumber != null && r.prTitle
+          ? `PR #${r.prNumber}: ${r.prTitle}`
+          : r.prTitle || r.cardTitle,
+      cardTitle: r.cardTitle,
+      authorAgent: r.authorAgent,
+      priority: r.priority,
+      updatedAt: r.updatedAt,
+    }));
 
     const escalations = (stmts.getAllActiveEscalations.all() as unknown[]).length;
 
@@ -397,6 +464,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         byPriority,
       },
       activeSessions: activeSessionsList,
+      openPRs: openPRsList,
       recentActivity,
     });
   });

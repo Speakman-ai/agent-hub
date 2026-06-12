@@ -38,6 +38,32 @@ const SAMPLE = {
       startedAt: new Date(Date.now() - 90_000).toISOString(),
     },
   ],
+  openPRs: [
+    {
+      cardId: 'card-pr-1',
+      projectId: 'proj-dash',
+      projectName: 'Hub Web',
+      prUrl: 'https://github.com/acme/app/pull/777',
+      prNumber: 777,
+      title: 'PR #777: Redesign the dashboard',
+      cardTitle: 'Redesign the dashboard',
+      authorAgent: 'Hub Frontend',
+      priority: 'high',
+      updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    },
+    {
+      cardId: 'card-pr-2',
+      projectId: 'proj-other',
+      projectName: 'Hub Server',
+      prUrl: 'https://github.com/acme/app/pull/778',
+      prNumber: 778,
+      title: 'PR #778: Add open PRs panel',
+      cardTitle: 'Add open PRs panel',
+      authorAgent: 'Hub Backend',
+      priority: 'medium',
+      updatedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    },
+  ],
   recentActivity: [
     {
       type: 'card_created',
@@ -92,7 +118,7 @@ describe('DashboardView', () => {
     vi.unstubAllGlobals();
   });
 
-  it('fetches the dashboard for the active org and renders the headline counters', async () => {
+  it('fetches the dashboard for the active org once data loads', async () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
@@ -103,15 +129,98 @@ describe('DashboardView', () => {
     // fetch called against /orgs/:id/dashboard
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0][0]).toMatch(/\/orgs\/org-1\/dashboard$/);
+  });
 
-    // All seven headline tiles render with their values.
-    expect(screen.getByTestId('headline-projects')).toHaveTextContent('4');
-    expect(screen.getByTestId('headline-agents')).toHaveTextContent('9');
-    expect(screen.getByTestId('headline-sessions')).toHaveTextContent('123');
-    expect(screen.getByTestId('headline-activeSessions')).toHaveTextContent('2');
-    expect(screen.getByTestId('headline-openCards')).toHaveTextContent('17');
-    expect(screen.getByTestId('headline-openPRs')).toHaveTextContent('3');
-    expect(screen.getByTestId('headline-escalations')).toHaveTextContent('1');
+  it('no longer renders the headline counter tiles', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Acme')).toBeInTheDocument();
+    });
+
+    // The counter cards were removed in the redesign.
+    expect(screen.queryByTestId('headline-projects')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('headline-openPRs')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Headline counters')).not.toBeInTheDocument();
+  });
+
+  it('no longer renders the new project banner', async () => {
+    const onNewProject = vi.fn();
+    render(<DashboardView orgId="org-1" onNewProject={onNewProject} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Acme')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('dashboard-new-project-cta')).not.toBeInTheDocument();
+  });
+
+  it('renders active sessions above open PRs above the kanban breakdown', async () => {
+    const { container } = render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('open-prs')).toBeInTheDocument();
+    });
+
+    const order = ['active-sessions', 'open-prs', 'kanban-by-column', 'recent-activity'];
+    const positions = order.map((id) =>
+      Array.prototype.indexOf.call(
+        container.querySelectorAll('[data-testid]'),
+        container.querySelector(`[data-testid="${id}"]`),
+      ),
+    );
+    // Each section appears strictly before the next in DOM order.
+    for (let i = 1; i < positions.length; i++) {
+      expect(positions[i - 1]).toBeLessThan(positions[i]);
+    }
+  });
+
+  it('renders the open PRs panel with each PR title, project, and author', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('open-prs')).toBeInTheDocument();
+    });
+
+    const panel = screen.getByTestId('open-prs');
+    expect(panel).toHaveTextContent('PR #777: Redesign the dashboard');
+    expect(panel).toHaveTextContent('PR #778: Add open PRs panel');
+    expect(panel).toHaveTextContent('Hub Web');
+    expect(panel).toHaveTextContent('Hub Backend');
+    // Header count reflects the number of open PRs.
+    expect(screen.getByText('2 open PRs')).toBeInTheDocument();
+  });
+
+  it('opens the external PR host when an open PR row is clicked', async () => {
+    const onOpenExternalUrl = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenExternalUrl={onOpenExternalUrl} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('PR #777: Redesign the dashboard')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('PR #777: Redesign the dashboard'));
+    expect(onOpenExternalUrl).toHaveBeenCalledWith('https://github.com/acme/app/pull/777');
+  });
+
+  it('shows an empty state when there are no open PRs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...SAMPLE, openPRs: [] }),
+        }),
+      ),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('open-prs')).toBeInTheDocument();
+    });
+    expect(screen.getByText('No open pull requests.')).toBeInTheDocument();
+    expect(screen.getByText('0 open PRs')).toBeInTheDocument();
   });
 
   it('renders the kanban breakdown bars and priority counts', async () => {
@@ -157,18 +266,6 @@ describe('DashboardView', () => {
     expect(feed).toHaveTextContent('Session started');
     expect(feed).toHaveTextContent('Escalation');
     expect(feed).toHaveTextContent('PR opened');
-  });
-
-  it('calls onNewProject when the dashboard New Project CTA is clicked', async () => {
-    const onNewProject = vi.fn();
-    render(<DashboardView orgId="org-1" onNewProject={onNewProject} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('dashboard-new-project-cta')).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId('dashboard-new-project-cta'));
-    expect(onNewProject).toHaveBeenCalledTimes(1);
   });
 
   it('calls onOpenSession when a session activity row is clicked', async () => {

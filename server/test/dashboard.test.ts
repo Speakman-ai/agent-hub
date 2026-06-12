@@ -47,6 +47,18 @@ interface DashboardBody {
     prompt: string;
     startedAt: string;
   }>;
+  openPRs: Array<{
+    cardId: string;
+    projectId: string;
+    projectName: string;
+    prUrl: string;
+    prNumber: number | null;
+    title: string;
+    cardTitle: string;
+    authorAgent: string | null;
+    priority: string;
+    updatedAt: string;
+  }>;
   recentActivity: Array<{
     type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
     id: string;
@@ -284,6 +296,115 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(entry).toBeDefined();
     expect(entry!.meta?.projectId).toBe(projectId);
     expect(entry!.meta?.prUrl).toBe(prUrl);
+  });
+
+  it('lists cards with a PR link in openPRs, enriched with project + card metadata', async () => {
+    const project = await createProject({ name: 'Dashboard openPRs list project' });
+    const projectId = project.id as string;
+
+    const card = await createCard(projectId, {
+      title: 'Open PR list card unique title',
+      priority: 'high',
+    });
+    const prUrl = 'https://github.com/Speakman-ai/agent-hub/pull/4242';
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
+      .send({ prUrl })
+      .expect(200);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(Array.isArray(body.openPRs)).toBe(true);
+    const entry = body.openPRs.find((p) => p.cardId === (card.id as string));
+    expect(entry).toBeDefined();
+    expect(entry!.prUrl).toBe(prUrl);
+    expect(entry!.projectId).toBe(projectId);
+    expect(entry!.projectName).toBe('Dashboard openPRs list project');
+    expect(entry!.cardTitle).toBe('Open PR list card unique title');
+    // No pr_creation_logs row for this URL, so the title falls back to the
+    // card title and prNumber is null.
+    expect(entry!.title).toBe('Open PR list card unique title');
+    expect(entry!.prNumber).toBeNull();
+    expect(entry!.priority).toBe('high');
+
+    // The list never exceeds the cap, and its length is consistent with the
+    // headline count being at least 1 (the card we just linked).
+    expect(body.openPRs.length).toBeLessThanOrEqual(30);
+    expect(body.headline.openPRs).toBeGreaterThanOrEqual(1);
+  });
+
+  it('excludes PR cards on boards whose project is not in the org roster from openPRs', async () => {
+    // Regression guard for the cross-org-scoping review: the openPRs detail
+    // list must be restricted to the org's *current* project roster
+    // (card → board → project → org), not just the per-org DB handle. A board
+    // row left behind by a since-deleted project (its project_id no longer in
+    // projects.json) must not leak its PR / card metadata into the list.
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+
+    const ghostProjectId = `ghost-project-${Date.now()}`;
+    const ghostBoardId = `ghost-board-${Date.now()}`;
+    const ghostColumnId = `ghost-col-${Date.now()}`;
+    const ghostCardId = `ghost-card-${Date.now()}`;
+    const ghostPrUrl = 'https://github.com/Speakman-ai/agent-hub/pull/6666';
+
+    db.prepare(`INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)`).run(
+      ghostBoardId,
+      ghostProjectId,
+      'Orphaned board',
+    );
+    // A non-Done column so the card would otherwise pass the open-set filter.
+    db.prepare(
+      `INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, 'To Do', 0)`,
+    ).run(ghostColumnId, ghostBoardId);
+    db.prepare(
+      `INSERT INTO kanban_cards (id, column_id, board_id, title, priority, pr_url)
+       VALUES (?, ?, ?, ?, 'high', ?)`,
+    ).run(
+      ghostCardId,
+      ghostColumnId,
+      ghostBoardId,
+      'Leaked PR card from deleted project',
+      ghostPrUrl,
+    );
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    // The orphaned card is absent from the list — neither by id nor by its
+    // ghost project / PR url.
+    expect(body.openPRs.some((p) => p.cardId === ghostCardId)).toBe(false);
+    expect(body.openPRs.some((p) => p.projectId === ghostProjectId)).toBe(false);
+    expect(body.openPRs.some((p) => p.prUrl === ghostPrUrl)).toBe(false);
+  });
+
+  it('excludes PR cards in Done-ish columns from openPRs (matches the headline semantics)', async () => {
+    const project = await createProject({ name: 'Dashboard openPRs Done-ish test' });
+    const projectId = project.id as string;
+
+    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardRes.body as {
+      columns: Array<{ id: string; name: string }>;
+    };
+    const doneCol = board.columns.find((c) => c.name === 'Done');
+    expect(doneCol).toBeDefined();
+
+    const card = await createCard(projectId, {
+      title: 'Merged PR card in Done column',
+      columnId: doneCol!.id,
+    });
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
+      .send({ prUrl: 'https://github.com/Speakman-ai/agent-hub/pull/5555' })
+      .expect(200);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    // A PR card sitting in a Done column is "closed" work — absent from the
+    // open PRs list, the same rule the headline openPRs counter uses.
+    expect(body.openPRs.some((p) => p.cardId === (card.id as string))).toBe(false);
   });
 
   it('does not count cards in Done-ish columns toward openCards', async () => {

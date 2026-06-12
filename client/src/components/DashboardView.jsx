@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   BarChart3,
-  Folder,
-  Bot,
-  MessageCircle,
-  Activity,
-  ListChecks,
   GitPullRequest,
   AlertTriangle,
   Plus,
@@ -21,8 +16,9 @@ import { parseNativePrUrl } from '../utils/prFormatting.js';
 
 /**
  * Org-wide dashboard. Renders the response from
- * `GET /api/orgs/:id/dashboard` as three sections:
- *   - 7 headline counter tiles
+ * `GET /api/orgs/:id/dashboard`, top to bottom:
+ *   - active sessions (what each agent is streaming right now)
+ *   - open PRs (cards with an unmerged PR link)
  *   - kanban breakdown (byColumn + byPriority bar charts)
  *   - recent activity feed
  *
@@ -34,7 +30,6 @@ import { parseNativePrUrl } from '../utils/prFormatting.js';
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
- * @param {() => void} [onNewProject] — open the full-screen new project wizard
  */
 export default function DashboardView({
   orgId,
@@ -43,7 +38,6 @@ export default function DashboardView({
   onOpenKanban,
   onOpenPulls,
   onOpenExternalUrl,
-  onNewProject,
 }) {
   const accountName = getAuthRecord()?.user?.username || 'Account';
   const [data, setData] = useState(null);
@@ -137,44 +131,18 @@ export default function DashboardView({
           </div>
         )}
 
-        {onNewProject && (
-          <section
-            aria-label="Create a new project"
-            className="mb-8 rounded-2xl border border-emerald-800/40 bg-gradient-to-br from-emerald-950/50 via-gray-900 to-gray-900 p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-emerald-400 mb-1">
-                <Sparkles size={18} className="shrink-0" />
-                <span className="text-xs font-semibold uppercase tracking-wider">Projects</span>
-              </div>
-              <h2 className="text-lg sm:text-xl font-semibold text-white">
-                Add a workspace to this org
-              </h2>
-              <p className="text-sm text-gray-400 mt-1 max-w-xl">
-                Connect a local folder or clone from GitHub, then review agents and context before
-                you land in the hub.
-              </p>
-            </div>
-            <button
-              type="button"
-              data-testid="dashboard-new-project-cta"
-              onClick={onNewProject}
-              className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950 transition-colors"
-            >
-              <Plus size={20} strokeWidth={2.5} aria-hidden />
-              New Project
-            </button>
-          </section>
-        )}
-
         {!data && !error && loading && (
           <div className="text-gray-500 text-sm">Loading dashboard…</div>
         )}
 
         {data && (
           <>
-            <HeadlineGrid headline={data.headline} />
             <ActiveSessionsPanel sessions={data.activeSessions} onOpenSession={onOpenSession} />
+            <OpenPRsPanel
+              prs={data.openPRs}
+              onOpenPulls={onOpenPulls}
+              onOpenExternalUrl={onOpenExternalUrl}
+            />
             <KanbanBreakdown kanban={data.kanban} />
             <RecentActivity
               items={data.recentActivity}
@@ -190,37 +158,113 @@ export default function DashboardView({
   );
 }
 
-const HEADLINE_TILES = [
-  { key: 'projects', label: 'Projects', Icon: Folder, color: 'text-indigo-400' },
-  { key: 'agents', label: 'Agents', Icon: Bot, color: 'text-cyan-400' },
-  { key: 'sessions', label: 'Sessions', Icon: MessageCircle, color: 'text-blue-400' },
-  { key: 'activeSessions', label: 'Active sessions', Icon: Activity, color: 'text-emerald-400' },
-  { key: 'openCards', label: 'Open cards', Icon: ListChecks, color: 'text-amber-400' },
-  { key: 'openPRs', label: 'Open PRs', Icon: GitPullRequest, color: 'text-fuchsia-400' },
-  { key: 'escalations', label: 'Escalations', Icon: AlertTriangle, color: 'text-rose-400' },
-];
+const PR_PRIORITY_DOT = {
+  urgent: 'bg-rose-500',
+  high: 'bg-orange-400',
+  medium: 'bg-amber-400',
+  low: 'bg-emerald-400',
+};
 
-function HeadlineGrid({ headline = {} }) {
+/**
+ * Open pull requests: kanban cards carrying an unmerged `pr_url` that have
+ * not yet landed in a Done-ish / shipped column. Sourced from
+ * `data.openPRs`. Each row deep-links into the in-app Pull Requests view
+ * for Agent Hub-native PR URLs (via `onOpenPulls`), or opens the external
+ * host (GitHub etc.) for everything else (via `onOpenExternalUrl`), with a
+ * final fallback to the project's PR list.
+ *
+ * @param {Array<{cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt}>} [prs]
+ * @param {(projectId: string) => void} [onOpenPulls]
+ * @param {(url: string) => void} [onOpenExternalUrl]
+ */
+function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
+  const list = Array.isArray(prs) ? prs : [];
+
+  const activate = (pr) => {
+    const prUrl = pr.prUrl != null ? String(pr.prUrl) : '';
+    const native = parseNativePrUrl(prUrl);
+    if (native && onOpenPulls) {
+      onOpenPulls(native.projectId);
+      return;
+    }
+    if (prUrl && onOpenExternalUrl) {
+      onOpenExternalUrl(prUrl);
+      return;
+    }
+    if (pr.projectId && onOpenPulls) {
+      onOpenPulls(String(pr.projectId));
+    }
+  };
+
+  const isActionable = (pr) => {
+    const prUrl = pr.prUrl != null ? String(pr.prUrl) : '';
+    if (parseNativePrUrl(prUrl) && onOpenPulls) return true;
+    if (prUrl && onOpenExternalUrl) return true;
+    return Boolean(pr.projectId && onOpenPulls);
+  };
+
   return (
-    <section
-      aria-label="Headline counters"
-      className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mb-8"
-    >
-      {HEADLINE_TILES.map(({ key, label, Icon, color }) => (
-        <div
-          key={key}
-          data-testid={`headline-${key}`}
-          className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-1"
-        >
-          <div className={`flex items-center gap-1.5 ${color}`}>
-            <Icon size={14} />
-            <span className="text-[10px] uppercase tracking-wider font-medium">{label}</span>
-          </div>
-          <div className="text-2xl font-semibold text-white tabular-nums">
-            {Number(headline[key] ?? 0)}
-          </div>
+    <section aria-label="Open pull requests" className="mb-8">
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Open PRs</h2>
+        <div className="text-xs text-gray-500">
+          {list.length} open PR{list.length === 1 ? '' : 's'}
         </div>
-      ))}
+      </div>
+      <div
+        data-testid="open-prs"
+        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
+      >
+        {list.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">No open pull requests.</div>
+        ) : (
+          list.map((pr) => {
+            const actionable = isActionable(pr);
+            const rowClass = actionable
+              ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
+              : 'px-4 py-3 flex items-center gap-3';
+            const inner = (
+              <>
+                <GitPullRequest size={16} className="text-violet-400 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-white truncate">{pr.title || pr.cardTitle}</div>
+                  <div className="text-[11px] text-gray-500 truncate">
+                    {pr.projectName || pr.projectId}
+                    {pr.authorAgent ? ` · ${pr.authorAgent}` : ''}
+                  </div>
+                </div>
+                {pr.priority && PR_PRIORITY_DOT[pr.priority] && (
+                  <span
+                    className={`h-2 w-2 rounded-full flex-shrink-0 ${PR_PRIORITY_DOT[pr.priority]}`}
+                    title={`${pr.priority} priority`}
+                    aria-hidden
+                  />
+                )}
+                <div className="text-[11px] text-gray-500 flex-shrink-0">
+                  {pr.updatedAt ? relativeTime(pr.updatedAt) : ''}
+                </div>
+              </>
+            );
+            if (actionable) {
+              return (
+                <button
+                  key={pr.cardId}
+                  type="button"
+                  className={rowClass}
+                  onClick={() => activate(pr)}
+                >
+                  {inner}
+                </button>
+              );
+            }
+            return (
+              <div key={pr.cardId} className={rowClass}>
+                {inner}
+              </div>
+            );
+          })
+        )}
+      </div>
     </section>
   );
 }

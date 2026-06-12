@@ -53,6 +53,19 @@ const ActiveSessionEntry = z.object({
   startedAt: z.string(),
 });
 
+const OpenPrEntry = z.object({
+  cardId: z.string(),
+  projectId: z.string(),
+  projectName: z.string(),
+  prUrl: z.string(),
+  prNumber: z.number().int().nullable(),
+  title: z.string(),
+  cardTitle: z.string(),
+  authorAgent: z.string().nullable(),
+  priority: z.string(),
+  updatedAt: z.string(),
+});
+
 const ActivityEntry = z.object({
   type: z.enum(['card_created', 'card_updated', 'session_created', 'escalation', 'pr_created']),
   id: z.string(),
@@ -71,6 +84,7 @@ export const DashboardResponseComponent = registerComponent(
       headline: HeadlineCounts,
       kanban: KanbanBreakdown,
       activeSessions: z.array(ActiveSessionEntry),
+      openPRs: z.array(OpenPrEntry),
       recentActivity: z.array(ActivityEntry),
     })
     .openapi({

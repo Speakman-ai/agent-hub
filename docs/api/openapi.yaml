@@ -2689,6 +2689,44 @@ components:
               - model
               - prompt
               - startedAt
+        openPRs:
+          type: array
+          items:
+            type: object
+            properties:
+              cardId:
+                type: string
+              projectId:
+                type: string
+              projectName:
+                type: string
+              prUrl:
+                type: string
+              prNumber:
+                type: integer
+                nullable: true
+              title:
+                type: string
+              cardTitle:
+                type: string
+              authorAgent:
+                type: string
+                nullable: true
+              priority:
+                type: string
+              updatedAt:
+                type: string
+            required:
+              - cardId
+              - projectId
+              - projectName
+              - prUrl
+              - prNumber
+              - title
+              - cardTitle
+              - authorAgent
+              - priority
+              - updatedAt
         recentActivity:
           type: array
           items:
@@ -2727,6 +2765,7 @@ components:
         - headline
         - kanban
         - activeSessions
+        - openPRs
         - recentActivity
       description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
     EscalationsErrorResponse:
