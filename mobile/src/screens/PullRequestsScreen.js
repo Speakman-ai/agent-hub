@@ -31,6 +31,11 @@ import {
 } from '../utils/prFormatting';
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
+import { prDetailCapabilities } from '../utils/prReviewActions';
+import PrDiffView from '../components/PrDiffView';
+import PrReviewSheet from '../components/PrReviewSheet';
+import PrCommentSheet from '../components/PrCommentSheet';
+import PrEditSheet from '../components/PrEditSheet';
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -302,6 +307,56 @@ function PrDetail({
   onOpenChat,
 }) {
   const pr = detail?.pr;
+  const caps = prDetailCapabilities(detail);
+
+  // PR actions (diff / review / comment / edit / reopen) — web parity.
+  const [showFiles, setShowFiles] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [reopening, setReopening] = useState(false);
+
+  const prNumber = pr?.number;
+
+  // Sheets throw on failure so they can render the error inline and stay
+  // open; success closes the sheet and refreshes the detail payload.
+  const handleSubmitReview = useCallback(
+    async (payload) => {
+      await api.submitPullReview(projectId, prNumber, payload);
+      onRefresh();
+    },
+    [projectId, prNumber, onRefresh],
+  );
+
+  const handleSaveEdit = useCallback(
+    async (payload) => {
+      await api.updatePull(projectId, prNumber, payload);
+      onRefresh();
+    },
+    [projectId, prNumber, onRefresh],
+  );
+
+  const handleAddInlineComment = useCallback(
+    async (payload) => {
+      await api.addPullComment(projectId, prNumber, payload);
+      onRefresh();
+    },
+    [projectId, prNumber, onRefresh],
+  );
+
+  const handleReopen = useCallback(async () => {
+    if (reopening || !prNumber) return;
+    setReopening(true);
+    try {
+      await api.reopenPull(projectId, prNumber);
+      onRefresh();
+    } catch (err) {
+      Alert.alert('Reopen failed', err?.message || 'Failed to reopen PR');
+    } finally {
+      setReopening(false);
+    }
+  }, [projectId, prNumber, reopening, onRefresh]);
+
   if (!pr) return null;
   const state = prStateBadge(pr);
   const checks = summarizeChecks(detail.checks);
@@ -385,12 +440,66 @@ function PrDetail({
         </View>
       )}
 
-      <TouchableOpacity
-        style={styles.openGithubButton}
-        onPress={() => pr.html_url && Linking.openURL(pr.html_url)}
-      >
-        <Text style={styles.openGithubText}>Open on GitHub {'\u2197'}</Text>
-      </TouchableOpacity>
+      {/* External link only for real GitHub URLs \u2014 native PR URLs are
+          in-app client routes with nothing external to open. */}
+      {caps.externalUrl ? (
+        <TouchableOpacity
+          style={styles.openGithubButton}
+          onPress={() => Linking.openURL(caps.externalUrl)}
+        >
+          <Text style={styles.openGithubText}>Open on GitHub {'\u2197'}</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      {/* PR actions: diff, review, comment, edit, reopen */}
+      <View style={styles.prActionsRow}>
+        <TouchableOpacity
+          style={[styles.prActionButton, !caps.canViewFiles && styles.resolveButtonDisabled]}
+          onPress={() => setShowFiles((v) => !v)}
+          disabled={!caps.canViewFiles}
+          accessibilityState={{ disabled: !caps.canViewFiles, expanded: showFiles }}
+        >
+          <Text style={styles.prActionButtonText}>
+            {showFiles ? 'Hide files' : `Files${pr.changed_files ? ` (${pr.changed_files})` : ''}`}
+          </Text>
+        </TouchableOpacity>
+        {caps.canReview ? (
+          <TouchableOpacity style={styles.prActionButton} onPress={() => setReviewOpen(true)}>
+            <Text style={styles.prActionButtonText}>Review</Text>
+          </TouchableOpacity>
+        ) : null}
+        {caps.canComment ? (
+          <TouchableOpacity style={styles.prActionButton} onPress={() => setCommentOpen(true)}>
+            <Text style={styles.prActionButtonText}>Comment</Text>
+          </TouchableOpacity>
+        ) : null}
+        {caps.canEdit ? (
+          <TouchableOpacity style={styles.prActionButton} onPress={() => setEditOpen(true)}>
+            <Text style={styles.prActionButtonText}>Edit</Text>
+          </TouchableOpacity>
+        ) : null}
+        {caps.canReopen ? (
+          <TouchableOpacity
+            style={[styles.prActionButton, reopening && styles.resolveButtonDisabled]}
+            onPress={handleReopen}
+            disabled={reopening}
+            accessibilityState={{ disabled: reopening, busy: reopening }}
+          >
+            {reopening ? (
+              <ActivityIndicator size="small" color={colors.emerald400} />
+            ) : (
+              <Text style={[styles.prActionButtonText, { color: colors.emerald400 }]}>Reopen</Text>
+            )}
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      {pr.body ? (
+        <>
+          <Text style={styles.sectionHeader}>Description</Text>
+          <Text style={styles.descriptionText}>{pr.body}</Text>
+        </>
+      ) : null}
 
       {/* Summary strip: checks + reviews */}
       <View style={styles.summaryStrip}>
@@ -404,6 +513,17 @@ function PrDetail({
           />
         )}
       </View>
+
+      {showFiles ? (
+        <>
+          <Text style={styles.sectionHeader}>Files changed</Text>
+          <PrDiffView
+            prUrl={caps.prUrl}
+            comments={caps.isNative ? detail.inline_comments || [] : []}
+            onAddComment={caps.canComment ? handleAddInlineComment : null}
+          />
+        </>
+      ) : null}
 
       <Text style={styles.activitySectionHeader}>Activity</Text>
       <Text style={styles.activitySub}>
@@ -454,6 +574,25 @@ function PrDetail({
         })}
 
       <View style={{ height: 40 }} />
+
+      <PrReviewSheet
+        visible={reviewOpen}
+        prNumber={pr.number}
+        onClose={() => setReviewOpen(false)}
+        onSubmit={handleSubmitReview}
+      />
+      <PrCommentSheet
+        visible={commentOpen}
+        prNumber={pr.number}
+        onClose={() => setCommentOpen(false)}
+        onSubmit={handleSubmitReview}
+      />
+      <PrEditSheet
+        visible={editOpen}
+        pr={pr}
+        onClose={() => setEditOpen(false)}
+        onSubmit={handleSaveEdit}
+      />
     </ScrollView>
   );
 }
@@ -1031,6 +1170,35 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   openGithubText: { color: colors.blue400, fontSize: 13 },
+  prActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  prActionButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    minHeight: 32,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  prActionButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '600' },
+  descriptionText: {
+    color: colors.gray300,
+    fontSize: 13,
+    lineHeight: 19,
+    padding: 10,
+    backgroundColor: colors.gray900,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+  },
   activitySectionHeader: {
     color: colors.gray300,
     fontSize: 13,

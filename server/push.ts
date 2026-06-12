@@ -24,6 +24,7 @@ import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { findProject } from './project-model.js';
 import { canViewProject } from './project-visibility.js';
 import { isLocalBundledServer } from './auth.js';
+import { getSessionOwner } from './session-ownership.js';
 
 // ── Event types that can trigger a push ────────────────────────────────
 export const PUSH_EVENT_TYPES = [
@@ -283,6 +284,8 @@ export interface PushDispatchDeps {
   log?: (msg: string) => void;
   resolveProjectId?: (data: BroadcastData) => string | null;
   findProjectById?: (projectId: string) => ReturnType<typeof findProject>;
+  /** Injectable session-owner lookup for tests; defaults to `getSessionOwner`. */
+  getSessionOwnerById?: (sessionId: string) => string | null;
 }
 
 function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
@@ -303,6 +306,8 @@ function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
     resolveProjectId:
       deps?.resolveProjectId ?? ((data: BroadcastData) => resolveProjectIdFromEvent(data)),
     findProjectById: deps?.findProjectById ?? ((projectId: string) => findProject(projectId)),
+    getSessionOwnerById:
+      deps?.getSessionOwnerById ?? ((sessionId: string) => getSessionOwner(sessionId)),
   };
 }
 
@@ -321,6 +326,41 @@ export function filterTokensForBroadcastVisibility(
   if (!project.ownerUserId) return tokens;
   const localBypass = isLocalBundledServer();
   return tokens.filter((t) => canViewProject(project, { userId: t.user_id ?? null, localBypass }));
+}
+
+/**
+ * Account-based push filtering for session-scoped events.
+ *
+ * Sessions are strictly per-user (`sessions.owner_user_id`, see
+ * `session-ownership.ts`), so a push about a specific session should only
+ * land on the owner's devices — Kevin's `session_complete` must not buzz
+ * Ryan's phone. Applies to any event whose payload carries a `sessionId`
+ * (`session_complete`, `changes_ready`, `pr_creation_stale`,
+ * `finalize_stall_warning`, …); board/thread/cron events without a
+ * `sessionId` keep the shared fan-out.
+ *
+ * Fallbacks (deliberately permissive so nothing silently goes dark):
+ *  - Unowned sessions (cron / heartbeat / autonomous spawns, pre-migration
+ *    rows) → all tokens, matching today's behavior.
+ *  - Local bundled server (single-tenant) → all tokens.
+ *
+ * Tokens with no `user_id` (registered before per-user auth, or by a
+ * legacy global-apiKey caller) are excluded for owned sessions: they can't
+ * be attributed to the owner, and re-registering on next app launch stamps
+ * the user id.
+ */
+export function filterTokensForSessionOwner(
+  tokens: DeviceTokenRowWithPrefs[],
+  data: BroadcastData,
+  deps?: Pick<PushDispatchDeps, 'getSessionOwnerById'>,
+): DeviceTokenRowWithPrefs[] {
+  const sessionId = typeof data.sessionId === 'string' ? data.sessionId : null;
+  if (!sessionId) return tokens;
+  if (isLocalBundledServer()) return tokens;
+  const getOwner = deps?.getSessionOwnerById ?? getSessionOwner;
+  const owner = getOwner(sessionId);
+  if (!owner) return tokens;
+  return tokens.filter((t) => t.user_id === owner);
 }
 
 /**
@@ -403,9 +443,11 @@ export async function dispatchPushEvent(
         ? payload.data.projectId
         : payload.data?.projectId,
   };
-  const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), visibilityEvent, d).filter(
-    (t) => tokenAcceptsEvent(t, eventType),
-  );
+  const tokens = filterTokensForSessionOwner(
+    filterTokensForBroadcastVisibility(d.getAllTokens(), visibilityEvent, d),
+    visibilityEvent,
+    d,
+  ).filter((t) => tokenAcceptsEvent(t, eventType));
   if (!tokens.length) return 0;
   const msgs = buildMessages(tokens, payload);
   return sendExpoPush(msgs, deps);
@@ -439,9 +481,11 @@ export async function handleBroadcastForPush(
   const mapped = mapBroadcastToPush(data);
   if (!mapped) return 0;
   const d = resolveDeps(deps);
-  const tokens = filterTokensForBroadcastVisibility(d.getAllTokens(), data, d).filter((t) =>
-    tokenAcceptsEvent(t, mapped.event),
-  );
+  const tokens = filterTokensForSessionOwner(
+    filterTokensForBroadcastVisibility(d.getAllTokens(), data, d),
+    data,
+    d,
+  ).filter((t) => tokenAcceptsEvent(t, mapped.event));
   if (!tokens.length) return 0;
   const msgs = buildMessages(tokens, mapped.payload);
   return sendExpoPush(msgs, deps);

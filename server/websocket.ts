@@ -116,12 +116,12 @@ export default function createWebSocket(
     // Fan out relevant broadcasts to mobile clients via Expo push. Fire-and-
     // forget: push dispatch must never block the WebSocket hot path.
     //
-    // NOTE: mobile push is NOT yet filtered by per-user project visibility —
-    // `device_tokens` lacks a `user_id` column today, so we cannot attribute
-    // tokens to a specific user. Tracked as Phase 2 of the WS broadcast
-    // visibility card; the device-token migration + auth on POST /api/devices
-    // are the prerequisites. Until then mobile push retains the legacy
-    // global fan-out behavior.
+    // Push recipients are filtered inside `handleBroadcastForPush`:
+    // private-project events go only to tokens whose user can view the
+    // project (`filterTokensForBroadcastVisibility`), and session-scoped
+    // events go only to the session owner's devices
+    // (`filterTokensForSessionOwner`); unowned sessions keep the shared
+    // fan-out.
     void handleBroadcastForPush(data).catch((err: unknown) => {
       console.error('[push] broadcast handler failed:', (err as Error).message);
     });

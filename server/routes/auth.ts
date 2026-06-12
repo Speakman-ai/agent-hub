@@ -173,6 +173,7 @@ registerPath({
             token: z.string(),
             expiresAt: z.string(),
             user: z.object({
+              id: z.string().optional(),
               username: z.string(),
               role: z.enum(['Owner', 'Admin', 'User']),
             }),
@@ -237,7 +238,11 @@ registerPath({
         'application/json': {
           schema: z.object({
             user: z
-              .object({ username: z.string(), role: z.enum(['Owner', 'Admin', 'User']).nullable() })
+              .object({
+                id: z.string().optional(),
+                username: z.string(),
+                role: z.enum(['Owner', 'Admin', 'User']).nullable(),
+              })
               .nullable(),
             authConfigured: z.boolean(),
             role: z.enum(['Owner', 'Admin', 'User']).nullable(),
@@ -1560,7 +1565,11 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       ok: true,
       token,
       expiresAt,
-      user: { username: record.username, role: record.role },
+      user: {
+        ...(user?.id ? { id: user.id } : {}),
+        username: record.username,
+        role: record.role,
+      },
     });
   });
 
@@ -1669,7 +1678,15 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({
       token,
       expiresAt,
-      user: { username: subject.username, role: resolvedRole },
+      // `id` lets clients compare themselves against per-user fields on
+      // broadcasts (e.g. `ownerUserId` on session events) without a
+      // follow-up lookup. Omitted on the legacy auth.json fallback where
+      // no user row exists yet.
+      user: {
+        ...(subject.id ? { id: subject.id } : {}),
+        username: subject.username,
+        role: resolvedRole,
+      },
     });
   });
 
@@ -1680,7 +1697,13 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const subject = authedReq.authUser || record?.username || null;
     const role: Role | null = authedReq.authRole ?? record?.role ?? null;
     res.json({
-      user: subject ? { username: subject, role } : null,
+      user: subject
+        ? {
+            ...(authedReq.authUserId ? { id: authedReq.authUserId } : {}),
+            username: subject,
+            role,
+          }
+        : null,
       authConfigured: !!record,
       role,
       orgId: authedReq.authOrgId ?? null,

@@ -2542,6 +2542,10 @@ export async function autoCommitAndPR(
         sessionId,
         agentName: agent.name,
         sessionName,
+        // Session owner so clients can scope foreground banners to the
+        // account that owns the session (see push.ts filterTokensForSessionOwner
+        // for the remote-push equivalent).
+        ownerUserId: getSessionOwner(sessionId),
         ...changesReadyData,
       });
       if (finalizeBlocksShip && allowFinalizeAutoStart) {

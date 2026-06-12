@@ -8,7 +8,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import TopBar from '../components/TopBar';
@@ -24,7 +24,9 @@ import SessionTail from '../components/SessionTail';
 // cleanup card.
 import FinalizeButton from '../components/FinalizeButton';
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
+import SessionExtrasBar from '../components/SessionExtrasBar';
 import { isWorkflowProject } from '../utils/project-mode';
+import { shouldShowViewChanges } from '../utils/sessionExtras';
 import {
   inferPrUrlFromSessionTitle,
   isResolvePrSessionTitle,
@@ -74,8 +76,10 @@ export default function ChatScreen() {
     sessions,
   } = useApp();
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
+  // plain declaration here previously made this module fail to parse.
 
+  const navigation = useNavigation();
   const flatListRef = useRef(null);
   const [showSwitcher, setShowSwitcher] = useState(false);
 
@@ -288,6 +292,19 @@ export default function ChatScreen() {
           maxTurns={activeSession?.max_turns}
           agents={agents}
           onUpdated={handleSessionAgentsUpdated}
+        />
+      ) : null}
+      {activeSessionId ? (
+        <SessionExtrasBar
+          sessionId={activeSessionId}
+          sessionAgents={sessionAgents}
+          showViewChanges={shouldShowViewChanges(activeSession)}
+          onViewChanges={() =>
+            navigation.navigate('SessionChanges', {
+              sessionId: activeSessionId,
+              sessionName: activeSession?.name || '',
+            })
+          }
         />
       ) : null}
       {sessionRoundProcessing ? (

@@ -5,7 +5,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
-import { loadAuthToken, isAuthenticated, getAuthStatus } from '../utils/auth';
+import { loadAuthToken, isAuthenticated, getAuthStatus, getAuthRecord } from '../utils/auth';
 import {
   loadSetupDismissed,
   saveSetupDismissed,
@@ -189,7 +189,12 @@ export function AppProvider({ children }) {
   // with a locally-scheduled notification so the user still sees a banner.
   // Dynamic require so Vitest doesn't need native mocks.
   const presentForegroundFor = useCallback((data) => {
-    const mapped = mapBroadcastToNotification(data);
+    // Scope session-owned events to the logged-in account — Kevin's
+    // session_complete must not banner on Ryan's phone. The owner id rides
+    // on the broadcast (`ownerUserId`); our identity comes from the stored
+    // JWT login record.
+    const currentUserId = getAuthRecord()?.user?.id ?? null;
+    const mapped = mapBroadcastToNotification(data, { currentUserId });
     if (!mapped) return;
     try {
       const Notifications = require('expo-notifications');

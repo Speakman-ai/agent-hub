@@ -29,6 +29,10 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import FinalizeSection from '../components/FinalizeSection';
+import AgentsSection from '../components/settings/AgentsSection';
+import SlackBotsSection from '../components/settings/SlackBotsSection';
+import ProjectSecretsSection from '../components/settings/ProjectSecretsSection';
+import MyCliKeysSection from '../components/settings/MyCliKeysSection';
 
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
@@ -2368,8 +2372,10 @@ export default function SettingsScreen({ navigation }) {
     { id: 'heartbeats', label: 'Heartbeats' },
     { id: 'crons', label: 'Crons' },
     { id: 'projects', label: 'Projects' },
+    { id: 'secrets', label: 'Secrets' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
+    { id: 'mykeys', label: 'My Keys' },
     { id: 'finalize', label: 'Runner' },
     { id: 'config', label: 'Backup' },
   ];
@@ -2414,8 +2420,15 @@ export default function SettingsScreen({ navigation }) {
           {tab === 'heartbeats' && <HeartbeatSection />}
           {tab === 'crons' && <CronSection />}
           {tab === 'projects' && <ProjectsSection />}
-          {tab === 'slack' && <SlackSection />}
-          {tab === 'agents' && <AgentConfigSection />}
+          {tab === 'secrets' && <ProjectSecretsSection />}
+          {tab === 'slack' && (
+            <>
+              <SlackBotsSection />
+              <SlackSection />
+            </>
+          )}
+          {tab === 'agents' && <AgentsSection />}
+          {tab === 'mykeys' && <MyCliKeysSection />}
           {tab === 'finalize' && <FinalizeSection navigation={navigation} />}
           {tab === 'config' && <ConfigBackupSection />}
         </ScrollView>

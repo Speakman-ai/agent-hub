@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Modal,
   StyleSheet,
   Pressable,
   Alert,
@@ -24,6 +23,7 @@ import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils
 import BugReportButton from './BugReportButton';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
 import SessionStateIcon from './SessionStateIcon';
+import SessionEngineModelSheet from './SessionEngineModelSheet';
 
 export default function TopBar({ projectId, agentId } = {}) {
   const {
@@ -279,94 +279,20 @@ export default function TopBar({ projectId, agentId } = {}) {
         }
       />
 
-      {/* Engine/Model Picker Modal */}
-      <Modal
+      {/* Engine/Model Picker Sheet — per-session; persists via
+          api.setSessionEngine / api.setSessionModel inside the context
+          handlers and Alerts on failure. */}
+      <SessionEngineModelSheet
         visible={showPicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowPicker(false)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowPicker(false)}>
-          <View style={styles.pickerContainer}>
-            {/* Engine section */}
-            <Text style={styles.pickerSectionLabel}>ENGINE</Text>
-            {engineOptions.map((eng) => (
-              <TouchableOpacity
-                key={eng.id}
-                style={styles.pickerItem}
-                onPress={() => {
-                  handleEngineChange(eng.id);
-                  setShowPicker(false);
-                }}
-              >
-                <View style={styles.pickerItemRow}>
-                  <View style={[styles.engineDotSmall, { backgroundColor: eng.color }]} />
-                  <Text style={styles.pickerItemLabel}>{eng.label}</Text>
-                </View>
-                {eng.id === sessionEngine && (
-                  <Text style={styles.pickerCheck}>✓</Text>
-                )}
-              </TouchableOpacity>
-            ))}
-
-            <View style={styles.pickerDivider} />
-
-            {/* Mode section — Ask (read-only) vs Agent (full access) */}
-            <Text style={styles.pickerSectionLabel}>MODE</Text>
-            <TouchableOpacity
-              style={styles.pickerItem}
-              onPress={() => {
-                handleAskModeChange(!sessionAskMode);
-                setShowPicker(false);
-              }}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: sessionAskMode }}
-              accessibilityLabel={
-                sessionAskMode
-                  ? 'Ask mode on — toggle to agent (full access)'
-                  : 'Ask mode off — toggle to read-only'
-              }
-            >
-              <Text
-                style={[
-                  styles.pickerItemLabel,
-                  sessionAskMode && styles.pickerItemLabelAsk,
-                ]}
-              >
-                {sessionAskMode ? 'Ask (read-only)' : 'Agent (full access)'}
-              </Text>
-              {sessionAskMode && <Text style={styles.pickerCheckAsk}>✓</Text>}
-            </TouchableOpacity>
-
-            <View style={styles.pickerDivider} />
-
-            {/* Model section */}
-            <Text style={styles.pickerSectionLabel}>MODEL</Text>
-            {engineModels.map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={styles.pickerItem}
-                onPress={() => {
-                  handleModelChange(m.id);
-                  setShowPicker(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.pickerItemLabel,
-                    m.id === sessionModel && styles.pickerItemLabelActive,
-                  ]}
-                >
-                  {m.label}
-                </Text>
-                {m.id === sessionModel && (
-                  <Text style={styles.pickerCheck}>✓</Text>
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </Pressable>
-      </Modal>
+        onClose={() => setShowPicker(false)}
+        modelConfig={modelConfig}
+        engine={sessionEngine}
+        model={sessionModel}
+        askMode={sessionAskMode}
+        onSelectEngine={handleEngineChange}
+        onSelectModel={handleModelChange}
+        onToggleAskMode={handleAskModeChange}
+      />
     </View>
   );
 }
@@ -495,72 +421,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 6,
   },
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: colors.black50,
-    justifyContent: 'flex-start',
-    alignItems: 'flex-end',
-    paddingTop: 100,
-    paddingRight: 16,
-  },
-  pickerContainer: {
-    backgroundColor: colors.gray800,
-    borderWidth: 1,
-    borderColor: colors.gray700,
-    borderRadius: 12,
-    minWidth: 220,
-    paddingVertical: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 10,
-  },
-  pickerSectionLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.gray500,
-    letterSpacing: 0.5,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  pickerItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  pickerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    minHeight: 44,
-  },
-  pickerItemLabel: {
-    fontSize: 14,
-    color: colors.gray400,
-  },
-  pickerItemLabelActive: {
-    color: colors.white,
-  },
-  pickerItemLabelAsk: {
-    color: colors.blue400,
-  },
-  pickerCheck: {
-    fontSize: 12,
-    color: colors.emerald400,
-  },
-  pickerCheckAsk: {
-    fontSize: 12,
-    color: colors.blue400,
-  },
-  pickerDivider: {
-    height: 1,
-    backgroundColor: colors.gray700,
-    marginVertical: 4,
-  },
+  // Picker modal styles moved to SessionEngineModelSheet.js.
   // Worktree detection badge (header)
   worktreeBadge: {
     paddingHorizontal: 6,

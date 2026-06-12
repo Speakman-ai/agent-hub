@@ -124,11 +124,24 @@ export function dispatchFailureNotification({ message }) {
  * use the same event taxonomy so server push + mobile in-app banners fire
  * on the same triggers.
  *
+ * Account scoping: session-scoped broadcasts carry `ownerUserId` (the
+ * session's owner, stamped server-side). When `currentUserId` is provided
+ * and the event is owned by a *different* user, no banner is shown —
+ * mirroring `server/push.ts#filterTokensForSessionOwner` so the foreground
+ * (WS → local notification) path matches the background (Expo push) path.
+ * Unowned events and callers without a per-user identity (legacy apiKey)
+ * keep the shared behavior.
+ *
  * @param {object} data
+ * @param {{ currentUserId?: string | null }} [opts]
  * @returns {({ event: string } & NotificationContent) | null}
  */
-export function mapBroadcastToNotification(data) {
+export function mapBroadcastToNotification(data, opts = {}) {
   if (!data || typeof data.type !== 'string') return null;
+
+  const owner = typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+  const me = typeof opts.currentUserId === 'string' && opts.currentUserId ? opts.currentUserId : null;
+  if (owner && me && owner !== me) return null;
 
   switch (data.type) {
     case 'done': {

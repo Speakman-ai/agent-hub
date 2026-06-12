@@ -142,13 +142,16 @@ describe('POST /api/auth/setup — apiKey→JWT migration', () => {
     // JWT shape: three base64url segments separated by dots.
     expect(res.body.token).toBeTypeOf('string');
     expect(res.body.token.split('.')).toHaveLength(3);
-    expect(res.body.user).toEqual({ username: 'owner', role: 'Owner' });
+    expect(res.body.user).toMatchObject({ username: 'owner', role: 'Owner' });
     expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
 
     // users table populated with exactly one row.
     const owner = getUserByUsername('owner');
     expect(owner).not.toBeNull();
     expect(countUsers()).toBe(1);
+    // The response also carries the new user row's id so clients can match
+    // themselves against per-user fields on broadcasts (e.g. `ownerUserId`).
+    expect(res.body.user.id).toBe(owner!.id);
 
     // memberships table populated — Owner in **every** pre-existing org.
     expect(getMembershipRole(owner!.id, 'default')).toBe('Owner');

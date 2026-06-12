@@ -4537,6 +4537,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           agentId: agent.id,
           agentName: agent.name,
           sessionName: latestSess?.name,
+          // Session owner so clients can scope foreground banners to the
+          // account that owns the session (push is filtered server-side in
+          // push.ts; this covers the WS → local-notification path).
+          ownerUserId: getSessionOwner(sessionId),
           message: {
             id: assistantMsgId,
             session_id: sessionId,

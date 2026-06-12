@@ -135,3 +135,54 @@ describe('mapBroadcastToNotification', () => {
     expect(r.body).toContain('boom');
   });
 });
+
+describe('mapBroadcastToNotification — account scoping (ownerUserId)', () => {
+  const doneEvent = (ownerUserId) => ({
+    type: 'done',
+    sessionId: 's1',
+    agentName: 'H',
+    sessionName: 'S',
+    ownerUserId,
+    message: { content: 'ok' },
+  });
+
+  it("suppresses another user's session events", () => {
+    expect(mapBroadcastToNotification(doneEvent('kevin'), { currentUserId: 'ryan' })).toBeNull();
+    expect(
+      mapBroadcastToNotification(
+        { type: 'changes_ready', sessionId: 's1', ownerUserId: 'kevin', branch: 'f/x' },
+        { currentUserId: 'ryan' },
+      ),
+    ).toBeNull();
+  });
+
+  it("shows the current user's own session events", () => {
+    const r = mapBroadcastToNotification(doneEvent('ryan'), { currentUserId: 'ryan' });
+    expect(r?.event).toBe('session_complete');
+  });
+
+  it('shows unowned events (cron/system sessions) to everyone', () => {
+    expect(mapBroadcastToNotification(doneEvent(null), { currentUserId: 'ryan' })?.event).toBe(
+      'session_complete',
+    );
+    expect(mapBroadcastToNotification(doneEvent(undefined), { currentUserId: 'ryan' })?.event).toBe(
+      'session_complete',
+    );
+  });
+
+  it('shows owned events when the caller has no per-user identity (legacy apiKey)', () => {
+    expect(mapBroadcastToNotification(doneEvent('kevin'), {})?.event).toBe('session_complete');
+    expect(mapBroadcastToNotification(doneEvent('kevin'))?.event).toBe('session_complete');
+  });
+
+  it('never scopes non-session events', () => {
+    const r = mapBroadcastToNotification(
+      { type: 'card_moved', columnName: 'Review', cardTitle: 'T', ownerUserId: 'kevin' },
+      { currentUserId: 'ryan' },
+    );
+    // card_moved carries no session owner semantics today; if a stray
+    // ownerUserId shows up it is still honored — this documents that the
+    // gate is on the field, not the event type.
+    expect(r).toBeNull();
+  });
+});

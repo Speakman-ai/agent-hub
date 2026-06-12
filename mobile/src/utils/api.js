@@ -223,6 +223,58 @@ export const api = {
   restartSlack: () => fetchJSON('/slack/restart', { method: 'POST' }),
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
+  // Slack bots — full CRUD (web parity). See server/routes/slack.ts.
+  getSlackBots: () => fetchJSON('/slack/bots'),
+  createSlackBot: (data) =>
+    fetchJSON('/slack/bots', { method: 'POST', body: JSON.stringify(data) }),
+  updateSlackBot: (id, data) =>
+    fetchJSON(`/slack/bots/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSlackBot: (id) => fetchJSON(`/slack/bots/${id}`, { method: 'DELETE' }),
+  toggleSlackBot: (id) => fetchJSON(`/slack/bots/${id}/toggle`, { method: 'POST' }),
+  testSlackBot: (id) => fetchJSON(`/slack/bots/${id}/test`, { method: 'POST' }),
+  testSlackTokens: (data) =>
+    fetchJSON('/slack/test-tokens', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Project secrets (Admin to read, Owner to write — server enforces roles).
+  getProjectSecrets: (projectId) => fetchJSON(`/projects/${projectId}/secrets`),
+  putProjectSecrets: (projectId, secrets) =>
+    fetchJSON(`/projects/${projectId}/secrets`, {
+      method: 'PUT',
+      body: JSON.stringify({ secrets }),
+    }),
+  deleteProjectSecret: (projectId, key) =>
+    fetchJSON(`/projects/${projectId}/secrets/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
+  importProjectSecrets: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/secrets/import`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // Per-user CLI credentials + GitHub connection (web Settings parity).
+  getMyAuth: (provider) => fetchJSON(`/auth/me/${provider}-auth`),
+  putMyAuth: (provider, data) =>
+    fetchJSON(`/auth/me/${provider}-auth`, { method: 'PUT', body: JSON.stringify(data) }),
+  getGithubAuthStatus: () => fetchJSON('/auth/github/status'),
+  disconnectGithub: () => fetchJSON('/auth/github', { method: 'DELETE' }),
+  // Per-user engine/model overrides per agent.
+  getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
+  putMyAgentEngineOverride: (agentId, data) =>
+    fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteMyAgentEngineOverride: (agentId) =>
+    fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, { method: 'DELETE' }),
+  getMyAgentModelOverrides: () => fetchJSON('/auth/me/agent-model-overrides'),
+  putMyAgentModelOverride: (agentId, data) =>
+    fetchJSON(`/auth/me/agent-model-overrides/${agentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteMyAgentModelOverride: (agentId) =>
+    fetchJSON(`/auth/me/agent-model-overrides/${agentId}`, { method: 'DELETE' }),
 
   // Devices (push notifications)
   registerDevice: (token, platform = 'ios') =>
@@ -371,6 +423,18 @@ export const api = {
     }),
   getAutonomousEpic: (projectId) => fetchJSON(`/projects/${projectId}/board/autonomous`),
 
+  // Session insights — summary panel, skill invocations, worktree diffs.
+  // `getSessionSummary` powers the session summary sheet (linked PR, agents,
+  // skill usage); `getSessionChangesDiff` returns the unified diff for one
+  // file in the session worktree (`file` is the repo-relative path from
+  // `getSessionWorktreeChanges`).
+  getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
+  getSessionSkillInvocations: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/skill-invocations`),
+  getSessionChanges: (sessionId) => fetchJSON(`/sessions/${sessionId}/changes`),
+  getSessionChangesDiff: (sessionId, file) =>
+    fetchJSON(`/sessions/${sessionId}/changes/diff?file=${encodeURIComponent(file)}`),
+
   // Pull Requests (read-only viewer)
   getProjectPulls: (projectId, { state = 'open', limit = 30 } = {}) => {
     const params = new URLSearchParams();
@@ -389,6 +453,40 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
+  // Pull Requests — write surface (web parity). Bodies mirror the web
+  // client; see server/routes/pulls-native.ts for the contracts.
+  createPull: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/pulls`, { method: 'POST', body: JSON.stringify(data) }),
+  updatePull: (projectId, number, data) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  reopenPull: (projectId, number) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // `data`: { event: 'APPROVE'|'REQUEST_CHANGES'|'COMMENT', body? }
+  submitPullReview: (projectId, number, data) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // `data`: { body, path?, line? } — path+line for inline file comments.
+  addPullComment: (projectId, number, data) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // GitHub PR read proxy — same endpoints the web FileDiffView uses.
+  getPrDiff: (prUrl) => fetchJSON(`/pr/diff?prUrl=${encodeURIComponent(prUrl)}`),
+  getPrFiles: (prUrl) => fetchJSON(`/pr/files?prUrl=${encodeURIComponent(prUrl)}`),
+  getPrData: (prUrl) => fetchJSON(`/pr/data?prUrl=${encodeURIComponent(prUrl)}`),
+  mergePr: (prUrl) =>
+    fetchJSON('/pr/merge', { method: 'POST', body: JSON.stringify({ prUrl }) }),
+  closePr: (prUrl) =>
+    fetchJSON('/pr/close', { method: 'POST', body: JSON.stringify({ prUrl }) }),
   // Notes (project-scoped quick-capture)
   getNotes: (projectId, query, limit) => fetchJSON(buildNotesListUrl(projectId, query, limit)),
   getNote: (projectId, noteId) => fetchJSON(buildNoteUrl(projectId, noteId)),

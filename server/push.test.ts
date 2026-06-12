@@ -18,6 +18,7 @@ import {
   mapBroadcastToPush,
   handleBroadcastForPush,
   filterTokensForBroadcastVisibility,
+  filterTokensForSessionOwner,
   EXPO_PUSH_URL,
   PUSH_EVENT_TYPES,
   type DeviceTokenRowWithPrefs,
@@ -569,5 +570,107 @@ describe('filterTokensForBroadcastVisibility', () => {
       },
     );
     expect(out.map((t) => t.token)).toEqual(['a', 'b']);
+  });
+});
+
+describe('filterTokensForSessionOwner', () => {
+  const tokens = () => [
+    token('ryan-phone', null, 'ryan'),
+    token('kevin-phone', null, 'kevin'),
+    token('legacy-device', null, null),
+  ];
+
+  it('keeps only the owner devices for an owned session', () => {
+    const out = filterTokensForSessionOwner(
+      tokens(),
+      { type: 'done', sessionId: 's1' },
+      { getSessionOwnerById: () => 'ryan' },
+    );
+    expect(out.map((t) => t.token)).toEqual(['ryan-phone']);
+  });
+
+  it('keeps all tokens for an unowned session (cron/system/legacy)', () => {
+    const out = filterTokensForSessionOwner(
+      tokens(),
+      { type: 'done', sessionId: 's1' },
+      { getSessionOwnerById: () => null },
+    );
+    expect(out.map((t) => t.token)).toEqual(['ryan-phone', 'kevin-phone', 'legacy-device']);
+  });
+
+  it('keeps all tokens for events without a sessionId (board/thread fan-out)', () => {
+    const getSessionOwnerById = vi.fn(() => 'ryan');
+    const out = filterTokensForSessionOwner(
+      tokens(),
+      { type: 'card_moved', cardId: 'c1' },
+      { getSessionOwnerById },
+    );
+    expect(out).toHaveLength(3);
+    expect(getSessionOwnerById).not.toHaveBeenCalled();
+  });
+
+  it('excludes unattributed (NULL user) tokens for owned sessions', () => {
+    const out = filterTokensForSessionOwner(
+      [token('legacy-device', null, null)],
+      { type: 'done', sessionId: 's1' },
+      { getSessionOwnerById: () => 'ryan' },
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('handleBroadcastForPush only pushes session_complete to the owner device', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const sent = await handleBroadcastForPush(
+      {
+        type: 'done',
+        sessionId: 'kevins-session',
+        agentName: 'Hub',
+        sessionName: 'N',
+        message: { content: 'ok' },
+      },
+      {
+        fetchFn,
+        getAllTokens: tokens,
+        removeToken: () => {},
+        getSessionOwnerById: (id) => (id === 'kevins-session' ? 'kevin' : null),
+      },
+    );
+
+    expect(sent).toBe(1);
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const payload = JSON.parse(String((call[1] as RequestInit).body));
+    expect(payload).toHaveLength(1);
+    expect(payload[0].to).toBe('kevin-phone');
+  });
+
+  it('dispatchPushEvent scopes pr_creation_stale to the session owner', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const sent = await dispatchPushEvent(
+      'pr_creation_stale',
+      { title: 'T', body: 'B', data: { sessionId: 's1', type: 'pr_creation_stale' } },
+      {
+        fetchFn,
+        getAllTokens: tokens,
+        removeToken: () => {},
+        getSessionOwnerById: () => 'ryan',
+      },
+    );
+
+    expect(sent).toBe(1);
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const payload = JSON.parse(String((call[1] as RequestInit).body));
+    expect(payload[0].to).toBe('ryan-phone');
   });
 });

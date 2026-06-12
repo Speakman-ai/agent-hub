@@ -16,6 +16,7 @@ import WikiScreen from './src/screens/WikiScreen';
 import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
+import SessionChangesScreen from './src/screens/SessionChangesScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
 import LoginScreen from './src/components/LoginScreen';
@@ -171,6 +172,7 @@ function AppContent() {
             <Stack.Screen name="Notes" component={NotesScreen} />
             <Stack.Screen name="PullRequests" component={PullRequestsScreen} />
             <Stack.Screen name="Threads" component={ThreadsScreen} />
+            <Stack.Screen name="SessionChanges" component={SessionChangesScreen} />
           </Stack.Navigator>
         </NavigationContainer>
 
