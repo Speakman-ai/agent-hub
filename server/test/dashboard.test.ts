@@ -298,7 +298,7 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(entry!.meta?.prUrl).toBe(prUrl);
   });
 
-  it('lists cards with a PR link in openPRs, enriched with project + card metadata', async () => {
+  it('lists cards with a native Agent Hub PR link in openPRs, enriched with project + card metadata', async () => {
     const project = await createProject({ name: 'Dashboard openPRs list project' });
     const projectId = project.id as string;
 
@@ -306,7 +306,8 @@ describe('GET /api/orgs/:id/dashboard', () => {
       title: 'Open PR list card unique title',
       priority: 'high',
     });
-    const prUrl = 'https://github.com/Speakman-ai/agent-hub/pull/4242';
+    // Native Agent Hub repository PR URL (`/projects/<id>/pulls/<n>`).
+    const prUrl = `/projects/${projectId}/pulls/4242`;
     await request
       .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
       .send({ prUrl })
@@ -332,6 +333,49 @@ describe('GET /api/orgs/:id/dashboard', () => {
     // headline count being at least 1 (the card we just linked).
     expect(body.openPRs.length).toBeLessThanOrEqual(30);
     expect(body.headline.openPRs).toBeGreaterThanOrEqual(1);
+  });
+
+  it('excludes GitHub-hosted PR URLs from openPRs — Agent Hub repository PRs only', async () => {
+    // Regression guard: the "Open PRs" list (and the headline counter that
+    // feeds the mobile tile) must show only native Agent Hub repository PRs.
+    // A card whose pr_url points at github.com must never appear, while a
+    // native `/projects/<id>/pulls/<n>` card on the same project does.
+    const project = await createProject({ name: 'Dashboard openPRs native-only project' });
+    const projectId = project.id as string;
+
+    const githubCard = await createCard(projectId, {
+      title: 'GitHub PR card must be hidden',
+      priority: 'high',
+    });
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${githubCard.id as string}`)
+      .send({ prUrl: 'https://github.com/Speakman-ai/agent-hub/pull/7777' })
+      .expect(200);
+
+    const nativeCard = await createCard(projectId, {
+      title: 'Native PR card must be shown',
+      priority: 'high',
+    });
+    const nativeUrl = `/projects/${projectId}/pulls/123`;
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${nativeCard.id as string}`)
+      .send({ prUrl: nativeUrl })
+      .expect(200);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    // GitHub PR card is excluded from the list…
+    expect(body.openPRs.some((p) => p.cardId === (githubCard.id as string))).toBe(false);
+    expect(body.openPRs.some((p) => p.prUrl.includes('github.com'))).toBe(false);
+    // …while the native Agent Hub repository PR card is present.
+    const nativeEntry = body.openPRs.find((p) => p.cardId === (nativeCard.id as string));
+    expect(nativeEntry).toBeDefined();
+    expect(nativeEntry!.prUrl).toBe(nativeUrl);
+
+    // The headline counter agrees with the list: every counted PR is native,
+    // so the count equals the number of native rows on the page (cap aside).
+    expect(body.headline.openPRs).toBe(body.openPRs.length);
   });
 
   it('excludes PR cards on boards whose project is not in the org roster from openPRs', async () => {

@@ -168,10 +168,12 @@ const PR_PRIORITY_DOT = {
 /**
  * Open pull requests: kanban cards carrying an unmerged `pr_url` that have
  * not yet landed in a Done-ish / shipped column. Sourced from
- * `data.openPRs`. Each row deep-links into the in-app Pull Requests view
- * for Agent Hub-native PR URLs (via `onOpenPulls`), or opens the external
- * host (GitHub etc.) for everything else (via `onOpenExternalUrl`), with a
- * final fallback to the project's PR list.
+ * `data.openPRs`, which the server scopes to *Agent Hub repository* PRs only
+ * (native `/projects/<id>/pulls/<n>` URLs) — GitHub-hosted PR URLs are
+ * excluded. Each row deep-links into the in-app Pull Requests view (via
+ * `onOpenPulls`). The `onOpenExternalUrl` fallback is retained defensively
+ * for any non-native URL that slips through, with a final fallback to the
+ * project's PR list.
  *
  * @param {Array<{cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt}>} [prs]
  * @param {(projectId: string) => void} [onOpenPulls]

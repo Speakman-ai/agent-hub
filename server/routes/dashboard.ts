@@ -7,6 +7,7 @@ import { getAuthRecord } from '../auth-store.js';
 import config from '../config.js';
 import type { RouteDeps } from '../types.js';
 import { isColumnDone, isColumnShippedLane } from '../kanban-blockers.js';
+import { isNativePrUrl } from '../native-pr/url.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -223,25 +224,16 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
           .get(...doneColumnIds) as { c: number }
       ).c || 0;
 
-    const openPRs =
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) as c FROM kanban_cards
-             WHERE pr_url IS NOT NULL AND pr_url != ''
-               AND column_id NOT IN (${placeholders})`,
-          )
-          .get(...doneColumnIds) as { c: number }
-      ).c || 0;
-
-    // ── Open PRs (detail list) ─────────────────────────────────────
-    // The headline `openPRs` counter is the same set, just counted: kanban
-    // cards carrying a non-empty `pr_url` that are not yet in a Done-ish /
-    // shipped column. The panel wants the rows themselves so it can list
-    // each PR and deep-link into the in-app PR view (native URLs) or the
-    // external host (GitHub). Enriched per-row from `pr_creation_logs` (PR
-    // number / title / author) when a creation log exists for that URL,
-    // falling back to the card title when it doesn't.
+    // ── Open PRs (count + detail list) ─────────────────────────────
+    // "Open PRs" means *Agent Hub repository* PRs only — kanban cards
+    // carrying a non-empty `pr_url` that points at a native Hub PR
+    // (`/projects/<id>/pulls/<n>`) and are not yet in a Done-ish / shipped
+    // column. GitHub-hosted PR URLs are intentionally excluded from both the
+    // headline counter and the panel list: a card's `pr_url` is an opaque
+    // string, so `isNativePrUrl` is the single source of truth for "this PR
+    // lives in an Agent Hub repository". Each row is enriched per-row from
+    // `pr_creation_logs` (PR number / title / author) when a creation log
+    // exists for that URL, falling back to the card title when it doesn't.
     //
     // Org scoping: like `activeSessions` above, we don't lean solely on the
     // per-org DB handle — we explicitly restrict to the org's *current*
@@ -250,12 +242,17 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     // left behind by a since-deleted project can't surface its PR/card
     // metadata in the list, keeping it consistent with the rest of the
     // payload. With no projects there is nothing to list.
+    //
+    // The headline `openPRs` counter is derived from the same native set so
+    // the panel and the mobile "Open PRs" tile never disagree. We fetch all
+    // qualifying rows (native filter and the 30-row cap are applied in JS,
+    // since the URL scheme can't be expressed in SQL) and slice for the list.
     const OPEN_PR_LIMIT = 30;
     const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
     const projectIds = [...projectNameById.keys()];
     const projectPlaceholders = projectIds.map(() => '?').join(',');
 
-    const openPrRows = projectIds.length
+    const openPrCandidates = projectIds.length
       ? (db
           .prepare(
             `SELECT k.id as cardId, k.title as cardTitle, k.pr_url as prUrl, k.priority as priority,
@@ -268,11 +265,15 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
          WHERE k.pr_url IS NOT NULL AND k.pr_url != ''
            AND k.column_id NOT IN (${placeholders})
            AND b.project_id IN (${projectPlaceholders})
-         ORDER BY k.updated_at DESC
-         LIMIT ?`,
+         ORDER BY k.updated_at DESC`,
           )
-          .all(...doneColumnIds, ...projectIds, OPEN_PR_LIMIT) as OpenPrRow[])
+          .all(...doneColumnIds, ...projectIds) as OpenPrRow[])
       : [];
+
+    // Agent Hub repository PRs only — drop GitHub (and any non-native) URLs.
+    const nativeOpenPrRows = openPrCandidates.filter((r) => isNativePrUrl(r.prUrl));
+    const openPRs = nativeOpenPrRows.length;
+    const openPrRows = nativeOpenPrRows.slice(0, OPEN_PR_LIMIT);
 
     const openPRsList = openPrRows.map((r) => ({
       cardId: r.cardId,
