@@ -12436,6 +12436,177 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/git-host/mirror:
+    get:
+      tags:
+        - Projects
+      summary: GitHub mirror sync status for a Hub-hosted repo
+      description: "Reports the last-known relationship between the Hub default branch and GitHub (synced / ahead / behind / diverged), ahead/behind counts, last sync + last error, and the last reconcile action. `diverged: true` means the branches forked and could not be auto-reconciled — surface it. 404 unless gitHost: agenthub."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Mirror status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  refs:
+                    type: string
+                    enum:
+                      - default-branch
+                      - all
+                  state:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - synced
+                          - ahead
+                          - behind
+                          - diverged
+                          - unknown
+                      diverged:
+                        type: boolean
+                      hubSha:
+                        type: string
+                      githubSha:
+                        type: string
+                      aheadBy:
+                        type: number
+                      behindBy:
+                        type: number
+                      lastSyncAt:
+                        type: string
+                      lastError:
+                        type: string
+                      lastErrorAt:
+                        type: string
+                      lastPollAt:
+                        type: string
+                      lastReconcileAt:
+                        type: string
+                      lastReconcileAction:
+                        type: string
+                required:
+                  - enabled
+                  - refs
+                  - state
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/mirror/reconcile:
+    post:
+      tags:
+        - Projects
+      summary: Reconcile the Hub default branch with GitHub on demand
+      description: "Admin only. Fetches GitHub's default branch and brings the two into sync: fast-forwards the Hub when GitHub is ahead (e.g. a release-bot version bump), pushes when the Hub is ahead, or attempts a clean auto-merge when they diverged. If they cannot be merged automatically, returns status \"diverged\" and records it. Never force-pushes or rewrites history."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Reconcile outcome + refreshed state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - synced
+                      - ahead
+                      - behind
+                      - diverged
+                      - unknown
+                  action:
+                    type: string
+                    enum:
+                      - none
+                      - pulled
+                      - pushed
+                      - merged
+                      - diverged
+                      - skipped
+                      - error
+                  hubSha:
+                    type: string
+                  githubSha:
+                    type: string
+                  aheadBy:
+                    type: number
+                  behindBy:
+                    type: number
+                  error:
+                    type: string
+                  state:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - synced
+                          - ahead
+                          - behind
+                          - diverged
+                          - unknown
+                      diverged:
+                        type: boolean
+                      hubSha:
+                        type: string
+                      githubSha:
+                        type: string
+                      aheadBy:
+                        type: number
+                      behindBy:
+                        type: number
+                      lastSyncAt:
+                        type: string
+                      lastError:
+                        type: string
+                      lastErrorAt:
+                        type: string
+                      lastPollAt:
+                        type: string
+                      lastReconcileAt:
+                        type: string
+                      lastReconcileAction:
+                        type: string
+                required:
+                  - status
+                  - action
+                  - state
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/git-host/commits:
     get:
       tags:

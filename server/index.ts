@@ -22,6 +22,7 @@ import createPullsNativeRoutes from './routes/pulls-native.js';
 import { refreshGitHostNotifyConfigs } from './git-host/lifecycle.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { notifyMirrorPush } from './git-host/mirror.js';
+import { startMirrorReconcilePoller } from './git-host/reconcile.js';
 import { maybeRunPushCi, maybeRunPrCi, handleHostedRepoPush } from './git-host/push-ci.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
@@ -1368,6 +1369,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       refreshGitHostNotifyConfigs(getProjects());
     } catch (e) {
       console.error('[git-host] notify refresh on boot failed:', (e as Error).message);
+    }
+
+    // Two-way mirror reconcile poller: catches commits that land directly
+    // on GitHub (e.g. a release bot's version bump) and pulls them into the
+    // Hub, and surfaces a true divergence the outbound mirror can't cross.
+    try {
+      startMirrorReconcilePoller({ getProjects, broadcast });
+    } catch (e) {
+      console.error('[git-host] mirror reconcile poller failed to start:', (e as Error).message);
     }
 
     const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();

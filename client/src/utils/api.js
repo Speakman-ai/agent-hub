@@ -118,6 +118,10 @@ export const api = {
   },
   getGitHostCommitDetail: (projectId, sha) =>
     fetchJSON(`/projects/${projectId}/git-host/commits/${encodeURIComponent(sha)}`),
+  // GitHub mirror sync status + on-demand reconcile (two-way sync).
+  getGitHostMirror: (projectId) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
+  reconcileGitHostMirror: (projectId) =>
+    fetchJSON(`/projects/${projectId}/git-host/mirror/reconcile`, { method: 'POST' }),
   getProjectSecrets: (projectId) => fetchJSON(`/projects/${projectId}/secrets`),
   putProjectSecrets: (projectId, secrets) =>
     fetchJSON(`/projects/${projectId}/secrets`, {

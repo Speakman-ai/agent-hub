@@ -29,6 +29,7 @@ import { api } from '../utils/api.js';
 import { relativePrTime } from '../utils/prFormatting.js';
 import { splitUnifiedDiff } from '../utils/commitDiff.js';
 import { FileDiffSection } from './FileDiffView.jsx';
+import GitHostMirrorStatusBanner from './GitHostMirrorStatusBanner.jsx';
 
 function shortSha(sha) {
   return (sha || '').slice(0, 8);
@@ -311,6 +312,8 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
             )}
           </div>
         </div>
+
+        <GitHostMirrorStatusBanner projectId={projectId} onToast={onToast} />
 
         {/* Commit page replaces the tabbed lists while a commit is open. */}
         {commitSha ? (

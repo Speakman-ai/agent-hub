@@ -31,7 +31,8 @@ vi.mock('../users-store.js', () => ({ getUserById: mocks.getUserById }));
 vi.mock('../memberships-store.js', () => ({ getMembershipRole: mocks.getMembershipRole }));
 vi.mock('../api-keys-store.js', () => ({ verifyApiKey: mocks.verifyApiKey }));
 
-const { notifyMirrorPush, readMirrorState, __clearMirrorQueues } = await import('./mirror.js');
+const { notifyMirrorPush, readMirrorState, writeMirrorState, __clearMirrorQueues } =
+  await import('./mirror.js');
 const { createHostedRepo, gitHostRepoPath } = await import('./repo-store.js');
 const { createGitSmartHttpRoutes } = await import('./smart-http.js');
 import type { Project } from '../types.js';
@@ -112,6 +113,45 @@ describe('git-host mirror sync', () => {
     expect(broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'git_host_mirror', status: 'synced' }),
     );
+  });
+
+  it('a successful push refreshes refs and zeroes stale divergence counts', async () => {
+    const sha = await seedHostedRepo('m7');
+    const project = makeProject('m7');
+    // Simulate a prior poll that recorded a divergence + error.
+    writeMirrorState(
+      'm7',
+      {
+        status: 'behind',
+        diverged: false,
+        aheadBy: 3,
+        behindBy: 5,
+        hubSha: 'deadbeef',
+        githubSha: 'cafef00d',
+        lastError: 'old failure',
+        lastErrorAt: 'then',
+      },
+      dataDir,
+    );
+
+    await notifyMirrorPush(project, ['refs/heads/main'], {
+      broadcast,
+      dataDir,
+      pushUrlOverride: githubBare,
+      debounceMs: 10,
+    });
+
+    const state = readMirrorState('m7', dataDir);
+    expect(state).toMatchObject({
+      status: 'synced',
+      diverged: false,
+      aheadBy: 0,
+      behindBy: 0,
+      hubSha: sha,
+      githubSha: sha,
+    });
+    expect(state.lastError).toBeUndefined();
+    expect(state.lastErrorAt).toBeUndefined();
   });
 
   it('skips sync when only a feature branch moved (policy: default-branch)', async () => {

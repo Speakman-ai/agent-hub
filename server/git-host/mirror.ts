@@ -37,10 +37,36 @@ const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
 const DEBOUNCE_MS = 2_000;
 const RETRY_DELAY_MS = 30_000;
 
+/**
+ * Relationship between the Hub's default branch and GitHub's, as of the
+ * last poll/sync. `ahead` = Hub has commits GitHub lacks (normal — the
+ * outbound mirror pushes them). `behind` = GitHub has commits the Hub
+ * lacks (e.g. a release bot committed straight to GitHub). `diverged` =
+ * both sides have unique commits AND an automatic merge could not be made
+ * — the only state that needs a human.
+ */
+export type MirrorSyncStatus = 'synced' | 'ahead' | 'behind' | 'diverged' | 'unknown';
+
 export interface MirrorState {
   lastSyncAt?: string;
   lastError?: string;
   lastErrorAt?: string;
+  /** Last computed relationship between Hub and GitHub default branches. */
+  status?: MirrorSyncStatus;
+  /** True when the branches diverged and could not be auto-reconciled. */
+  diverged?: boolean;
+  /** Default-branch tips at the last poll. */
+  hubSha?: string;
+  githubSha?: string;
+  /** Commits on the Hub not yet on GitHub. */
+  aheadBy?: number;
+  /** Commits on GitHub not yet on the Hub. */
+  behindBy?: number;
+  /** Last time the reconcile poller examined this project. */
+  lastPollAt?: string;
+  /** Last time a reconcile action ran, and what it did. */
+  lastReconcileAt?: string;
+  lastReconcileAction?: string;
 }
 
 const MIRROR_STATE_FILE = 'agent-hub-mirror-state.json';
@@ -55,7 +81,7 @@ export function readMirrorState(projectId: string, dataDir: string = config.data
   }
 }
 
-function writeMirrorState(
+export function writeMirrorState(
   projectId: string,
   state: MirrorState,
   dataDir: string = config.dataDir,
@@ -98,7 +124,12 @@ interface QueueEntry {
 
 const queues = new Map<string, QueueEntry>();
 
-async function defaultResolveToken(project: Project): Promise<string | null> {
+/**
+ * Resolve the GitHub token used to push the mirror (and fetch GitHub's
+ * default branch during reconcile) — the repo-aware Owner chain. Exported
+ * so the reconcile poller shares exactly the mirror's auth path.
+ */
+export async function resolveMirrorToken(project: Project): Promise<string | null> {
   // Prefer the explicit `owner/repo` field; fall back to deriving it
   // from the mirror URL so older projects (repoUrl only) still resolve.
   let ownerRepo = project.githubRepo ?? null;
@@ -115,7 +146,10 @@ async function defaultResolveToken(project: Project): Promise<string | null> {
   });
 }
 
-function mirrorPolicy(project: Project): { enabled: boolean; refs: 'default-branch' | 'all' } {
+export function mirrorPolicy(project: Project): {
+  enabled: boolean;
+  refs: 'default-branch' | 'all';
+} {
   return {
     enabled:
       project.gitHost === 'agenthub' &&
@@ -164,35 +198,46 @@ export function notifyMirrorPush(
   return result;
 }
 
-async function runMirrorSync(
-  project: Project,
-  updatedRefs: string[],
-  deps: MirrorSyncDeps,
-  isRetry = false,
-): Promise<void> {
+/**
+ * Push the hosted repo's default branch (+ tags, or all branches) to
+ * GitHub once, non-force. Writes mirror state and broadcasts. Returns
+ * `true` on success, `false` on a rejected/failed push (state records the
+ * error). No debounce, no retry — callers that need those wrap this. The
+ * reconcile poller calls this directly so the push is serialized inside
+ * its own queue slot rather than re-entering {@link notifyMirrorPush}.
+ */
+/** Resolve a ref to its commit SHA, or null if it can't be read. */
+async function revParseQuiet(repoPath: string, ref: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['-C', repoPath, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      { timeout: 15_000 },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function pushMirrorNow(project: Project, deps: MirrorSyncDeps): Promise<boolean> {
   const dataDir = deps.dataDir ?? config.dataDir;
-  if (!hostedRepoExists(project.id, dataDir)) return;
+  if (!hostedRepoExists(project.id, dataDir)) return false;
   const policy = mirrorPolicy(project);
-  if (!policy.enabled) return;
+  if (!policy.enabled) return false;
 
   const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
-  if (policy.refs === 'default-branch') {
-    const defaultMoved =
-      updatedRefs.length === 0 || updatedRefs.includes(`refs/heads/${defaultBranch}`);
-    if (!defaultMoved) return;
-  }
-
   const refspecs =
     policy.refs === 'all'
       ? ['refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*']
       : [`refs/heads/${defaultBranch}:refs/heads/${defaultBranch}`, 'refs/tags/*:refs/tags/*'];
 
   const pushUrl = deps.pushUrlOverride ?? project.repoUrl;
-  if (!pushUrl) return;
+  if (!pushUrl) return false;
 
   let token: string | null = null;
   if (!deps.pushUrlOverride) {
-    token = await (deps.resolveToken ?? defaultResolveToken)(project);
+    token = await (deps.resolveToken ?? resolveMirrorToken)(project);
   }
   const authArgs = token ? gitAuthArgsForGithubPat(token) : [];
   const repoPath = gitHostRepoPath(project.id, dataDir);
@@ -206,8 +251,29 @@ async function runMirrorSync(
       timeout: PUSH_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
     });
-    writeMirrorState(project.id, { lastSyncAt: new Date().toISOString() }, dataDir);
+    // Success → GitHub's default branch now matches the Hub's tip, so both
+    // sides are at `syncedSha` with no divergence. Refresh the recorded
+    // refs/counts (not just status) so the state can't read `synced` with
+    // stale ahead/behind values or old SHAs left by an earlier poll.
+    const syncedSha = await revParseQuiet(repoPath, `refs/heads/${defaultBranch}`);
+    const prior = readMirrorState(project.id, dataDir);
+    writeMirrorState(
+      project.id,
+      {
+        ...prior,
+        lastSyncAt: new Date().toISOString(),
+        lastError: undefined,
+        lastErrorAt: undefined,
+        status: 'synced',
+        diverged: false,
+        ...(syncedSha ? { hubSha: syncedSha, githubSha: syncedSha } : {}),
+        aheadBy: 0,
+        behindBy: 0,
+      },
+      dataDir,
+    );
     deps.broadcast({ type: 'git_host_mirror', projectId: project.id, status: 'synced' });
+    return true;
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
     const safe = redactAuthHeader(redactToken(raw, token));
@@ -224,13 +290,56 @@ async function runMirrorSync(
       status: 'error',
       error: safe.slice(0, 500),
     });
-    if (!isRetry) {
-      const timer = setTimeout(() => {
-        void runMirrorSync(project, updatedRefs, deps, true);
-      }, deps.retryDelayMs ?? RETRY_DELAY_MS);
-      if (typeof timer.unref === 'function') timer.unref();
-    }
+    return false;
   }
+}
+
+async function runMirrorSync(
+  project: Project,
+  updatedRefs: string[],
+  deps: MirrorSyncDeps,
+  isRetry = false,
+): Promise<void> {
+  const dataDir = deps.dataDir ?? config.dataDir;
+  if (!hostedRepoExists(project.id, dataDir)) return;
+  const policy = mirrorPolicy(project);
+  if (!policy.enabled) return;
+
+  // `default-branch` policy only mirrors when the default branch moved.
+  if (policy.refs === 'default-branch') {
+    const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
+    const defaultMoved =
+      updatedRefs.length === 0 || updatedRefs.includes(`refs/heads/${defaultBranch}`);
+    if (!defaultMoved) return;
+  }
+
+  const ok = await pushMirrorNow(project, deps);
+  if (!ok && !isRetry) {
+    const timer = setTimeout(() => {
+      void runMirrorSync(project, updatedRefs, deps, true);
+    }, deps.retryDelayMs ?? RETRY_DELAY_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+}
+
+/**
+ * Serialize an arbitrary async op onto a project's mirror queue, so the
+ * reconcile poller and the debounced outbound push never run concurrently
+ * against the same bare repo. Runs after any in-flight work (success or
+ * failure) and never poisons the chain for the next caller.
+ */
+export function runOnMirrorQueue<T>(projectId: string, op: () => Promise<T>): Promise<T> {
+  let entry = queues.get(projectId);
+  if (!entry) {
+    entry = { chain: Promise.resolve(), debounceTimer: null, pendingRefs: new Set() };
+    queues.set(projectId, entry);
+  }
+  const result = entry.chain.then(op, op);
+  entry.chain = result.then(
+    () => {},
+    () => {},
+  );
+  return result;
 }
 
 /** Test seam: drop all queued mirror work. */

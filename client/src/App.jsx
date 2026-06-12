@@ -2034,6 +2034,15 @@ export default function App({ initialView } = {}) {
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
           break;
 
+        // GitHub mirror sync status (server/git-host/mirror.ts +
+        // reconcile.ts). Bridged to a window CustomEvent so
+        // <GitHostMirrorStatusBanner /> refreshes the moment the background
+        // reconcile poller acts (pulled / diverged / synced / error)
+        // without subscribing to the WS connection directly.
+        case 'git_host_mirror':
+          window.dispatchEvent(new CustomEvent('git_host_mirror', { detail: data }));
+          break;
+
         case 'wiki_delete':
           window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
           break;

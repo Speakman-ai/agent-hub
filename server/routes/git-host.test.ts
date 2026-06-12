@@ -162,6 +162,29 @@ describe('git-host repository browsing routes', () => {
     await request.get(`/api/projects/${id}/git-host/commits/abc1234`).expect(404);
   });
 
+  it('mirror status + reconcile: 404 for non-hosted, wired for hosted', async () => {
+    const nonHosted = await freshProject();
+    await request.get(`/api/projects/${nonHosted}/git-host/mirror`).expect(404);
+    await request.post(`/api/projects/${nonHosted}/git-host/mirror/reconcile`).expect(404);
+
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const status = await request.get(`/api/projects/${id}/git-host/mirror`).expect(200);
+    expect(status.body).toHaveProperty('enabled');
+    expect(status.body).toHaveProperty('refs');
+    expect(status.body).toHaveProperty('state');
+
+    // No repoUrl on this project → mirror policy disabled → reconcile no-ops.
+    const rec = await request.post(`/api/projects/${id}/git-host/mirror/reconcile`).expect(200);
+    expect(rec.body.action).toBe('skipped');
+    expect(rec.body).toHaveProperty('state');
+  });
+
   it('lists branches with default flag and ahead/behind counts', async () => {
     const { id } = await hostedProjectWithHistory();
     const res = await request.get(`/api/projects/${id}/git-host/branches`).expect(200);

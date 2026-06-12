@@ -28,6 +28,8 @@ import {
   refreshBranchProtection,
 } from '../git-host/repo-store.js';
 import { listRecentPushes } from '../git-host/recent-pushes.js';
+import { mirrorPolicy, readMirrorState } from '../git-host/mirror.js';
+import { reconcileMirror } from '../git-host/reconcile.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -226,6 +228,69 @@ registerPath({
   },
 });
 
+const MirrorStateSchema = z.object({
+  status: z.enum(['synced', 'ahead', 'behind', 'diverged', 'unknown']).optional(),
+  diverged: z.boolean().optional(),
+  hubSha: z.string().optional(),
+  githubSha: z.string().optional(),
+  aheadBy: z.number().optional(),
+  behindBy: z.number().optional(),
+  lastSyncAt: z.string().optional(),
+  lastError: z.string().optional(),
+  lastErrorAt: z.string().optional(),
+  lastPollAt: z.string().optional(),
+  lastReconcileAt: z.string().optional(),
+  lastReconcileAction: z.string().optional(),
+});
+
+const MirrorStatusSchema = z.object({
+  enabled: z.boolean(),
+  refs: z.enum(['default-branch', 'all']),
+  state: MirrorStateSchema,
+});
+
+const ReconcileResultSchema = z.object({
+  status: z.enum(['synced', 'ahead', 'behind', 'diverged', 'unknown']),
+  action: z.enum(['none', 'pulled', 'pushed', 'merged', 'diverged', 'skipped', 'error']),
+  hubSha: z.string().optional(),
+  githubSha: z.string().optional(),
+  aheadBy: z.number().optional(),
+  behindBy: z.number().optional(),
+  error: z.string().optional(),
+  state: MirrorStateSchema,
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/mirror',
+  tags: ['Projects'],
+  summary: 'GitHub mirror sync status for a Hub-hosted repo',
+  description:
+    'Reports the last-known relationship between the Hub default branch and GitHub (synced / ahead / behind / diverged), ahead/behind counts, last sync + last error, and the last reconcile action. `diverged: true` means the branches forked and could not be auto-reconciled — surface it. 404 unless gitHost: agenthub.',
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: { description: 'Mirror status.', content: jsonContent(MirrorStatusSchema) },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/git-host/mirror/reconcile',
+  tags: ['Projects'],
+  summary: 'Reconcile the Hub default branch with GitHub on demand',
+  description:
+    'Admin only. Fetches GitHub\'s default branch and brings the two into sync: fast-forwards the Hub when GitHub is ahead (e.g. a release-bot version bump), pushes when the Hub is ahead, or attempts a clean auto-merge when they diverged. If they cannot be merged automatically, returns status "diverged" and records it. Never force-pushes or rewrites history.',
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: {
+      description: 'Reconcile outcome + refreshed state.',
+      content: jsonContent(ReconcileResultSchema),
+    },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+  },
+});
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/git-host/commits',
@@ -322,6 +387,24 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
       if (!project) return;
       const defaultBranch = await hostedRepoDefaultBranch(project.id);
       res.json({ pushes: listRecentPushes(deps.stmts, project.id, defaultBranch) });
+    },
+  );
+
+  router.get('/api/projects/:projectId/git-host/mirror', (req: Request, res: Response) => {
+    const project = findHostedProjectOr404(req, res);
+    if (!project) return;
+    const policy = mirrorPolicy(project);
+    res.json({ enabled: policy.enabled, refs: policy.refs, state: readMirrorState(project.id) });
+  });
+
+  router.post(
+    '/api/projects/:projectId/git-host/mirror/reconcile',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findHostedProjectOr404(req, res);
+      if (!project) return;
+      const result = await reconcileMirror(project, { broadcast: deps.broadcast });
+      res.json({ ...result, state: readMirrorState(project.id) });
     },
   );
 
