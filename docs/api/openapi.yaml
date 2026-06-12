@@ -15220,6 +15220,9 @@ paths:
                     - commented
                 body:
                   type: string
+                reviewer:
+                  type: string
+                  description: Reviewer-name override (agent reviews).
               required:
                 - state
       responses:
