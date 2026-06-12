@@ -193,6 +193,11 @@ import {
   browserToolStartLabel,
 } from './browser-tools.js';
 import {
+  runPreviewReActStep,
+  PREVIEW_REACT_OP_SET,
+  PREVIEW_DRIVE_OPS,
+} from './preview/preview-react.js';
+import {
   effectiveBrowserToolsEnabled,
   resolveBrowserSessionOptions,
 } from './browser-agent-settings.js';
@@ -528,13 +533,13 @@ function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: str
   }
 }
 
-type ReActTool = 'wiki' | 'skill' | 'web' | 'browser';
+type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview';
 
 interface ReActAction {
   tool: ReActTool;
   query?: string;
   name?: string;
-  /** browser — see server/browser-tools.ts */
+  /** browser — see server/browser-tools.ts; preview — see server/preview/preview-react.ts */
   op?: string;
   url?: string;
   target?: string;
@@ -543,6 +548,10 @@ interface ReActAction {
   schema?: Record<string, unknown>;
   direction?: string;
   condition?: string;
+  /** preview navigate — path within the preview app (must start with `/`). */
+  route?: string;
+  /** preview logs — tail line count. */
+  tail?: number;
 }
 
 interface ParsedReAct {
@@ -794,6 +803,10 @@ ${skillsList.join('\n')}`;
       ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
+    const previewEnabledForPrompt = Boolean(project.prEnv?.preview?.enabled);
+    const previewToolLines = previewEnabledForPrompt
+      ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
+      : '';
 
     prompt += `\n\n## ReAct Loop
 When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
@@ -805,7 +818,7 @@ Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
-${browserToolLines}
+${browserToolLines}${previewToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   }
 
@@ -843,8 +856,8 @@ The server moves the session's linked card to Done and appends an explanatory co
         }
 
         if (project.prEnv?.preview?.enabled) {
-          prompt += `\n\n## Worktree preview (human-only)
-Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar. After they have a preview running, your file edits may reload automatically; if they need to see the app, tell them to use **Start preview** (first boot can take several minutes) or the refresh control in the preview pane once it shows **Ready**.`;
+          prompt += `\n\n## Worktree preview (lifecycle is human-only)
+Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar (first boot can take several minutes). Once it is running you can observe and drive it yourself with the ReAct \`preview\` tool — check \`{"tool":"preview","op":"state"}\`, read boot/runtime logs with \`"op":"logs"\`, and verify UI changes with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
         }
       }
     }
@@ -1326,9 +1339,66 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       });
       continue;
     }
+    if (a.tool === 'preview') {
+      const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
+      if (!op || !PREVIEW_REACT_OP_SET.has(op)) {
+        return {
+          error: 'malformed',
+          detail: 'preview action requires op as a supported preview operation',
+        };
+      }
+      const route = typeof a.route === 'string' ? a.route.trim() : undefined;
+      const target = (typeof a.target === 'string' ? a.target : undefined)?.trim() || undefined;
+      const text = typeof a.text === 'string' ? a.text : undefined;
+      const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
+      const direction = typeof a.direction === 'string' ? a.direction : undefined;
+      const condition = typeof a.condition === 'string' ? a.condition : undefined;
+      const tail =
+        typeof a.tail === 'number' && Number.isFinite(a.tail) ? Math.floor(a.tail) : undefined;
+      let schema: Record<string, unknown> | undefined;
+      if (
+        a.schema !== undefined &&
+        a.schema !== null &&
+        typeof a.schema === 'object' &&
+        !Array.isArray(a.schema)
+      ) {
+        schema = a.schema as Record<string, unknown>;
+      }
+      if (op === 'navigate' && !route?.startsWith('/')) {
+        return {
+          error: 'malformed',
+          detail: 'preview navigate requires route starting with "/" (path within the preview app)',
+        };
+      }
+      if ((op === 'click' || op === 'type') && !target) {
+        return { error: 'malformed', detail: `preview ${op} requires target` };
+      }
+      if (op === 'type' && text === undefined) {
+        return { error: 'malformed', detail: 'preview type requires text' };
+      }
+      if (op === 'scroll' && !direction?.trim()) {
+        return { error: 'malformed', detail: 'preview scroll requires direction' };
+      }
+      if (op === 'wait' && !condition?.trim()) {
+        return { error: 'malformed', detail: 'preview wait requires condition' };
+      }
+      actions.push({
+        tool: 'preview',
+        op,
+        route,
+        tail,
+        target,
+        text,
+        instruction,
+        schema,
+        direction,
+        condition,
+      });
+      continue;
+    }
     return {
       error: 'malformed',
-      detail: 'Unsupported action.tool; expected "wiki", "skill", "web", or "browser"',
+      detail: 'Unsupported action.tool; expected "wiki", "skill", "web", "browser", or "preview"',
     };
   }
   return { actions };
@@ -3993,6 +4063,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 ? `${assistantContextToAppend}\n\n${gateMsg}`
                 : gateMsg;
             }
+            // Preview drive/screenshot ops ride the same Chromium capability —
+            // strip them too. `state` / `logs` are plain reads and stay allowed.
+            const isPreviewDrive = (a: ReActAction) =>
+              a.tool === 'preview' && PREVIEW_DRIVE_OPS.has(a.op ?? '');
+            const removedPreviewDrive = boundedActions.filter(isPreviewDrive).length;
+            if (removedPreviewDrive > 0) {
+              boundedActions = boundedActions.filter((a) => !isPreviewDrive(a));
+              reactObservations.push(
+                `- ${removedPreviewDrive} preview browser action(s) skipped: browser tools are disabled for agent "${agent.id}" (preview \`state\`/\`logs\` remain available).`,
+              );
+            }
           }
           for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
             const action = boundedActions[actionIdx]!;
@@ -4232,6 +4313,83 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 }
                 hostExit = b.hostExit;
                 hostDetail = b.hostDetail || action.op;
+                continue;
+              }
+
+              if (action.tool === 'preview') {
+                const actionId = uuidv4();
+                const opName = action.op ?? '';
+                const startLabel = `Preview: ${opName || 'action'}…`;
+                const startedAtMs = Date.now();
+                emitBrowserActivityEvent(
+                  buildBrowserActivityStartedEvent({
+                    actionId,
+                    op: `preview:${opName || 'unknown'}`,
+                    label: startLabel,
+                    startedAtMs,
+                  }),
+                );
+                const previewOpStartMs = Date.now();
+                let p: Awaited<ReturnType<typeof runPreviewReActStep>>;
+                try {
+                  p = await runPreviewReActStep(
+                    sessionId,
+                    {
+                      op: opName,
+                      route: action.route,
+                      tail: action.tail,
+                      target: action.target,
+                      text: action.text,
+                      instruction: action.instruction,
+                      schema: action.schema,
+                      direction: action.direction,
+                      condition: action.condition,
+                    },
+                    {
+                      runtime: getPreviewComposeRuntime ? getPreviewComposeRuntime() : null,
+                      launchOpts: browserLaunchOpts,
+                    },
+                  );
+                } catch (err: unknown) {
+                  emitBrowserActivityEvent(
+                    buildBrowserActivityEndedThrowEvent({
+                      actionId,
+                      op: `preview:${opName || 'unknown'}`,
+                      label: startLabel,
+                      startedAtMs,
+                      durationMs: Date.now() - previewOpStartMs,
+                      err,
+                    }),
+                  );
+                  throw err;
+                }
+                emitBrowserActivityEvent(
+                  buildBrowserActivityEndedEvent({
+                    actionId,
+                    op: `preview:${opName || 'unknown'}`,
+                    label: startLabel,
+                    startedAtMs,
+                    durationMs: Date.now() - previewOpStartMs,
+                    b: p,
+                  }),
+                );
+                const previewShot = buildBrowserActivityScreenshotBroadcast({
+                  sessionId,
+                  messageId: assistantMsgId,
+                  actionId,
+                  screenshotWsUrl: p.ui?.screenshotWsUrl,
+                });
+                if (previewShot) broadcast(previewShot);
+                if (p.markdown.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${p.markdown.trim()}`
+                    : p.markdown.trim();
+                  reactObservations.push(
+                    `- preview(${opName}) host step finished (exit ${p.hostExit}).`,
+                  );
+                }
+                hostExit = p.hostExit;
+                hostDetail = p.hostDetail || opName;
                 continue;
               }
             } catch (err: unknown) {

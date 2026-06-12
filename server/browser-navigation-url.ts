@@ -16,6 +16,27 @@ import { isIPv4, isIPv6 } from 'node:net';
 
 export type BrowserNavigationUrlResult = { ok: true; href: string } | { ok: false; error: string };
 
+/**
+ * Optional policy relaxation for host-mediated browsing of targets the host
+ * itself owns (e.g. the per-session docker-compose preview on
+ * `http://localhost:<port>`).
+ *
+ * `allowOrigins` entries must be full origins (`scheme://host[:port]`) and are
+ * compared against the URL's WHATWG `origin` — exact match only. A matching
+ * origin bypasses the loopback/private-address blocks but NOT the scheme or
+ * credentials-in-URL checks.
+ */
+export interface BrowserNavigationPolicyOpts {
+  allowOrigins?: readonly string[];
+}
+
+/** True when `u`'s origin exactly matches an allowlisted origin. */
+function isAllowlistedOrigin(u: URL, opts?: BrowserNavigationPolicyOpts): boolean {
+  const allow = opts?.allowOrigins;
+  if (!allow || allow.length === 0) return false;
+  return allow.includes(u.origin);
+}
+
 function isBlockedDottedIPv4(host: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!m) return false;
@@ -70,7 +91,10 @@ function isBlockedIPv6Host(host: string): boolean {
 /**
  * Returns a normalized `href` safe to pass to `page.goto`, or an error.
  */
-export function validateBrowserNavigationUrl(raw: string): BrowserNavigationUrlResult {
+export function validateBrowserNavigationUrl(
+  raw: string,
+  opts?: BrowserNavigationPolicyOpts,
+): BrowserNavigationUrlResult {
   const trimmed = raw.trim();
   if (!trimmed) return { ok: false, error: 'url is required' };
 
@@ -87,6 +111,12 @@ export function validateBrowserNavigationUrl(raw: string): BrowserNavigationUrlR
 
   if (u.username || u.password) {
     return { ok: false, error: 'URLs with embedded credentials are not allowed' };
+  }
+
+  // Pinned-origin allowance (preview drive) — bypasses only the
+  // loopback/private-target blocks below, never the scheme/credential checks.
+  if (isAllowlistedOrigin(u, opts)) {
+    return { ok: true, href: u.href };
   }
 
   const host = normalizeHostnameForPolicy(u.hostname);

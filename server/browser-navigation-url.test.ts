@@ -55,3 +55,34 @@ describe('validateBrowserNavigationUrl', () => {
     expect(validateBrowserNavigationUrl('http://[::ffff:127.0.0.1]/').ok).toBe(false);
   });
 });
+
+describe('validateBrowserNavigationUrl — pinned-origin allowance (preview drive)', () => {
+  const PREVIEW = { allowOrigins: ['http://localhost:4123'] };
+
+  it('allows an exactly-matching loopback origin', () => {
+    const r = validateBrowserNavigationUrl('http://localhost:4123/settings?tab=1', PREVIEW);
+    expect(r).toEqual({ ok: true, href: 'http://localhost:4123/settings?tab=1' });
+  });
+
+  it('still blocks other loopback ports and hosts', () => {
+    expect(validateBrowserNavigationUrl('http://localhost:4999/', PREVIEW).ok).toBe(false);
+    expect(validateBrowserNavigationUrl('http://127.0.0.1:4123/', PREVIEW).ok).toBe(false);
+    expect(validateBrowserNavigationUrl('http://localhost/', PREVIEW).ok).toBe(false);
+  });
+
+  it('requires scheme match — https origin string does not allow http target', () => {
+    expect(validateBrowserNavigationUrl('https://localhost:4123/', PREVIEW).ok).toBe(false);
+  });
+
+  it('never bypasses scheme or credential checks', () => {
+    expect(validateBrowserNavigationUrl('file:///etc/passwd', PREVIEW).ok).toBe(false);
+    expect(validateBrowserNavigationUrl('http://user:pw@localhost:4123/', PREVIEW).ok).toBe(false);
+  });
+
+  it('empty allowlist behaves like no allowlist', () => {
+    expect(validateBrowserNavigationUrl('http://localhost:4123/', { allowOrigins: [] }).ok).toBe(
+      false,
+    );
+    expect(validateBrowserNavigationUrl('http://localhost:4123/').ok).toBe(false);
+  });
+});

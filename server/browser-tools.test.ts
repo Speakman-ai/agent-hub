@@ -16,6 +16,7 @@ import {
   BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE,
   browserToolStartLabel,
   summarizeJsonPreview,
+  installPersistentDocumentNavigationGuard,
   BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS,
 } from './browser-tools.js';
 import {
@@ -526,5 +527,133 @@ describe('browser-tools — resolveStagehandModelName', () => {
     } finally {
       if (prev !== undefined) process.env.STAGEHAND_MODEL = prev;
     }
+  });
+});
+
+describe('installPersistentDocumentNavigationGuard', () => {
+  const PIN = 'http://localhost:4123';
+
+  function makeCdpPage() {
+    const handlers = new Map<string, (p: unknown) => void>();
+    const send = vi.fn(async () => ({}));
+    const mainSession = {
+      send,
+      on: vi.fn((evt: string, h: (p: unknown) => void) => {
+        handlers.set(evt, h);
+      }),
+      off: vi.fn((evt: string) => {
+        handlers.delete(evt);
+      }),
+    };
+    const page = Object.assign(makeMockPage(), { mainSession });
+    return { page, send, handlers, mainSession };
+  }
+
+  it('fails off-pin Document requests at request time, before egress (real CDP event shape)', async () => {
+    const { page, send, handlers } = makeCdpPage();
+    const sh = asV3(makeMockStagehand(page));
+    const guard = await installPersistentDocumentNavigationGuard(sh, (u) =>
+      u.startsWith(`${PIN}/`),
+    );
+    expect(guard.installed).toBe(true);
+    expect(send).toHaveBeenCalledWith('Fetch.enable', {
+      patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+    });
+
+    const h = handlers.get('Fetch.requestPaused')!;
+    // Per the CDP spec, `resourceType` is a TOP-LEVEL Fetch.requestPaused
+    // field — NOT nested inside `request`. Regression: a guard reading
+    // request.resourceType treats every document navigation as a
+    // subresource and continues it.
+    // Metadata-style SSRF target via a click-driven document navigation.
+    h({
+      requestId: 'r1',
+      resourceType: 'Document',
+      request: { url: 'http://169.254.169.254/latest/meta-data/' },
+    });
+    expect(send).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'r1',
+      errorReason: 'BlockedByClient',
+    });
+    // Public off-pin target is blocked too — the pin is exact.
+    h({ requestId: 'r2', resourceType: 'Document', request: { url: 'https://example.com/' } });
+    expect(send).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'r2',
+      errorReason: 'BlockedByClient',
+    });
+    // On-pin documents continue.
+    h({ requestId: 'r3', resourceType: 'Document', request: { url: `${PIN}/settings` } });
+    expect(send).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 'r3' });
+  });
+
+  it('honors a nested request.resourceType as a fallback for shape drift', async () => {
+    const { page, send, handlers } = makeCdpPage();
+    const sh = asV3(makeMockStagehand(page));
+    await installPersistentDocumentNavigationGuard(sh, () => false);
+    const h = handlers.get('Fetch.requestPaused')!;
+    h({ requestId: 'n1', request: { url: 'https://example.com/', resourceType: 'Document' } });
+    expect(send).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'n1',
+      errorReason: 'BlockedByClient',
+    });
+  });
+
+  it('does not intercept subresource requests (same scope as navigate-time policy)', async () => {
+    const { page, send, handlers } = makeCdpPage();
+    const sh = asV3(makeMockStagehand(page));
+    await installPersistentDocumentNavigationGuard(sh, () => false);
+    const h = handlers.get('Fetch.requestPaused')!;
+    h({
+      requestId: 's1',
+      resourceType: 'Script',
+      request: { url: 'https://cdn.example.com/app.js' },
+    });
+    expect(send).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 's1' });
+    expect(send).not.toHaveBeenCalledWith('Fetch.failRequest', expect.anything());
+  });
+
+  it('registers the pause handler BEFORE enabling Fetch (no unhandled in-flight pauses)', async () => {
+    const { page, send, handlers, mainSession } = makeCdpPage();
+    // While Fetch.enable is still settling, Chromium may already pause an
+    // in-flight request — the handler must be attached by then.
+    send.mockImplementationOnce(async (...args: unknown[]) => {
+      expect(args[0]).toBe('Fetch.enable');
+      expect(handlers.has('Fetch.requestPaused')).toBe(true);
+      return {};
+    });
+    const sh = asV3(makeMockStagehand(page));
+    const guard = await installPersistentDocumentNavigationGuard(sh, () => true);
+    expect(guard.installed).toBe(true);
+    const onOrder = mainSession.on.mock.invocationCallOrder[0]!;
+    const enableOrder = send.mock.invocationCallOrder[0]!;
+    expect(onOrder).toBeLessThan(enableOrder);
+  });
+
+  it('returns installed:false when the page has no CDP session', async () => {
+    const sh = asV3(makeMockStagehand(makeMockPage()));
+    const guard = await installPersistentDocumentNavigationGuard(sh, () => true);
+    expect(guard.installed).toBe(false);
+  });
+
+  it('detaches the handler and returns installed:false when Fetch.enable fails', async () => {
+    const { page, send, handlers, mainSession } = makeCdpPage();
+    send.mockRejectedValueOnce(new Error('Fetch domain unavailable'));
+    const sh = asV3(makeMockStagehand(page));
+    const guard = await installPersistentDocumentNavigationGuard(sh, () => true);
+    expect(guard.installed).toBe(false);
+    // No orphaned handler left behind after the failed enable.
+    expect(mainSession.off).toHaveBeenCalledWith('Fetch.requestPaused', expect.any(Function));
+    expect(handlers.has('Fetch.requestPaused')).toBe(false);
+  });
+
+  it('uninstall detaches the handler and disables Fetch', async () => {
+    const { page, send, handlers, mainSession } = makeCdpPage();
+    const sh = asV3(makeMockStagehand(page));
+    const guard = await installPersistentDocumentNavigationGuard(sh, () => true);
+    expect(handlers.has('Fetch.requestPaused')).toBe(true);
+    await guard.uninstall();
+    expect(mainSession.off).toHaveBeenCalledWith('Fetch.requestPaused', expect.any(Function));
+    expect(send).toHaveBeenCalledWith('Fetch.disable');
+    expect(handlers.has('Fetch.requestPaused')).toBe(false);
   });
 });

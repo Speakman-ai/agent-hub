@@ -408,3 +408,75 @@ describe('planAutoContinuationRetry', () => {
     });
   });
 });
+
+describe('ReAct block parse — preview tool', () => {
+  it('parses observe ops with defaults and tail clamping to integer', () => {
+    const payload = JSON.stringify({
+      actions: [
+        { tool: 'preview', op: 'state' },
+        { tool: 'preview', op: 'logs', tail: 50.9 },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions[0]).toMatchObject({ tool: 'preview', op: 'state' });
+    expect(parsed.actions[1]).toMatchObject({ tool: 'preview', op: 'logs', tail: 50 });
+  });
+
+  it('parses drive ops and normalizes op case', () => {
+    const payload = JSON.stringify({
+      actions: [
+        { tool: 'preview', op: 'Navigate', route: '/settings' },
+        { tool: 'preview', op: 'click', target: 'the save button' },
+        { tool: 'preview', op: 'type', target: '#email', text: 'a@b.c' },
+        { tool: 'preview', op: 'screenshot' },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions.map((a) => a.op)).toEqual(['navigate', 'click', 'type', 'screenshot']);
+    expect(parsed.actions[0]).toMatchObject({ route: '/settings' });
+  });
+
+  it('rejects unsupported preview ops — including lifecycle verbs', () => {
+    for (const op of ['start', 'stop', 'restart', 'boot']) {
+      const parsed = parseReActBlock(
+        `<agenthub:react>{"actions":[{"tool":"preview","op":"${op}"}]}</agenthub:react>`,
+      );
+      expect(parsed).toMatchObject({ error: 'malformed' });
+      if ('error' in parsed) {
+        expect(parsed.detail).toMatch(/supported preview operation/);
+      }
+    }
+  });
+
+  it('rejects navigate without a route or with a full URL', () => {
+    const missing = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"navigate"}]}</agenthub:react>',
+    );
+    expect(missing).toMatchObject({ error: 'malformed' });
+
+    const fullUrl = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"navigate","route":"https://example.com"}]}</agenthub:react>',
+    );
+    expect(fullUrl).toMatchObject({ error: 'malformed' });
+    if ('error' in fullUrl) {
+      expect(fullUrl.detail).toMatch(/route starting with "\/"/);
+    }
+  });
+
+  it('rejects click/type without operands', () => {
+    const click = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"click"}]}</agenthub:react>',
+    );
+    expect(click).toMatchObject({ error: 'malformed' });
+
+    const type = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"type","target":"#x"}]}</agenthub:react>',
+    );
+    expect(type).toMatchObject({ error: 'malformed' });
+    if ('error' in type) {
+      expect(type.detail).toMatch(/preview type requires text/);
+    }
+  });
+});

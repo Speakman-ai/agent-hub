@@ -8,7 +8,10 @@
 
 import { jsonSchemaToZod, type JsonSchema } from '@browserbasehq/stagehand';
 import type { V3 } from '@browserbasehq/stagehand';
-import { validateBrowserNavigationUrl } from './browser-navigation-url.js';
+import {
+  validateBrowserNavigationUrl,
+  type BrowserNavigationPolicyOpts,
+} from './browser-navigation-url.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   getBrowserSession,
@@ -229,9 +232,29 @@ type PageWithMainSession = { mainSession?: CdpSessionLike };
  * {@link validateBrowserNavigationUrl} so redirect targets cannot bypass policy.
  * Best-effort: if Fetch cannot be enabled, only post-navigation URL checks apply.
  */
+/** Shape of a paused-request event as far as the URL policy needs it. */
+type FetchRequestPausedParams = {
+  requestId: string;
+  /** Per the CDP spec, `resourceType` is a TOP-LEVEL event field. */
+  resourceType?: unknown;
+  request: { url: string; resourceType?: unknown };
+};
+
+/**
+ * `Network.ResourceType` of a `Fetch.requestPaused` event. The spec puts
+ * `resourceType` at the event's top level (NOT inside `request`); the nested
+ * fallback tolerates shape drift but real Chromium uses the top-level field.
+ */
+function pausedRequestResourceType(params: FetchRequestPausedParams): string | undefined {
+  if (typeof params.resourceType === 'string') return params.resourceType;
+  const nested = params.request?.resourceType;
+  return typeof nested === 'string' ? nested : undefined;
+}
+
 async function withDocumentNavigationUrlPolicy(
   stagehand: V3,
   run: () => Promise<void>,
+  policy?: BrowserNavigationPolicyOpts,
 ): Promise<void> {
   const page = getActivePage(stagehand);
   const ms = (page as unknown as PageWithMainSession).mainSession;
@@ -240,16 +263,16 @@ async function withDocumentNavigationUrlPolicy(
     return;
   }
   const handler = (raw: unknown) => {
-    const params = raw as { requestId: string; request: { url: string; resourceType: string } };
+    const params = raw as FetchRequestPausedParams;
     const { requestId, request } = params;
     const continueReq = () => {
       void ms.send('Fetch.continueRequest', { requestId }).catch(() => {});
     };
-    if (request.resourceType !== 'Document') {
+    if (pausedRequestResourceType(params) !== 'Document') {
       continueReq();
       return;
     }
-    const next = validateBrowserNavigationUrl(request.url);
+    const next = validateBrowserNavigationUrl(request.url, policy);
     if (!next.ok) {
       void ms
         .send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' })
@@ -258,22 +281,111 @@ async function withDocumentNavigationUrlPolicy(
     }
     continueReq();
   };
+  // Attach BEFORE enabling: Chromium may pause in-flight requests the moment
+  // Fetch.enable resolves — with no handler attached they would never be
+  // continued and the page would hang.
+  ms.on('Fetch.requestPaused', handler);
+  let enabled = false;
   try {
     await ms.send('Fetch.enable', {
       patterns: [{ urlPattern: '*', requestStage: 'Request' }],
     });
-    ms.on('Fetch.requestPaused', handler);
-    await run();
+    enabled = true;
   } catch (err) {
+    ms.off('Fetch.requestPaused', handler);
     console.warn(
       '[browser-tools] Fetch.enable failed; main-frame redirect URL policy is degraded for this navigation:',
       err instanceof Error ? err.message : String(err),
     );
+  }
+  try {
     await run();
   } finally {
-    ms.off('Fetch.requestPaused', handler);
-    await ms.send('Fetch.disable').catch(() => {});
+    if (enabled) {
+      ms.off('Fetch.requestPaused', handler);
+      await ms.send('Fetch.disable').catch(() => {});
+    }
   }
+}
+
+/** Result of {@link installPersistentDocumentNavigationGuard}. */
+export interface PersistentDocumentGuardHandle {
+  /** False when the CDP session is unavailable (callers keep post-op checks as backstop). */
+  installed: boolean;
+  uninstall: () => Promise<void>;
+}
+
+/**
+ * Persistent main-frame document-request guard for a browser session whose
+ * page must stay pinned to a fixed document set (preview drive). Unlike
+ * {@link withDocumentNavigationUrlPolicy} — which wraps a single `page.goto`
+ * — this stays installed for the session, so click/type/JS-driven document
+ * navigations (and redirect hops) are policy-checked at REQUEST time: a
+ * disallowed document request is failed before it egresses, instead of only
+ * being reverted after the fact.
+ *
+ * Scope matches the navigate-time policy: only `Document` resource requests
+ * are intercepted; subresources are not (see the browser egress note in the
+ * ReAct prompt docs). Best-effort: returns `installed: false` when the CDP
+ * session is unavailable or `Fetch.enable` fails.
+ *
+ * Do not combine with {@link withDocumentNavigationUrlPolicy} on the same
+ * page — its `Fetch.disable` on completion would silently disable this
+ * guard, and two pause-handlers would race on the same requestId.
+ */
+export async function installPersistentDocumentNavigationGuard(
+  stagehand: V3,
+  isDocumentUrlAllowed: (url: string) => boolean,
+): Promise<PersistentDocumentGuardHandle> {
+  const noop: PersistentDocumentGuardHandle = { installed: false, uninstall: async () => {} };
+  let ms: CdpSessionLike | undefined;
+  try {
+    const page = getActivePage(stagehand);
+    ms = (page as unknown as PageWithMainSession).mainSession;
+  } catch {
+    return noop;
+  }
+  if (!ms?.send || !ms?.on || !ms?.off) {
+    return noop;
+  }
+  const session = ms;
+  const handler = (raw: unknown) => {
+    const params = raw as FetchRequestPausedParams;
+    const { requestId, request } = params;
+    if (pausedRequestResourceType(params) !== 'Document') {
+      void session.send('Fetch.continueRequest', { requestId }).catch(() => {});
+      return;
+    }
+    if (!isDocumentUrlAllowed(request.url)) {
+      void session
+        .send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' })
+        .catch(() => {});
+      return;
+    }
+    void session.send('Fetch.continueRequest', { requestId }).catch(() => {});
+  };
+  // Attach BEFORE enabling: Chromium may pause in-flight requests as soon as
+  // Fetch.enable takes effect; an unhandled pause would hang the page.
+  session.on('Fetch.requestPaused', handler);
+  try {
+    await session.send('Fetch.enable', {
+      patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+    });
+  } catch (err) {
+    session.off('Fetch.requestPaused', handler);
+    console.warn(
+      '[browser-tools] persistent document guard: Fetch.enable failed; request-time URL policy is degraded for this session:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return noop;
+  }
+  return {
+    installed: true,
+    uninstall: async () => {
+      session.off('Fetch.requestPaused', handler);
+      await session.send('Fetch.disable').catch(() => {});
+    },
+  };
 }
 
 export function resolveStagehandModelName(): string {
@@ -309,21 +421,26 @@ export async function browserNavigate(
   stagehand: V3,
   url: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserToolResult> {
   const u = url.trim();
   if (!u) return result('navigate', false, undefined, 'url is required');
-  const policy = validateBrowserNavigationUrl(u);
+  const policy = validateBrowserNavigationUrl(u, policyOpts);
   if (!policy.ok) {
     return result('navigate', false, undefined, policy.error);
   }
   try {
     const page = getActivePage(stagehand);
-    await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs });
-      void res;
-    });
+    await withDocumentNavigationUrlPolicy(
+      stagehand,
+      async () => {
+        const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs });
+        void res;
+      },
+      policyOpts,
+    );
     const finalUrl = page.url();
-    const landed = validateBrowserNavigationUrl(finalUrl);
+    const landed = validateBrowserNavigationUrl(finalUrl, policyOpts);
     if (!landed.ok) {
       return result(
         'navigate',
@@ -459,14 +576,19 @@ export async function browserScroll(stagehand: V3, direction: string): Promise<B
 export async function browserBack(
   stagehand: V3,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
-    await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goBack({ waitUntil: 'load', timeoutMs });
-    });
+    await withDocumentNavigationUrlPolicy(
+      stagehand,
+      async () => {
+        await page.goBack({ waitUntil: 'load', timeoutMs });
+      },
+      policyOpts,
+    );
     const finalUrl = page.url();
-    const landed = validateBrowserNavigationUrl(finalUrl);
+    const landed = validateBrowserNavigationUrl(finalUrl, policyOpts);
     if (!landed.ok) {
       return result(
         'back',
@@ -485,14 +607,19 @@ export async function browserBack(
 export async function browserForward(
   stagehand: V3,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
-    await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goForward({ waitUntil: 'load', timeoutMs });
-    });
+    await withDocumentNavigationUrlPolicy(
+      stagehand,
+      async () => {
+        await page.goForward({ waitUntil: 'load', timeoutMs });
+      },
+      policyOpts,
+    );
     const finalUrl = page.url();
-    const landed = validateBrowserNavigationUrl(finalUrl);
+    const landed = validateBrowserNavigationUrl(finalUrl, policyOpts);
     if (!landed.ok) {
       return result(
         'forward',

@@ -1281,6 +1281,17 @@ export class PreviewComposeRuntime {
     return [...(this.logTails.get(groupId) ?? [])];
   }
 
+  /**
+   * Base URL the **Hub process itself** can use to reach a preview's
+   * published host port. Mirrors the health-check target (so it honors
+   * `AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal` when the Hub runs
+   * inside Docker) rather than the client-facing iframe URL, which may be a
+   * proxy path the server-side browser cannot resolve.
+   */
+  serverReachableUrlForPort(port: number): string {
+    return this.healthUrlBase(port);
+  }
+
   /** Bump `last_active_at` so the reaper's idle-TTL clock resets. */
   touchPreview(groupId: string): void {
     this.db
