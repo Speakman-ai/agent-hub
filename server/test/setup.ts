@@ -43,6 +43,9 @@ process.env.AGENT_HUB_DISABLE_PUSH_CI = '1';
 // the chat handler (CLI spawn) — same hard rule as above. Unit tests for
 // the module pass `force: true` with mocked deps instead.
 process.env.AGENT_HUB_DISABLE_INITIAL_BUILD = '1';
+// Same rule for the external-push auto-review dispatch (Reviewer agent
+// session spawn). Unit tests pass `force: true` with a mocked handleChat.
+process.env.AGENT_HUB_DISABLE_AUTO_REVIEW = '1';
 // Fresh deploy bootstrap env must not leak from the host (Agent Hub
 // sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
 // server boot, auth.json exists, and authMiddleware rejects unauthenticated

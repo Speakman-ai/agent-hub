@@ -25,6 +25,7 @@ import { notifyMirrorPush } from './git-host/mirror.js';
 import { maybeRunPushCi, maybeRunPrCi, handleHostedRepoPush } from './git-host/push-ci.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
+import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import {
   initProjects,
   migrateAhwDirectories,
@@ -411,6 +412,26 @@ app.use(
     onPush: (project, refs) => {
       recordRecentPush(project.id, refs); // feeds the "Create pull request" banner
       handleHostedRepoPush(project, refs, { stmts: stmts!, broadcast });
+      // Review safety net for external pushes: any moved branch backing
+      // an open PR gets the Reviewer agent when branch protection
+      // requires review and the head isn't Finalize-validated.
+      // routeDeps is initialized later in module order but long before
+      // the server accepts pushes.
+      for (const ref of refs) {
+        if (!ref.startsWith('refs/heads/')) continue;
+        const branch = ref.slice('refs/heads/'.length);
+        const open = stmts!.getOpenPullRequestByHeadBranch.get(project.id, branch) as
+          | import('./types.js').PullRequestRow
+          | undefined;
+        if (open) {
+          void maybeRunPrAutoReview(project, open, {
+            stmts: stmts!,
+            config,
+            broadcast,
+            handleChat: routeDeps.handleChat,
+          });
+        }
+      }
     },
   }),
 );
@@ -457,6 +478,12 @@ const nativePr = createNativePrService({
   // existed.
   onPrHeadChanged: (project, row) => {
     void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
+    void maybeRunPrAutoReview(project, row, {
+      stmts: stmts!,
+      config,
+      broadcast,
+      handleChat: routeDeps.handleChat,
+    });
   },
 });
 

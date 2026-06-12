@@ -956,3 +956,21 @@ describe('deleteBranchOnMerge setting + branch deletion', () => {
     await request.delete(`/api/projects/${id}/git-host/branches/never-existed`).expect(404);
   });
 });
+
+describe('review reviewer-name override', () => {
+  it('attributes the review to the supplied reviewer name (agent reviews)', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await request
+      .post(`/api/projects/${id}/pulls`)
+      .send({ headBranch: branch, title: 'Agent-reviewed' })
+      .expect(201);
+    const res = await request
+      .post(`/api/projects/${id}/pulls/1/reviews`)
+      .send({ state: 'changes_requested', body: 'tighten', reviewer: 'Demo Reviewer' })
+      .expect(201);
+    expect(res.body.review.user).toBe('Demo Reviewer');
+    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.reviews[0].user).toBe('Demo Reviewer');
+    expect(detail.body.pr.review_decision).toBe('CHANGES_REQUESTED');
+  });
+});

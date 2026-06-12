@@ -236,6 +236,10 @@ registerPath({
         z.object({
           state: z.enum(['approved', 'changes_requested', 'commented']),
           body: z.string().optional(),
+          reviewer: z
+            .string()
+            .optional()
+            .openapi({ description: 'Reviewer-name override (agent reviews).' }),
         }),
       ),
       required: true,
@@ -515,13 +519,21 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: 'a comment review needs a body' });
     }
     const areq = req as AuthenticatedRequest;
+    // Optional reviewer-name override for agent reviews (the auto-review
+    // dispatch tells the Reviewer agent to sign with its own name so
+    // per-reviewer verdict precedence works). Authenticated callers on a
+    // trusted instance only — attribution, not authorization.
+    const reviewerOverride =
+      typeof body.reviewer === 'string' && body.reviewer.trim()
+        ? body.reviewer.trim().slice(0, 80)
+        : null;
     try {
       const { review } = deps.nativePr!.submitReview({
         project: ctx.project,
         number: ctx.number,
         state,
         body: reviewBody,
-        reviewer: areq.authUser ?? areq.authUserId ?? 'user',
+        reviewer: reviewerOverride ?? areq.authUser ?? areq.authUserId ?? 'user',
       });
       res.status(201).json({ review });
     } catch (err: unknown) {
