@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import type { FinalizeRunRow, KanbanCardRow, Project, RouteDeps, SessionRow } from '../types.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
+import { mergeOrEnableGithubAutoMerge } from '../github-auto-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
@@ -38,16 +39,13 @@ async function enableGithubAutoMerge(
   try {
     const token = await resolveOrgOwnerGithubToken(routeDeps.config, project.githubRepo ?? null);
     const env = autoGitChildEnv(token);
-    await execFileAsync('gh', ['pr', 'merge', '--auto', '--squash', prUrl], {
-      cwd,
-      env,
-      timeout: 15_000,
-      maxBuffer: 1024 * 1024,
-    });
-    console.log(`[finalize-automation] Enabled GitHub native auto-merge for ${prUrl}`);
+    const outcome = await mergeOrEnableGithubAutoMerge(prUrl, (args) =>
+      execFileAsync('gh', args, { cwd, env, timeout: 15_000, maxBuffer: 1024 * 1024 }),
+    );
+    console.log(`[finalize-automation] ${outcome.note}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[finalize-automation] Failed to enable auto-merge for ${prUrl}: ${msg}`);
+    console.warn(`[finalize-automation] Auto-merge failed for ${prUrl}: ${msg}`);
   }
 }
 

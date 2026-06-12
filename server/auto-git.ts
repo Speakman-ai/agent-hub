@@ -19,6 +19,7 @@ import {
   shouldTriggerAutoShipAtSessionEnd,
 } from './code-change-tracker.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
+import { mergeOrEnableGithubAutoMerge } from './github-auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 import { resolveDefaultBranch } from './git-default-branch.js';
@@ -1443,11 +1444,13 @@ async function enableAutoMergeIfNeeded(
 ): Promise<void> {
   if (!resolveShouldAutoMerge(override, project.githubWorkflow)) return;
   try {
-    await runGh(['pr', 'merge', '--auto', '--squash', prUrl], cwd, 15000, githubToken);
-    console.log(`[auto-merge] Enabled GitHub native auto-merge for ${prUrl}`);
+    const outcome = await mergeOrEnableGithubAutoMerge(prUrl, (args) =>
+      runGh(args, cwd, 15000, githubToken),
+    );
+    console.log(`[auto-merge] ${outcome.note}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[auto-merge] Failed to enable auto-merge for ${prUrl}: ${msg}`);
+    console.warn(`[auto-merge] ${msg}`);
   }
 }
 
