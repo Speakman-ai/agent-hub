@@ -139,6 +139,26 @@ mid-stream drops) with the recovery step that usually unsticks them.
    than duplicating. See `agent-hub-wiki`.
 5. **Log** `TOOL_ERROR` lines when tool failures block you.
 
+## Artifacts — share generated documents
+
+When you generate a document the user should be able to view or download
+(a PDF, a report, a script, a build log, an exported CSV…), publish it as a
+**session artifact** with `scripts/artifacts.sh`. Uploaded artifacts show up
+in the session's **Artifacts panel** in the web/mobile/Electron UI, and you
+can read them back later in the same or a follow-up turn.
+
+```bash
+scripts/artifacts.sh put ./report.pdf "Q2 report"   # upload (prints metadata JSON)
+scripts/artifacts.sh list                            # list this session's artifacts
+scripts/artifacts.sh get <artifactId> ./out.pdf      # download bytes back to a file
+scripts/artifacts.sh delete <artifactId>             # remove one
+```
+
+Everything is scoped to `$AGENT_HUB_SESSION_ID`. Executables / native binaries
+and files over 100 MB are rejected. Storage is S3 when the Hub is configured
+with an artifacts bucket, otherwise a local directory — either way you use the
+same script.
+
 ## Workflows — worked examples
 
 Concrete recipes live under **[examples/](examples/)**:

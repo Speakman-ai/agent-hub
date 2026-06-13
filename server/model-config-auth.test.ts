@@ -51,6 +51,8 @@ function makeConfig(): AppConfig {
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,
     browserBlockAdsTrackers: true,
+    artifactsBucket: null,
+    artifactsBucketRegion: null,
     previewComposeReadyTimeoutMs: 600_000,
     previewSubdomainBase: null,
     get allValidModels() {

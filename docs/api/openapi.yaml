@@ -187,6 +187,61 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    Artifact:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        filename:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+        storageKind:
+          type: string
+          enum:
+            - local
+            - s3
+        createdBy:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        url:
+          type: string
+          description: Relative URL to download/view the artifact bytes.
+      required:
+        - id
+        - sessionId
+        - filename
+        - contentType
+        - size
+        - storageKind
+        - createdBy
+        - createdAt
+        - url
+      description: Metadata for one session artifact.
+    ArtifactList:
+      type: object
+      properties:
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Artifact"
+      required:
+        - artifacts
+      description: All artifacts generated in a session, newest first.
+    ArtifactErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
     AuditErrorResponse:
       type: object
       properties:
@@ -5274,6 +5329,179 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentErrorResponse"
+  /api/sessions/{sessionId}/artifacts:
+    get:
+      tags:
+        - Artifacts
+      summary: List a session’s generated artifacts
+      description: Returns metadata for every document an agent generated in this session, newest first. The bytes are fetched separately via the per-artifact content endpoint.
+      parameters:
+        - schema:
+            type: string
+            description: Session ID.
+          required: true
+          description: Session ID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Artifact list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactList"
+        "404":
+          description: Session not found / not owned by caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+    post:
+      tags:
+        - Artifacts
+      summary: Upload an artifact to a session
+      description: Stores a raw file body as a session artifact. Send the bytes as the request body with `Content-Type` set to the file’s MIME type and `x-filename` set to the display name. Used by agents (via the agent-hub artifact script) and the web UI. Rejects executables/native binaries and bodies over 100 MB.
+      parameters:
+        - schema:
+            type: string
+            description: Session ID.
+          required: true
+          description: Session ID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw file bytes.
+      responses:
+        "200":
+          description: Created artifact metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "400":
+          description: Empty body or rejected content type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "404":
+          description: Session not found / not owned by caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "413":
+          description: File exceeds the 100 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "500":
+          description: Storage write failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+  /api/sessions/{sessionId}/artifacts/{artifactId}/content:
+    get:
+      tags:
+        - Artifacts
+      summary: Download or view an artifact’s bytes
+      description: "Streams the artifact bytes with `X-Content-Type-Options: nosniff`. Inert types render inline by default; pass `?download=1` for an attachment disposition. Active/scriptable content (HTML, SVG, XML, JS) is always forced to download with a neutral `application/octet-stream` type so it cannot execute in the app origin. When the backend is S3 and `?redirect=1` is set (non-active content only), responds 302 to a short-lived presigned URL instead of proxying the bytes. The store is resolved from the artifact row’s recorded backend, so reads survive a later storage reconfiguration."
+      parameters:
+        - schema:
+            type: string
+            description: Session ID.
+          required: true
+          description: Session ID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Artifact ID.
+          required: true
+          description: Artifact ID.
+          name: artifactId
+          in: path
+      responses:
+        "200":
+          description: Artifact bytes.
+        "302":
+          description: Redirect to a presigned download URL (S3 backend, redirect=1).
+        "404":
+          description: Session or artifact not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "500":
+          description: Storage read failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "503":
+          description: Artifact’s recorded storage backend is unavailable / unrecoverable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+  /api/sessions/{sessionId}/artifacts/{artifactId}:
+    delete:
+      tags:
+        - Artifacts
+      summary: Delete an artifact
+      description: Deletes the artifact bytes from object storage FIRST, then removes the metadata row. If the storage delete fails the request fails (502) and nothing is removed, so the bytes are never orphaned without a record to retry. Resolves the row’s recorded backend, so it works after a storage reconfiguration.
+      parameters:
+        - schema:
+            type: string
+            description: Session ID.
+          required: true
+          description: Session ID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Artifact ID.
+          required: true
+          description: Artifact ID.
+          name: artifactId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "404":
+          description: Session or artifact not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "502":
+          description: Object-store deletion failed; nothing was removed (safe to retry).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
+        "503":
+          description: Artifact’s recorded storage backend is unavailable / unrecoverable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
   /api/projects/{projectId}/audit:
     get:
       tags:

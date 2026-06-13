@@ -2,7 +2,7 @@ import { installLogCapture, setLogBroadcast } from './server-log.js';
 installLogCapture(); // Must be first — captures all subsequent console output
 
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { createServer } from 'http';
 import createWebSocket from './websocket.js';
 import cors from 'cors';
@@ -96,6 +96,7 @@ import createAgentRoutes from './routes/agents.js';
 import createOrgRoutes from './routes/orgs.js';
 import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
+import createArtifactRoutes from './routes/artifacts.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
 import createReleasesRoutes from './routes/releases.js';
@@ -437,14 +438,28 @@ app.use(
   }),
 );
 
-app.use(
-  express.json({
-    limit: '20mb',
-    verify: (req: Request, _res, buf: Buffer) => {
-      (req as Request & { rawBody?: Buffer }).rawBody = buf;
-    },
-  }),
-);
+// Artifact uploads (POST /api/sessions/:id/artifacts) are raw binary read by
+// the route's own `express.raw` — but a body an earlier middleware already
+// consumed cannot be re-parsed. The global JSON parser would otherwise eat
+// `application/json` (and `*+json`) artifact bodies, turning a valid `.json`
+// upload into a parsed object and tripping the route's `Buffer.isBuffer` guard
+// (400 "Empty file body"). JSON is an explicitly-supported artifact type, so
+// skip the global parser for that one path and let the route handle the raw
+// stream. Other content types already bypass `express.json` (it only matches
+// JSON) so this guard is scoped tightly to the upload endpoint.
+const ARTIFACT_UPLOAD_PATH = /^\/api\/sessions\/[^/]+\/artifacts\/?$/;
+const globalJsonParser = express.json({
+  limit: '20mb',
+  verify: (req: Request, _res, buf: Buffer) => {
+    (req as Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+});
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'POST' && ARTIFACT_UPLOAD_PATH.test(req.path)) {
+    return next();
+  }
+  return globalJsonParser(req, res, next);
+});
 
 app.use(createHealthRoute({ allAgents, getProjects, config }));
 
@@ -924,6 +939,7 @@ app.use(createSkillRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
+app.use(createArtifactRoutes(routeDeps));
 app.use(createFinalizeRoutes(routeDeps));
 app.use(createFinalizeParityRoutes(routeDeps));
 app.use(createFinalizeQuarantineRoutes(routeDeps));

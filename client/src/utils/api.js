@@ -318,6 +318,11 @@ export const api = {
   /** Live git status — uncommitted or unpushed work in the session worktree. */
   getSessionWorktreeChanges: (sessionId, opts = {}) =>
     fetchJSON(`/sessions/${sessionId}/worktree-changes`, { signal: opts.signal }),
+  /** Documents an agent generated during the session (Artifacts panel). */
+  getSessionArtifacts: (sessionId, opts = {}) =>
+    fetchJSON(`/sessions/${sessionId}/artifacts`, { signal: opts.signal }),
+  deleteSessionArtifact: (sessionId, artifactId) =>
+    fetchJSON(`/sessions/${sessionId}/artifacts/${artifactId}`, { method: 'DELETE' }),
   /**
    * Most-recent Finalize run for a session. Returns `{ run: null }` when
    * the session has never triggered a Finalize run — used by the read-only

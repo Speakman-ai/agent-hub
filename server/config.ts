@@ -471,6 +471,17 @@ const config: AppConfig = {
     ? false
     : fileConfig.browserBlockAdsTrackers !== false,
 
+  // ── Session artifacts (agent-generated documents) ──────────────
+  // When `artifactsBucket` is set, artifacts upload to S3 and downloads
+  // stream from it; otherwise the Hub stores them locally under
+  // `<dataDir>/artifacts` (see server/artifacts/artifact-store.ts).
+  artifactsBucket: resolve('AGENT_HUB_ARTIFACTS_BUCKET', 'artifactsBucket', null),
+  artifactsBucketRegion: resolve(
+    'AGENT_HUB_ARTIFACTS_BUCKET_REGION',
+    'artifactsBucketRegion',
+    null,
+  ),
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

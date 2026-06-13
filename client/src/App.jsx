@@ -29,6 +29,7 @@ import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionDesignPane from './components/SessionDesignPane.jsx';
 // Lazy — pulls in @git-diff-view/react + its CSS only when the diff pane opens.
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane.jsx'));
+const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane.jsx'));
 import LinkDesignModal from './components/LinkDesignModal.jsx';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton.jsx';
 import {
@@ -104,6 +105,7 @@ import {
   Loader2,
   ArrowLeftRight,
   GitBranch,
+  Package,
 } from 'lucide-react';
 import {
   migrateFromLegacy,
@@ -292,6 +294,14 @@ export default function App({ initialView } = {}) {
   /** Per-session counter bumped on each `code_changed` WS event; passed to the
    * diff pane as a reloadToken so the file list stays live while the agent works. */
   const [codeChangedTickBySession, setCodeChangedTickBySession] = useState({});
+  /** Per-session Artifacts pane open flag. Mutually exclusive with the Changes
+   * and preview panes (only one right pane shows at a time). */
+  const [artifactsPaneOpenBySession, setArtifactsPaneOpenBySession] = useState({});
+  /** Per-session count of artifacts, to badge the "Artifacts" toolbar button. */
+  const [artifactCountBySession, setArtifactCountBySession] = useState({});
+  /** Per-session counter bumped on `artifact_created` / `artifact_deleted` WS
+   * events; passed to the artifacts pane as a reloadToken to keep it live. */
+  const [artifactTickBySession, setArtifactTickBySession] = useState({});
   /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
   const [previewStartingBySession, setPreviewStartingBySession] = useState({});
   /** While POST /sessions/:id/workspace/ensure is cloning the session worktree. */
@@ -2252,6 +2262,35 @@ export default function App({ initialView } = {}) {
           break;
         }
 
+        case 'artifact_created':
+        case 'artifact_deleted': {
+          const sid = data.sessionId;
+          if (!sid || !sessionsRef.current.some((s) => s.id === sid)) break;
+          // Keep an open pane live (it reloads and reports the authoritative
+          // count via onCount). For the closed-pane badge we reconcile to the
+          // server's post-mutation count carried on the event rather than
+          // blindly +/-1 — otherwise the client that performed a local delete
+          // (which already set the count) would decrement a second time on its
+          // own broadcast and drift. `data.count` absent (version skew) → leave
+          // the badge as-is and let the next pane open recount.
+          setArtifactTickBySession((prev) => ({ ...prev, [sid]: (prev[sid] || 0) + 1 }));
+          if (typeof data.count === 'number') {
+            const next = Math.max(0, data.count);
+            setArtifactCountBySession((prev) =>
+              prev[sid] === next ? prev : { ...prev, [sid]: next },
+            );
+          }
+          if (data.type === 'artifact_created' && sid === activeSessionIdRef.current) {
+            const name = data.artifact?.filename;
+            showToast(
+              name ? `New artifact: ${name}` : 'The agent generated a new artifact.',
+              'info',
+              7000,
+            );
+          }
+          break;
+        }
+
         case 'agenthub_preview': {
           // Per-session preview lifecycle event. Persist the latest event
           // keyed by sessionId so the SessionPreviewPane can render the
@@ -3165,8 +3204,15 @@ export default function App({ initialView } = {}) {
   // slot and are mutually exclusive — opening Changes replaces an open
   // preview (the preview's own state is preserved and returns on close).
   const showSessionDiffPane = !!activeSessionId && diffPaneOpenBySession[activeSessionId] === true;
+  // The Artifacts pane shares the right-hand slot with Changes/preview and is
+  // mutually exclusive with them. Changes wins if somehow both are flagged.
+  const showSessionArtifactsPane =
+    !showSessionDiffPane &&
+    !!activeSessionId &&
+    artifactsPaneOpenBySession[activeSessionId] === true;
   const showSessionPreviewPane =
     !showSessionDiffPane &&
+    !showSessionArtifactsPane &&
     shouldShowSessionPreviewPane({
       activeSessionId,
       project: activeChatProject,
@@ -4789,12 +4835,19 @@ export default function App({ initialView } = {}) {
                             type="button"
                             data-testid="toggle-changes-pane"
                             aria-pressed={showSessionDiffPane}
-                            onClick={() =>
+                            onClick={() => {
+                              const opening = !diffPaneOpenBySession[activeSessionId];
                               setDiffPaneOpenBySession((prev) => ({
                                 ...prev,
-                                [activeSessionId]: !prev[activeSessionId],
-                              }))
-                            }
+                                [activeSessionId]: opening,
+                              }));
+                              if (opening) {
+                                setArtifactsPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
+                              }
+                            }}
                             title="View session file changes"
                             className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
                               showSessionDiffPane
@@ -4806,6 +4859,39 @@ export default function App({ initialView } = {}) {
                             {diffFileCountBySession[activeSessionId] > 0 && (
                               <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
                                 {diffFileCountBySession[activeSessionId]}
+                              </span>
+                            )}
+                          </button>
+                          {/* Artifacts toggle — opens the artifacts pane, which
+                            shares the right slot with Changes/preview. */}
+                          <button
+                            type="button"
+                            data-testid="toggle-artifacts-pane"
+                            aria-pressed={showSessionArtifactsPane}
+                            onClick={() => {
+                              const opening = !artifactsPaneOpenBySession[activeSessionId];
+                              setArtifactsPaneOpenBySession((prev) => ({
+                                ...prev,
+                                [activeSessionId]: opening,
+                              }));
+                              if (opening) {
+                                setDiffPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
+                              }
+                            }}
+                            title="View documents the agent generated"
+                            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
+                              showSessionArtifactsPane
+                                ? 'bg-violet-700/70 text-violet-50 border-violet-600'
+                                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                            }`}
+                          >
+                            <Package size={13} /> Artifacts
+                            {artifactCountBySession[activeSessionId] > 0 && (
+                              <span className="ml-0.5 rounded-full bg-violet-500/30 text-violet-100 px-1.5 text-[10px] font-semibold">
+                                {artifactCountBySession[activeSessionId]}
                               </span>
                             )}
                           </button>
@@ -4904,6 +4990,33 @@ export default function App({ initialView } = {}) {
                                 activeSessionId,
                                 fileCountFromChangesSummary(s),
                               ),
+                            )
+                          }
+                        />
+                      </Suspense>
+                    )}
+                    {showSessionArtifactsPane && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[420px]">
+                            <Loader2 size={18} className="animate-spin text-violet-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionArtifactsPane
+                          sessionId={activeSessionId}
+                          reloadToken={artifactTickBySession[activeSessionId] || 0}
+                          onClose={() =>
+                            setArtifactsPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [activeSessionId]: false,
+                            }))
+                          }
+                          onCount={(n) =>
+                            setArtifactCountBySession((prev) =>
+                              prev[activeSessionId] === n
+                                ? prev
+                                : { ...prev, [activeSessionId]: n },
                             )
                           }
                         />

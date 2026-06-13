@@ -121,6 +121,38 @@ export interface SessionAgentRow {
   added_at: string;
 }
 
+/**
+ * A document an agent generated during a session (PDF, script, report, etc.)
+ * and stored in object storage so the user (and the agent) can download/view
+ * it from the session's Artifacts panel. The bytes live in S3 or a local
+ * directory (see `server/artifacts/artifact-store.ts`); this row is the
+ * metadata index used to list/serve them without enumerating storage.
+ */
+export interface ArtifactRow {
+  id: string;
+  session_id: string;
+  /** Display name (original filename the agent uploaded). */
+  filename: string;
+  content_type: string;
+  /** Size in bytes. */
+  size: number;
+  /** Storage backend the bytes live in: `s3` or `local`. */
+  storage_kind: string;
+  /** Opaque key within the storage backend. */
+  storage_key: string;
+  /**
+   * S3 bucket the bytes were written to (NULL for local rows and legacy rows
+   * predating this column). Persisted so reads resolve the ORIGINAL bucket even
+   * after the Hub's `artifactsBucket` config changes.
+   */
+  storage_bucket: string | null;
+  /** S3 region for `storage_bucket` (NULL = resolve from ambient/config). */
+  storage_region: string | null;
+  /** Agent id that created the artifact (NULL for user uploads / legacy). */
+  created_by: string | null;
+  created_at: string;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1117,6 +1149,12 @@ type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Stat
  * to e.g. `Stmt<[string], SessionRow>` once bind sites (including Express `req.params`) are consistently typed.
  */
 export interface Stmts {
+  // Artifacts (session-generated documents)
+  insertArtifact: Stmt;
+  getArtifactsBySession: Stmt;
+  countArtifactsBySession: Stmt;
+  getArtifact: Stmt;
+  deleteArtifact: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;
@@ -2658,6 +2696,20 @@ export interface AppConfig {
   browserAllowDownloads: boolean;
   /** Block common ad/tracker third-party hosts at route level when true. */
   browserBlockAdsTrackers: boolean;
+  /**
+   * S3 bucket for session artifacts (agent-generated documents/scripts/PDFs).
+   * When set, artifacts upload to this bucket and downloads stream from it.
+   * When null, the Hub falls back to a local directory under `dataDir/artifacts`
+   * (dev / single-host). Env: `AGENT_HUB_ARTIFACTS_BUCKET`; config.json:
+   * `artifactsBucket`.
+   */
+  artifactsBucket: string | null;
+  /**
+   * AWS region for `artifactsBucket`. Falls back to the SDK's ambient region
+   * (AWS_REGION / AWS_DEFAULT_REGION) when null. Env:
+   * `AGENT_HUB_ARTIFACTS_BUCKET_REGION`; config.json: `artifactsBucketRegion`.
+   */
+  artifactsBucketRegion: string | null;
   readonly allValidModels: string[];
 }
 

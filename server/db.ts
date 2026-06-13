@@ -243,6 +243,26 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_progress_session
       ON session_progress(session_id, started_at ASC);
 
+    -- artifacts: per-session documents an agent generated (PDFs, scripts,
+    -- reports, …). The bytes live in object storage (S3 or a local dir; see
+    -- server/artifacts/artifact-store.ts); this table is the metadata index
+    -- the Artifacts panel + agent script wrapper list/serve from.
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      storage_kind TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      storage_bucket TEXT,
+      storage_region TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifacts_session
+      ON artifacts(session_id, created_at DESC);
+
     -- Delegations: tracks sub-agent tasks spawned by a lead agent
     CREATE TABLE IF NOT EXISTS delegations (
       id TEXT PRIMARY KEY,
@@ -1176,6 +1196,20 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT attachments FROM messages LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
+  }
+
+  // artifacts.storage_bucket / storage_region — persist the S3 location per row
+  // so reads resolve the ORIGINAL backend even after `artifactsBucket` changes.
+  // Added after the initial artifacts table shipped; NULL for local + legacy rows.
+  try {
+    db.prepare('SELECT storage_bucket FROM artifacts LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE artifacts ADD COLUMN storage_bucket TEXT');
+  }
+  try {
+    db.prepare('SELECT storage_region FROM artifacts LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE artifacts ADD COLUMN storage_region TEXT');
   }
 
   // Nullable metadata column for system-role messages (e.g. PR-created markers).
@@ -2281,6 +2315,19 @@ function initDb(dataDir: string): void {
   }
 
   stmts = {
+    // Artifacts (session-generated documents)
+    insertArtifact: db.prepare(
+      `INSERT INTO artifacts
+         (id, session_id, filename, content_type, size, storage_kind, storage_key,
+          storage_bucket, storage_region, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getArtifactsBySession: db.prepare(
+      'SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at DESC, id DESC',
+    ),
+    countArtifactsBySession: db.prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?'),
+    getArtifact: db.prepare('SELECT * FROM artifacts WHERE id = ?'),
+    deleteArtifact: db.prepare('DELETE FROM artifacts WHERE id = ?'),
     // Sessions
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

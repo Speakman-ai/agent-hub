@@ -57,6 +57,7 @@ const DETERMINISTIC_SCRIPTS = [
   'wiki-upsert.sh',
   'get-board-state.sh',
   'log-tool-error.sh',
+  'artifacts.sh',
 ];
 
 function runHelp(file: string): { code: number; stdout: string } {
@@ -165,6 +166,18 @@ describe('agent-hub deterministic script wrappers — shape', () => {
 
     it('log-tool-error.sh with no args exits 2', () => {
       expect(runExit(path.join(DEFAULT_SCRIPTS, 'log-tool-error.sh'), [])).toBe(2);
+    });
+
+    it('artifacts.sh with no args exits 2', () => {
+      expect(runExit(path.join(DEFAULT_SCRIPTS, 'artifacts.sh'), [])).toBe(2);
+    });
+
+    it('artifacts.sh with an unknown subcommand exits 2', () => {
+      expect(runExit(path.join(DEFAULT_SCRIPTS, 'artifacts.sh'), ['bogus'])).toBe(2);
+    });
+
+    it('artifacts.sh put without a file exits 2', () => {
+      expect(runExit(path.join(DEFAULT_SCRIPTS, 'artifacts.sh'), ['put'])).toBe(2);
     });
 
     it('log-tool-error.sh missing --summary exits 2', () => {
