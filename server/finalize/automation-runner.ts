@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import type { FinalizeRunRow, KanbanCardRow, Project, RouteDeps, SessionRow } from '../types.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
-import { mergeOrEnableGithubAutoMerge } from '../github-auto-merge.js';
+import { autoMergeReadyPr } from './auto-merge-ready-pr.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
@@ -28,20 +28,37 @@ export function setFinalizeAutomationRouteDeps(deps: RouteDeps): void {
   routeDeps = deps;
 }
 
-async function enableGithubAutoMerge(
+/**
+ * Auto-merge a Finalize-pushed PR for the "Merge Automatically" level.
+ * Dispatches by host: native Hub PRs merge in-process via NativePrService;
+ * github.com PRs merge (or enable native auto-merge) through `gh`. See
+ * auto-merge-ready-pr.ts — `gh pr merge` cannot touch a Hub-hosted repo, so
+ * routing every PR through it left native PRs open with all checks green.
+ */
+async function autoMergeFinalizedPr(
   prUrl: string,
   project: Project,
   override: boolean | undefined,
   cwd: string,
 ): Promise<void> {
   if (!routeDeps) return;
+  const deps = routeDeps;
   if (!resolveShouldAutoMerge(override, project.githubWorkflow)) return;
   try {
-    const token = await resolveOrgOwnerGithubToken(routeDeps.config, project.githubRepo ?? null);
-    const env = autoGitChildEnv(token);
-    const outcome = await mergeOrEnableGithubAutoMerge(prUrl, (args) =>
-      execFileAsync('gh', args, { cwd, env, timeout: 15_000, maxBuffer: 1024 * 1024 }),
-    );
+    // Resolve the GitHub token lazily — only when the dispatcher actually
+    // runs `gh` (the github.com branch). Native Hub PRs merge in-process and
+    // need no GitHub credentials; a Hub-hosted project without a GitHub repo
+    // configured must not fail token resolution before reaching that path.
+    const outcome = await autoMergeReadyPr({
+      prUrl,
+      project,
+      nativePr: deps.nativePr,
+      runGh: async (args) => {
+        const token = await resolveOrgOwnerGithubToken(deps.config, project.githubRepo ?? null);
+        const env = autoGitChildEnv(token);
+        return execFileAsync('gh', args, { cwd, env, timeout: 15_000, maxBuffer: 1024 * 1024 });
+      },
+    });
     console.log(`[finalize-automation] ${outcome.note}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -184,6 +201,6 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
     return;
   }
   if (outcome.prUrl && shouldEnableAutoMergeForAutomation(level)) {
-    void enableGithubAutoMerge(outcome.prUrl, ctx.project, true, ctx.session.worktree_path!);
+    void autoMergeFinalizedPr(outcome.prUrl, ctx.project, true, ctx.session.worktree_path!);
   }
 }
