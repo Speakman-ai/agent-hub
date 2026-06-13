@@ -4929,6 +4929,7 @@ export default function App({ initialView } = {}) {
                                 pendingChanges={changesReady[activeSessionId] ?? null}
                                 onError={(msg) => showToast(msg, 'error', 8000)}
                                 hosted={activeChatProject?.gitHost === 'agenthub'}
+                                isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
                               />
                             </>
                           ) : null}

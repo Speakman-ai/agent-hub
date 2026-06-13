@@ -15,6 +15,14 @@ export interface SessionRow {
   worktree_path: string | null;
   worktree_branch: string | null;
   git_worktree_detected: number | null;
+  /**
+   * PR head branch for `[Resolve PR #N]` sessions. When set (and the session
+   * uses a worktree), `ensureSessionWorkspace` provisions the clone directly on
+   * this branch instead of cutting `agent-hub/<agent>/session-<id>`, so the
+   * agent's commits append to the existing PR and the push updates it rather
+   * than opening a new one. NULL for every non-resolve session.
+   */
+  resolve_pr_head_branch?: string | null;
   changes_ready: string | null;
   /**
    * ISO timestamp of the first worktree mutation detected during this session
@@ -1183,6 +1191,7 @@ export interface Stmts {
   updateSessionLastTurnError: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
+  setSessionResolvePrHeadBranch: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;

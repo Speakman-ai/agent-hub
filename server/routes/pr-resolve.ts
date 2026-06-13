@@ -119,18 +119,17 @@ export function buildPrContextHeader(
     lines.push(`- mergeable: ${pr.mergeable ?? 'unknown'} (state: ${pr.mergeable_state})`);
   }
 
-  // Required first step. Resolve sessions spawn into a fresh worktree branch
-  // (`agent-hub/<agent-id>/session-<id>`), NOT the PR's head branch. If the
-  // agent commits on the worktree branch and the session ends, `autoCommitAndPR`
-  // runs `gh pr view <branch>` against the worktree branch, finds no PR, and
-  // falls through to a `changes_ready` broadcast — the commits stay local and
-  // the PR is never updated. Checking out the PR head branch first guarantees
-  // that:
-  //   1. Subsequent commits land on the same branch GitHub's PR is tracking.
-  //   2. The session-end auto-commit pipeline finds the open PR via the
-  //      pre-check in `commitPushAndCreatePR` and pushes the fix.
-  // See server/auto-git.ts → autoCommitAndPR (`!isAutonomousCard` branch) and
-  // the resolve-comment regression test in server/auto-git.test.ts.
+  // Belt-and-braces first step. The route pins the PR head branch onto the
+  // session (`resolve_pr_head_branch`), and `ensureSessionWorkspace` provisions
+  // the worktree directly on it — so for same-repo PRs the agent already starts
+  // on the PR's head branch and these commands are a no-op. They still matter as
+  // a fallback: fork PRs (head branch not on origin) and deleted-branch cases
+  // fall back to the default `agent-hub/<agent-id>/session-<id>` branch, where
+  // checking out the PR head branch is what keeps commits on the branch GitHub's
+  // PR tracks. Without landing on that branch, the session-end push finds no PR
+  // for the worktree branch and opens a duplicate instead of updating the PR.
+  // See server/worktree.ts → ensureSessionWorkspace (resolvePrHeadBranch) and
+  // push-and-create-pr.ts (`gh pr list --head` existing-PR reuse).
   const prNumber = pr.number;
   if (typeof prNumber === 'number' && Number.isFinite(prNumber) && prNumber > 0) {
     lines.push('');
@@ -312,6 +311,15 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
       setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
+      // Pin the PR's head branch onto the session so `ensureSessionWorkspace`
+      // provisions the worktree directly on it: the agent's commits append to
+      // the existing PR and the session-end push updates that PR instead of
+      // opening a new one — instead of relying on the prompt's `gh pr checkout`.
+      // Only meaningful for worktree-backed sessions; harmless otherwise.
+      const headBranch = typeof pr.head === 'string' ? pr.head.trim() : '';
+      if (wt === 1 && headBranch) {
+        stmts.setSessionResolvePrHeadBranch.run(headBranch, sessionId);
+      }
       // Resolve PR sessions exist to drive a PR to merge-ready: the agent fixes
       // conflicts/CI/review, then the work should run through review + tests and
       // be pushed back to the PR automatically. Start at the "Build and Push"

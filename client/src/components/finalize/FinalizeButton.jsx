@@ -23,6 +23,17 @@ function phasePassed(summary) {
   return summary?.status === 'ready_to_push' || summary?.status === 'pushed';
 }
 
+/**
+ * Confirm-dialog copy for a not-fully-validated push. Resolve-PR sessions push
+ * to an existing pull request (their worktree is pinned to the PR head branch),
+ * so the wording must not promise a brand-new PR.
+ */
+export function pushConfirmMessage(isResolveSession) {
+  return isResolveSession
+    ? 'Review and checks have not both passed. Push to the existing pull request anyway?'
+    : 'Review and checks have not both passed. Push branch and open PR on GitHub anyway?';
+}
+
 async function fetchGithubConnected() {
   try {
     const res = await fetch(`${getApiBase()}/auth/github/status`, {
@@ -47,6 +58,8 @@ export default function FinalizeButton({
   variant = 'default',
   /** True when the project's repo is hosted on Agent Hub (gitHost 'agenthub'). */
   hosted = false,
+  /** True for `[Resolve PR #N]` sessions — push updates the existing PR. */
+  isResolveSession = false,
 }) {
   const { run, steps, phases, status, phase, activeSeconds } = useFinalizeRun({
     sessionId,
@@ -199,9 +212,7 @@ export default function FinalizeButton({
     // Only a fully-validated branch unlocks a confirm-free push. Anything else
     // warns first — the test+reviewer gate has not been satisfied.
     if (!fullyValidated) {
-      const ok = window.confirm(
-        'Review and checks have not both passed. Push branch and open PR on GitHub anyway?',
-      );
+      const ok = window.confirm(pushConfirmMessage(isResolveSession));
       if (!ok) return;
     }
 
@@ -219,7 +230,16 @@ export default function FinalizeButton({
     } finally {
       setPushPending(false);
     }
-  }, [projectId, sessionId, runId, fullyValidated, pushPending, hasCommittableChanges, onError]);
+  }, [
+    projectId,
+    sessionId,
+    runId,
+    fullyValidated,
+    pushPending,
+    hasCommittableChanges,
+    onError,
+    isResolveSession,
+  ]);
 
   // Stop an in-flight phase. The server trips the orchestrator's cancel
   // signal, kills the session's agent turn, and broadcasts the terminal

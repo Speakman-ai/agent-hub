@@ -28,7 +28,7 @@ vi.mock('../../hooks/useFinalizeRun.js', async () => {
   };
 });
 
-import FinalizeButton from './FinalizeButton.jsx';
+import FinalizeButton, { pushConfirmMessage } from './FinalizeButton.jsx';
 import { api } from '../../utils/api.js';
 import { useFinalizeRun } from '../../hooks/useFinalizeRun.js';
 
@@ -583,5 +583,19 @@ describe('FinalizeButton', () => {
     render(<FinalizeButton {...baseProps} pendingChanges={null} />);
     const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
     await waitFor(() => expect(pushBtn).toBeDisabled());
+  });
+});
+
+describe('pushConfirmMessage', () => {
+  it('warns about opening a new PR for a normal session', () => {
+    const msg = pushConfirmMessage(false);
+    expect(msg).toContain('open PR on GitHub');
+    expect(msg).not.toContain('existing pull request');
+  });
+
+  it('warns about pushing to the existing PR for a resolve session', () => {
+    const msg = pushConfirmMessage(true);
+    expect(msg).toContain('existing pull request');
+    expect(msg).not.toContain('open PR on GitHub');
   });
 });

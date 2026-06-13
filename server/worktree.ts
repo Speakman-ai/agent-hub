@@ -566,6 +566,18 @@ async function getDefaultBranch(cwd: string): Promise<string> {
   }
 }
 
+/**
+ * Does `git ls-remote --heads origin <branch>` output advertise an *exact*
+ * `refs/heads/<branch>` ref? `ls-remote <pattern>` tail-matches, so a bare
+ * name like `foo` would also match `refs/heads/bar/foo`; we require the full
+ * ref to avoid provisioning a resolve session on the wrong branch. Pure so the
+ * exact-match guard is unit-testable without git I/O.
+ */
+export function lsRemoteHasExactHead(lsRemoteOutput: string, branch: string): boolean {
+  const suffix = `\trefs/heads/${branch}`;
+  return lsRemoteOutput.split('\n').some((line) => line.endsWith(suffix));
+}
+
 /** Remote branch tip to sync a process/session clone to (kanban `pr_base_branch` or repo default). */
 async function resolveSyncBranch(
   projectCwd: string,
@@ -1770,6 +1782,11 @@ export async function ensureSessionWorkspace(
 
   const shortId = session.id.slice(0, 8);
   const safeName = `session-${shortId}`;
+  // Resolve-PR sessions are pinned to the PR's head branch — provision the
+  // worktree directly on it (see {@link SessionRow.resolve_pr_head_branch}) so
+  // commits append to the existing PR and the session-end push updates it
+  // instead of opening a new one. NULL for every other session.
+  const resolvePrHeadBranch = session.resolve_pr_head_branch?.trim() || null;
 
   // Persisted worktree_path (resume, kanban dispatch, webhook autofix, etc.).
   // Must refresh remotes on every ensure — previously this path returned early
@@ -1900,44 +1917,133 @@ export async function ensureSessionWorkspace(
       );
     }
 
-    const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
-    try {
-      await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
-        cwd: cloneDir,
-        timeoutMs: FETCH_TIMEOUT_MS,
-      });
-      await fetchWithRetry(
-        [
-          ...authArgs,
-          'fetch',
-          'origin',
-          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
-          '--depth',
-          '1',
-        ],
-        {
-          cwd: cloneDir,
-          timeoutMs: FETCH_TIMEOUT_MS,
-        },
-      );
-      await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
-      const tip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
-      console.log(
-        `[Workspace] Fresh session clone synced to origin/${syncBranch} at ${tip.slice(0, 7)} before branching (${branchName})`,
-      );
-    } catch (err: unknown) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
-      const message = redactAuthHeader(redactToken(normalized, userToken));
-      console.error(
-        `[Workspace] Failed to position session clone on origin/${syncBranch}:`,
-        message,
-      );
-      onFailure?.(session.id, message);
-      return projectCwd;
+    // The branch the session worktree ends up on. Resolve-PR sessions try to
+    // position on the PR head branch first (see below); everything else cuts
+    // the default `agent-hub/<agent>/session-<id>` branch off the base.
+    let effectiveBranch = branchName;
+    let positionedOnPrHead = false;
+
+    if (resolvePrHeadBranch) {
+      // Position the worktree on the PR's head branch so the agent commits onto
+      // the branch GitHub's PR is tracking — `git push` then updates the
+      // existing PR (push-and-create-pr.ts finds it via `gh pr list --head`).
+      //
+      // CRITICAL: only a *genuinely missing* head ref may fall back to the
+      // default session branch (the fork-PR / deleted-branch case the prompt's
+      // `gh pr checkout` still covers). A transient/auth/refspec failure must
+      // NOT silently fall back — doing so would strand commits on
+      // `agent-hub/<agent>/session-*` and let finalize open a DUPLICATE PR,
+      // the exact failure this change prevents. So we first probe the remote
+      // with `ls-remote`: a reachable origin that lacks the ref is the safe
+      // fallback; any probe/fetch/checkout *error* routes through `onFailure`.
+      let headRefExists: boolean | null = null;
+      try {
+        const refs = await runGit(
+          [...authArgs, 'ls-remote', '--heads', 'origin', resolvePrHeadBranch],
+          { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+        );
+        headRefExists = lsRemoteHasExactHead(refs, resolvePrHeadBranch);
+      } catch (err: unknown) {
+        const raw = err instanceof Error ? err.message : String(err);
+        const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+        const message = redactAuthHeader(redactToken(normalized, userToken));
+        console.error(
+          `[Workspace] Failed to probe PR head branch '${resolvePrHeadBranch}' on origin (${cloneDir}); not falling back to a new branch:`,
+          message,
+        );
+        onFailure?.(session.id, message);
+        return projectCwd;
+      }
+
+      if (headRefExists) {
+        try {
+          await fetchWithRetry(
+            [
+              ...authArgs,
+              'fetch',
+              'origin',
+              `${resolvePrHeadBranch}:refs/remotes/origin/${resolvePrHeadBranch}`,
+              '--depth',
+              '1',
+            ],
+            { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+          );
+          await runGit(['checkout', '-B', resolvePrHeadBranch, `origin/${resolvePrHeadBranch}`], {
+            cwd: cloneDir,
+          });
+          const tip = await runGit(['rev-parse', `origin/${resolvePrHeadBranch}`], {
+            cwd: cloneDir,
+          });
+          effectiveBranch = resolvePrHeadBranch;
+          positionedOnPrHead = true;
+          console.log(
+            `[Workspace] Resolve session positioned on PR head branch origin/${resolvePrHeadBranch} at ${tip.slice(0, 7)} (${cloneDir})`,
+          );
+        } catch (err: unknown) {
+          // The ref exists but fetch/checkout failed (transient/auth/refspec).
+          // This is an infra error, NOT a fork/deleted fallback — surface it so
+          // finalize never opens a duplicate PR off the default session branch.
+          const raw = err instanceof Error ? err.message : String(err);
+          const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+          const message = redactAuthHeader(redactToken(normalized, userToken));
+          console.error(
+            `[Workspace] Failed to position resolve session on existing PR head branch '${resolvePrHeadBranch}' (${cloneDir}); not falling back to a new branch:`,
+            message,
+          );
+          onFailure?.(session.id, message);
+          return projectCwd;
+        }
+      } else {
+        // Reachable origin without the ref: fork PR (head lives on the fork) or
+        // a deleted head branch. Fall back to the default session branch; the
+        // resolve prompt's `gh pr checkout` step lands fork-PR commits on the PR.
+        console.warn(
+          `[Workspace] PR head branch '${resolvePrHeadBranch}' not found on origin (fork PR / deleted branch) for ${cloneDir}; falling back to ${branchName}`,
+        );
+      }
     }
 
-    await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
+    if (!positionedOnPrHead) {
+      const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
+      try {
+        await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
+          cwd: cloneDir,
+          timeoutMs: FETCH_TIMEOUT_MS,
+        });
+        await fetchWithRetry(
+          [
+            ...authArgs,
+            'fetch',
+            'origin',
+            `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+            '--depth',
+            '1',
+          ],
+          {
+            cwd: cloneDir,
+            timeoutMs: FETCH_TIMEOUT_MS,
+          },
+        );
+        await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
+        const tip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
+        console.log(
+          `[Workspace] Fresh session clone synced to origin/${syncBranch} at ${tip.slice(0, 7)} before branching (${branchName})`,
+        );
+      } catch (err: unknown) {
+        const raw = err instanceof Error ? err.message : String(err);
+        const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+        const message = redactAuthHeader(redactToken(normalized, userToken));
+        console.error(
+          `[Workspace] Failed to position session clone on origin/${syncBranch}:`,
+          message,
+        );
+        onFailure?.(session.id, message);
+        return projectCwd;
+      }
+
+      await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
+    }
+
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
 
@@ -1950,9 +2056,9 @@ export async function ensureSessionWorkspace(
       onFailure?.(session.id, err.message);
       return projectCwd;
     }
-    persistFn(cloneDir, branchName, session.id);
+    persistFn(cloneDir, effectiveBranch, session.id);
     console.log(
-      `[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})${userToken ? ' (user token)' : ''}`,
+      `[Workspace] Created session clone: ${cloneDir} (branch: ${effectiveBranch})${userToken ? ' (user token)' : ''}`,
     );
     return cloneDir;
   } catch (err: unknown) {
@@ -2106,6 +2212,7 @@ export function cleanupStaleWorkspaces(
  */
 export const __test = {
   gitEnv,
+  lsRemoteHasExactHead,
   SHORT_GIT_TIMEOUT_MS,
   FETCH_TIMEOUT_MS,
   CLONE_TIMEOUT_MS,

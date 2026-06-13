@@ -18,6 +18,34 @@ const {
   __test,
 } = await import('./worktree.js');
 
+describe('lsRemoteHasExactHead', () => {
+  const sha = '1111111111111111111111111111111111111111';
+
+  it('matches the exact head ref', () => {
+    expect(
+      __test.lsRemoteHasExactHead(`${sha}\trefs/heads/feature/pr-head`, 'feature/pr-head'),
+    ).toBe(true);
+  });
+
+  it('returns false for empty output (ref absent — fork PR / deleted branch)', () => {
+    expect(__test.lsRemoteHasExactHead('', 'feature/pr-head')).toBe(false);
+  });
+
+  it('does not tail-match a different branch that ends with the name', () => {
+    // `ls-remote <pattern>` tail-matches; a bare name must not match a deeper ref.
+    expect(
+      __test.lsRemoteHasExactHead(`${sha}\trefs/heads/other/feature/pr-head`, 'feature/pr-head'),
+    ).toBe(false);
+  });
+
+  it('matches when the exact ref is one of several advertised lines', () => {
+    const out = [`${sha}\trefs/heads/feature/pr-head-2`, `${sha}\trefs/heads/feature/pr-head`].join(
+      '\n',
+    );
+    expect(__test.lsRemoteHasExactHead(out, 'feature/pr-head')).toBe(true);
+  });
+});
+
 describe('getOrCreateProcessWorktree — cwd validation', () => {
   it('falls back to defaultCwd when cwd does not exist', async () => {
     const result = await getOrCreateProcessWorktree('/nonexistent/fake/path', 'test-process');
@@ -396,6 +424,48 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(existsSync(path.join(clonePath, 'from_main.txt'))).toBe(false);
     const branch = git(clonePath, 'rev-parse --abbrev-ref HEAD');
     expect(branch.startsWith('agent-hub/')).toBe(true);
+  });
+
+  it('checks out the PR head branch for a resolve session (commits land on the existing PR)', async () => {
+    const persist = vi.fn();
+
+    // Open "PR" head branch on origin, ahead of main.
+    git(sourceRepo, 'checkout -b feature/pr-head');
+    writeFileSync(path.join(sourceRepo, 'pr_change.txt'), 'pr work\n');
+    git(sourceRepo, 'add pr_change.txt');
+    git(sourceRepo, 'commit -m "pr commit"');
+    git(sourceRepo, 'push -u origin feature/pr-head');
+    const prHeadTip = git(sourceRepo, 'rev-parse HEAD');
+    git(sourceRepo, 'checkout main');
+
+    const session = { ...makeSession(null), resolve_pr_head_branch: 'feature/pr-head' };
+    const clonePath = await ensureSessionWorkspace(session, sourceRepo, 'test-agent', persist);
+    createdWorkspace = clonePath;
+
+    // Worktree is on the PR head branch (named exactly), at the PR tip.
+    const branch = git(clonePath, 'rev-parse --abbrev-ref HEAD');
+    expect(branch).toBe('feature/pr-head');
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(prHeadTip);
+    expect(existsSync(path.join(clonePath, 'pr_change.txt'))).toBe(true);
+
+    // Persisted worktree_branch is the PR head branch (so Finalize/push targets it).
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][1]).toBe('feature/pr-head');
+  });
+
+  it('falls back to the default session branch when the PR head branch is missing on origin', async () => {
+    const persist = vi.fn();
+
+    // resolve_pr_head_branch references a branch that does not exist on origin
+    // (the fork-PR / deleted-branch case).
+    const session = { ...makeSession(null), resolve_pr_head_branch: 'feature/does-not-exist' };
+    const clonePath = await ensureSessionWorkspace(session, sourceRepo, 'test-agent', persist);
+    createdWorkspace = clonePath;
+
+    const branch = git(clonePath, 'rev-parse --abbrev-ref HEAD');
+    expect(branch.startsWith('agent-hub/test-agent/session-')).toBe(true);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][1]).toMatch(/^agent-hub\/test-agent\/session-/);
   });
 
   it('does not reset the checked-out feature branch on reuse', async () => {

@@ -1158,6 +1158,16 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER DEFAULT NULL');
   }
 
+  // Resolve-PR sessions store the PR's head branch here so the worktree is
+  // provisioned directly on that branch (commits append to the existing PR and
+  // the session-end push updates it instead of opening a new PR). NULL for all
+  // other sessions, which keep the default `agent-hub/<agent>/session-<id>` branch.
+  try {
+    db.prepare('SELECT resolve_pr_head_branch FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN resolve_pr_head_branch TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT changes_ready FROM sessions LIMIT 1').get();
   } catch {
@@ -2445,6 +2455,11 @@ function initDb(dataDir: string): void {
     ),
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Resolve-PR sessions: record the PR head branch so `ensureSessionWorkspace`
+    // provisions the worktree directly on it (pushes update the existing PR).
+    setSessionResolvePrHeadBranch: db.prepare(
+      "UPDATE sessions SET resolve_pr_head_branch = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     getSessionIdsByWorktreeBranch: db.prepare('SELECT id FROM sessions WHERE worktree_branch = ?'),
     updateSessionGitWorktreeDetected: db.prepare(

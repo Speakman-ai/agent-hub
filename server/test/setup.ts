@@ -43,6 +43,17 @@ process.env.AGENT_HUB_DISABLE_PUSH_CI = '1';
 // the chat handler (CLI spawn) — same hard rule as above. Unit tests for
 // the module pass `force: true` with mocked deps instead.
 process.env.AGENT_HUB_DISABLE_INITIAL_BUILD = '1';
+// Neutralize the session-branch git guard for tests. The spawn-guard `git`
+// wrapper (server/finalize/spawn-guards/git) blocks `git checkout -b` /
+// `git switch -c` / `git branch <name>` when AGENT_HUB_PROTECT_SESSION_BRANCH=1,
+// which is set inside the Finalize DinD CI runner. Many tests build throwaway
+// git repos and create branches in them (worktree.test.ts, native-pr/*,
+// routes/pulls-native.test.ts, …) — those branch ops have nothing to do with
+// the session-worktree invariant the guard protects, but would fail in the
+// runner. Set the documented operator override so test-spawned branch ops pass
+// through to real git regardless of the runner's guard env. This is the
+// sanctioned override, not a guard defeat — no assertions are weakened.
+process.env.AGENT_HUB_ALLOW_BRANCH_OPS = '1';
 // Same rule for the external-push auto-review dispatch (Reviewer agent
 // session spawn). Unit tests pass `force: true` with a mocked handleChat.
 process.env.AGENT_HUB_DISABLE_AUTO_REVIEW = '1';

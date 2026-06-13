@@ -206,6 +206,7 @@ function buildDeps(overrides: Partial<RouteDeps> = {}): RouteDeps {
       createSession: { run: vi.fn() },
       insertBackgroundTask: { run: vi.fn() },
       updateSessionFinalizeAutomation: { run: vi.fn() },
+      setSessionResolvePrHeadBranch: { run: vi.fn() },
       getSession: { get: vi.fn().mockReturnValue({ id: 'fake-session' }) },
     },
     broadcast: vi.fn() as unknown,
@@ -366,6 +367,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     const createSessionRun = vi.fn();
     const insertBackgroundTaskRun = vi.fn();
     const updateFinalizeRun = vi.fn();
+    const setResolvePrHeadBranchRun = vi.fn();
     const deps = buildDeps({
       findProject: vi.fn().mockReturnValue({ id: 'p', githubRepo: 'o/r' }),
       findAgent: vi.fn().mockReturnValue({
@@ -377,6 +379,7 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
         createSession: { run: createSessionRun },
         insertBackgroundTask: { run: insertBackgroundTaskRun },
         updateSessionFinalizeAutomation: { run: updateFinalizeRun },
+        setSessionResolvePrHeadBranch: { run: setResolvePrHeadBranchRun },
         getSession: {
           get: vi
             .fn()
@@ -395,6 +398,11 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(createSessionRun).toHaveBeenCalledTimes(1);
     const sessionArgs = createSessionRun.mock.calls[0];
     expect(sessionArgs[2]).toMatch(/^\[Resolve PR #42\]/);
+
+    // The PR head branch is pinned onto the session so the worktree is
+    // provisioned on it and the push updates the existing PR (#42), not a new one.
+    expect(setResolvePrHeadBranchRun).toHaveBeenCalledTimes(1);
+    expect(setResolvePrHeadBranchRun.mock.calls[0][0]).toBe('feature/x');
 
     // Resolve PR sessions start at the "Build and Push" finalize level so the
     // session-end pipeline reviews, tests, and pushes back to the PR.
