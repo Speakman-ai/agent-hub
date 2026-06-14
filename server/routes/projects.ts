@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { execSync, execFileSync, spawn, ChildProcess, exec } from 'child_process';
+import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
@@ -47,6 +47,7 @@ import { deleteProjectScopedRows } from '../project-owner-cascade.js';
 import { archiveHostedRepo, refreshBranchProtection } from '../git-host/repo-store.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 import type {
   RouteDeps,
   Agent,
@@ -1523,26 +1524,30 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
   router.get('/api/setup/status', async (req: Request, res: Response) => {
     const projects = getProjects();
-    let claudeAvailable = false;
 
-    try {
-      execSync(`"${getClaudeBin()}" --version`, { timeout: 5000, stdio: 'pipe' });
-      claudeAvailable = true;
-    } catch {}
-
+    // Probe engine availability with ASYNC, PARALLEL `<bin> --version` calls.
+    // These were previously three serial `execSync` calls (5s timeout each):
+    // a synchronous `execSync` blocks the Node event loop, so when a CLI hangs
+    // on `--version` this endpoint — hit on every app load — could freeze the
+    // whole server for up to ~15s, failing health checks and stalling all
+    // other requests. `execFile` (no shell) runs off-thread; `Promise.all`
+    // parallelises so worst case is one 5s timeout, not three, and the loop
+    // stays responsive throughout.
     const cursorBinResolved = getCursorBin?.() ?? config.cursorBin;
-    let cursorAvailable = false;
-    try {
-      execSync(`"${cursorBinResolved}" --version`, { timeout: 5000, stdio: 'pipe' });
-      cursorAvailable = true;
-    } catch {}
-
     const codexBinResolved = getCodexBin?.() ?? config.codexBin;
-    let codexAvailable = false;
-    try {
-      execSync(`"${codexBinResolved}" --version`, { timeout: 5000, stdio: 'pipe' });
-      codexAvailable = true;
-    } catch {}
+    const probeEngine = async (bin: string): Promise<boolean> => {
+      try {
+        await execFileAsync(bin, ['--version'], { timeout: 5000 });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const [claudeAvailable, cursorAvailable, codexAvailable] = await Promise.all([
+      probeEngine(getClaudeBin()),
+      probeEngine(cursorBinResolved),
+      probeEngine(codexBinResolved),
+    ]);
 
     // `hasAnyAiCredentials` mirrors the auth-resolution that `buildSpawnEnv`
     // applies — strictly per-account: the requesting user's own Claude /

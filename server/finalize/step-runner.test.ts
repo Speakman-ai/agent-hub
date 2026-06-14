@@ -16,6 +16,7 @@ import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
+  STEP_MAX_PERSISTED_LINES,
   __test,
   defaultSpawnStep,
   runStepPhase,
@@ -1043,3 +1044,60 @@ function microtaskTick(): Promise<void> {
 function stripPrefixForTail(s: string): string {
   return s.replace(/^\[stdout\] |^\[stderr\] /, '');
 }
+
+// ─── Output flood cap (regression) ──────────────────────────────────
+//
+// A single verbose CI step (Cypress E2E, tsc/webpack ANSI spam, DB migration
+// chatter) once wrote one `messages` row per output line. A real run produced
+// >1M rows, bloating the SQLite DB to multi-GB, exploding the WAL, and freezing
+// the server's event loop via checkpoint I/O storms. STEP_MAX_PERSISTED_LINES
+// bounds the per-step rows; every line is still counted + fed to the tail/
+// excerpt for triage.
+describe('runStepPhase — persisted-output cap', () => {
+  it('caps persisted system messages per step but still counts every line', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'E2E', run: 'npm run e2e' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    const N = STEP_MAX_PERSISTED_LINES + 500;
+    let buf = '';
+    for (let i = 0; i < N; i++) buf += `noise line ${i}\n`;
+    fakes[0].stdout.push(buf);
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    // Every line is still processed/counted (full triage context preserved)…
+    expect(result.stepResults[0].stdoutLines).toBe(N);
+    // …but persisted rows are bounded — NOT one per line.
+    const persisted = stmts.addMessage.run.mock.calls.length;
+    expect(persisted).toBeLessThanOrEqual(STEP_MAX_PERSISTED_LINES + 2);
+    expect(persisted).toBeGreaterThanOrEqual(STEP_MAX_PERSISTED_LINES);
+    // …and a one-time truncation notice is persisted.
+    const bodies = stmts.addMessage.run.mock.calls.map((c) => c[3] as string);
+    expect(bodies.some((b) => typeof b === 'string' && b.includes('[output truncated]'))).toBe(
+      true,
+    );
+  });
+});

@@ -142,6 +142,24 @@ export const STEP_FAILURE_EXCERPT_CONTEXT_AFTER = 30;
 export const STEP_FAILURE_EXCERPT_MAX_LINES = 160;
 
 /**
+ * Hard cap on how many output lines a single step persists as `system`
+ * chat messages (via {@link announceLine}). Verbose CI steps — Cypress E2E,
+ * webpack/tsc with ANSI progress spam, DB migration chatter — can emit
+ * hundreds of thousands to millions of lines. Persisting one `messages` row
+ * per line previously bloated the SQLite DB into the multi-GB range (a single
+ * E2E run produced >1M rows), which in turn blew the WAL up and triggered
+ * checkpoint I/O storms that froze the server's event loop. The full output
+ * is still captured in-memory for the result (`tail` + failure `excerpt`,
+ * both already bounded), so capping the *persisted* lines costs nothing for
+ * triage while making the row count per step bounded. Override with
+ * `FINALIZE_STEP_MAX_PERSISTED_LINES` if needed.
+ */
+export const STEP_MAX_PERSISTED_LINES = (() => {
+  const n = Number.parseInt(process.env.FINALIZE_STEP_MAX_PERSISTED_LINES ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+})();
+
+/**
  * Lines that mark a real test/build failure. Deliberately case-sensitive on
  * the capitalised forms (`Error`, `FAIL`, `FATAL`, `ERROR`) so a benign
  * lower-case "error" inside chatty info logs does not trip it, while still
@@ -703,10 +721,36 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     };
     let stdoutLines = 0;
     let stderrLines = 0;
+    let persistedLines = 0;
+    let outputTruncationNoticed = false;
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let settled = false;
     let timedOut = false;
+
+    // Cap per-step output persisted as chat messages. `record()` still feeds
+    // the bounded tail/excerpt (full triage context preserved); this only
+    // stops the unbounded per-line DB writes + broadcasts that previously let
+    // a single verbose CI step write >1M `messages` rows. See
+    // STEP_MAX_PERSISTED_LINES.
+    const persistLine = (stream: 'stdout' | 'stderr', line: string): void => {
+      if (persistedLines < STEP_MAX_PERSISTED_LINES) {
+        persistedLines += 1;
+        announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
+      } else if (!outputTruncationNoticed) {
+        outputTruncationNoticed = true;
+        announceLine(
+          deps,
+          sessionId,
+          runId,
+          stepIndex,
+          step,
+          'stderr',
+          `[output truncated] step exceeded ${STEP_MAX_PERSISTED_LINES} persisted lines; ` +
+            `further output is captured in the failure excerpt and run logs but not stored as chat messages`,
+        );
+      }
+    };
 
     let child: SpawnedStep;
     try {
@@ -776,7 +820,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
-        announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
+        persistLine(stream, line);
       }
       // Flush the partial buffer if it has grown too large — protects
       // against a step that streams forever without a newline.
@@ -785,7 +829,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
-        announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
+        persistLine(stream, line);
         if (stream === 'stdout') stdoutBuffer = '';
         else stderrBuffer = '';
       } else if (stream === 'stdout') {
@@ -803,14 +847,14 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         const line = stripCarriageReturn(stdoutBuffer);
         record(line);
         stdoutLines += 1;
-        announceLine(deps, sessionId, runId, stepIndex, step, 'stdout', line);
+        persistLine('stdout', line);
         stdoutBuffer = '';
       }
       if (stderrBuffer.length > 0) {
         const line = stripCarriageReturn(stderrBuffer);
         record(line);
         stderrLines += 1;
-        announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
+        persistLine('stderr', line);
         stderrBuffer = '';
       }
     };
