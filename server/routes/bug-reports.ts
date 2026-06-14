@@ -154,6 +154,22 @@ interface BugReportInput {
   currentProjectId?: string;
   currentAgentId?: string;
   screenshotUrl?: string | null;
+  replayRef?: string | null;
+}
+
+/**
+ * Accept only a locally-resolvable session-replay ref produced by the
+ * `/api/replays` ingest endpoint (`/uploads/replay-<id>.json`). Anything else
+ * (remote URLs, traversal, other upload kinds) is dropped — the value flows
+ * untrusted into the intake prompt and, downstream, into `replay_ref`, so we
+ * keep it to the exact shape `resolveReplayContext` is willing to read.
+ */
+export function sanitizeReplayRef(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  const ref = String(raw).trim();
+  if (!/^\/uploads\/replay-[A-Za-z0-9._-]+\.json$/.test(ref)) return null;
+  if (ref.includes('..')) return null;
+  return ref;
 }
 
 export function buildBugReportPrompt(input: BugReportInput): string {
@@ -177,6 +193,13 @@ export function buildBugReportPrompt(input: BugReportInput): string {
     lines.push('');
     lines.push('### Screenshot');
     lines.push(`![bug report screenshot](${input.screenshotUrl})`);
+  }
+  if (input.replayRef) {
+    lines.push('');
+    lines.push('### Session Replay');
+    lines.push(
+      `A session replay (trailing window of rrweb DOM events) was captured for this report: \`${input.replayRef}\`. Include this ref in the card description (and as the support ticket \`replayRef\` if one is created) so investigation can replay the steps leading up to the issue.`,
+    );
   }
   lines.push('');
   lines.push(
@@ -273,6 +296,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const appVersion = (fields.appVersion || '').toString();
         const currentProjectId = (fields.currentProjectId || '').toString();
         const currentAgentId = (fields.currentAgentId || '').toString();
+        const replayRef = sanitizeReplayRef(fields.replayRef);
 
         // ── Save screenshot (optional) ─────────────────────
         let screenshotUrl: string | null = null;
@@ -317,6 +341,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           currentProjectId,
           currentAgentId,
           screenshotUrl,
+          replayRef,
         });
 
         // ── Spawn session ──────────────────────────────────

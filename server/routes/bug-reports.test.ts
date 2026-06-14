@@ -5,7 +5,11 @@ import supertest from 'supertest';
 import os from 'os';
 import path from 'path';
 import { mkdirSync, rmSync, existsSync, readdirSync } from 'fs';
-import createBugReportRoutes, { _resetRateLimit, buildBugReportPrompt } from './bug-reports.js';
+import createBugReportRoutes, {
+  _resetRateLimit,
+  buildBugReportPrompt,
+  sanitizeReplayRef,
+} from './bug-reports.js';
 import type { RouteDeps, ChatMessage } from '../types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -115,6 +119,23 @@ describe('buildBugReportPrompt', () => {
     expect(out).toContain('End the session after the card is created');
   });
 
+  it('includes a Session Replay section when a replayRef is given', () => {
+    const out = buildBugReportPrompt({
+      title: 'x',
+      description: 'y',
+      severity: 'medium',
+      replayRef: '/uploads/replay-abc123.json',
+    });
+    expect(out).toContain('### Session Replay');
+    expect(out).toContain('/uploads/replay-abc123.json');
+    expect(out).toMatch(/replayRef/);
+  });
+
+  it('omits the Session Replay section when no replayRef is given', () => {
+    const out = buildBugReportPrompt({ title: 'x', description: 'y', severity: 'medium' });
+    expect(out).not.toContain('### Session Replay');
+  });
+
   it('instructs the intake agent NOT to pass session_id on the created card', () => {
     // Regression guard for the "Session active / Open Session" stuck state:
     // if the ephemeral intake session stamps its id on the bug-report card,
@@ -130,6 +151,33 @@ describe('buildBugReportPrompt', () => {
     expect(out).toMatch(/do not pass .*session_?id/i);
     // And the snake_case form the JSON API accepts
     expect(out).toContain('session_id');
+  });
+});
+
+describe('sanitizeReplayRef', () => {
+  it('accepts a valid replay upload ref', () => {
+    expect(sanitizeReplayRef('/uploads/replay-abc-123.json')).toBe('/uploads/replay-abc-123.json');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(sanitizeReplayRef('  /uploads/replay-x.json ')).toBe('/uploads/replay-x.json');
+  });
+
+  it('rejects refs that are not replay uploads', () => {
+    expect(sanitizeReplayRef('/uploads/foo.png')).toBeNull();
+    expect(sanitizeReplayRef('/uploads/other.json')).toBeNull();
+    expect(sanitizeReplayRef('https://evil.example/replay-x.json')).toBeNull();
+    expect(sanitizeReplayRef('/uploads/replay-x.txt')).toBeNull();
+  });
+
+  it('rejects traversal attempts', () => {
+    expect(sanitizeReplayRef('/uploads/replay-../../etc/passwd.json')).toBeNull();
+  });
+
+  it('returns null for empty / nullish input', () => {
+    expect(sanitizeReplayRef(undefined)).toBeNull();
+    expect(sanitizeReplayRef(null)).toBeNull();
+    expect(sanitizeReplayRef('')).toBeNull();
   });
 });
 
@@ -190,6 +238,34 @@ describe('POST /api/bug-reports', () => {
     // Prompt that is actually sent must tell the intake agent not to stamp
     // its ephemeral session id on the resulting card.
     expect(chatMsg.content).toMatch(/do not pass .*session_?id/i);
+  });
+
+  it('threads a valid replayRef into the intake prompt', async () => {
+    await supertest(ctx.app)
+      .post('/api/bug-reports')
+      .field('title', 'Replay attached')
+      .field('severity', 'medium')
+      .field('replayRef', '/uploads/replay-deadbeef.json')
+      .expect(202);
+
+    await new Promise((r) => setImmediate(r));
+    const [, chatMsg] = ctx.handleChat.mock.calls[0]!;
+    expect(chatMsg.content).toContain('### Session Replay');
+    expect(chatMsg.content).toContain('/uploads/replay-deadbeef.json');
+  });
+
+  it('drops a non-replay (malicious) replayRef rather than echoing it', async () => {
+    await supertest(ctx.app)
+      .post('/api/bug-reports')
+      .field('title', 'Bad ref')
+      .field('severity', 'medium')
+      .field('replayRef', 'https://evil.example/x.json')
+      .expect(202);
+
+    await new Promise((r) => setImmediate(r));
+    const [, chatMsg] = ctx.handleChat.mock.calls[0]!;
+    expect(chatMsg.content).not.toContain('### Session Replay');
+    expect(chatMsg.content).not.toContain('evil.example');
   });
 
   it('returns 400 when title is missing', async () => {

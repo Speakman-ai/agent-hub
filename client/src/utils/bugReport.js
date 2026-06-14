@@ -87,6 +87,7 @@ export async function submitBugReport({
   // eslint-disable-next-line no-unused-vars -- accepted-and-ignored; see JSDoc above.
   projectId,
   agentId,
+  replayRef,
 }) {
   if (!title || !String(title).trim()) {
     throw new Error('Title is required');
@@ -111,6 +112,7 @@ export async function submitBugReport({
 
   form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
   if (agentId) form.append('currentAgentId', String(agentId));
+  if (replayRef) form.append('replayRef', String(replayRef));
 
   const res = await fetch(BUG_REPORT_ENDPOINT, {
     method: 'POST',

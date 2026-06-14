@@ -34,6 +34,10 @@ export const BugReportFormFieldsComponent = registerComponent(
       clientType: z.enum(VALID_CLIENT_TYPES).optional(),
       currentProjectId: z.string().optional(),
       currentAgentId: z.string().optional(),
+      replayRef: z.string().optional().openapi({
+        description:
+          'Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Surfaced to the intake agent for investigation.',
+      }),
       screenshot: z.string().optional().openapi({
         description:
           'Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.',

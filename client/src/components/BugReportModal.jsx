@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bug, Camera, Loader2, X } from 'lucide-react';
 import { captureScreenshot, submitBugReport } from '../utils/bugReport.js';
+import { flushSessionReplayRef } from '../utils/sessionReplay.js';
 
 const SEVERITIES = [
   { value: 'low', label: 'Low' },
@@ -78,6 +79,15 @@ export default function BugReportModal({
     setSubmitting(true);
     setError(null);
     try {
+      // Flush the trailing replay window (if recording is active) and attach
+      // the ref so the intake agent can investigate the session. Best-effort —
+      // never let a replay failure block the report.
+      let replayRef = null;
+      try {
+        replayRef = await flushSessionReplayRef({ trigger: 'bug-report' });
+      } catch {
+        replayRef = null;
+      }
       await submitBugReport({
         title,
         description,
@@ -85,6 +95,7 @@ export default function BugReportModal({
         screenshotBlob,
         projectId,
         agentId,
+        replayRef,
       });
       if (typeof onToast === 'function') {
         onToast(

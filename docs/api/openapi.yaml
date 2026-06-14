@@ -1976,6 +1976,9 @@ components:
           type: string
         currentAgentId:
           type: string
+        replayRef:
+          type: string
+          description: Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Surfaced to the intake agent for investigation.
         screenshot:
           type: string
           format: binary
@@ -4846,6 +4849,43 @@ components:
         - selected
         - releases
       description: Release history for the Agent Hub repo.
+    ReplayIngestErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for replay ingest.
+    ReplayIngestRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: number
+                description: rrweb EventType.
+              timestamp:
+                type: number
+                description: Event timestamp (ms epoch).
+              data:
+                nullable: true
+            required:
+              - type
+              - timestamp
+          minItems: 1
+          description: Trailing rolling-buffer window of rrweb events.
+        meta:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: Optional context (trigger, url, ...).
+      required:
+        - events
+      description: A flushed session-replay buffer.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -16183,6 +16223,59 @@ paths:
                     type: string
                 required:
                   - error
+  /api/replays:
+    options:
+      tags:
+        - Bug Reports
+      summary: CORS preflight (returns 204)
+      responses:
+        "204":
+          description: CORS preflight OK.
+    post:
+      tags:
+        - Bug Reports
+      summary: Public session-replay ingest (JSON)
+      description: Unauthenticated, rate-limited (30 / hour per IP). Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayIngestRequest"
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayId:
+                    type: string
+                  replayRef:
+                    type: string
+                    description: Local `/uploads/replay-<id>.json` ref.
+                required:
+                  - replayId
+                  - replayRef
+                description: The persisted replay id and its uploads ref.
+        "400":
+          description: Validation failed (empty events, bad event shape, non-object meta).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "429":
+          description: Per-IP rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "500":
+          description: Handler threw while persisting the replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
   /api/projects/{projectId}/support-requests:
     options:
       tags:
