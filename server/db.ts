@@ -263,6 +263,35 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_artifacts_session
       ON artifacts(session_id, created_at DESC);
 
+    -- session_replays: metadata index for record-on-error rrweb session
+    -- replays. The rrweb event array is gzipped and stored as a blob via the
+    -- artifact store (S3 or a local dir; see server/artifacts/artifact-store.ts
+    -- plus server/replays/replay-store.ts). This table is the durable index the
+    -- paginated read API and support-ticket investigation resolve from. size is
+    -- the COMPRESSED blob size (roughly 250-400 KB/session); uncompressed_size
+    -- is the raw JSON length. support_ticket_id / card_id link a replay to the
+    -- triage surface that referenced it.
+    CREATE TABLE IF NOT EXISTS session_replays (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      size INTEGER NOT NULL DEFAULT 0,
+      uncompressed_size INTEGER NOT NULL DEFAULT 0,
+      storage_kind TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      storage_bucket TEXT,
+      storage_region TEXT,
+      support_ticket_id TEXT,
+      card_id TEXT,
+      meta TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_replays_project
+      ON session_replays(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_session_replays_ticket
+      ON session_replays(support_ticket_id);
+
     -- Delegations: tracks sub-agent tasks spawned by a lead agent
     CREATE TABLE IF NOT EXISTS delegations (
       id TEXT PRIMARY KEY,
@@ -2371,6 +2400,40 @@ function initDb(dataDir: string): void {
     countArtifactsBySession: db.prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?'),
     getArtifact: db.prepare('SELECT * FROM artifacts WHERE id = ?'),
     deleteArtifact: db.prepare('DELETE FROM artifacts WHERE id = ?'),
+    // Session replays (record-on-error rrweb captures; blob via artifact store)
+    insertSessionReplay: db.prepare(
+      `INSERT INTO session_replays
+         (id, project_id, duration_ms, event_count, size, uncompressed_size,
+          storage_kind, storage_key, storage_bucket, storage_region,
+          support_ticket_id, card_id, meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getSessionReplay: db.prepare('SELECT * FROM session_replays WHERE id = ?'),
+    getSessionReplaysByProject: db.prepare(
+      'SELECT * FROM session_replays WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+    ),
+    // Attribute a replay to a project / ticket / card. Two guards together:
+    //   1. The WHERE clause only matches a row that is unattributed
+    //      (`project_id IS NULL`) OR already owned by the caller's project
+    //      (`project_id = ?`). A caller from a DIFFERENT project is a complete
+    //      no-op — they cannot touch ANY field (project, ticket, or card), so a
+    //      leaked `/uploads/replay-<id>.json` ref can't be used to poison or
+    //      steal another project's replay, and can't pre-stamp card_id to block
+    //      the rightful convert.
+    //   2. COALESCE(col, ?) fills only still-NULL fields — first-write-wins
+    //      within the owning project, so re-linking is idempotent and a later
+    //      convert-to-card fills the NULL card_id without disturbing the rest.
+    // The bound `projectId` appears twice: once for the COALESCE fill, once for
+    // the WHERE ownership check.
+    linkSessionReplay: db.prepare(
+      `UPDATE session_replays
+          SET project_id        = COALESCE(project_id, ?),
+              support_ticket_id = COALESCE(support_ticket_id, ?),
+              card_id           = COALESCE(card_id, ?)
+        WHERE id = ?
+          AND (project_id IS NULL OR project_id = ?)`,
+    ),
+    deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
     // Sessions
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

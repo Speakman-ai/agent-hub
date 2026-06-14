@@ -49,6 +49,17 @@ export function buildArtifactKey(sessionId: string, artifactId: string): string 
   return `${safe(sessionId)}/${safe(artifactId)}`;
 }
 
+/**
+ * Build the storage key for a session-replay blob. The id is server-minted
+ * (uuid), so the key can never traverse outside the artifacts root; we still
+ * sanitise defensively. Replays live under a `replays/` prefix to keep them
+ * visually separate from per-session artifacts within the same backend.
+ */
+export function buildReplayKey(replayId: string): string {
+  const safe = replayId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return `replays/${safe}.json.gz`;
+}
+
 /** Local-filesystem store rooted at `<dataDir>/artifacts`. */
 export class LocalArtifactStore implements ArtifactStore {
   readonly kind = 'local' as const;

@@ -161,6 +161,42 @@ export interface ArtifactRow {
   created_at: string;
 }
 
+/**
+ * Metadata row for a record-on-error session replay. The rrweb event array
+ * itself is gzipped and stored as a blob via the artifact store (see
+ * server/replays/replay-store.ts); this row is the index the paginated read API
+ * resolves from. `size` is the COMPRESSED blob size in bytes;
+ * `uncompressed_size` is the raw JSON length.
+ */
+export interface SessionReplayRow {
+  id: string;
+  /** Project the replay belongs to, when known (NULL for anonymous ingests). */
+  project_id: string | null;
+  created_at: string;
+  /** Span between the first and last rrweb event timestamp, in ms (>= 0). */
+  duration_ms: number;
+  /** Number of rrweb events in the capture. */
+  event_count: number;
+  /** Compressed (gzip) blob size in bytes. */
+  size: number;
+  /** Raw JSON length before gzip, in bytes. */
+  uncompressed_size: number;
+  /** Storage backend the gzipped blob lives in: `s3` or `local`. */
+  storage_kind: string;
+  /** Opaque key within the storage backend. */
+  storage_key: string;
+  /** S3 bucket (NULL for local rows). Mirrors `artifacts.storage_bucket`. */
+  storage_bucket: string | null;
+  /** S3 region for `storage_bucket` (NULL = resolve from ambient/config). */
+  storage_region: string | null;
+  /** Support ticket that referenced this replay, when linked. */
+  support_ticket_id: string | null;
+  /** Kanban card that referenced this replay, when linked. */
+  card_id: string | null;
+  /** JSON-encoded ingest context (trigger, url, …); NULL when absent. */
+  meta: string | null;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1193,6 +1229,12 @@ export interface Stmts {
   countArtifactsBySession: Stmt;
   getArtifact: Stmt;
   deleteArtifact: Stmt;
+  // Session replays (record-on-error rrweb captures)
+  insertSessionReplay: Stmt;
+  getSessionReplay: Stmt;
+  getSessionReplaysByProject: Stmt;
+  linkSessionReplay: Stmt;
+  deleteSessionReplay: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

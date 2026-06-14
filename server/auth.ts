@@ -30,6 +30,10 @@ import {
 const PUBLIC_PATHS: readonly string[] = [
   '/api/health',
   '/api/bug-reports',
+  // Public session-replay ingest (same posture as bug-reports: clients may run
+  // on any origin, gated by a per-IP rate limiter). Exact-match only, so the
+  // authenticated read surfaces at `/api/replays/:id[/events]` stay gated.
+  '/api/replays',
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',
   '/api/auth/login',

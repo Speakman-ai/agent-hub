@@ -40,8 +40,52 @@ const ReplayIngestSuccessResponse = z
   .object({
     replayId: z.string(),
     replayRef: z.string().openapi({ description: 'Local `/uploads/replay-<id>.json` ref.' }),
+    size: z.number().openapi({ description: 'Compressed (gzip) blob size in bytes.' }),
+    eventCount: z.number().openapi({ description: 'Number of rrweb events stored.' }),
+    durationMs: z
+      .number()
+      .openapi({ description: 'Span between first and last event timestamp (ms).' }),
   })
-  .openapi({ description: 'The persisted replay id and its uploads ref.' });
+  .openapi({ description: 'The persisted replay id, its uploads ref, and blob stats.' });
+
+const ReplayMetadataResponse = registerComponent(
+  'SessionReplayMetadata',
+  z
+    .object({
+      id: z.string(),
+      projectId: z.string().nullable(),
+      createdAt: z.string(),
+      durationMs: z.number(),
+      eventCount: z.number(),
+      size: z.number().openapi({ description: 'Compressed blob size in bytes.' }),
+      uncompressedSize: z.number().openapi({ description: 'Raw JSON length in bytes.' }),
+      supportTicketId: z.string().nullable(),
+      cardId: z.string().nullable(),
+      meta: z.record(z.string(), z.unknown()).nullable(),
+      eventsUrl: z.string().openapi({ description: 'Paginated events endpoint for this replay.' }),
+      defaultPageSize: z.number(),
+    })
+    .openapi({ description: 'Session-replay metadata row.' }),
+);
+
+const ReplayEventsPageResponse = z
+  .object({
+    replayId: z.string(),
+    events: z
+      .array(
+        z.object({
+          type: z.number(),
+          timestamp: z.number(),
+          data: z.unknown().optional(),
+        }),
+      )
+      .openapi({ description: 'One page of rrweb events.' }),
+    total: z.number().openapi({ description: 'Total events in the capture.' }),
+    offset: z.number().openapi({ description: 'Applied (clamped) offset.' }),
+    limit: z.number().openapi({ description: 'Applied (clamped) page size.' }),
+    hasMore: z.boolean().openapi({ description: 'True when more events follow this page.' }),
+  })
+  .openapi({ description: 'A paginated window of a replay’s events.' });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -75,5 +119,50 @@ registerPath({
     400: errorResponse('Validation failed (empty events, bad event shape, non-object meta).'),
     429: errorResponse('Per-IP rate limit exceeded.'),
     500: errorResponse('Handler threw while persisting the replay.'),
+  },
+});
+
+const replayIdParam = {
+  params: z.object({
+    id: z.string().openapi({ description: 'Replay id (uuid).' }),
+  }),
+};
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/{id}',
+  tags: ['Bug Reports'],
+  summary: 'Session-replay metadata (authenticated)',
+  description:
+    'Returns the `session_replays` metadata row (duration, sizes, ticket/card links, events URL). Authenticated, and authorized per-replay: a replay linked to a project is readable only by callers who can view that project; an unattributed replay is readable only by a privileged caller. Unauthorized access is masked as 404.',
+  request: replayIdParam,
+  responses: {
+    200: { description: 'Metadata.', content: jsonContent(ReplayMetadataResponse) },
+    404: errorResponse('No replay with that id, or the caller is not authorized to read it.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/{id}/events',
+  tags: ['Bug Reports'],
+  summary: 'Paginated session-replay events (authenticated)',
+  description:
+    'Returns one page of the gunzipped rrweb event array, sliced by `offset`/`limit` (defaults applied + capped server-side) so large captures never load in one request. The page carries `total`/`hasMore` for walking. Same per-replay authorization as the metadata endpoint — unauthorized access is masked as 404.',
+  request: {
+    ...replayIdParam,
+    query: z.object({
+      offset: z.coerce.number().optional().openapi({ description: 'Start index (default 0).' }),
+      limit: z.coerce
+        .number()
+        .optional()
+        .openapi({ description: 'Page size (default 500, max 5000).' }),
+    }),
+  },
+  responses: {
+    200: { description: 'A page of events.', content: jsonContent(ReplayEventsPageResponse) },
+    404: errorResponse('No replay with that id, or the caller is not authorized to read it.'),
+    500: errorResponse('Failed to read the stored blob.'),
+    503: errorResponse('The replay’s storage backend could not be resolved.'),
   },
 });
