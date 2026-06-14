@@ -27,6 +27,7 @@ import {
   ChevronDown,
   Bot,
   GitBranch,
+  StickyNote,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -83,6 +84,7 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   pullsProjectId,
+  notesProjectId,
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
   activeReviews = {},
@@ -184,28 +186,25 @@ export default function Sidebar({
     setCollapsedProjectMenus((prev) => ({ ...prev, [projectId]: false }));
   };
 
+  // Routes that live inside the collapsible "<project> Settings" group. The
+  // lifecycle links (Repository, Pulls, Board, Epics, Notes, Threads) are now
+  // top-level and intentionally excluded so the Settings toggle only lights up
+  // for configuration sub-routes.
   const isProjectMenuRoute = (view, pid) =>
     view === `project-settings:${pid}` ||
     view === `project-agents:${pid}` ||
+    // Cron Jobs lives inside the Settings group, so its route must mark the
+    // toggle active — keep this in sync with the Cron Jobs link below.
     view === `project-crons:${pid}` ||
     view === `runners:${pid}` ||
     view === `preview:${pid}` ||
     view === `aws:${pid}` ||
-    view === `kanban:${pid}` ||
-    view === `repo:${pid}` ||
-    view === `epics:${pid}` ||
-    (typeof view === 'string' && view.startsWith(`epic:${pid}:`)) ||
-    (view === 'reviewer' && reviewerProjectId === pid) ||
-    (view.startsWith('threads') && threadsProjectId === pid) ||
-    (view === 'pulls' && pullsProjectId === pid);
+    (view === 'reviewer' && reviewerProjectId === pid);
 
   const projectMenuLinkClass = (active) =>
     `w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
       active ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
     }`;
-
-  const projectMenuHeadingClass =
-    'px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-600 uppercase tracking-wider first:pt-0';
 
   // Move `sourceId` into the slot currently occupied by `targetId`,
   // preserving the order of every other project. Hands the resulting
@@ -942,11 +941,89 @@ export default function Sidebar({
                           className="mt-1 mb-1"
                           data-testid={`sidebar-project-menu-${project.id}`}
                         >
+                          {/* Top-level lifecycle navigation — always visible when
+                              the project is expanded; no Settings expand required. */}
+                          {project.gitHost === 'agenthub' && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate(`repo:${project.id}`)}
+                              className={projectMenuLinkClass(currentView === `repo:${project.id}`)}
+                            >
+                              <GitBranch size={14} className="flex-shrink-0" />
+                              <span className="truncate">Repository</span>
+                            </button>
+                          )}
+
+                          {project.mode !== 'workflow' && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate('pulls', project.id)}
+                              className={projectMenuLinkClass(
+                                currentView === 'pulls' && pullsProjectId === project.id,
+                              )}
+                            >
+                              <ListOrdered size={14} className="flex-shrink-0" />
+                              <span className="truncate">Pulls</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate(`kanban:${project.id}`)}
+                            className={projectMenuLinkClass(currentView === `kanban:${project.id}`)}
+                          >
+                            <LayoutGrid size={14} className="flex-shrink-0" />
+                            <span className="truncate">Board</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate(`epics:${project.id}`)}
+                            className={projectMenuLinkClass(
+                              currentView === `epics:${project.id}` ||
+                                (typeof currentView === 'string' &&
+                                  currentView.startsWith(`epic:${project.id}:`)),
+                            )}
+                          >
+                            <Target size={14} className="flex-shrink-0" />
+                            <span className="truncate">Epics</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('notes', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'notes' && notesProjectId === project.id,
+                            )}
+                          >
+                            <StickyNote size={14} className="flex-shrink-0" />
+                            <span className="truncate">Notes</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('threads', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView.startsWith('threads') && threadsProjectId === project.id,
+                            )}
+                          >
+                            <List size={14} className="flex-shrink-0" />
+                            <span className="truncate">Threads</span>
+                            {unreadThreadCounts[project.id] > 0 && (
+                              <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
+                                {unreadThreadCounts[project.id] > 99
+                                  ? '99+'
+                                  : unreadThreadCounts[project.id]}
+                              </span>
+                            )}
+                          </button>
+
+                          {/* Configuration — collapsed under "<project> Settings". */}
                           <button
                             type="button"
                             onClick={(e) => toggleProjectMenuCollapse(project.id, e)}
                             data-testid={`sidebar-project-menu-toggle-${project.id}`}
-                            className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                            className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 mt-1 flex items-center gap-2 transition-colors text-xs ${
                               menuActive
                                 ? 'bg-gray-800/70 text-gray-200'
                                 : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
@@ -974,126 +1051,8 @@ export default function Sidebar({
                                 )}
                               >
                                 <Settings size={14} className="flex-shrink-0" />
-                                <span className="truncate">Project Settings</span>
+                                <span className="truncate">Project Configuration</span>
                               </button>
-
-                              <div className={projectMenuHeadingClass}>Lifecycle</div>
-
-                              {project.gitHost === 'agenthub' && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    expandProjectMenu(project.id);
-                                    onNavigate(`repo:${project.id}`);
-                                  }}
-                                  className={projectMenuLinkClass(
-                                    currentView === `repo:${project.id}`,
-                                  )}
-                                >
-                                  <GitBranch size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Repository</span>
-                                </button>
-                              )}
-
-                              {project.mode !== 'workflow' && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    expandProjectMenu(project.id);
-                                    onNavigate('pulls', project.id);
-                                  }}
-                                  className={projectMenuLinkClass(
-                                    currentView === 'pulls' && pullsProjectId === project.id,
-                                  )}
-                                >
-                                  <ListOrdered size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Pulls</span>
-                                </button>
-                              )}
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate(`kanban:${project.id}`);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === `kanban:${project.id}`,
-                                )}
-                              >
-                                <LayoutGrid size={14} className="flex-shrink-0" />
-                                <span className="truncate">Board</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate(`epics:${project.id}`);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === `epics:${project.id}` ||
-                                    (typeof currentView === 'string' &&
-                                      currentView.startsWith(`epic:${project.id}:`)),
-                                )}
-                              >
-                                <Target size={14} className="flex-shrink-0" />
-                                <span className="truncate">Epics</span>
-                              </button>
-
-                              {project.agents?.some((a) => a.role === 'reviewer') && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    expandProjectMenu(project.id);
-                                    onNavigate('reviewer', project.id);
-                                  }}
-                                  className={projectMenuLinkClass(
-                                    currentView === 'reviewer' && reviewerProjectId === project.id,
-                                  )}
-                                >
-                                  <ScanEye size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Reviewer</span>
-                                </button>
-                              )}
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate('threads', project.id);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView.startsWith('threads') &&
-                                    threadsProjectId === project.id,
-                                )}
-                              >
-                                <List size={14} className="flex-shrink-0" />
-                                <span className="truncate">Threads</span>
-                                {unreadThreadCounts[project.id] > 0 && (
-                                  <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
-                                    {unreadThreadCounts[project.id] > 99
-                                      ? '99+'
-                                      : unreadThreadCounts[project.id]}
-                                  </span>
-                                )}
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  expandProjectMenu(project.id);
-                                  onNavigate(`project-crons:${project.id}`);
-                                }}
-                                className={projectMenuLinkClass(
-                                  currentView === `project-crons:${project.id}`,
-                                )}
-                              >
-                                <Clock size={14} className="flex-shrink-0" />
-                                <span className="truncate">Cron Jobs</span>
-                              </button>
-
-                              <div className={projectMenuHeadingClass}>Configuration</div>
 
                               <button
                                 type="button"
@@ -1152,6 +1111,36 @@ export default function Sidebar({
                                   <span className="truncate">AWS</span>
                                 </button>
                               )}
+
+                              {project.agents?.some((a) => a.role === 'reviewer') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate('reviewer', project.id);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === 'reviewer' && reviewerProjectId === project.id,
+                                  )}
+                                >
+                                  <ScanEye size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Reviewer</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`project-crons:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `project-crons:${project.id}`,
+                                )}
+                              >
+                                <Clock size={14} className="flex-shrink-0" />
+                                <span className="truncate">Cron Jobs</span>
+                              </button>
                             </div>
                           )}
                         </div>

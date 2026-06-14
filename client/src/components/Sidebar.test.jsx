@@ -839,25 +839,26 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`));
   };
 
-  it('renders a collapsed project menu by default', () => {
+  it('shows lifecycle links top-level and keeps configuration collapsed by default', () => {
     render(<Sidebar {...buildProps()} />);
     expect(screen.getByRole('button', { name: 'Test Project Settings' })).toBeInTheDocument();
+
+    // Lifecycle links are always visible (no Settings expand needed).
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
+
+    // Configuration items stay hidden until the Settings menu is expanded.
     expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Agents' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Board' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Epics' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Project Configuration' })).toBeNull();
   });
 
-  it('expands to show lifecycle and configuration navigation links', () => {
+  it('navigates from the top-level lifecycle links without expanding Settings', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
-    expandMenu();
-
-    expect(screen.getByText('Lifecycle')).toBeInTheDocument();
-    expect(screen.getByText('Configuration')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Project Settings' }));
-    expect(onNavigate).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Board' }));
     expect(onNavigate).toHaveBeenCalledWith(`kanban:${PROJECT_ID}`);
@@ -871,6 +872,52 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pulls' }));
     expect(onNavigate).toHaveBeenCalledWith('pulls', PROJECT_ID);
 
+    // Settings stays collapsed — config links never rendered.
+    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+  });
+
+  // Regression: Notes had no sidebar entry (keyboard-only) before this.
+  it('renders a top-level Notes link that navigates to the notes view', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
+    const notes = screen.getByRole('button', { name: 'Notes' });
+    expect(notes).toBeInTheDocument();
+    fireEvent.click(notes);
+    expect(onNavigate).toHaveBeenCalledWith('notes', PROJECT_ID);
+  });
+
+  // Regression: the Notes active highlight depends on the `notesProjectId` prop
+  // being threaded from the parent (App.jsx). Lock in that the row highlights on
+  // the notes view for this project, and does NOT highlight for other views or
+  // a different project's notes.
+  it('highlights the Notes link only on the matching project notes view', () => {
+    // `text-white` is applied only by the active branch of projectMenuLinkClass
+    // (the inactive branch uses text-gray-500 + hover:bg-gray-800/50).
+    const { rerender } = render(
+      <Sidebar {...buildProps({ currentView: 'notes', notesProjectId: PROJECT_ID })} />,
+    );
+    expect(screen.getByRole('button', { name: 'Notes' }).className).toContain('text-white');
+
+    // Notes view, but for a different project → not highlighted here.
+    rerender(
+      <Sidebar {...buildProps({ currentView: 'notes', notesProjectId: 'other-project' })} />,
+    );
+    expect(screen.getByRole('button', { name: 'Notes' }).className).not.toContain('text-white');
+
+    // Different view entirely → not highlighted.
+    rerender(<Sidebar {...buildProps({ currentView: 'chat', notesProjectId: PROJECT_ID })} />);
+    expect(screen.getByRole('button', { name: 'Notes' }).className).not.toContain('text-white');
+  });
+
+  it('expands the Settings menu to reveal configuration links', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+    expandMenu();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project Configuration' }));
+    expect(onNavigate).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
+
     fireEvent.click(screen.getByRole('button', { name: 'Runners' }));
     expect(onNavigate).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
 
@@ -882,6 +929,33 @@ describe('Sidebar — per-project settings menu', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }));
     expect(onNavigate).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);
+  });
+
+  // Regression: every configuration route (including Cron Jobs) must mark the
+  // "<project> Settings" toggle active, so the active page isn't hidden under a
+  // collapsed, inactive-looking group on initial render / reload. `text-gray-200`
+  // is applied only by the active branch of the toggle's class (inactive uses
+  // text-gray-500).
+  it('marks the Settings toggle active for every configuration route', () => {
+    const configRoutes = [
+      `project-settings:${PROJECT_ID}`,
+      `project-agents:${PROJECT_ID}`,
+      `runners:${PROJECT_ID}`,
+      `preview:${PROJECT_ID}`,
+      `project-crons:${PROJECT_ID}`,
+    ];
+    const { rerender } = render(<Sidebar {...buildProps({ currentView: configRoutes[0] })} />);
+    for (const view of configRoutes) {
+      rerender(<Sidebar {...buildProps({ currentView: view })} />);
+      const toggle = screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`);
+      expect(toggle.className, `expected toggle active for ${view}`).toContain('text-gray-200');
+    }
+
+    // A lifecycle (top-level) route must NOT activate the Settings toggle.
+    rerender(<Sidebar {...buildProps({ currentView: `kanban:${PROJECT_ID}` })} />);
+    expect(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`).className).not.toContain(
+      'text-gray-200',
+    );
   });
 
   it('does not render the Workflows entry (temporarily hidden)', () => {
