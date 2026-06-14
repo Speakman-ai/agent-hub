@@ -8,6 +8,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { KanbanCardComponent } from './board.openapi.js';
 
 const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as const;
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -141,6 +142,42 @@ registerPath({
     200: { description: 'Updated ticket.', content: jsonContent(SupportTicketComponent) },
     400: errorResponse('Invalid status.'),
     404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+const ConvertSupportTicketResponse = registerComponent(
+  'ConvertSupportTicketResponse',
+  z
+    .object({
+      ticket: SupportTicketComponent,
+      card: KanbanCardComponent,
+      alreadyConverted: z
+        .boolean()
+        .optional()
+        .openapi({ description: 'True when the ticket was already linked to an existing card.' }),
+    })
+    .openapi({ description: 'The converted ticket plus the kanban card it became.' }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/convert',
+  tags: ['Support'],
+  summary: 'Convert a support ticket into a To Do kanban card',
+  description:
+    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), flips the ticket to converted, and links the card id back. Idempotent: returns the existing card if already converted.',
+  request: { params: ticketParams },
+  responses: {
+    200: {
+      description: 'Ticket was already converted; returns the existing card.',
+      content: jsonContent(ConvertSupportTicketResponse),
+    },
+    201: {
+      description: 'Ticket converted to a new card.',
+      content: jsonContent(ConvertSupportTicketResponse),
+    },
+    404: errorResponse('Project or ticket not found.'),
+    500: errorResponse('Board has no columns to place the card in.'),
   },
 });
 

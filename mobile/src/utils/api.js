@@ -509,6 +509,10 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
   },
   getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+  // Promote a support ticket to a To Do kanban card. Idempotent: re-converting
+  // returns the existing card with `alreadyConverted: true`.
+  convertSupportTicketToCard: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
 
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {

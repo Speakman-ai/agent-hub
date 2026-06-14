@@ -112,6 +112,74 @@ describe('support-tickets routes', () => {
     await request.get(`/api/projects/${projectId}/support-tickets?status=bogus`).expect(400);
   });
 
+  it('converts a ticket into a To Do kanban card with mapped fields', async () => {
+    const projectId = await newProjectId();
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({
+        body: 'Checkout button does nothing on mobile',
+        subject: 'Broken checkout',
+        type: 'bug',
+        severity: 'critical',
+      })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .expect(201);
+
+    // Ticket is flipped to converted and linked to the new card.
+    expect(convert.body.ticket.status).toBe('converted');
+    expect(convert.body.ticket.converted_card_id).toBe(convert.body.card.id);
+
+    // Card carries over the mapped fields.
+    const card = convert.body.card;
+    expect(card.title).toBe('Broken checkout');
+    expect(card.priority).toBe('urgent'); // critical → urgent
+    expect(card.labels).toBe('support,bug');
+    expect(card.description).toContain('Checkout button does nothing on mobile');
+    expect(card.description).toContain(ticketId); // back-link footer
+
+    // Card lands in the board's "To Do" column.
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const todo = board.body.columns.find((c: { name: string }) => c.name === 'To Do');
+    expect(card.column_id).toBe(todo.id);
+    const onBoard = board.body.cards.find((c: { id: string }) => c.id === card.id);
+    expect(onBoard).toBeTruthy();
+  });
+
+  it('is idempotent — re-converting returns the existing card without duplicating', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'duplicate me', severity: 'low', type: 'question' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    const first = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .expect(201);
+    const second = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .expect(200);
+
+    expect(second.body.alreadyConverted).toBe(true);
+    expect(second.body.card.id).toBe(first.body.card.id);
+
+    // Only one card exists on the board for this ticket.
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const matching = board.body.cards.filter((c: { id: string }) => c.id === first.body.card.id);
+    expect(matching).toHaveLength(1);
+  });
+
+  it('404s converting an unknown ticket or project', async () => {
+    const projectId = await newProjectId();
+    await request.post(`/api/projects/${projectId}/support-tickets/nope/convert`).expect(404);
+    await request.post('/api/projects/does-not-exist/support-tickets/nope/convert').expect(404);
+  });
+
   it('triggers AI investigation for bug tickets only', async () => {
     const projectId = await newProjectId();
 

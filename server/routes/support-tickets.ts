@@ -1,5 +1,6 @@
+import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
-import type { RouteDeps } from '../types.js';
+import type { RouteDeps, KanbanCardRow } from '../types.js';
 import {
   createSupportTicket,
   getSupportTicket,
@@ -7,11 +8,14 @@ import {
   updateSupportTicketStatus,
   recordSupportTicketInvestigation,
   setSupportTicketReplayRef,
+  convertSupportTicketToCard,
   deleteSupportTicket,
   SUPPORT_TICKET_STATUSES,
 } from '../support-tickets-store.js';
 import type { SupportTicketStatus } from '../types.js';
 import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
+import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
+import { getOrCreateBoard } from './board.js';
 
 /**
  * Support ticket queue routes. Tickets are persisted in their own
@@ -20,7 +24,7 @@ import { triggerSupportTicketInvestigation } from '../support-ticket-investigati
  * first) so the most urgent requests sit at the top.
  */
 export default function createSupportTicketRoutes(deps: RouteDeps): Router {
-  const { broadcast, findProject } = deps;
+  const { broadcast, findProject, stmts } = deps;
   const router = Router();
 
   router.get('/api/projects/:projectId/support-tickets', (req: Request, res: Response) => {
@@ -134,6 +138,83 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       res.status(400).json({ error: (err as Error).message });
     }
   });
+
+  /**
+   * Promote a support ticket to a kanban card.
+   *
+   * Creates a To Do card carrying over the ticket's title/description, a
+   * severity→priority mapping, and `support,<type>` labels, with a footer in
+   * the description linking back to the source ticket. The ticket is then
+   * flipped to `converted` and stamped with the new card id.
+   *
+   * Idempotent: a ticket already linked to a still-existing card returns that
+   * card (200) instead of creating a duplicate. If the linked card was since
+   * deleted, conversion runs again.
+   */
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/convert',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      // Double-conversion guard: if the ticket is already linked to a card that
+      // still exists, return it unchanged rather than spawning a duplicate.
+      if (ticket.converted_card_id) {
+        const existingCard = stmts.getKanbanCard.get(ticket.converted_card_id) as
+          | KanbanCardRow
+          | undefined;
+        if (existingCard) {
+          return res.status(200).json({ ticket, card: existingCard, alreadyConverted: true });
+        }
+        // The previously-linked card was deleted — fall through and re-create.
+      }
+
+      const { board, columns } = getOrCreateBoard(stmts, project.id);
+      // Prefer the canonical "To Do" column; fall back to the left-most column
+      // so a board with renamed columns still gets a sensible landing spot.
+      const todo =
+        columns.find((c) => c.name.trim().toLowerCase() === 'to do') ??
+        [...columns].sort((a, b) => a.position - b.position)[0];
+      if (!todo) {
+        return res.status(500).json({ error: 'Board has no columns to place the card in' });
+      }
+
+      const fields = buildCardFieldsFromTicket(ticket);
+      const existingCards = stmts.getKanbanCardsByColumn.all(todo.id) as KanbanCardRow[];
+      const maxPos =
+        existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
+      const cardId = uuidv4();
+
+      stmts.createKanbanCard.run(
+        cardId,
+        todo.id,
+        board.id,
+        fields.title,
+        fields.description,
+        fields.priority,
+        null, // assignee
+        fields.labels,
+        null, // session_id
+        null, // github_issue_url
+        'support-ticket', // created_by
+        null, // assign_model
+        maxPos,
+      );
+
+      const updatedTicket = convertSupportTicketToCard(ticket.id, cardId)!;
+      const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow;
+
+      broadcast({ type: 'kanban_update', projectId: project.id });
+      broadcast({ type: 'support_ticket_updated', ticket: updatedTicket });
+
+      res.status(201).json({ ticket: updatedTicket, card });
+    },
+  );
 
   router.delete('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

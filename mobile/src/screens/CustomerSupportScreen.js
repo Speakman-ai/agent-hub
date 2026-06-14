@@ -39,6 +39,88 @@ const STATUS_FILTERS = [
   { key: 'closed', label: 'Closed' },
 ];
 
+function TicketCard({ item, projectId, onOpenReplay }) {
+  const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
+  const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
+  const hasReplay = item.type === 'bug' && item.replay_ref;
+  const isConverted = item.status === 'converted' || !!item.converted_card_id;
+
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState(null);
+
+  const handleConvert = async () => {
+    if (converting || isConverted) return;
+    setConverting(true);
+    setConvertError(null);
+    try {
+      await api.convertSupportTicketToCard(projectId, item.id);
+      // The support_ticket_updated WebSocket event re-renders this card as
+      // converted; no local state mutation needed.
+    } catch (err) {
+      setConvertError(err.message || 'Failed to convert');
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.badgeRow}>
+        <View style={[styles.severityBadge, { borderColor: severityColor }]}>
+          <Text style={[styles.severityText, { color: severityColor }]}>{item.severity}</Text>
+        </View>
+        <View style={styles.typeBadge}>
+          <Text style={styles.typeText}>{TYPE_LABEL[item.type] || 'Other'}</Text>
+        </View>
+        <View style={styles.statusBadge}>
+          <Text style={styles.statusText}>{item.status}</Text>
+        </View>
+        <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
+      </View>
+
+      <Text style={styles.cardTitle}>{title}</Text>
+
+      {item.subject?.trim() && item.body?.trim() ? (
+        <Text style={styles.cardBody} numberOfLines={3}>
+          {item.body}
+        </Text>
+      ) : null}
+
+      {item.reporter ? <Text style={styles.reporter}>Reported by {item.reporter}</Text> : null}
+
+      {item.ai_summary ? (
+        <View style={styles.aiBox}>
+          <Text style={styles.aiLabel}>AI investigation</Text>
+          <Text style={styles.aiText}>{item.ai_summary}</Text>
+        </View>
+      ) : null}
+
+      {hasReplay ? (
+        <TouchableOpacity onPress={() => onOpenReplay(item.replay_ref)}>
+          <Text style={styles.replayLink}>{'▶'} View session replay</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      <View style={styles.actionRow}>
+        {isConverted ? (
+          <Text style={styles.convertedText}>{'✓'} Converted to card</Text>
+        ) : (
+          <TouchableOpacity
+            onPress={handleConvert}
+            disabled={converting}
+            style={[styles.convertButton, converting && styles.convertButtonDisabled]}
+          >
+            <Text style={styles.convertButtonText}>
+              {converting ? 'Converting…' : '▤ Convert to card'}
+            </Text>
+          </TouchableOpacity>
+        )}
+        {convertError ? <Text style={styles.convertErrorText}>{convertError}</Text> : null}
+      </View>
+    </View>
+  );
+}
+
 export default function CustomerSupportScreen({ route }) {
   const { projects, lastSupportTicketEvent } = useApp();
   const { openSidebar } = useContext(SidebarContext);
@@ -96,50 +178,9 @@ export default function CustomerSupportScreen({ route }) {
     if (url) Linking.openURL(url).catch(() => {});
   }, []);
 
-  const renderItem = ({ item }) => {
-    const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
-    const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
-    const hasReplay = item.type === 'bug' && item.replay_ref;
-    return (
-      <View style={styles.card}>
-        <View style={styles.badgeRow}>
-          <View style={[styles.severityBadge, { borderColor: severityColor }]}>
-            <Text style={[styles.severityText, { color: severityColor }]}>{item.severity}</Text>
-          </View>
-          <View style={styles.typeBadge}>
-            <Text style={styles.typeText}>{TYPE_LABEL[item.type] || 'Other'}</Text>
-          </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>{item.status}</Text>
-          </View>
-          <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
-        </View>
-
-        <Text style={styles.cardTitle}>{title}</Text>
-
-        {item.subject?.trim() && item.body?.trim() ? (
-          <Text style={styles.cardBody} numberOfLines={3}>
-            {item.body}
-          </Text>
-        ) : null}
-
-        {item.reporter ? <Text style={styles.reporter}>Reported by {item.reporter}</Text> : null}
-
-        {item.ai_summary ? (
-          <View style={styles.aiBox}>
-            <Text style={styles.aiLabel}>AI investigation</Text>
-            <Text style={styles.aiText}>{item.ai_summary}</Text>
-          </View>
-        ) : null}
-
-        {hasReplay ? (
-          <TouchableOpacity onPress={() => openReplay(item.replay_ref)}>
-            <Text style={styles.replayLink}>{'▶'} View session replay</Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-    );
-  };
+  const renderItem = ({ item }) => (
+    <TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} />
+  );
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -277,4 +318,23 @@ const styles = StyleSheet.create({
   },
   aiText: { fontSize: 12, color: colors.gray300 },
   replayLink: { fontSize: 12, color: colors.blue400, marginTop: 8 },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  convertButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  convertButtonDisabled: { opacity: 0.5 },
+  convertButtonText: { fontSize: 12, color: colors.gray300, fontWeight: '600' },
+  convertedText: { fontSize: 12, color: colors.emerald400 },
+  convertErrorText: { fontSize: 11, color: colors.red400 },
 });

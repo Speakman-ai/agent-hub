@@ -9,6 +9,8 @@ import {
   MessageSquare,
   Sparkles,
   PlayCircle,
+  SquareKanban,
+  Check,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
@@ -75,12 +77,34 @@ function resolveReplayUrl(ref) {
   return `${base}/${ref}`;
 }
 
-function SupportTicketCard({ ticket }) {
+function SupportTicketCard({ ticket, projectId }) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
   const replayUrl = ticket.type === 'bug' ? resolveReplayUrl(ticket.replay_ref) : null;
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
+
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState(null);
+  // A ticket is "converted" once its status flips (the WebSocket-pushed row
+  // carries the new status + converted_card_id, so the button reflects the
+  // result without a manual refetch).
+  const isConverted = ticket.status === 'converted' || !!ticket.converted_card_id;
+
+  const handleConvert = async () => {
+    if (converting || isConverted) return;
+    setConverting(true);
+    setConvertError(null);
+    try {
+      await api.convertSupportTicketToCard(projectId, ticket.id);
+      // The support_ticket_updated WebSocket event re-renders this card as
+      // converted; no local state mutation needed.
+    } catch (err) {
+      setConvertError(err.message || 'Failed to convert');
+    } finally {
+      setConverting(false);
+    }
+  };
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
@@ -141,6 +165,26 @@ function SupportTicketCard({ ticket }) {
               View session replay
             </a>
           ) : null}
+
+          <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+            {isConverted ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                <Check size={13} />
+                Converted to card
+              </span>
+            ) : (
+              <button
+                onClick={handleConvert}
+                disabled={converting}
+                title="Create a To Do kanban card from this ticket"
+                className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <SquareKanban size={13} />
+                {converting ? 'Converting…' : 'Convert to card'}
+              </button>
+            )}
+            {convertError ? <span className="text-[11px] text-red-400">{convertError}</span> : null}
+          </div>
         </div>
       </div>
     </div>
@@ -252,7 +296,7 @@ function CustomerSupportPageInner({ projectId }, ref) {
         ) : (
           <div className="p-3 space-y-2 max-w-3xl mx-auto">
             {tickets.map((ticket) => (
-              <SupportTicketCard key={ticket.id} ticket={ticket} />
+              <SupportTicketCard key={ticket.id} ticket={ticket} projectId={projectId} />
             ))}
           </div>
         )}

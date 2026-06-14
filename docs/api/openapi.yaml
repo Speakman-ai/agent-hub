@@ -4985,6 +4985,20 @@ components:
         - created_at
         - updated_at
       description: A single support ticket row.
+    ConvertSupportTicketResponse:
+      type: object
+      properties:
+        ticket:
+          $ref: "#/components/schemas/SupportTicket"
+        card:
+          $ref: "#/components/schemas/KanbanCard"
+        alreadyConverted:
+          type: boolean
+          description: True when the ticket was already linked to an existing card.
+      required:
+        - ticket
+        - card
+      description: The converted ticket plus the kanban card it became.
     WikiPage:
       type: object
       properties:
@@ -16487,6 +16501,52 @@ paths:
                   - ok
         "404":
           description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/convert:
+    post:
+      tags:
+        - Support
+      summary: Convert a support ticket into a To Do kanban card
+      description: "Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), flips the ticket to converted, and links the card id back. Idempotent: returns the existing card if already converted."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Ticket was already converted; returns the existing card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConvertSupportTicketResponse"
+        "201":
+          description: Ticket converted to a new card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConvertSupportTicketResponse"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "500":
+          description: Board has no columns to place the card in.
           content:
             application/json:
               schema:
