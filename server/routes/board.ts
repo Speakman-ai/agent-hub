@@ -15,6 +15,7 @@ import type {
   KanbanCardBlockerRow,
   SessionRow,
   FinalizeRunRow,
+  SessionReplayRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
@@ -294,6 +295,39 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
     res.json(stmts.getKanbanCards.all(board.id));
   });
+
+  // Resolve the session replay attributed to a card, if any. A bug ticket
+  // surfaces its replay via `ticket.replay_ref`; once the ticket is converted
+  // to a card the attribution moves to `session_replays.card_id`, but the card
+  // row carries no ref — so the client needs this lookup to render a "Watch
+  // replay" surface on a converted card. Returns the replay id (the playback
+  // endpoints under /api/replays/:id handle their own per-replay authorization)
+  // plus light metadata, or 404 when the card has no replay. The card is scoped
+  // to the project's board so a leaked card id can't enumerate replays across
+  // projects (the project-visibility gate already guards the project mount).
+  router.get(
+    '/api/projects/:projectId/board/cards/:cardId/replay',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
+      if (!card) return res.status(404).json({ error: 'Card not found' });
+      const { board } = getOrCreateBoard(stmts, project.id);
+      if (card.board_id !== board.id) {
+        return res.status(404).json({ error: 'Card not found' });
+      }
+      const replay = stmts.getSessionReplayByCard.get(req.params.cardId) as
+        | SessionReplayRow
+        | undefined;
+      if (!replay) return res.status(404).json({ error: 'No replay for card' });
+      return res.json({
+        replayId: replay.id,
+        durationMs: replay.duration_ms,
+        eventCount: replay.event_count,
+        createdAt: replay.created_at,
+      });
+    },
+  );
 
   router.post('/api/projects/:projectId/board/cards', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

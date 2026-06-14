@@ -1490,6 +1490,23 @@ components:
         - content
         - created_at
       description: A comment posted to a kanban card.
+    CardReplay:
+      type: object
+      properties:
+        replayId:
+          type: string
+        durationMs:
+          type: number
+        eventCount:
+          type: number
+        createdAt:
+          type: string
+      required:
+        - replayId
+        - durationMs
+        - eventCount
+        - createdAt
+      description: Pointer to the session replay attributed to a kanban card. The events are fetched from the per-replay playback endpoints under /api/replays/:id.
     BoardResponse:
       type: object
       properties:
@@ -8360,6 +8377,40 @@ paths:
                 $ref: "#/components/schemas/BoardErrorResponse"
         "404":
           description: Project or column not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/cards/{cardId}/replay:
+    get:
+      tags:
+        - Board
+      summary: Get the session replay attributed to a card
+      description: Returns a pointer to the rrweb session replay linked to the card (via session_replays.card_id, e.g. carried over when a bug support ticket was converted). The client uses `replayId` to drive the sandboxed rrweb-player playback surface against /api/replays/:id. 404 when the card has no replay.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card UUID.
+          required: true
+          description: Kanban card UUID.
+          name: cardId
+          in: path
+      responses:
+        "200":
+          description: Replay pointer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardReplay"
+        "404":
+          description: Project, card, or replay not found.
           content:
             application/json:
               schema:

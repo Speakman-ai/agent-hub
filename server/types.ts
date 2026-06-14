@@ -1233,6 +1233,7 @@ export interface Stmts {
   insertSessionReplay: Stmt;
   getSessionReplay: Stmt;
   getSessionReplaysByProject: Stmt;
+  getSessionReplayByCard: Stmt;
   linkSessionReplay: Stmt;
   updateSessionReplayStats: Stmt;
   updateSessionReplayStatsIfUnfinalized: Stmt;

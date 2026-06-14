@@ -1004,6 +1004,23 @@ export const api = {
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
 
+  // Session replays — record-on-error rrweb captures. Metadata + paginated
+  // events back the sandboxed rrweb-player playback surface. Reads are
+  // authenticated + per-replay authorized server-side.
+  getReplay: (replayId) => fetchJSON(`/replays/${replayId}`),
+  getReplayEvents: (replayId, offset = 0, limit) => {
+    const params = new URLSearchParams();
+    if (offset) params.set('offset', String(offset));
+    if (limit != null) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/replays/${replayId}/events${qs ? `?${qs}` : ''}`);
+  },
+  // Pointer to the replay attributed to a kanban card (e.g. carried over when a
+  // bug ticket was converted). Returns { replayId, durationMs, eventCount,
+  // createdAt } or throws on 404 when the card has no replay.
+  getCardReplay: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/replay`),
+
   // Threads
   getThreads: (projectId, type) => {
     const qs = type ? `?type=${type}` : '';

@@ -22,6 +22,9 @@ vi.mock('../utils/api.js', () => ({
     getBoard: vi.fn(),
     get: vi.fn(),
     getCardComments: vi.fn(),
+    // Opening a card resolves its (optional) session replay. Default to "none"
+    // (404) so the "Watch replay" CTA stays hidden in tests that don't care.
+    getCardReplay: vi.fn().mockRejectedValue(new Error('404: No replay for card')),
     getModelConfig: vi.fn().mockResolvedValue({
       defaultModel: 'claude-opus-4-8',
       engineDefaultModels: {},
@@ -195,6 +198,41 @@ describe('KanbanBoard card detail modal', () => {
     expect(within(modal).getByText(/^Labels$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/GitHub Issue URL/i)).toBeInTheDocument();
     expect(within(modal).getByText(/Pull Request/i)).toBeInTheDocument();
+  });
+
+  it('shows a "Watch replay" CTA on a card that has an attributed replay and opens the player', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-replay',
+          title: 'Converted bug card',
+          description: 'Converted from a bug ticket',
+          column_id: 'col-todo',
+          position: 0,
+          priority: 'high',
+        },
+      ]),
+    );
+    api.getCardReplay.mockResolvedValueOnce({
+      replayId: 'replay-xyz',
+      durationMs: 5000,
+      eventCount: 9,
+      createdAt: '2026-06-14 10:00:00',
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Converted bug card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Converted bug card'));
+
+    const modal = await screen.findByTestId('card-detail-modal');
+    const watchBtn = await within(modal).findByTestId('card-watch-replay-button');
+    expect(watchBtn).toBeInTheDocument();
+    expect(api.getCardReplay).toHaveBeenCalledWith('p1', 'card-replay');
+
+    // Clicking it mounts the sandboxed player.
+    fireEvent.click(watchBtn);
+    const iframe = await screen.findByTestId('replay-player-iframe');
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
   });
 
   it('renders card description as markdown in read mode and updates preview after edit', async () => {

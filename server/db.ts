@@ -2412,6 +2412,11 @@ function initDb(dataDir: string): void {
     getSessionReplaysByProject: db.prepare(
       'SELECT * FROM session_replays WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
     ),
+    // Most-recent replay attributed to a kanban card (convert-to-card stamps
+    // session_replays.card_id). Powers the card-detail "Watch replay" surface.
+    getSessionReplayByCard: db.prepare(
+      'SELECT * FROM session_replays WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
+    ),
     // Attribute a replay to a project / ticket / card. Two guards together:
     //   1. The WHERE clause only matches a row that is unattributed
     //      (`project_id IS NULL`) OR already owned by the caller's project

@@ -121,6 +121,9 @@ export default [
       sourceType: 'module',
       globals: {
         ...globals.node,
+        // Playwright `page.evaluate(...)` callbacks run in the browser context,
+        // so specs legitimately reference `window` / `document` / DOM globals.
+        ...globals.browser,
       },
     },
     rules: {

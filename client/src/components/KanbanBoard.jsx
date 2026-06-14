@@ -12,6 +12,7 @@ import {
   Lock,
   AlertTriangle,
   Zap,
+  PlayCircle,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
@@ -22,6 +23,7 @@ import FinalizeCardBadge from './finalize/CardBadge.jsx';
 import EpicFilterDropdown from './EpicFilterDropdown.jsx';
 import EpicAutonomousDialog from './EpicAutonomousDialog.jsx';
 import { epicToAutonomousForm } from './EpicAutonomousPanel.jsx';
+import ReplayPlayerModal from './ReplayPlayerModal.jsx';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25',
@@ -71,6 +73,10 @@ export default function KanbanBoard({
   const [selectedCard, setSelectedCard] = useState(null);
   const [detailForm, setDetailForm] = useState({});
   const [comments, setComments] = useState([]);
+  // Session replay attributed to the open card (carried over from a converted
+  // bug ticket). null = none / not-yet-resolved; drives the "Watch replay" CTA.
+  const [cardReplay, setCardReplay] = useState(null);
+  const [watchingReplay, setWatchingReplay] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -174,6 +180,31 @@ export default function KanbanBoard({
       .getCardComments(projectId, selectedCard.id)
       .then(setComments)
       .catch(() => setComments([]));
+  }, [selectedCard, projectId]);
+
+  // Resolve the card's session replay, if any. A card carries no replay ref on
+  // its row — the attribution lives on session_replays.card_id — so we ask the
+  // server. 404 (the common case: most cards have no replay) clears it.
+  useEffect(() => {
+    if (!selectedCard) {
+      setCardReplay(null);
+      setWatchingReplay(false);
+      return;
+    }
+    let cancelled = false;
+    setCardReplay(null);
+    setWatchingReplay(false);
+    api
+      .getCardReplay(projectId, selectedCard.id)
+      .then((r) => {
+        if (!cancelled) setCardReplay(r?.replayId ? r : null);
+      })
+      .catch(() => {
+        if (!cancelled) setCardReplay(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCard, projectId]);
 
   // Close detail modal on Escape key
@@ -1165,6 +1196,24 @@ export default function KanbanBoard({
 
                 {/* Sidebar: metadata */}
                 <aside className="flex flex-col gap-5 lg:border-l lg:border-white/[0.06] lg:pl-6">
+                  {/* Session replay (carried over from a converted bug ticket) */}
+                  {cardReplay?.replayId ? (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                        Session replay
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setWatchingReplay(true)}
+                        data-testid="card-watch-replay-button"
+                        className="inline-flex items-center gap-1.5 w-full justify-center text-xs bg-blue-600/90 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        <PlayCircle size={13} />
+                        Watch replay
+                      </button>
+                    </div>
+                  ) : null}
+
                   {/* Priority */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
@@ -1826,6 +1875,15 @@ export default function KanbanBoard({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Session replay player — sandboxed rrweb-player over the card's replay */}
+      {watchingReplay && cardReplay?.replayId && (
+        <ReplayPlayerModal
+          replayId={cardReplay.replayId}
+          title={selectedCard ? `Replay · ${selectedCard.title}` : 'Session replay'}
+          onClose={() => setWatchingReplay(false)}
+        />
       )}
 
       {/* Confirm move — blocked-card → blocker-sensitive column */}

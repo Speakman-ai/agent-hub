@@ -39,6 +39,23 @@ if (!gitHash) {
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // rrweb-player's package `exports` map only exposes `.` and
+    // `./dist/style.css`, so the UMD bundle isn't reachable as a bare subpath
+    // specifier. We need it as a raw string to inline into the sandboxed
+    // replay-player iframe, so alias a clean id straight at the UMD file and
+    // import it with `?raw`. Regex/array form (prefix, no `$`) so the `?raw`
+    // query is preserved through the rewrite. Mirrored in vitest.config.js.
+    alias: [
+      {
+        find: /^rrweb-player-umd/,
+        replacement: path.resolve(
+          __dirname,
+          'node_modules/rrweb-player/dist/rrweb-player.umd.min.cjs',
+        ),
+      },
+    ],
+  },
   define: {
     // Expose the API port to the client so connection.js can use it
     'import.meta.env.VITE_API_PORT': JSON.stringify(apiPort),

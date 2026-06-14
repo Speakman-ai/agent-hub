@@ -59,7 +59,7 @@ describe('resolveReplayUrl', () => {
 });
 
 describe('CustomerSupportPage', () => {
-  it('renders tickets ordered by severity with type, severity, AI summary and replay link', async () => {
+  it('renders tickets ordered by severity with type, severity, AI summary and watch-replay control', async () => {
     api.getSupportTickets.mockResolvedValue([
       ticket({
         id: 'crit',
@@ -88,22 +88,25 @@ describe('CustomerSupportPage', () => {
     const feat = screen.getByText('Dark mode please');
     expect(crit.compareDocumentPosition(feat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // Type + severity badges, AI summary, and bug replay link all render.
+    // Type + severity badges, AI summary, and a bug "Watch replay" button render
+    // (the replay now opens a sandboxed in-app player rather than a raw JSON link).
     expect(screen.getByText('Bug')).toBeInTheDocument();
     expect(screen.getByText('Feature request')).toBeInTheDocument();
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('Likely a null deref in checkout')).toBeInTheDocument();
-    const replay = screen.getByRole('link', { name: /view session replay/i });
-    expect(replay).toHaveAttribute('href', 'https://hub.example.com/uploads/replay-crit.json');
+    const replay = screen.getByRole('button', { name: /watch replay/i });
+    expect(replay).toBeInTheDocument();
+    // No legacy raw-JSON link.
+    expect(screen.queryByRole('link', { name: /session replay/i })).toBeNull();
   });
 
-  it('does not render a replay link for non-bug tickets', async () => {
+  it('does not render a watch-replay control for non-bug tickets', async () => {
     api.getSupportTickets.mockResolvedValue([
       ticket({ id: 'q', type: 'question', replay_ref: '/uploads/x.json', subject: 'How?' }),
     ]);
     render(<CustomerSupportPage projectId="proj-1" />);
     await waitFor(() => expect(screen.getByText('How?')).toBeInTheDocument());
-    expect(screen.queryByRole('link', { name: /view session replay/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /watch replay/i })).toBeNull();
   });
 
   it('shows an empty state when there are no tickets', async () => {

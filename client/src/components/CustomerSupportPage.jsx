@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
+import ReplayPlayerModal from './ReplayPlayerModal.jsx';
+import { parseReplayIdFromRef } from '../utils/replayPlayer.js';
 
 function relativeTime(ts) {
   if (!ts) return '';
@@ -81,9 +83,10 @@ function SupportTicketCard({ ticket, projectId }) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
-  const replayUrl = ticket.type === 'bug' ? resolveReplayUrl(ticket.replay_ref) : null;
+  const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
 
+  const [watchingReplay, setWatchingReplay] = useState(false);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState(null);
   // A ticket is "converted" once its status flips (the WebSocket-pushed row
@@ -154,16 +157,24 @@ function SupportTicketCard({ ticket, projectId }) {
             </div>
           ) : null}
 
-          {replayUrl ? (
-            <a
-              href={replayUrl}
-              target="_blank"
-              rel="noopener noreferrer"
+          {replayId ? (
+            <button
+              type="button"
+              onClick={() => setWatchingReplay(true)}
               className="inline-flex items-center gap-1.5 mt-2 text-xs text-blue-400 hover:text-blue-300"
+              data-testid="watch-replay-button"
             >
               <PlayCircle size={13} />
-              View session replay
-            </a>
+              Watch replay
+            </button>
+          ) : null}
+
+          {watchingReplay && replayId ? (
+            <ReplayPlayerModal
+              replayId={replayId}
+              title={`Replay · ${title}`}
+              onClose={() => setWatchingReplay(false)}
+            />
           ) : null}
 
           <div className="mt-2.5 flex items-center gap-2 flex-wrap">

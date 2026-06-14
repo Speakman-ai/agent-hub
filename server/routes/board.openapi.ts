@@ -193,6 +193,21 @@ export const KanbanCardCommentComponent = registerComponent(
     .openapi({ description: 'A comment posted to a kanban card.' }),
 );
 
+export const CardReplayComponent = registerComponent(
+  'CardReplay',
+  z
+    .object({
+      replayId: z.string(),
+      durationMs: z.number(),
+      eventCount: z.number(),
+      createdAt: z.string(),
+    })
+    .openapi({
+      description:
+        'Pointer to the session replay attributed to a kanban card. The events are fetched from the per-replay playback endpoints under /api/replays/:id.',
+    }),
+);
+
 export const BoardResponseComponent = registerComponent(
   'BoardResponse',
   z
@@ -424,6 +439,21 @@ registerPath({
   responses: {
     200: { description: 'Array of cards.', content: jsonContent(z.array(KanbanCardComponent)) },
     404: errorResponse('Project not found.'),
+  },
+});
+
+// GET /board/cards/:cardId/replay
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/board/cards/{cardId}/replay',
+  tags: ['Board'],
+  summary: 'Get the session replay attributed to a card',
+  description:
+    'Returns a pointer to the rrweb session replay linked to the card (via session_replays.card_id, e.g. carried over when a bug support ticket was converted). The client uses `replayId` to drive the sandboxed rrweb-player playback surface against /api/replays/:id. 404 when the card has no replay.',
+  request: { params: projectCardIdParams },
+  responses: {
+    200: { description: 'Replay pointer.', content: jsonContent(CardReplayComponent) },
+    404: errorResponse('Project, card, or replay not found.'),
   },
 });
 
