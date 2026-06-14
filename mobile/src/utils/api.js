@@ -503,6 +503,13 @@ export const api = {
   deleteNote: (projectId, noteId) =>
     fetchJSON(buildNoteUrl(projectId, noteId), { method: 'DELETE' }),
 
+  // Support tickets — project-scoped queue, ordered by severity (server-side).
+  getSupportTickets: (projectId, status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
+  },
+  getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {
     const qs = type ? `?type=${encodeURIComponent(type)}` : '';

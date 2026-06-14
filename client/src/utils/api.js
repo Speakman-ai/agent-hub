@@ -991,6 +991,15 @@ export const api = {
     fetchJSON('/tasks', { method: 'POST', body: JSON.stringify({ agentId, prompt }) }),
   stopTask: (taskId) => fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
 
+  // Support tickets — project-scoped queue, ordered by severity (server-side).
+  // Pass `status` to filter to a single lifecycle state (new | investigating |
+  // converted | closed).
+  getSupportTickets: (projectId, status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
+  },
+  getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+
   // Threads
   getThreads: (projectId, type) => {
     const qs = type ? `?type=${type}` : '';

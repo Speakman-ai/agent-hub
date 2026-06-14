@@ -92,6 +92,9 @@ export function AppProvider({ children }) {
   // live updates react to this ref bump via a counter. Shape:
   //   { type, projectId, thread?, threadId?, entry?, bump }
   const [lastThreadEvent, setLastThreadEvent] = useState(null);
+  // Last `support_ticket_*` WS event for the Customer Support screen.
+  //   { type, projectId, ticket?, ticketId?, bump }
+  const [lastSupportTicketEvent, setLastSupportTicketEvent] = useState(null);
   // Last `finalize_wizard_*` WS event for the Settings → Finalize panel.
   // Mirrors the web component's `agenthub:finalize_wizard_complete`
   // window CustomEvent — RN has no DOM event bus, so we surface the last
@@ -708,6 +711,23 @@ export function AppProvider({ children }) {
           type: 'thread_deleted',
           projectId: data.projectId,
           threadId: data.threadId,
+          bump: Date.now(),
+        });
+        break;
+      case 'support_ticket_created':
+      case 'support_ticket_updated':
+        setLastSupportTicketEvent({
+          type: data.type,
+          projectId: data.ticket?.project_id,
+          ticket: data.ticket,
+          bump: Date.now(),
+        });
+        break;
+      case 'support_ticket_deleted':
+        setLastSupportTicketEvent({
+          type: 'support_ticket_deleted',
+          projectId: data.projectId,
+          ticketId: data.ticketId,
           bump: Date.now(),
         });
         break;
@@ -1714,6 +1734,7 @@ export function AppProvider({ children }) {
     // Threads
     unreadThreadCounts,
     lastThreadEvent,
+    lastSupportTicketEvent,
     markProjectThreadsRead,
     setActiveThreadsProject,
     setActiveThread,

@@ -473,6 +473,15 @@ export default function DrawerContent({ navigation }) {
                         )}
                       </View>
                     </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.boardButton}
+                      onPress={() => {
+                        navigation.navigate('CustomerSupport', { projectId: project.id, project });
+                        navigation.closeDrawer();
+                      }}
+                    >
+                      <Text style={styles.boardButtonText}>{'\u26d1'} Support</Text>
+                    </TouchableOpacity>
                     {project.githubRepo && !isWorkflowProject(project) ? (
                       <TouchableOpacity
                         style={styles.boardButton}

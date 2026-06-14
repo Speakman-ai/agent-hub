@@ -28,6 +28,7 @@ import {
   Bot,
   GitBranch,
   StickyNote,
+  LifeBuoy,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -83,6 +84,7 @@ export default function Sidebar({
   cronSessions = [],
   reviewerProjectId,
   threadsProjectId,
+  supportProjectId,
   pullsProjectId,
   notesProjectId,
   workflowBadgeByProject = {},
@@ -1016,6 +1018,17 @@ export default function Sidebar({
                                   : unreadThreadCounts[project.id]}
                               </span>
                             )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('support', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'support' && supportProjectId === project.id,
+                            )}
+                          >
+                            <LifeBuoy size={14} className="flex-shrink-0" />
+                            <span className="truncate">Support</span>
                           </button>
 
                           {/* Configuration — collapsed under "<project> Settings". */}

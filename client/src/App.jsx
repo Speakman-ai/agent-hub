@@ -61,6 +61,7 @@ import DashboardView from './components/DashboardView.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
+import CustomerSupportPage from './components/CustomerSupportPage.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import RepositoryPage from './components/RepositoryPage.jsx';
@@ -369,6 +370,10 @@ export default function App({ initialView } = {}) {
   // Refs to push WebSocket updates into ThreadList/ThreadView
   const threadListRef = useRef(null);
   const threadViewRef = useRef(null);
+  // Customer Support page state
+  const [supportProjectId, setSupportProjectId] = useState(null);
+  // Ref to push WebSocket support_ticket_* updates into CustomerSupportPage
+  const supportListRef = useRef(null);
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -469,6 +474,8 @@ export default function App({ initialView } = {}) {
   // Refs for thread state (accessible inside WebSocket callback)
   const threadsProjectIdRef = useRef(threadsProjectId);
   threadsProjectIdRef.current = threadsProjectId;
+  const supportProjectIdRef = useRef(supportProjectId);
+  supportProjectIdRef.current = supportProjectId;
   const activeThreadIdRef = useRef(activeThreadId);
   activeThreadIdRef.current = activeThreadId;
   const currentViewRef = useRef(currentView);
@@ -2036,6 +2043,26 @@ export default function App({ initialView } = {}) {
           if (activeThreadIdRef.current === data.threadId) {
             setActiveThreadId(null);
             setActiveThread(null);
+          }
+          break;
+        }
+
+        // ── Support ticket queue ─────────────────────────────────
+        case 'support_ticket_created': {
+          if (supportListRef.current && supportProjectIdRef.current === data.ticket?.project_id) {
+            supportListRef.current.addTicket(data.ticket);
+          }
+          break;
+        }
+        case 'support_ticket_updated': {
+          if (supportListRef.current && supportProjectIdRef.current === data.ticket?.project_id) {
+            supportListRef.current.updateTicket(data.ticket);
+          }
+          break;
+        }
+        case 'support_ticket_deleted': {
+          if (supportListRef.current && supportProjectIdRef.current === data.projectId) {
+            supportListRef.current.removeTicket(data.ticketId);
           }
           break;
         }
@@ -3876,6 +3903,7 @@ export default function App({ initialView } = {}) {
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
     if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
+    if (currentView === 'support' && supportProjectId) return supportProjectId;
     const byAgent = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
     return byAgent?.id || projects[0]?.id || null;
   }, [
@@ -3886,6 +3914,7 @@ export default function App({ initialView } = {}) {
     notesProjectId,
     pullsProjectId,
     threadsProjectId,
+    supportProjectId,
     projects,
     activeAgentId,
   ]);
@@ -4132,6 +4161,7 @@ export default function App({ initialView } = {}) {
                   return next;
                 });
               }
+              if (view === 'support' && extra) setSupportProjectId(extra);
               setSidebarOpen(false);
             }}
             currentView={currentView}
@@ -4148,6 +4178,7 @@ export default function App({ initialView } = {}) {
             notesProjectId={notesProjectId}
             reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
+            supportProjectId={supportProjectId}
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
@@ -4417,6 +4448,8 @@ export default function App({ initialView } = {}) {
                     }}
                   />
                 )
+              ) : currentView === 'support' && supportProjectId ? (
+                <CustomerSupportPage ref={supportListRef} projectId={supportProjectId} />
               ) : currentView === 'pulls' && pullsProjectId ? (
                 <PullRequestsPage
                   projectId={pullsProjectId}
