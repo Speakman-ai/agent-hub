@@ -11,6 +11,7 @@ import {
   SUPPORT_TICKET_STATUSES,
 } from '../support-tickets-store.js';
 import type { SupportTicketStatus } from '../types.js';
+import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
 
 /**
  * Support ticket queue routes. Tickets are persisted in their own
@@ -74,6 +75,20 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         replayRef: replayRef ?? null,
       });
       broadcast({ type: 'support_ticket_created', ticket });
+
+      // Bug tickets get an initial AI investigation pass that fills in the
+      // ai_summary / ai_investigation fields. Fire-and-forget: the ticket has
+      // already landed and the response is about to return, so a failed
+      // investigation must never surface as an error here.
+      if (ticket.type === 'bug') {
+        triggerSupportTicketInvestigation(ticket.id, {
+          config: deps.config,
+          broadcast,
+          serverDir: deps.serverDir,
+          cwd: project.cwd,
+        });
+      }
+
       res.status(201).json(ticket);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });

@@ -1,6 +1,14 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject } from '../test/helpers.js';
+
+// Stub the investigation trigger so creating a bug ticket in these tests never
+// spawns a CLI (the real fire-and-forget path would shell out to an engine).
+// We still assert it is wired correctly below.
+const triggerInvestigation = vi.fn();
+vi.mock('../support-ticket-investigation.js', () => ({
+  triggerSupportTicketInvestigation: (...args: unknown[]) => triggerInvestigation(...args),
+}));
 
 let request: supertest.Agent;
 
@@ -102,5 +110,28 @@ describe('support-tickets routes', () => {
       .send({ severity: 'high' })
       .expect(400);
     await request.get(`/api/projects/${projectId}/support-tickets?status=bogus`).expect(400);
+  });
+
+  it('triggers AI investigation for bug tickets only', async () => {
+    const projectId = await newProjectId();
+
+    triggerInvestigation.mockClear();
+    const bug = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'crash on save', type: 'bug', severity: 'high' })
+      .expect(201);
+    expect(triggerInvestigation).toHaveBeenCalledTimes(1);
+    expect(triggerInvestigation).toHaveBeenCalledWith(
+      bug.body.id,
+      expect.objectContaining({ cwd: expect.any(String) }),
+    );
+
+    // Non-bug ticket types do not kick off an investigation.
+    triggerInvestigation.mockClear();
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'how do I export?', type: 'question' })
+      .expect(201);
+    expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 });
