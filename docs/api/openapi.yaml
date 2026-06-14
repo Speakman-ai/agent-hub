@@ -4905,6 +4905,86 @@ components:
         - type
         - title
       description: Multipart form fields for the support-request intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
+    SupportTicketErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for support-ticket routes.
+    SupportTicket:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - bug
+            - question
+            - feature_request
+            - incident
+            - other
+        severity:
+          type: string
+          enum:
+            - critical
+            - high
+            - medium
+            - low
+        status:
+          type: string
+          enum:
+            - new
+            - investigating
+            - converted
+            - closed
+        subject:
+          type: string
+        body:
+          type: string
+        reporter:
+          type: string
+          nullable: true
+        ai_summary:
+          type: string
+          nullable: true
+        ai_investigation:
+          type: string
+          nullable: true
+        ai_investigated_at:
+          type: string
+          nullable: true
+        replay_ref:
+          type: string
+          nullable: true
+        converted_card_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - type
+        - severity
+        - status
+        - subject
+        - body
+        - reporter
+        - ai_summary
+        - ai_investigation
+        - ai_investigated_at
+        - replay_ref
+        - converted_card_id
+        - created_at
+        - updated_at
+      description: A single support ticket row.
     WikiPage:
       type: object
       properties:
@@ -16171,6 +16251,246 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportRequestsErrorResponse"
+  /api/projects/{projectId}/support-tickets:
+    get:
+      tags:
+        - Support
+      summary: List a project’s support tickets, ordered by severity
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - new
+              - investigating
+              - converted
+              - closed
+            description: Filter to a single lifecycle status.
+          required: false
+          description: Filter to a single lifecycle status.
+          name: status
+          in: query
+      responses:
+        "200":
+          description: Tickets ordered by severity (critical → low) then newest.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SupportTicket"
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+    post:
+      tags:
+        - Support
+      summary: Create a support ticket
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                type:
+                  type: string
+                  enum:
+                    - bug
+                    - question
+                    - feature_request
+                    - incident
+                    - other
+                severity:
+                  type: string
+                  enum:
+                    - critical
+                    - high
+                    - medium
+                    - low
+                subject:
+                  type: string
+                reporter:
+                  type: string
+                replayRef:
+                  type: string
+              required:
+                - body
+      responses:
+        "201":
+          description: Created ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "400":
+          description: Invalid type/severity or missing body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}:
+    get:
+      tags:
+        - Support
+      summary: Fetch a single support ticket
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: The ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+    patch:
+      tags:
+        - Support
+      summary: Update a support ticket (status, AI investigation, replay ref)
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - new
+                    - investigating
+                    - converted
+                    - closed
+                aiSummary:
+                  type: string
+                  nullable: true
+                aiInvestigation:
+                  type: string
+                  nullable: true
+                replayRef:
+                  type: string
+                  nullable: true
+              description: "Partial update: status transition and/or AI/replay fields."
+      responses:
+        "200":
+          description: Updated ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "400":
+          description: Invalid status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+    delete:
+      tags:
+        - Support
+      summary: Delete a support ticket
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

@@ -578,6 +578,39 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
 
+    -- Support tickets: customer support requests persisted in their OWN
+    -- project-scoped queue, deliberately separate from the kanban board. The
+    -- status lifecycle (new -> investigating -> converted / closed) is distinct
+    -- from kanban columns; the severity column drives list ordering.
+    -- AI-investigation columns (ai_summary / ai_investigation /
+    -- ai_investigated_at) and the optional session-replay reference
+    -- (replay_ref) are written by downstream features (AI triage, replay
+    -- attach). converted_card_id records the kanban card a ticket was promoted
+    -- to when status becomes 'converted'.
+    CREATE TABLE IF NOT EXISTS support_tickets (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'other'
+        CHECK(type IN ('bug','question','feature_request','incident','other')),
+      severity TEXT NOT NULL DEFAULT 'medium'
+        CHECK(severity IN ('critical','high','medium','low')),
+      status TEXT NOT NULL DEFAULT 'new'
+        CHECK(status IN ('new','investigating','converted','closed')),
+      subject TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      reporter TEXT,
+      ai_summary TEXT,
+      ai_investigation TEXT,
+      ai_investigated_at TEXT,
+      replay_ref TEXT,
+      converted_card_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_tickets_project ON support_tickets(project_id);
+    CREATE INDEX IF NOT EXISTS idx_support_tickets_status
+      ON support_tickets(project_id, status);
+
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
       id TEXT PRIMARY KEY,
@@ -3430,6 +3463,58 @@ function initDb(dataDir: string): void {
     acknowledgeEscalation: db.prepare('UPDATE escalations SET acknowledged = 1 WHERE id = ?'),
     deleteEscalation: db.prepare('DELETE FROM escalations WHERE id = ?'),
     deleteEscalationsByProject: db.prepare('DELETE FROM escalations WHERE project_id = ?'),
+
+    // Support tickets. List queries order by severity (most severe first) then
+    // newest, via a CASE rank since SQLite has no native enum ordering.
+    createSupportTicket: db.prepare(
+      `INSERT INTO support_tickets
+         (id, project_id, type, severity, status, subject, body, reporter, replay_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getSupportTicket: db.prepare('SELECT * FROM support_tickets WHERE id = ?'),
+    listSupportTicketsByProject: db.prepare(
+      `SELECT * FROM support_tickets
+       WHERE project_id = ?
+       ORDER BY CASE severity
+         WHEN 'critical' THEN 0
+         WHEN 'high' THEN 1
+         WHEN 'medium' THEN 2
+         WHEN 'low' THEN 3
+         ELSE 4 END ASC,
+         created_at DESC,
+         rowid DESC`,
+    ),
+    listSupportTicketsByProjectAndStatus: db.prepare(
+      `SELECT * FROM support_tickets
+       WHERE project_id = ? AND status = ?
+       ORDER BY CASE severity
+         WHEN 'critical' THEN 0
+         WHEN 'high' THEN 1
+         WHEN 'medium' THEN 2
+         WHEN 'low' THEN 3
+         ELSE 4 END ASC,
+         created_at DESC,
+         rowid DESC`,
+    ),
+    updateSupportTicketStatus: db.prepare(
+      `UPDATE support_tickets SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    updateSupportTicketInvestigation: db.prepare(
+      `UPDATE support_tickets
+         SET ai_summary = ?, ai_investigation = ?, ai_investigated_at = datetime('now'),
+             updated_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    setSupportTicketReplayRef: db.prepare(
+      `UPDATE support_tickets SET replay_ref = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    convertSupportTicketToCard: db.prepare(
+      `UPDATE support_tickets
+         SET converted_card_id = ?, status = 'converted', updated_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    deleteSupportTicket: db.prepare('DELETE FROM support_tickets WHERE id = ?'),
+    deleteSupportTicketsByProject: db.prepare('DELETE FROM support_tickets WHERE project_id = ?'),
 
     // Workflows
     getWorkflowsByProject: db.prepare(

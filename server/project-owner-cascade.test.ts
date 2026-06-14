@@ -28,6 +28,7 @@ function makeStmts(
   const noop = { run: vi.fn() };
   const all = {
     deleteEscalationsByProject: noop,
+    deleteSupportTicketsByProject: noop,
     deleteNotesByProject: noop,
     deleteWikiPagesByProject: noop,
     deleteWebhookConfigsByProject: noop,

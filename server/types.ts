@@ -825,6 +825,36 @@ export interface NoteRow {
   updated_at: string;
 }
 
+// ─── Support Tickets ────────────────────────────────────────────
+// Customer support requests persisted in their OWN queue, separate from the
+// kanban board. The status lifecycle is distinct from kanban columns:
+// new → investigating → converted / closed. Severity drives list ordering.
+
+export type SupportTicketType = 'bug' | 'question' | 'feature_request' | 'incident' | 'other';
+export type SupportTicketSeverity = 'critical' | 'high' | 'medium' | 'low';
+export type SupportTicketStatus = 'new' | 'investigating' | 'converted' | 'closed';
+
+export interface SupportTicketRow {
+  id: string;
+  project_id: string;
+  type: SupportTicketType;
+  severity: SupportTicketSeverity;
+  status: SupportTicketStatus;
+  subject: string;
+  body: string;
+  reporter: string | null;
+  // AI-investigation fields — populated when an agent investigates the ticket.
+  ai_summary: string | null;
+  ai_investigation: string | null;
+  ai_investigated_at: string | null;
+  // Optional reference to a captured session replay attached to the ticket.
+  replay_ref: string | null;
+  // Set when the ticket is promoted to a kanban card (status → 'converted').
+  converted_card_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── iOS Build Types ────────────────────────────────────────────
 
 export type IosBuildStatus =
@@ -1523,6 +1553,18 @@ export interface Stmts {
   acknowledgeEscalation: Stmt;
   deleteEscalation: Stmt;
   deleteEscalationsByProject: Stmt;
+
+  // Support tickets
+  createSupportTicket: Stmt;
+  getSupportTicket: Stmt;
+  listSupportTicketsByProject: Stmt;
+  listSupportTicketsByProjectAndStatus: Stmt;
+  updateSupportTicketStatus: Stmt;
+  updateSupportTicketInvestigation: Stmt;
+  setSupportTicketReplayRef: Stmt;
+  convertSupportTicketToCard: Stmt;
+  deleteSupportTicket: Stmt;
+  deleteSupportTicketsByProject: Stmt;
 
   // Bulk project cleanup
   deleteNotesByProject: Stmt;
