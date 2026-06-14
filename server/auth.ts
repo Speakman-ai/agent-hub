@@ -46,9 +46,19 @@ const PUBLIC_PATHS: readonly string[] = [
  */
 const PUBLIC_PREFIXES: readonly string[] = ['/api/auth/invites/'];
 
+/**
+ * Public paths that contain a dynamic segment and so can't be matched by
+ * exact string or static prefix. The project-scoped support-request intake
+ * (`POST /api/projects/:projectId/support-requests`) is intentionally
+ * unauthenticated — same posture as `/api/bug-reports` — and gated only by
+ * its own per-IP rate limiter.
+ */
+const PUBLIC_PATTERNS: readonly RegExp[] = [/^\/api\/projects\/[^/]+\/support-requests$/];
+
 function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
-  return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
+  return PUBLIC_PATTERNS.some((re) => re.test(pathname));
 }
 
 /**

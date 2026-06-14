@@ -124,6 +124,7 @@ import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
 import createPrResolveRoutes from './routes/pr-resolve.js';
 import createBugReportRoutes from './routes/bug-reports.js';
+import createSupportRequestRoutes from './routes/support-requests.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
@@ -985,6 +986,7 @@ app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
+app.use(createSupportRequestRoutes(routeDeps));
 app.use(
   createAuthRoutes({
     // When a user's last org membership is dropped and the user row is

@@ -141,6 +141,34 @@ describe('authMiddleware (API key)', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('passes through for the public project-scoped support-request intake path', () => {
+    // POST /api/projects/:projectId/support-requests is intentionally
+    // unauthenticated (per-IP rate limited in the route handler), so the
+    // dynamic projectId segment must match the public-path pattern even
+    // when an API key is configured.
+    config.apiKey = 'secret-key';
+    const next = vi.fn();
+    authMiddleware(
+      mockReq({ path: '/api/projects/agent-hub/support-requests' }),
+      mockRes() as unknown as Response,
+      next,
+    );
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('still gates a non-support project subpath behind auth', () => {
+    config.apiKey = 'secret-key';
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(
+      mockReq({ path: '/api/projects/agent-hub/board' }),
+      res as unknown as Response,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+
   it('returns 401 when key is required but not provided', () => {
     config.apiKey = 'secret-key';
     const next = vi.fn();
