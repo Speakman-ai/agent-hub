@@ -2433,6 +2433,35 @@ function initDb(dataDir: string): void {
         WHERE id = ?
           AND (project_id IS NULL OR project_id = ?)`,
     ),
+    // Overwrite a replay's blob-derived stats after a chunked append. The blob
+    // itself is replaced out-of-band (same storage_key); this just re-stamps the
+    // counts/sizes/meta the read API and listing surface from.
+    updateSessionReplayStats: db.prepare(
+      `UPDATE session_replays
+          SET duration_ms       = ?,
+              event_count       = ?,
+              size              = ?,
+              uncompressed_size = ?,
+              meta              = ?
+        WHERE id = ?`,
+    ),
+    // Same restamp, but only while the replay is still UNATTRIBUTED. This is the
+    // authoritative compare-and-update the chunked-append guard relies on: a
+    // concurrent `linkSessionReplay` (support-ticket / card / project link) that
+    // finalizes the row makes this match zero rows, so a post-finalization chunk
+    // is rejected at the DB level — no append lock can cover the link write.
+    updateSessionReplayStatsIfUnfinalized: db.prepare(
+      `UPDATE session_replays
+          SET duration_ms       = ?,
+              event_count       = ?,
+              size              = ?,
+              uncompressed_size = ?,
+              meta              = ?
+        WHERE id = ?
+          AND project_id IS NULL
+          AND support_ticket_id IS NULL
+          AND card_id IS NULL`,
+    ),
     deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
     // Sessions
     createSession: db.prepare(

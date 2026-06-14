@@ -1,10 +1,19 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
 import path from 'path';
+import { gunzipSync } from 'zlib';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps, SessionReplayRow } from '../types.js';
-import { storeReplay, readReplayEventsPage, DEFAULT_EVENTS_PAGE } from '../replays/replay-store.js';
+import {
+  storeReplay,
+  readReplayEventsPage,
+  appendReplayEvents,
+  ReplayEventCapError,
+  ReplayFinalizedError,
+  ReplayNeedsSnapshotError,
+  DEFAULT_EVENTS_PAGE,
+} from '../replays/replay-store.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -44,11 +53,26 @@ const MAX_EVENTS = 20_000;
 // cannot be reconstructed, so we refuse it rather than store a dead ref.
 const RRWEB_FULL_SNAPSHOT = 2;
 
+// ── Chunked-append endpoint (POST /api/replays/:id/events) ──────────
+// A streaming client picks an id and flushes batches over the lifetime of a
+// session, so the per-IP budget is far more generous than the one-shot ingest.
+const EVENTS_RATE_LIMIT_MAX = 600; // ~10 batches/min/IP over the hour window
+// rrweb batches gzip very well; bound the post-inflation byte count with a hard
+// ceiling that also guards against a gzip bomb (applied by both express's own
+// inflate `limit` and our manual gunzip `maxOutputLength`).
+const MAX_BATCH_DECOMPRESSED_BYTES = 16 * 1024 * 1024; // 16 MB after gunzip
+const MAX_EVENTS_PER_BATCH = 10_000;
+// A caller-supplied id becomes both the PK and (sanitised) the storage key, so
+// constrain it to the uuid-ish charset to keep the key 1:1 with the id.
+const REPLAY_ID_RE = /^[A-Za-z0-9._-]{8,200}$/;
+
 // ─── Rate limit ──────────────────────────────────────────────────
 export const _rateBuckets = new Map<string, { count: number; resetAt: number }>();
+export const _eventsRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 export function _resetRateLimit(): void {
   _rateBuckets.clear();
+  _eventsRateBuckets.clear();
 }
 
 function ipFromReq(req: Request): string {
@@ -59,18 +83,26 @@ function ipFromReq(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
 
-function rateLimitCheck(ip: string): { ok: boolean; retryAfterMs: number } {
+function bucketCheck(
+  buckets: Map<string, { count: number; resetAt: number }>,
+  ip: string,
+  max: number,
+): { ok: boolean; retryAfterMs: number } {
   const now = Date.now();
-  const entry = _rateBuckets.get(ip);
+  const entry = buckets.get(ip);
   if (!entry || entry.resetAt <= now) {
-    _rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    buckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return { ok: true, retryAfterMs: 0 };
   }
-  if (entry.count >= RATE_LIMIT_MAX) {
+  if (entry.count >= max) {
     return { ok: false, retryAfterMs: entry.resetAt - now };
   }
   entry.count += 1;
   return { ok: true, retryAfterMs: 0 };
+}
+
+function rateLimitCheck(ip: string): { ok: boolean; retryAfterMs: number } {
+  return bucketCheck(_rateBuckets, ip, RATE_LIMIT_MAX);
 }
 
 // ─── Validation ──────────────────────────────────────────────────
@@ -86,13 +118,23 @@ export interface ValidatedReplay {
   meta: Record<string, unknown> | undefined;
 }
 
+interface ValidateOpts {
+  /** Require at least one rrweb full snapshot (type 2) in the array. */
+  requireSnapshot: boolean;
+  /** Upper bound on the number of events in this single payload. */
+  maxEvents: number;
+}
+
 /**
- * Validate a parsed replay request body. Pure (no IO) so it can be unit-tested.
- * Requires a non-empty `events` array whose entries each carry a numeric
- * rrweb `type` and `timestamp`; `meta`, when present, must be a plain object.
+ * Validate a parsed `{ events, meta? }` payload. Pure (no IO) so it can be
+ * unit-tested. Requires a non-empty `events` array whose entries each carry a
+ * numeric rrweb `type` and `timestamp`; `meta`, when present, must be a plain
+ * object. `requireSnapshot` enforces the minimum-replayable shape (a full
+ * snapshot anywhere in the array).
  */
-export function validateReplayPayload(
+function validateEvents(
   body: unknown,
+  opts: ValidateOpts,
 ): { ok: true; value: ValidatedReplay } | { ok: false; error: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'body must be a JSON object' };
@@ -101,8 +143,8 @@ export function validateReplayPayload(
   if (!Array.isArray(events) || events.length === 0) {
     return { ok: false, error: 'events must be a non-empty array' };
   }
-  if (events.length > MAX_EVENTS) {
-    return { ok: false, error: `events exceeds ${MAX_EVENTS} cap` };
+  if (events.length > opts.maxEvents) {
+    return { ok: false, error: `events exceeds ${opts.maxEvents} cap` };
   }
   let hasFullSnapshot = false;
   for (const e of events) {
@@ -116,10 +158,9 @@ export function validateReplayPayload(
     }
     if ((e as ReplayEvent).type === RRWEB_FULL_SNAPSHOT) hasFullSnapshot = true;
   }
-  // Enforce the minimum replayable shape: without a full snapshot the events
-  // can't reconstruct the DOM, and the resulting ref is later trusted enough to
-  // surface in intake prompts.
-  if (!hasFullSnapshot) {
+  // Without a full snapshot the events can't reconstruct the DOM, and the
+  // resulting ref is later trusted enough to surface in intake prompts.
+  if (opts.requireSnapshot && !hasFullSnapshot) {
     return { ok: false, error: 'events must include a full snapshot (type 2)' };
   }
   if (meta != null && (typeof meta !== 'object' || Array.isArray(meta))) {
@@ -132,6 +173,67 @@ export function validateReplayPayload(
       meta: (meta as Record<string, unknown> | undefined) ?? undefined,
     },
   };
+}
+
+/**
+ * Validate a one-shot replay ingest body (`POST /api/replays`). Always requires
+ * a full snapshot, since the whole capture arrives at once.
+ */
+export function validateReplayPayload(
+  body: unknown,
+): { ok: true; value: ValidatedReplay } | { ok: false; error: string } {
+  return validateEvents(body, { requireSnapshot: true, maxEvents: MAX_EVENTS });
+}
+
+/**
+ * Validate one chunk of a streamed replay (`POST /api/replays/:id/events`). The
+ * FIRST chunk (no replay row yet) must carry the full snapshot so the capture is
+ * replayable; later chunks append incremental events and need not repeat it.
+ */
+export function validateEventBatch(
+  body: unknown,
+  isFirstChunk: boolean,
+): { ok: true; value: ValidatedReplay } | { ok: false; error: string } {
+  return validateEvents(body, {
+    requireSnapshot: isFirstChunk,
+    maxEvents: MAX_EVENTS_PER_BATCH,
+  });
+}
+
+/**
+ * Decode a request body into a parsed JSON object, transparently gunzipping a
+ * raw gzip-framed body (magic `1f 8b`). A `Content-Encoding: gzip` body is
+ * already inflated by express before it reaches here, so we sniff the bytes
+ * rather than the header to avoid a double-inflate. The decompressed size is
+ * bounded by a hard ceiling so a small gzip body can't expand into a memory
+ * bomb. Pure apart from the in-memory inflate.
+ */
+export function decodeReplayBatchBody(
+  raw: Buffer,
+): { ok: true; value: unknown } | { ok: false; status: number; error: string } {
+  if (!Buffer.isBuffer(raw) || raw.length === 0) {
+    return { ok: false, status: 400, error: 'empty request body' };
+  }
+  const looksGzip = raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b;
+  let jsonBuf: Buffer;
+  if (looksGzip) {
+    try {
+      jsonBuf = gunzipSync(raw, { maxOutputLength: MAX_BATCH_DECOMPRESSED_BYTES });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/maxOutputLength|buffer/i.test(msg)) {
+        return { ok: false, status: 413, error: 'decompressed payload too large' };
+      }
+      return { ok: false, status: 400, error: 'malformed gzip payload' };
+    }
+  } else {
+    jsonBuf = raw;
+  }
+  try {
+    return { ok: true, value: JSON.parse(jsonBuf.toString('utf-8')) };
+  } catch {
+    return { ok: false, status: 400, error: 'body must be valid JSON' };
+  }
 }
 
 // ─── Route factory ───────────────────────────────────────────────
@@ -231,6 +333,107 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Replays] Unexpected failure:', message);
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // ── Chunked append (public) ──────────────────────────────────────
+  // A streaming client picks a replay id and POSTs gzipped batches of rrweb
+  // events over the lifetime of a capture. The first batch creates the replay
+  // (and must carry a full snapshot); later batches append. Public + CORS *,
+  // mirroring the one-shot ingest, but on its own (more generous) per-IP budget.
+  router.options('/api/replays/:id/events', applyCors, (_req, res) => {
+    res.status(204).end();
+  });
+
+  // Cheap admission gate that runs BEFORE the raw body is read/inflated, so a
+  // rate-limited or malformed-id caller can't force up to 16 MB of body parsing
+  // + gunzip work on a public, unauthenticated endpoint. Both checks here are
+  // O(1) and touch no body bytes.
+  function eventsIngestGate(req: Request, res: Response, next: NextFunction): void {
+    const ip = ipFromReq(req);
+    const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+    if (!rl.ok) {
+      res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+      res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+      return;
+    }
+    if (!REPLAY_ID_RE.test(String(req.params.id))) {
+      res.status(400).json({ error: 'invalid replay id' });
+      return;
+    }
+    next();
+  }
+
+  router.post(
+    '/api/replays/:id/events',
+    applyCors,
+    eventsIngestGate,
+    // Accept any content type as raw bytes. express inflates a
+    // `Content-Encoding: gzip` body itself (bounded by `limit`); a raw
+    // gzip-framed body with no encoding header passes through and is inflated in
+    // decodeReplayBatchBody. `limit` bounds the post-inflation byte count. This
+    // only runs once the gate above has admitted the request.
+    express.raw({ type: () => true, limit: MAX_BATCH_DECOMPRESSED_BYTES }),
+    async (req: Request, res: Response) => {
+      try {
+        const id = String(req.params.id);
+        const decoded = decodeReplayBatchBody(req.body as Buffer);
+        if (!decoded.ok) {
+          return res.status(decoded.status).json({ error: decoded.error });
+        }
+
+        // Structural validation only (shape / non-empty / per-batch cap / meta);
+        // it does NOT depend on stored state, so it's safe to run before the
+        // lock. The state-dependent decisions — whether the replay is finalized
+        // and whether this is the creating (first) chunk that must carry a
+        // snapshot — are enforced INSIDE appendReplayEvents' per-id critical
+        // section against a freshly-read row, eliminating the TOCTOU between a
+        // stale read here and the serialized blob overwrite.
+        const parsed = validateEventBatch(decoded.value, false);
+        if (!parsed.ok) {
+          return res.status(400).json({ error: parsed.error });
+        }
+
+        let result;
+        try {
+          result = await appendReplayEvents(
+            { stmts, config },
+            { id, events: parsed.value.events, meta: parsed.value.meta ?? null },
+            {
+              totalEventCap: MAX_EVENTS,
+              rejectIfFinalized: true,
+              requireSnapshotOnFirstChunk: true,
+            },
+          );
+        } catch (err) {
+          if (err instanceof ReplayNeedsSnapshotError) {
+            return res.status(400).json({ error: err.message });
+          }
+          if (err instanceof ReplayFinalizedError) {
+            return res.status(409).json({ error: err.message });
+          }
+          if (err instanceof ReplayEventCapError) {
+            return res.status(413).json({ error: err.message });
+          }
+          if (err instanceof ArtifactStoreUnavailableError) {
+            return res.status(503).json({ error: err.message });
+          }
+          throw err;
+        }
+
+        const { row, created } = result;
+        return res.status(created ? 201 : 200).json({
+          replayId: row.id,
+          created,
+          eventCount: row.event_count,
+          size: row.size,
+          durationMs: row.duration_ms,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[Replays] Chunked append failed:', message);
         return res.status(500).json({ error: message });
       }
     },

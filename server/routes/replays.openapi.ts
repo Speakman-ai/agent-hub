@@ -128,6 +128,72 @@ const replayIdParam = {
   }),
 };
 
+const ReplayBatchRequestSchema = registerComponent(
+  'ReplayBatchIngestRequest',
+  z
+    .object({
+      events: z
+        .array(
+          z.object({
+            type: z.number().openapi({ description: 'rrweb EventType.' }),
+            timestamp: z.number().openapi({ description: 'Event timestamp (ms epoch).' }),
+            data: z.unknown().optional(),
+          }),
+        )
+        .min(1)
+        .openapi({ description: 'One batch (chunk) of rrweb events.' }),
+      meta: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .openapi({ description: 'Optional context, honored on the first chunk only.' }),
+    })
+    .openapi({
+      description:
+        'A chunk of a streamed replay. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body).',
+    }),
+);
+
+const ReplayBatchSuccessResponse = z
+  .object({
+    replayId: z.string(),
+    created: z.boolean().openapi({ description: 'True when this chunk created the replay.' }),
+    eventCount: z.number().openapi({ description: 'Total events stored after this chunk.' }),
+    size: z.number().openapi({ description: 'Compressed (gzip) blob size in bytes.' }),
+    durationMs: z.number().openapi({ description: 'Span across all stored events (ms).' }),
+  })
+  .openapi({ description: 'Running totals for the replay after appending this chunk.' });
+
+registerPath({
+  method: 'options',
+  path: '/api/replays/{id}/events',
+  tags: ['Bug Reports'],
+  summary: 'CORS preflight for chunked replay ingest (returns 204)',
+  request: replayIdParam,
+  responses: { 204: { description: 'CORS preflight OK.' } },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/replays/{id}/events',
+  tags: ['Bug Reports'],
+  summary: 'Public chunked session-replay ingest',
+  description:
+    'Unauthenticated, rate-limited (600 / hour per IP). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Once a replay is attributed to a project / ticket / card it is finalized and rejects further chunks (409).',
+  request: {
+    ...replayIdParam,
+    body: { content: jsonContent(ReplayBatchRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Chunk appended.', content: jsonContent(ReplayBatchSuccessResponse) },
+    201: { description: 'Replay created.', content: jsonContent(ReplayBatchSuccessResponse) },
+    400: errorResponse('Bad id, undecodable body, or validation failure.'),
+    409: errorResponse('Replay is finalized (already attributed) and cannot accept more events.'),
+    413: errorResponse('Decompressed payload or total event count exceeds its cap.'),
+    429: errorResponse('Per-IP rate limit exceeded.'),
+    503: errorResponse('The replay’s storage backend could not be resolved.'),
+  },
+});
+
 registerPath({
   method: 'get',
   path: '/api/replays/{id}',

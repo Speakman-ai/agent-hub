@@ -59,10 +59,22 @@ const PUBLIC_PREFIXES: readonly string[] = ['/api/auth/invites/'];
  */
 const PUBLIC_PATTERNS: readonly RegExp[] = [/^\/api\/projects\/[^/]+\/support-requests$/];
 
-function isPublicPath(pathname: string): boolean {
+/**
+ * Public paths that are method-scoped: the same `:id`-bearing path is public for
+ * one verb and gated for another. Chunked session-replay ingest
+ * (`POST /api/replays/:id/events`, plus its CORS preflight) is unauthenticated
+ * like the one-shot ingest, but the `GET` read surfaces on the same path stay
+ * gated — so we can't widen `PUBLIC_PATTERNS` (method-agnostic) for it.
+ */
+const PUBLIC_METHOD_PATTERNS: readonly { methods: readonly string[]; re: RegExp }[] = [
+  { methods: ['POST', 'OPTIONS'], re: /^\/api\/replays\/[^/]+\/events$/ },
+];
+
+function isPublicPath(pathname: string, method: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
   if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
-  return PUBLIC_PATTERNS.some((re) => re.test(pathname));
+  if (PUBLIC_PATTERNS.some((re) => re.test(pathname))) return true;
+  return PUBLIC_METHOD_PATTERNS.some((p) => p.methods.includes(method) && p.re.test(pathname));
 }
 
 /**
@@ -230,7 +242,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  if (isPublicPath(req.path)) {
+  if (isPublicPath(req.path, req.method)) {
     next();
     return;
   }

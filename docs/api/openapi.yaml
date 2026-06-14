@@ -4936,6 +4936,35 @@ components:
         - eventsUrl
         - defaultPageSize
       description: Session-replay metadata row.
+    ReplayBatchIngestRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: number
+                description: rrweb EventType.
+              timestamp:
+                type: number
+                description: Event timestamp (ms epoch).
+              data:
+                nullable: true
+            required:
+              - type
+              - timestamp
+          minItems: 1
+          description: One batch (chunk) of rrweb events.
+        meta:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: Optional context, honored on the first chunk only.
+      required:
+        - events
+      description: "A chunk of a streamed replay. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body)."
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -16338,12 +16367,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
-  /api/replays/{id}:
-    get:
+  /api/replays/{id}/events:
+    options:
       tags:
         - Bug Reports
-      summary: Session-replay metadata (authenticated)
-      description: "Returns the `session_replays` metadata row (duration, sizes, ticket/card links, events URL). Authenticated, and authorized per-replay: a replay linked to a project is readable only by callers who can view that project; an unattributed replay is readable only by a privileged caller. Unauthorized access is masked as 404."
+      summary: CORS preflight for chunked replay ingest (returns 204)
       parameters:
         - schema:
             type: string
@@ -16353,19 +16381,113 @@ paths:
           name: id
           in: path
       responses:
+        "204":
+          description: CORS preflight OK.
+    post:
+      tags:
+        - Bug Reports
+      summary: Public chunked session-replay ingest
+      description: Unauthenticated, rate-limited (600 / hour per IP). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Once a replay is attributed to a project / ticket / card it is finalized and rejects further chunks (409).
+      parameters:
+        - schema:
+            type: string
+            description: Replay id (uuid).
+          required: true
+          description: Replay id (uuid).
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayBatchIngestRequest"
+      responses:
         "200":
-          description: Metadata.
+          description: Chunk appended.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionReplayMetadata"
-        "404":
-          description: No replay with that id, or the caller is not authorized to read it.
+                type: object
+                properties:
+                  replayId:
+                    type: string
+                  created:
+                    type: boolean
+                    description: True when this chunk created the replay.
+                  eventCount:
+                    type: number
+                    description: Total events stored after this chunk.
+                  size:
+                    type: number
+                    description: Compressed (gzip) blob size in bytes.
+                  durationMs:
+                    type: number
+                    description: Span across all stored events (ms).
+                required:
+                  - replayId
+                  - created
+                  - eventCount
+                  - size
+                  - durationMs
+                description: Running totals for the replay after appending this chunk.
+        "201":
+          description: Replay created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayId:
+                    type: string
+                  created:
+                    type: boolean
+                    description: True when this chunk created the replay.
+                  eventCount:
+                    type: number
+                    description: Total events stored after this chunk.
+                  size:
+                    type: number
+                    description: Compressed (gzip) blob size in bytes.
+                  durationMs:
+                    type: number
+                    description: Span across all stored events (ms).
+                required:
+                  - replayId
+                  - created
+                  - eventCount
+                  - size
+                  - durationMs
+                description: Running totals for the replay after appending this chunk.
+        "400":
+          description: Bad id, undecodable body, or validation failure.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
-  /api/replays/{id}/events:
+        "409":
+          description: Replay is finalized (already attributed) and cannot accept more events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "413":
+          description: Decompressed payload or total event count exceeds its cap.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "429":
+          description: Per-IP rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "503":
+          description: The replay’s storage backend could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
     get:
       tags:
         - Bug Reports
@@ -16454,6 +16576,33 @@ paths:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "503":
           description: The replay’s storage backend could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/{id}:
+    get:
+      tags:
+        - Bug Reports
+      summary: Session-replay metadata (authenticated)
+      description: "Returns the `session_replays` metadata row (duration, sizes, ticket/card links, events URL). Authenticated, and authorized per-replay: a replay linked to a project is readable only by callers who can view that project; an unattributed replay is readable only by a privileged caller. Unauthorized access is masked as 404."
+      parameters:
+        - schema:
+            type: string
+            description: Replay id (uuid).
+          required: true
+          description: Replay id (uuid).
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReplayMetadata"
+        "404":
+          description: No replay with that id, or the caller is not authorized to read it.
           content:
             application/json:
               schema:

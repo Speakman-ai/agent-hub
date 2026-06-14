@@ -41,6 +41,10 @@ export interface ReplayBlob {
 
 const REPLAY_CONTENT_TYPE = 'application/gzip';
 
+/** rrweb EventType.FullSnapshot — the marker a first chunk must carry so the
+ *  capture can reconstruct the DOM. */
+const RRWEB_FULL_SNAPSHOT = 2;
+
 /** Default page size when a reader doesn't ask for one. */
 export const DEFAULT_EVENTS_PAGE = 500;
 /** Hard cap on a single page so a huge `limit` can't defeat pagination. */
@@ -196,6 +200,254 @@ export async function storeReplay(
 }
 
 /**
+ * Thrown by `appendReplayEvents` when a chunked append would push a capture past
+ * its total-event ceiling. The route maps this to a 413 so a streaming client
+ * can't grow a single replay without bound across many batches.
+ */
+export class ReplayEventCapError extends Error {
+  readonly total: number;
+  readonly cap: number;
+  constructor(total: number, cap: number) {
+    super(`replay would hold ${total} events, exceeding the ${cap} cap`);
+    this.name = 'ReplayEventCapError';
+    this.total = total;
+    this.cap = cap;
+  }
+}
+
+/**
+ * Thrown by `appendReplayEvents` when `rejectIfFinalized` is set and the replay
+ * (re-read inside the per-id lock) is already attributed to a project / ticket /
+ * card. The route maps this to a 409 anti-tamper guard. Because the check runs
+ * INSIDE the serialized section, a link landing concurrently is observed here —
+ * no TOCTOU window between a stale route read and the blob overwrite.
+ */
+export class ReplayFinalizedError extends Error {
+  constructor() {
+    super('replay is finalized and cannot accept more events');
+    this.name = 'ReplayFinalizedError';
+  }
+}
+
+/**
+ * Thrown by `appendReplayEvents` when `requireSnapshotOnFirstChunk` is set and
+ * the batch that creates the replay (determined under the lock) carries no rrweb
+ * full snapshot. The route maps this to a 400. Deciding "first chunk?" inside
+ * the lock means an incremental chunk that raced behind the creating chunk is
+ * correctly treated as an append, not wrongly rejected for lacking a snapshot.
+ */
+export class ReplayNeedsSnapshotError extends Error {
+  constructor() {
+    super('first chunk must include a full snapshot (type 2)');
+    this.name = 'ReplayNeedsSnapshotError';
+  }
+}
+
+export interface AppendReplayInput {
+  /** Caller-supplied replay id (the `:id` path param). The first batch creates
+   *  the row under this id; later batches append to it. */
+  id: string;
+  events: ReplayEvent[];
+  meta?: Record<string, unknown> | null;
+}
+
+export interface AppendReplayOptions {
+  /** Upper bound on the merged event count; exceeding throws ReplayEventCapError. */
+  totalEventCap?: number;
+  /** Reject (ReplayFinalizedError) when the under-lock row is already attributed. */
+  rejectIfFinalized?: boolean;
+  /** Reject (ReplayNeedsSnapshotError) when the creating chunk has no snapshot. */
+  requireSnapshotOnFirstChunk?: boolean;
+}
+
+export interface AppendReplayResult {
+  row: SessionReplayRow;
+  /** True when this batch created the replay (first chunk), false on append. */
+  created: boolean;
+}
+
+/** A replay is "finalized" once triage has attributed it to a project, support
+ *  ticket, or card. Pure — no IO. */
+export function isReplayFinalized(
+  row: Pick<SessionReplayRow, 'project_id' | 'support_ticket_id' | 'card_id'>,
+): boolean {
+  return Boolean(row.project_id || row.support_ticket_id || row.card_id);
+}
+
+// ── Per-replay critical section ──────────────────────────────────
+//
+// A chunked append is a read-modify-write on a single blob slot: read the
+// current blob, concatenate this batch, overwrite the key. Two overlapping
+// appends to the SAME id would both read the same base blob and the later
+// `put` would clobber the earlier one — silently dropping an already-acked
+// chunk. Worse, an append straddles `await`s (blob read + write), so a
+// *synchronous* attribution write (`linkSessionReplay`) could finalize the row
+// mid-append and the in-flight chunk would land AFTER finalization, defeating
+// the 409 anti-tamper guard.
+//
+// Both appends AND attribution (`linkReplay`) run inside this per-id promise
+// chain, so they are mutually exclusive: a link can never interleave with an
+// in-flight append's blob write, and an append always observes the prior link's
+// committed finalized state. This holds within the single-process Hub (the
+// documented deployment topology); a future multi-process / multi-host backend
+// would need storage-level coordination (conditional put / object versioning)
+// instead.
+const _replayLocks = new Map<string, Promise<unknown>>();
+
+function withReplayLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _replayLocks.get(id) ?? Promise.resolve();
+  // Run `fn` only after the previous critical section for this id settles
+  // (success OR failure — `.then(fn, fn)` so one failure can't wedge the chain).
+  const run = prev.then(fn, fn);
+  // Park a rejection-swallowed tail as the chain head so the next waiter never
+  // sees an unhandled rejection from our result.
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  _replayLocks.set(id, tail);
+  // Garbage-collect the map entry once we're the last link in the chain.
+  void tail.finally(() => {
+    if (_replayLocks.get(id) === tail) _replayLocks.delete(id);
+  });
+  return run;
+}
+
+/**
+ * Append a batch of events to a replay, supporting the chunked-ingest endpoint.
+ * Appends AND attribution (`linkReplay`) to the same id are SERIALIZED (see
+ * `withReplayLock`) so a concurrent overlapping batch can never drop an
+ * already-acknowledged chunk, and a `linkReplay` finalize can never interleave
+ * with an in-flight append's blob write.
+ *
+ * ALL state-dependent decisions are made INSIDE the lock against a freshly-read
+ * row, so there is no TOCTOU window between a stale caller read and the blob
+ * overwrite:
+ *   - No row yet → create it via `storeReplay` (first chunk). When
+ *     `requireSnapshotOnFirstChunk` is set, the creating batch must carry an
+ *     rrweb full snapshot or `ReplayNeedsSnapshotError` is thrown.
+ *   - Row exists → read the existing blob, concatenate the new events, re-gzip,
+ *     overwrite the SAME storage key, and re-stamp the metadata row's
+ *     counts/sizes/duration. Existing `meta` wins (first-write); a still-null
+ *     meta is filled from this batch.
+ *   - `rejectIfFinalized` → throw `ReplayFinalizedError` when the replay is
+ *     attributed to a project / ticket / card. Attribution (`linkSessionReplay`)
+ *     does NOT take the append lock, so the check is made authoritative at the
+ *     DB via a guarded compare-and-update (see the CAS-before-blob note below),
+ *     not just the under-lock read — a link landing during the blob read/write
+ *     window still rejects the chunk.
+ *
+ * `totalEventCap` bounds the merged length — exceeding it throws
+ * `ReplayEventCapError` and leaves the stored blob untouched (the cap is checked
+ * before any write).
+ */
+export function appendReplayEvents(
+  deps: ReplayStoreDeps,
+  input: AppendReplayInput,
+  options: AppendReplayOptions = {},
+): Promise<AppendReplayResult> {
+  return withReplayLock(input.id, () => appendReplayEventsUnlocked(deps, input, options));
+}
+
+async function appendReplayEventsUnlocked(
+  deps: ReplayStoreDeps,
+  input: AppendReplayInput,
+  options: AppendReplayOptions,
+): Promise<AppendReplayResult> {
+  const { stmts, config } = deps;
+  const totalEventCap = options.totalEventCap ?? Infinity;
+  // Re-read the row inside the critical section so finalized / first-chunk state
+  // can't be stale relative to a concurrent create or link.
+  const existing = stmts.getSessionReplay.get(input.id) as SessionReplayRow | undefined;
+
+  if (existing && options.rejectIfFinalized && isReplayFinalized(existing)) {
+    throw new ReplayFinalizedError();
+  }
+
+  if (!existing) {
+    if (
+      options.requireSnapshotOnFirstChunk &&
+      !input.events.some((e) => e.type === RRWEB_FULL_SNAPSHOT)
+    ) {
+      throw new ReplayNeedsSnapshotError();
+    }
+    if (input.events.length > totalEventCap) {
+      throw new ReplayEventCapError(input.events.length, totalEventCap);
+    }
+    const row = await storeReplay(deps, {
+      id: input.id,
+      events: input.events,
+      meta: input.meta ?? null,
+    });
+    return { row, created: true };
+  }
+
+  const store = getArtifactStoreForLocation(existing, config);
+  const prev = decodeReplayBlob(await store.getBuffer(existing.storage_key));
+  const mergedEvents = prev.events.concat(input.events);
+  if (mergedEvents.length > totalEventCap) {
+    throw new ReplayEventCapError(mergedEvents.length, totalEventCap);
+  }
+
+  const meta = prev.meta ?? input.meta ?? null;
+  const { buffer, uncompressedSize } = encodeReplayBlob(mergedEvents, meta);
+
+  // CAS-before-blob, a DB-level backstop UNDER the per-id lock. The lock already
+  // makes `linkReplay` mutually exclusive with this whole critical section, so
+  // attribution cannot interleave with the `getBuffer`/`put` awaits here. As a
+  // second, storage-independent authority we still claim the stats with a
+  // guarded UPDATE that only matches while the row is unattributed: if a finalize
+  // ever lands before this statement (e.g. a future link path that bypasses the
+  // lock), it matches zero rows and we reject WITHOUT having touched the blob.
+  // The blob is overwritten only AFTER a successful claim.
+  if (options.rejectIfFinalized) {
+    const claimed = stmts.updateSessionReplayStatsIfUnfinalized.run(
+      computeDurationMs(mergedEvents),
+      mergedEvents.length,
+      buffer.length,
+      uncompressedSize,
+      meta ? JSON.stringify(meta) : null,
+      input.id,
+    );
+    if (claimed.changes === 0) {
+      // Finalized (or removed) during our read window — the authoritative reject.
+      throw new ReplayFinalizedError();
+    }
+  } else {
+    stmts.updateSessionReplayStats.run(
+      computeDurationMs(mergedEvents),
+      mergedEvents.length,
+      buffer.length,
+      uncompressedSize,
+      meta ? JSON.stringify(meta) : null,
+      input.id,
+    );
+  }
+
+  try {
+    await store.put(existing.storage_key, buffer, REPLAY_CONTENT_TYPE);
+  } catch (err) {
+    // The stats were claimed but the blob write failed — roll the row back to
+    // its prior committed stats so it never claims events the blob lacks.
+    try {
+      stmts.updateSessionReplayStats.run(
+        existing.duration_ms,
+        existing.event_count,
+        existing.size,
+        existing.uncompressed_size,
+        existing.meta,
+        input.id,
+      );
+    } catch {
+      /* best-effort restore — surface the original put error */
+    }
+    throw err;
+  }
+
+  return { row: stmts.getSessionReplay.get(input.id) as SessionReplayRow, created: false };
+}
+
+/**
  * Read a stored replay's blob and return one paginated page of its events.
  * Resolves the blob's ORIGINAL backend from the row (not current config), so a
  * storage reconfiguration doesn't strand existing replays.
@@ -266,23 +518,31 @@ export interface ReplayLink {
  * returns the current row (possibly unchanged), or null when the ref is
  * unparseable or no such replay row exists (e.g. a file-only legacy capture).
  * Never throws on a missing row.
+ *
+ * ASYNC + LOCKED: attribution runs inside the SAME per-id critical section as
+ * `appendReplayEvents` (see `withReplayLock`). This is what closes the finalize
+ * race — a link cannot land while an append is mid-write (it waits for the
+ * append to commit or roll back first), and an append always observes a prior
+ * link's finalized state. Callers must `await` it.
  */
 export function linkReplay(
   stmts: Stmts,
   ref: string | null | undefined,
   link: ReplayLink,
-): SessionReplayRow | null {
+): Promise<SessionReplayRow | null> {
   const id = parseReplayIdFromRef(ref);
-  if (!id) return null;
-  const existing = stmts.getSessionReplay.get(id) as SessionReplayRow | undefined;
-  if (!existing) return null;
-  const projectId = link.projectId ?? null;
-  stmts.linkSessionReplay.run(
-    projectId,
-    link.supportTicketId ?? null,
-    link.cardId ?? null,
-    id,
-    projectId, // WHERE ownership guard — same value as the COALESCE fill
-  );
-  return stmts.getSessionReplay.get(id) as SessionReplayRow;
+  if (!id) return Promise.resolve(null);
+  return withReplayLock(id, async () => {
+    const existing = stmts.getSessionReplay.get(id) as SessionReplayRow | undefined;
+    if (!existing) return null;
+    const projectId = link.projectId ?? null;
+    stmts.linkSessionReplay.run(
+      projectId,
+      link.supportTicketId ?? null,
+      link.cardId ?? null,
+      id,
+      projectId, // WHERE ownership guard — same value as the COALESCE fill
+    );
+    return stmts.getSessionReplay.get(id) as SessionReplayRow;
+  });
 }

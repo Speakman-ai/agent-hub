@@ -25,13 +25,13 @@ import { linkReplay } from '../replays/replay-store.js';
  * Used for the convert path, where the ticket's `replay_ref` was already
  * validated for this project at create/PATCH time.
  */
-function tryLinkReplay(
+async function tryLinkReplay(
   stmts: RouteDeps['stmts'],
   replayRef: string | null | undefined,
   link: { projectId?: string | null; supportTicketId?: string | null; cardId?: string | null },
-): void {
+): Promise<void> {
   try {
-    linkReplay(stmts, replayRef, link);
+    await linkReplay(stmts, replayRef, link);
   } catch (err) {
     console.error('[SupportTickets] Failed to link replay:', (err as Error).message);
   }
@@ -50,14 +50,14 @@ function tryLinkReplay(
  * another project's capture into this ticket's triage prompt. Returns true to
  * keep the ref, false to clear it. Defensive — any error clears.
  */
-function replayRefBelongsToProject(
+async function replayRefBelongsToProject(
   stmts: RouteDeps['stmts'],
   replayRef: string,
   projectId: string,
   ticketId: string,
-): boolean {
+): Promise<boolean> {
   try {
-    const row = linkReplay(stmts, replayRef, { projectId, supportTicketId: ticketId });
+    const row = await linkReplay(stmts, replayRef, { projectId, supportTicketId: ticketId });
     return row !== null && row.project_id === projectId;
   } catch (err) {
     console.error('[SupportTickets] replay link failed; clearing ref:', (err as Error).message);
@@ -103,7 +103,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     res.json(ticket);
   });
 
-  router.post('/api/projects/:projectId/support-tickets', (req: Request, res: Response) => {
+  router.post('/api/projects/:projectId/support-tickets', async (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -131,7 +131,10 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       // ref can't be attributed to THIS project, clear it before anything reads
       // it — otherwise the bug investigation below would resolve a foreign
       // capture via the legacy `/uploads` path (which bypasses canViewReplay).
-      if (replayRef && !replayRefBelongsToProject(stmts, replayRef, project.id, ticket.id)) {
+      if (
+        replayRef &&
+        !(await replayRefBelongsToProject(stmts, replayRef, project.id, ticket.id))
+      ) {
         ticket = setSupportTicketReplayRef(ticket.id, null)!;
       }
       broadcast({ type: 'support_ticket_created', ticket });
@@ -155,50 +158,56 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     }
   });
 
-  router.patch('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
+  router.patch(
+    '/api/projects/:projectId/support-tickets/:id',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const existing = getSupportTicket(req.params.id as string);
-    if (!existing || existing.project_id !== project.id) {
-      return res.status(404).json({ error: 'Support ticket not found' });
-    }
-
-    const { status, aiSummary, aiInvestigation, replayRef } = req.body as {
-      status?: string;
-      aiSummary?: string | null;
-      aiInvestigation?: string | null;
-      replayRef?: string | null;
-    };
-
-    try {
-      let ticket = existing;
-      if (status !== undefined) {
-        ticket = updateSupportTicketStatus(ticket.id, status as SupportTicketStatus)!;
+      const existing = getSupportTicket(req.params.id as string);
+      if (!existing || existing.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
       }
-      if (aiSummary !== undefined || aiInvestigation !== undefined) {
-        // Pass the raw values through: the store preserves fields left
-        // `undefined` and treats an explicit `null` as a clear, so sending
-        // only one field never wipes the other.
-        ticket = recordSupportTicketInvestigation(ticket.id, {
-          summary: aiSummary,
-          details: aiInvestigation,
-        })!;
-      }
-      if (replayRef !== undefined) {
-        ticket = setSupportTicketReplayRef(ticket.id, replayRef)!;
-        // Keep the ref only if it attributes to THIS project; otherwise clear it
-        // so the legacy investigation path can't resolve a foreign capture.
-        if (replayRef && !replayRefBelongsToProject(stmts, replayRef, project.id, ticket.id)) {
-          ticket = setSupportTicketReplayRef(ticket.id, null)!;
+
+      const { status, aiSummary, aiInvestigation, replayRef } = req.body as {
+        status?: string;
+        aiSummary?: string | null;
+        aiInvestigation?: string | null;
+        replayRef?: string | null;
+      };
+
+      try {
+        let ticket = existing;
+        if (status !== undefined) {
+          ticket = updateSupportTicketStatus(ticket.id, status as SupportTicketStatus)!;
         }
+        if (aiSummary !== undefined || aiInvestigation !== undefined) {
+          // Pass the raw values through: the store preserves fields left
+          // `undefined` and treats an explicit `null` as a clear, so sending
+          // only one field never wipes the other.
+          ticket = recordSupportTicketInvestigation(ticket.id, {
+            summary: aiSummary,
+            details: aiInvestigation,
+          })!;
+        }
+        if (replayRef !== undefined) {
+          ticket = setSupportTicketReplayRef(ticket.id, replayRef)!;
+          // Keep the ref only if it attributes to THIS project; otherwise clear it
+          // so the legacy investigation path can't resolve a foreign capture.
+          if (
+            replayRef &&
+            !(await replayRefBelongsToProject(stmts, replayRef, project.id, ticket.id))
+          ) {
+            ticket = setSupportTicketReplayRef(ticket.id, null)!;
+          }
+        }
+        broadcast({ type: 'support_ticket_updated', ticket });
+        res.json(ticket);
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
       }
-      broadcast({ type: 'support_ticket_updated', ticket });
-      res.json(ticket);
-    } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
-    }
-  });
+    },
+  );
 
   /**
    * Promote a support ticket to a kanban card.
@@ -214,7 +223,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
    */
   router.post(
     '/api/projects/:projectId/support-tickets/:id/convert',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -273,7 +282,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       // Carry the replay attribution onto the new card (project/ticket links
       // are preserved via COALESCE).
       if (ticket.replay_ref) {
-        tryLinkReplay(stmts, ticket.replay_ref, {
+        await tryLinkReplay(stmts, ticket.replay_ref, {
           projectId: project.id,
           supportTicketId: ticket.id,
           cardId,

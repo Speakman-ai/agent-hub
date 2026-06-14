@@ -73,6 +73,7 @@ const { signJwt } = await import('./jwt.js');
 
 interface MockReqOverrides {
   path?: string;
+  method?: string;
   headers?: Record<string, string>;
   query?: Record<string, string>;
 }
@@ -80,6 +81,7 @@ interface MockReqOverrides {
 function mockReq(overrides: MockReqOverrides = {}): Request {
   return {
     path: '/api/agents',
+    method: 'GET',
     headers: {},
     query: {},
     ...overrides,
@@ -154,6 +156,32 @@ describe('authMiddleware (API key)', () => {
       next,
     );
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('passes through POST/OPTIONS for the public chunked replay-ingest path', () => {
+    config.apiKey = 'secret-key';
+    for (const method of ['POST', 'OPTIONS']) {
+      const next = vi.fn();
+      authMiddleware(
+        mockReq({ path: '/api/replays/abc-123-def-456/events', method }),
+        mockRes() as unknown as Response,
+        next,
+      );
+      expect(next).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('still gates GET on the same replay-events path behind auth', () => {
+    config.apiKey = 'secret-key';
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(
+      mockReq({ path: '/api/replays/abc-123-def-456/events', method: 'GET' }),
+      res as unknown as Response,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
   });
 
   it('still gates a non-support project subpath behind auth', () => {

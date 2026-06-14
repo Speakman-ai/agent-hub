@@ -275,7 +275,7 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
     const row = await storeReplay(deps, { id: 'r1', events: EVENTS }); // project_id NULL
     expect(row.project_id).toBeNull();
 
-    const linked = linkReplay(deps.stmts, '/uploads/replay-r1.json', {
+    const linked = await linkReplay(deps.stmts, '/uploads/replay-r1.json', {
       projectId: 'proj-7',
       supportTicketId: 'ticket-3',
     });
@@ -286,13 +286,13 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
 
   it('fills a still-NULL field on a same-project later link (convert-to-card)', async () => {
     await storeReplay(deps, { id: 'r2', events: EVENTS });
-    linkReplay(deps.stmts, '/uploads/replay-r2.json', {
+    await linkReplay(deps.stmts, '/uploads/replay-r2.json', {
       projectId: 'proj-1',
       supportTicketId: 'ticket-1',
     });
     // Convert-to-card within the SAME project adds only the card id;
     // project/ticket must survive. (Real callers always pass projectId.)
-    const after = linkReplay(deps.stmts, '/uploads/replay-r2.json', {
+    const after = await linkReplay(deps.stmts, '/uploads/replay-r2.json', {
       projectId: 'proj-1',
       cardId: 'card-9',
     });
@@ -304,12 +304,12 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
   it('no-ops on EVERY field for a cross-project caller (no steal, no poison)', async () => {
     await storeReplay(deps, { id: 'r-steal', events: EVENTS });
     // Legitimate first link → project A's ticket (card_id still NULL).
-    linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
+    await linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
       projectId: 'proj-A',
       supportTicketId: 'ticket-A',
     });
     // Attacker in project B references the same ref to try to steal / poison it.
-    const after = linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
+    const after = await linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
       projectId: 'proj-B',
       supportTicketId: 'ticket-B',
       cardId: 'card-B',
@@ -321,7 +321,7 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
     expect(after?.card_id).toBeNull();
 
     // Project A's later convert still fills the card id.
-    const converted = linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
+    const converted = await linkReplay(deps.stmts, '/uploads/replay-r-steal.json', {
       projectId: 'proj-A',
       cardId: 'card-A',
     });
@@ -330,9 +330,13 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
 
   it('returns null for an unparseable ref or a missing row', async () => {
     await storeReplay(deps, { id: 'r3', events: EVENTS });
-    expect(linkReplay(deps.stmts, 'https://evil.example/x.json', { projectId: 'p' })).toBeNull();
-    expect(linkReplay(deps.stmts, '/uploads/replay-unknown.json', { projectId: 'p' })).toBeNull();
-    expect(linkReplay(deps.stmts, null, { projectId: 'p' })).toBeNull();
+    expect(
+      await linkReplay(deps.stmts, 'https://evil.example/x.json', { projectId: 'p' }),
+    ).toBeNull();
+    expect(
+      await linkReplay(deps.stmts, '/uploads/replay-unknown.json', { projectId: 'p' }),
+    ).toBeNull();
+    expect(await linkReplay(deps.stmts, null, { projectId: 'p' })).toBeNull();
   });
 });
 

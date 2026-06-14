@@ -1234,6 +1234,8 @@ export interface Stmts {
   getSessionReplay: Stmt;
   getSessionReplaysByProject: Stmt;
   linkSessionReplay: Stmt;
+  updateSessionReplayStats: Stmt;
+  updateSessionReplayStatsIfUnfinalized: Stmt;
   deleteSessionReplay: Stmt;
   // Sessions
   createSession: Stmt;
