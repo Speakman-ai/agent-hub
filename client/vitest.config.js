@@ -1,9 +1,5 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
@@ -15,18 +11,6 @@ export default defineConfig({
   },
   resolve: {
     conditions: ['development', 'browser'],
-    // Mirror vite.config.js so component tests can import the rrweb-player UMD
-    // bundle as raw text (the package exports map hides the dist subpath). Regex
-    // prefix form preserves the `?raw` query through the rewrite.
-    alias: [
-      {
-        find: /^rrweb-player-umd/,
-        replacement: path.resolve(
-          __dirname,
-          'node_modules/rrweb-player/dist/rrweb-player.umd.min.cjs',
-        ),
-      },
-    ],
   },
   test: {
     environment: 'jsdom',

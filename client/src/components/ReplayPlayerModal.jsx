@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, AlertCircle, Film } from 'lucide-react';
 // rrweb-player UMD bundle + stylesheet, inlined into the sandboxed iframe as raw
-// text (Vite `?raw`). Pinned to the same rrweb major (2.x) the recorder uses so
-// the stored event format plays back faithfully.
-import playerJs from 'rrweb-player-umd?raw';
+// text (Vite `?raw`). Import the UMD file by relative path — the package exports
+// map hides it, and a Vite alias + `?raw` gets mis-handled by optimizeDeps in dev.
+import playerJs from '../../node_modules/rrweb-player/dist/rrweb-player.umd.min.cjs?raw';
 import playerCss from 'rrweb-player/dist/style.css?raw';
 import { api } from '../utils/api.js';
 import {

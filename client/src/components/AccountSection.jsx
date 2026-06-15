@@ -442,7 +442,6 @@ function PluginApiKeyRow({ item }) {
                 setStatus(null);
               }}
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 pr-10 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-              placeholder="sk-..."
               autoComplete="off"
               data-1p-ignore
               data-lpignore="true"
