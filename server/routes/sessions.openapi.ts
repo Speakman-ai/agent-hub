@@ -342,13 +342,14 @@ registerPath({
   },
 });
 
-// DELETE /api/agents/:agentId/sessions/inactive
+// DELETE /api/agents/:agentId/sessions/pushed
 registerPath({
   method: 'delete',
-  path: '/api/agents/{agentId}/sessions/inactive',
+  path: '/api/agents/{agentId}/sessions/pushed',
   tags: ['Sessions'],
-  summary: 'Bulk soft-delete (archive) every *inactive* session for an agent',
-  description: 'Skips sessions with an active in-flight CLI process.',
+  summary: 'Bulk soft-delete (archive) every *pushed* session for an agent',
+  description:
+    'Archives only sessions whose resolved lifecycle state is `pushed` (Finalize pushed the branch but it has not merged yet). Sessions in any other state — working, waiting, in-flight Finalize phases, or merged — are left untouched, as are sessions with an active in-flight CLI process.',
   request: { params: agentIdParams },
   responses: {
     200: {

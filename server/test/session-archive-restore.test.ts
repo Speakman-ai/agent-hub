@@ -122,25 +122,61 @@ describe('Session archive & restore', () => {
     await request.post(`/api/sessions/${liveId}/restore`).expect(200);
   });
 
-  it('bulk DELETE inactive soft-archives sessions without an active CLI process', async () => {
+  it('bulk DELETE pushed archives only sessions whose state is `pushed`, keeping the rest', async () => {
     const agent = await createAgent({
       projectId: 'archive-proj',
-      id: `inactive-bulk-agent-${Date.now()}`,
-      name: 'Inactive bulk isolation',
+      id: `pushed-bulk-agent-${Date.now()}`,
+      name: 'Pushed bulk isolation',
     });
     const aid = agent.id as string;
-    await createSession({ agentId: aid, name: 'idle-1' });
-    await createSession({ agentId: aid, name: 'idle-2' });
 
-    const bulk = await request.delete(`/api/agents/${aid}/sessions/inactive`).expect(200);
-    expect(bulk.body.archived).toBe(2);
-    expect(bulk.body.deleted).toBe(2);
+    // One session with a settled `pushed` finalize run → state resolves to
+    // `pushed` and should be archived.
+    const pushed = await createSession({ agentId: aid, name: 'pushed-1' });
+    const pushedId = pushed.id as string;
+    // One plain idle session (no finalize run) → state is the default
+    // `waiting_for_user_input` and must be kept.
+    const idle = await createSession({ agentId: aid, name: 'idle-keep' });
+    const idleId = idle.id as string;
 
+    const { randomUUID } = await import('node:crypto');
+    const { stmts } = await import('../db.js');
+    if (!stmts) throw new Error('Database not initialized');
+    const runId = randomUUID();
+    stmts.insertFinalizeRun.run(
+      runId,
+      `card-${runId}`,
+      pushedId,
+      'archive-proj',
+      'feature/pushed',
+      'sha-pushed',
+      `pushed-${runId}`,
+      'pushed',
+      'push',
+      'ui_button',
+      '/tmp/pushed',
+      'owner-user',
+      'Agent Hub',
+      'agent@example.test',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+
+    const bulk = await request.delete(`/api/agents/${aid}/sessions/pushed`).expect(200);
+    expect(bulk.body.archived).toBe(1);
+    expect(bulk.body.deleted).toBe(1);
+
+    // Only the idle session remains live.
     const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
-    expect(liveList.body).toEqual([]);
+    const liveIds = (liveList.body as Array<{ id: string }>).map((s) => s.id);
+    expect(liveIds).toEqual([idleId]);
 
+    // The pushed session is the only one archived.
     const archived = await request.get(`/api/agents/${aid}/archived-sessions`).expect(200);
-    expect((archived.body as Array<{ id: string }>).length).toBe(2);
+    const archivedIds = (archived.body as Array<{ id: string }>).map((s) => s.id);
+    expect(archivedIds).toEqual([pushedId]);
   });
 
   it('archiving the same session twice is idempotent (still 200, stays archived)', async () => {

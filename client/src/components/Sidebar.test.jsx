@@ -60,7 +60,7 @@ const buildProps = (overrides = {}) => {
     onNewSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onClearAllSessions: vi.fn(),
-    onClearInactiveSessions: vi.fn(),
+    onClearPushedSessions: vi.fn(),
     onRenameSession: vi.fn(),
     onNavigate,
     currentView: 'chat',

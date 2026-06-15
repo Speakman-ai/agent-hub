@@ -9715,12 +9715,12 @@ paths:
                   - ok
                   - archived
                   - deleted
-  /api/agents/{agentId}/sessions/inactive:
+  /api/agents/{agentId}/sessions/pushed:
     delete:
       tags:
         - Sessions
-      summary: Bulk soft-delete (archive) every *inactive* session for an agent
-      description: Skips sessions with an active in-flight CLI process.
+      summary: Bulk soft-delete (archive) every *pushed* session for an agent
+      description: Archives only sessions whose resolved lifecycle state is `pushed` (Finalize pushed the branch but it has not merged yet). Sessions in any other state — working, waiting, in-flight Finalize phases, or merged — are left untouched, as are sessions with an active in-flight CLI process.
       parameters:
         - schema:
             type: string

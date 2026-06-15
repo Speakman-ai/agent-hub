@@ -924,7 +924,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, archived, deleted: archived });
   });
 
-  router.delete('/api/agents/:agentId/sessions/inactive', (req: Request, res: Response) => {
+  // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
+  // is `pushed` — i.e. Finalize pushed the branch but the work has not merged
+  // yet. Everything else (working / waiting / in-flight Finalize phases /
+  // merged) is left untouched. A session with an active CLI process can never
+  // resolve to `pushed` (live activity outranks the settled push state), but we
+  // keep the explicit guard as defence-in-depth so a racing process is never
+  // archived out from under itself.
+  router.delete('/api/agents/:agentId/sessions/pushed', (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
@@ -932,6 +939,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
+      if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
       stopPreviewsBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
@@ -949,7 +957,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // `deleted_at` so it disappears from the live sidebar but stays recoverable
   // via POST /api/sessions/:sessionId/restore for 24 hours. We deliberately
   // leave the worktree on disk so a restore can reattach the same checkout.
-  // Bulk `DELETE /api/agents/:agentId/sessions[/inactive]` uses the same
+  // Bulk `DELETE /api/agents/:agentId/sessions[/pushed]` uses the same
   // soft-delete semantics. Hard removal (DB row + worktree) happens when the
   // agent or project is deleted, or when the hourly workspace-purge tick in
   // server/session-purge.ts drops rows past the 24-hour recovery window.

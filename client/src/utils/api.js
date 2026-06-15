@@ -507,8 +507,8 @@ export const api = {
   getArchivedSessions: (agentId) => fetchJSON(`/agents/${agentId}/archived-sessions`),
   restoreSession: (sessionId) => fetchJSON(`/sessions/${sessionId}/restore`, { method: 'POST' }),
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
-  clearInactiveSessions: (agentId) =>
-    fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),
+  clearPushedSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/pushed`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

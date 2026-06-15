@@ -62,8 +62,14 @@ export const api = {
   restoreSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/restore`, { method: 'POST' }),
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
-  clearInactiveSessions: (agentId) =>
-    fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),
+  // NOTE: the bulk-clear actions (clearAllSessions / clearPushedSessions) are
+  // web-only — the mobile drawer has no bulk-clear UI surface, so these
+  // helpers currently have no mobile call site. They're kept in lockstep with
+  // client/src/utils/api.js for parity so a future mobile bulk-clear screen can
+  // use them directly. `clearPushedSessions` (renamed from the former
+  // `clearInactiveSessions`) hits the pushed-only archive endpoint.
+  clearPushedSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/pushed`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

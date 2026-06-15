@@ -6,7 +6,7 @@
  * Covers three handlers:
  *   - `DELETE /api/sessions/:id` (single-session soft delete)
  *   - `DELETE /api/agents/:agentId/sessions` (bulk archive)
- *   - `DELETE /api/agents/:agentId/sessions/inactive` (bulk archive inactive)
+ *   - `DELETE /api/agents/:agentId/sessions/pushed` (bulk archive pushed)
  *
  * The full route is exercised via supertest. Both runtime accessors on
  * `routeDeps` are spied on so the test asserts on the call count

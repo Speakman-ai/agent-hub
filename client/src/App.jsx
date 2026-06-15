@@ -3478,20 +3478,26 @@ export default function App({ initialView } = {}) {
     }
   };
 
-  const handleClearInactiveSessions = async () => {
+  const handleClearPushedSessions = async () => {
     if (!activeAgentId) return;
-    setDeletingBulk('inactive');
-    const activeIds = new Set(Object.keys(activeTasks));
-    for (const s of sessions) {
-      if (!activeIds.has(s.id)) tearDownSessionPreview(s.id);
-    }
+    setDeletingBulk('pushed');
+    // Resolve which sessions the server will archive (state === 'pushed') using
+    // the same shared resolver the sidebar status icon uses, so the optimistic
+    // local update matches what the server does.
+    const isPushed = (s) =>
+      deriveSessionState(s, {
+        activeTaskSessionIds: activeTasks,
+        finalizeStatusBySession,
+      }) === 'pushed';
+    const pushedIds = new Set(sessions.filter(isPushed).map((s) => s.id));
+    for (const id of pushedIds) tearDownSessionPreview(id);
     try {
-      const result = await api.clearInactiveSessions(activeAgentId);
+      const result = await api.clearPushedSessions(activeAgentId);
       if (result.ok) {
-        // Keep only sessions that had active tasks (server skipped them)
-        setSessions((prev) => prev.filter((s) => activeIds.has(s.id)));
-        if (activeSessionId && !activeIds.has(activeSessionId)) {
-          const remaining = sessions.filter((s) => activeIds.has(s.id));
+        // Drop only the pushed sessions; everything else stays.
+        setSessions((prev) => prev.filter((s) => !pushedIds.has(s.id)));
+        if (activeSessionId && pushedIds.has(activeSessionId)) {
+          const remaining = sessions.filter((s) => !pushedIds.has(s.id));
           setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
         }
       }
@@ -4137,7 +4143,7 @@ export default function App({ initialView } = {}) {
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
-            onClearInactiveSessions={handleClearInactiveSessions}
+            onClearPushedSessions={handleClearPushedSessions}
             archivedSessions={archivedSessions}
             onRestoreSession={handleRestoreSession}
             restoringSessionIds={restoringSessionIds}

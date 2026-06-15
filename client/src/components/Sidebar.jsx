@@ -61,7 +61,7 @@ export default function Sidebar({
   onNewSession,
   onDeleteSession,
   onClearAllSessions,
-  onClearInactiveSessions,
+  onClearPushedSessions,
   onRenameSession,
   onNavigate,
   currentView,
@@ -128,7 +128,7 @@ export default function Sidebar({
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
-  const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
+  const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-pushed' | null
   const [serverVersion, setServerVersion] = useState(null);
   const [serverGitHash, setServerGitHash] = useState(null);
   const renameSavedRef = useRef(false);
@@ -781,12 +781,12 @@ export default function Sidebar({
                                           {sessions.length > 0 && (
                                             <div className="ml-auto flex items-center gap-0.5 pr-1">
                                               <button
-                                                onClick={() => setConfirmAction('clear-inactive')}
+                                                onClick={() => setConfirmAction('clear-pushed')}
                                                 disabled={!!deletingBulk}
                                                 className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                title="Clear inactive sessions"
+                                                title="Clear sessions with pushed changes"
                                               >
-                                                {deletingBulk === 'inactive' ? '...' : 'Clear idle'}
+                                                {deletingBulk === 'pushed' ? '...' : 'Clear pushed'}
                                               </button>
                                               <button
                                                 onClick={() => setConfirmAction('clear-all')}
@@ -884,7 +884,7 @@ export default function Sidebar({
                                             <p className="text-xs text-gray-300 mb-2">
                                               {confirmAction === 'clear-all'
                                                 ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
-                                                : `Delete all idle sessions? Active sessions will be kept.`}
+                                                : `Delete all sessions with pushed changes? Sessions in any other state will be kept.`}
                                             </p>
                                             <div className="flex gap-2 justify-end">
                                               <button
@@ -898,7 +898,7 @@ export default function Sidebar({
                                                   if (confirmAction === 'clear-all') {
                                                     await onClearAllSessions();
                                                   } else {
-                                                    await onClearInactiveSessions();
+                                                    await onClearPushedSessions();
                                                   }
                                                   setConfirmAction(null);
                                                 }}
@@ -913,7 +913,7 @@ export default function Sidebar({
                                                   ? 'Deleting...'
                                                   : confirmAction === 'clear-all'
                                                     ? 'Delete All'
-                                                    : 'Delete Idle'}
+                                                    : 'Delete Pushed'}
                                               </button>
                                             </div>
                                           </div>
