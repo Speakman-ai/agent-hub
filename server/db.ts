@@ -292,6 +292,31 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_replays_ticket
       ON session_replays(support_ticket_id);
 
+    -- project_rum_clients: per-project RUM (real user monitoring) ingest
+    -- credentials. A third-party vendor site authenticates a replay upload to
+    -- POST /api/replays with an X-RUM-Token header; a valid token attributes
+    -- the capture to its project and applies a per-project ingest budget. Token
+    -- handling mirrors api_keys (api-keys-store.ts): a rum_-prefixed CSPRNG
+    -- token whose plaintext is returned ONCE at mint, with only the sha256 hex
+    -- (token_hash, UNIQUE) and the indexed prefix persisted. revoked_at soft-
+    -- deletes. Unlike api_keys (shared orgs.db, per-user) these are project-
+    -- scoped, so they live in the per-org main DB alongside session_replays.
+    CREATE TABLE IF NOT EXISTS project_rum_clients (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_rum_clients_project
+      ON project_rum_clients(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_project_rum_clients_prefix
+      ON project_rum_clients(prefix);
+
     -- Delegations: tracks sub-agent tasks spawned by a lead agent
     CREATE TABLE IF NOT EXISTS delegations (
       id TEXT PRIMARY KEY,
@@ -2468,6 +2493,31 @@ function initDb(dataDir: string): void {
           AND card_id IS NULL`,
     ),
     deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
+    // Per-project RUM ingest clients (rum-clients-store.ts)
+    insertRumClient: db.prepare(
+      `INSERT INTO project_rum_clients (id, project_id, name, token_hash, prefix, created_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    getRumClient: db.prepare('SELECT * FROM project_rum_clients WHERE id = ?'),
+    // Verify path: O(1) lookup on the indexed prefix + the UNIQUE hash. The
+    // revoked filter happens in the store so a revoked match is distinguishable.
+    getRumClientByPrefixHash: db.prepare(
+      'SELECT * FROM project_rum_clients WHERE prefix = ? AND token_hash = ?',
+    ),
+    listRumClientsByProject: db.prepare(
+      `SELECT * FROM project_rum_clients
+        WHERE project_id = ? AND revoked_at IS NULL
+        ORDER BY created_at DESC, id DESC`,
+    ),
+    // Scoped soft-delete: only revokes a row owned by the caller's project and
+    // not already revoked, so a clientId from another project is a no-op.
+    revokeRumClient: db.prepare(
+      `UPDATE project_rum_clients SET revoked_at = datetime('now')
+        WHERE id = ? AND project_id = ? AND revoked_at IS NULL`,
+    ),
+    touchRumClientLastUsed: db.prepare(
+      "UPDATE project_rum_clients SET last_used_at = datetime('now') WHERE id = ?",
+    ),
     // Sessions
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

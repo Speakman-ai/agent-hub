@@ -1,7 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 import supertest from 'supertest';
+
+// The route imports verifyRumToken from the store (which talks to the global DB,
+// not the in-memory stmts these tests build). Mock it so we can both avoid the
+// global DB and assert WHETHER it was called — the precheck guard must skip
+// verification entirely once an IP is rate-limited. Tests that send no token
+// never invoke it, so the mock is inert for them.
+vi.mock('../rum-clients-store.js', () => ({ verifyRumToken: vi.fn(() => null) }));
+import { verifyRumToken } from '../rum-clients-store.js';
 import os from 'os';
 import path from 'path';
 import { mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'fs';
@@ -272,6 +280,59 @@ describe('POST /api/replays', () => {
       .expect(429);
     expect(res.body.error).toMatch(/rate limit/i);
     expect(res.headers['retry-after']).toBeDefined();
+  });
+});
+
+describe('POST /api/replays — token verification precheck (abuse guard)', () => {
+  let app: Express;
+  let serverDir: string;
+
+  beforeEach(() => {
+    _resetRateLimit();
+    (verifyRumToken as Mock).mockClear();
+    ({ app, serverDir } = makeApp());
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  // Well-formed (passes the token regex) but unknown — exactly the shape that
+  // would otherwise force a hash + indexed DB lookup on every attempt.
+  const BAD_TOKEN = 'rum_wellformedbutunknown000000000000000000000000';
+
+  it('429s a token request WITHOUT verifying once the per-IP budget is spent', async () => {
+    // Spend the anonymous per-IP budget (30/hr) with token-less ingests.
+    for (let i = 0; i < 30; i++) {
+      await supertest(app)
+        .post('/api/replays')
+        .send({ events: [SNAPSHOT] })
+        .expect(201);
+    }
+    (verifyRumToken as Mock).mockClear();
+
+    // A token-bearing request from the same exhausted IP must be rejected by the
+    // cheap precheck BEFORE verifyRumToken runs — no hash, no DB lookup.
+    const res = await supertest(app)
+      .post('/api/replays')
+      .set('X-RUM-Token', BAD_TOKEN)
+      .send({ events: [SNAPSHOT] });
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBeDefined();
+    expect(verifyRumToken).not.toHaveBeenCalled();
+  });
+
+  it('still verifies a token while the IP has budget (invalid → 401)', async () => {
+    const res = await supertest(app)
+      .post('/api/replays')
+      .set('X-RUM-Token', BAD_TOKEN)
+      .send({ events: [SNAPSHOT] });
+    expect(res.status).toBe(401);
+    expect(verifyRumToken).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -17,6 +17,7 @@ import {
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { verifyRumToken } from '../rum-clients-store.js';
 
 /**
  * Public, rate-limited session-replay ingest endpoint, plus authenticated read
@@ -32,9 +33,15 @@ import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
  * back and splices into the triage prompt. The response carries the replay id
  * and the `/uploads/...` ref.
  *
- * Like the bug-report intake, ingest is intentionally unauthenticated (clients
- * may run on any origin), so it's gated by an in-memory per-IP rate limiter and
- * a hard body-size cap. The read endpoints are NOT public — replay events can
+ * Like the bug-report intake, anonymous ingest is intentionally unauthenticated
+ * (the first-party in-app recorder may run on any origin), so it's gated by an
+ * in-memory per-IP rate limiter and a hard body-size cap, and the resulting row
+ * is left unattributed (`project_id IS NULL`). A third-party vendor site may
+ * instead present an `X-RUM-Token` header (minted per project via
+ * `POST /api/projects/:projectId/rum/clients`, see rum-clients-store.ts): a
+ * valid token attributes the capture to its project and switches the request to
+ * a per-PROJECT ingest budget; an invalid token is rejected 401. The read
+ * endpoints are NOT public — replay events can
  * carry (masked) DOM content, so they require normal Hub auth AND a per-replay
  * authorization check: a replay linked to a project is only readable by callers
  * who can view that project (`canViewProject`), and an unattributed replay
@@ -47,6 +54,12 @@ import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 
 const RATE_LIMIT_MAX = 30;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+// Per-project budget for token-authenticated (X-RUM-Token) vendor ingest. A
+// single vendor's end users sit behind many client IPs, so a per-IP bucket
+// would be meaningless for them; the budget is keyed by the token's project
+// instead. Higher than the anonymous per-IP cap because it aggregates a whole
+// site's traffic, but still bounded so one project can't flood the store.
+export const RUM_PROJECT_RATE_LIMIT_MAX = 600;
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // 8 MB of rrweb JSON
 const MAX_EVENTS = 20_000;
 // rrweb EventType.FullSnapshot. A replay that never carries a full snapshot
@@ -69,10 +82,13 @@ const REPLAY_ID_RE = /^[A-Za-z0-9._-]{8,200}$/;
 // ─── Rate limit ──────────────────────────────────────────────────
 export const _rateBuckets = new Map<string, { count: number; resetAt: number }>();
 export const _eventsRateBuckets = new Map<string, { count: number; resetAt: number }>();
+// Token-authenticated ingest budget, keyed by project id (not IP).
+export const _projectRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 export function _resetRateLimit(): void {
   _rateBuckets.clear();
   _eventsRateBuckets.clear();
+  _projectRateBuckets.clear();
 }
 
 function ipFromReq(req: Request): string {
@@ -103,6 +119,25 @@ function bucketCheck(
 
 function rateLimitCheck(ip: string): { ok: boolean; retryAfterMs: number } {
   return bucketCheck(_rateBuckets, ip, RATE_LIMIT_MAX);
+}
+
+/**
+ * Non-consuming look at a bucket: reports whether `key` is already at/over `max`
+ * for the current window WITHOUT incrementing it. Used as a cheap admission
+ * precheck so an exhausted IP can be rejected BEFORE any expensive work (token
+ * hashing + DB lookup) runs, while a request that's admitted still decides
+ * separately whether to actually charge a bucket.
+ */
+function bucketPeek(
+  buckets: Map<string, { count: number; resetAt: number }>,
+  key: string,
+  max: number,
+): { ok: boolean; retryAfterMs: number } {
+  const now = Date.now();
+  const entry = buckets.get(key);
+  if (!entry || entry.resetAt <= now) return { ok: true, retryAfterMs: 0 };
+  if (entry.count >= max) return { ok: false, retryAfterMs: entry.resetAt - now };
+  return { ok: true, retryAfterMs: 0 };
 }
 
 // ─── Validation ──────────────────────────────────────────────────
@@ -282,11 +317,63 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     express.json({ limit: MAX_BODY_BYTES }),
     async (req: Request, res: Response) => {
       try {
+        // Optional vendor authentication via `X-RUM-Token`.
+        //
+        //   - VALID token   → attribute the capture to its project and use a
+        //                     per-PROJECT budget. The per-IP bucket is never
+        //                     charged, so a vendor proxying many users through one
+        //                     IP isn't throttled by the anonymous cap.
+        //   - no token      → anonymous ingest on the per-IP budget.
+        //   - INVALID token → charged to the per-IP budget, then 401.
+        //
+        // Crucially, the per-IP budget is PRECHECKED (without consuming) BEFORE
+        // any token is verified: token verification hashes the token and hits the
+        // DB, so an exhausted IP must be rejected with 429 *before* that work
+        // runs — otherwise a bogus-token flood could keep forcing hash + indexed
+        // lookups while already being rate-limited. Only well-formed unknown
+        // tokens that pass the precheck reach `verifyRumToken`.
         const ip = ipFromReq(req);
-        const rl = rateLimitCheck(ip);
-        if (!rl.ok) {
-          res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
-          return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+        const rawToken = req.headers['x-rum-token'];
+        const presentedToken = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+        const hasToken = presentedToken != null && String(presentedToken).trim() !== '';
+
+        let attributedProjectId: string | null = null;
+        if (hasToken) {
+          // Cheap, non-consuming admission check guarding the verification path.
+          const pre = bucketPeek(_rateBuckets, ip, RATE_LIMIT_MAX);
+          if (!pre.ok) {
+            res.setHeader('Retry-After', Math.ceil(pre.retryAfterMs / 1000));
+            return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          }
+          const verified = verifyRumToken(String(presentedToken).trim());
+          if (verified) {
+            attributedProjectId = verified.projectId;
+            const rl = bucketCheck(
+              _projectRateBuckets,
+              attributedProjectId,
+              RUM_PROJECT_RATE_LIMIT_MAX,
+            );
+            if (!rl.ok) {
+              res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+              return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+            }
+          } else {
+            // Malformed / unknown / revoked token: charge the per-IP budget (so a
+            // bogus header is no cheaper than an anonymous ingest), then 401 — or
+            // 429 if that charge tips the IP over its budget.
+            const rl = rateLimitCheck(ip);
+            if (!rl.ok) {
+              res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+              return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+            }
+            return res.status(401).json({ error: 'Invalid RUM token' });
+          }
+        } else {
+          const rl = rateLimitCheck(ip);
+          if (!rl.ok) {
+            res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+            return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          }
         }
 
         const parsed = validateReplayPayload(req.body);
@@ -316,7 +403,12 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         try {
           row = await storeReplay(
             { stmts, config },
-            { id: replayId, events: parsed.value.events, meta: parsed.value.meta ?? null },
+            {
+              id: replayId,
+              events: parsed.value.events,
+              meta: parsed.value.meta ?? null,
+              projectId: attributedProjectId,
+            },
           );
         } catch (err) {
           rmSync(dest, { force: true });
@@ -326,6 +418,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         return res.status(201).json({
           replayId,
           replayRef,
+          projectId: row.project_id,
           size: row.size,
           eventCount: row.event_count,
           durationMs: row.duration_ms,

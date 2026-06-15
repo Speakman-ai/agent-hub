@@ -40,6 +40,10 @@ const ReplayIngestSuccessResponse = z
   .object({
     replayId: z.string(),
     replayRef: z.string().openapi({ description: 'Local `/uploads/replay-<id>.json` ref.' }),
+    projectId: z.string().nullable().openapi({
+      description:
+        'Project the capture was attributed to via a valid `X-RUM-Token`, or null for anonymous ingest.',
+    }),
     size: z.number().openapi({ description: 'Compressed (gzip) blob size in bytes.' }),
     eventCount: z.number().openapi({ description: 'Number of rrweb events stored.' }),
     durationMs: z
@@ -110,14 +114,20 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public session-replay ingest (JSON)',
   description:
-    'Unauthenticated, rate-limited (30 / hour per IP). Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`.',
+    'Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401.',
   request: {
+    headers: z.object({
+      'x-rum-token': z.string().optional().openapi({
+        description: 'Optional per-project RUM ingest token. When present it must be valid.',
+      }),
+    }),
     body: { content: jsonContent(ReplayIngestRequestSchema) },
   },
   responses: {
     201: { description: 'Stored.', content: jsonContent(ReplayIngestSuccessResponse) },
     400: errorResponse('Validation failed (empty events, bad event shape, non-object meta).'),
-    429: errorResponse('Per-IP rate limit exceeded.'),
+    401: errorResponse('An X-RUM-Token header was supplied but is invalid or revoked.'),
+    429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
     500: errorResponse('Handler threw while persisting the replay.'),
   },
 });

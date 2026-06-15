@@ -197,6 +197,27 @@ export interface SessionReplayRow {
   meta: string | null;
 }
 
+/**
+ * A per-project RUM (real user monitoring) ingest client credential. The
+ * `token_hash` (sha256 hex of a `rum_`-prefixed CSPRNG token) and indexed
+ * `prefix` are stored; the plaintext token is returned only once at mint and is
+ * never persisted. `revoked_at` soft-deletes. See `rum-clients-store.ts`.
+ */
+export interface RumClientRow {
+  id: string;
+  project_id: string;
+  name: string;
+  token_hash: string;
+  prefix: string;
+  created_at: string;
+  /** User id of the admin who minted the token, when known. */
+  created_by: string | null;
+  /** Last successful ingest auth (debounced); NULL until first use. */
+  last_used_at: string | null;
+  /** Set when revoked; NULL while active. */
+  revoked_at: string | null;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1238,6 +1259,13 @@ export interface Stmts {
   updateSessionReplayStats: Stmt;
   updateSessionReplayStatsIfUnfinalized: Stmt;
   deleteSessionReplay: Stmt;
+  // Per-project RUM ingest clients
+  insertRumClient: Stmt;
+  getRumClient: Stmt;
+  getRumClientByPrefixHash: Stmt;
+  listRumClientsByProject: Stmt;
+  revokeRumClient: Stmt;
+  touchRumClientLastUsed: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

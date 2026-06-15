@@ -4982,6 +4982,81 @@ components:
       required:
         - events
       description: "A chunk of a streamed replay. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body)."
+    RumClientErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for RUM ingest-client routes.
+    RumClient:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        prefix:
+          type: string
+          description: First 12 chars of the token (e.g. `rum_xxxx`).
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        lastUsedAt:
+          type: string
+          nullable: true
+        revokedAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - projectId
+        - name
+        - prefix
+        - createdAt
+        - createdBy
+        - lastUsedAt
+        - revokedAt
+      description: Public metadata for a RUM ingest client. Never includes the token.
+    MintedRumClient:
+      allOf:
+        - $ref: "#/components/schemas/RumClient"
+        - type: object
+          properties:
+            token:
+              type: string
+              description: The plaintext `rum_`-prefixed token. Returned ONCE at mint; never retrievable again.
+          required:
+            - token
+      description: A freshly minted RUM ingest client including its one-time token.
+    RumClientListResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        clients:
+          type: array
+          items:
+            $ref: "#/components/schemas/RumClient"
+      required:
+        - projectId
+        - clients
+      description: A project’s active (non-revoked) RUM ingest clients.
+    RevokeRumClientResponse:
+      type: object
+      properties:
+        revoked:
+          type: boolean
+          enum:
+            - true
+      required:
+        - revoked
+      description: RUM client revoked.
     RumWizardErrorResponse:
       type: object
       properties:
@@ -16522,7 +16597,15 @@ paths:
       tags:
         - Bug Reports
       summary: Public session-replay ingest (JSON)
-      description: Unauthenticated, rate-limited (30 / hour per IP). Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`.
+      description: "Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401."
+      parameters:
+        - schema:
+            type: string
+            description: Optional per-project RUM ingest token. When present it must be valid.
+          required: false
+          description: Optional per-project RUM ingest token. When present it must be valid.
+          name: x-rum-token
+          in: header
       requestBody:
         content:
           application/json:
@@ -16541,6 +16624,10 @@ paths:
                   replayRef:
                     type: string
                     description: Local `/uploads/replay-<id>.json` ref.
+                  projectId:
+                    type: string
+                    nullable: true
+                    description: Project the capture was attributed to via a valid `X-RUM-Token`, or null for anonymous ingest.
                   size:
                     type: number
                     description: Compressed (gzip) blob size in bytes.
@@ -16553,6 +16640,7 @@ paths:
                 required:
                   - replayId
                   - replayRef
+                  - projectId
                   - size
                   - eventCount
                   - durationMs
@@ -16563,8 +16651,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "401":
+          description: An X-RUM-Token header was supplied but is invalid or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "429":
-          description: Per-IP rate limit exceeded.
+          description: Per-IP (anonymous) or per-project (token) rate limit exceeded.
           content:
             application/json:
               schema:
@@ -16815,6 +16909,112 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/projects/{projectId}/rum/clients:
+    post:
+      tags:
+        - RUM
+      summary: Mint a per-project RUM ingest token
+      description: Admin+. Mints a new `rum_`-prefixed ingest credential for the project. The plaintext token is returned ONCE in the `token` field and is never retrievable again. Vendor sites send it as the `X-RUM-Token` header on `POST /api/replays` to attribute a capture to this project.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Human label for the ingest client.
+              required:
+                - name
+      responses:
+        "201":
+          description: Token minted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MintedRumClient"
+        "400":
+          description: Invalid name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumClientErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumClientErrorResponse"
+    get:
+      tags:
+        - RUM
+      summary: List a project’s RUM ingest clients
+      description: Admin+. Lists active (non-revoked) ingest clients for the project. Returns metadata only — never the token or its hash.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Active clients.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumClientListResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumClientErrorResponse"
+  /api/projects/{projectId}/rum/clients/{clientId}:
+    delete:
+      tags:
+        - RUM
+      summary: Revoke a RUM ingest client
+      description: Admin+. Revokes (soft-deletes) an ingest client. Uploads bearing that token are rejected afterward. Scoped to the project — a clientId from another project resolves to 404.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: RUM client id.
+          required: true
+          description: RUM client id.
+          name: clientId
+          in: path
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevokeRumClientResponse"
+        "404":
+          description: Project or client not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumClientErrorResponse"
   /api/projects/{projectId}/rum/setup-draft:
     get:
       tags:
