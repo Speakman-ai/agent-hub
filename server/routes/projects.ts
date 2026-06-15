@@ -19,6 +19,7 @@ import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
+import type { SupportedEngine } from '../engine-availability.js';
 import { claudePermissionModeForSpawn } from '../claude-cli-args.js';
 import {
   ANALYZE_FINALIZE_SHIPPING_GUIDELINES,
@@ -140,6 +141,17 @@ Read these files if they exist to understand the project:
 Also examine the top-level directory structure and a sampling of source files to understand conventions.
 
 Return your analysis as the JSON structure described in your instructions.`;
+
+// Engine fallback chain for project analysis. Claude Code is preferred
+// (its stream-json output drives the live progress UI); when the acting
+// user has no Claude credentials we fall back to the other interactive
+// agent CLIs. Gemini is deliberately excluded — it is reserved for
+// RAG/embeddings and is not used to drive interactive project analysis.
+const ANALYZE_FALLBACK_CHAIN: readonly SupportedEngine[] = [
+  'claude-code',
+  'cursor-agent',
+  'codex-cli',
+];
 
 interface AnalysisResult {
   techStack?: {
@@ -2523,9 +2535,18 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // because it's the only engine whose stream-json output we currently
     // parse for live progress events; fallback engines run without
     // streaming progress but still produce a valid JSON answer.
+    // The agent CLIs (Claude/Cursor/Codex) authenticate strictly per-account,
+    // so the acting user's id must be threaded through — otherwise the probe
+    // reports "No acting user for this <engine> run" even when the user's
+    // credentials are configured.
+    const analyzeUserId = (req as AuthenticatedRequest).authUserId ?? null;
     let resolved;
     try {
-      resolved = await resolveOneShotEngine(config, { preferred: 'claude-code' });
+      resolved = await resolveOneShotEngine(config, {
+        preferred: 'claude-code',
+        userId: analyzeUserId,
+        fallbackChain: ANALYZE_FALLBACK_CHAIN,
+      });
     } catch (err) {
       if (err instanceof NoEnginesAvailableError) {
         return res.status(400).json({
