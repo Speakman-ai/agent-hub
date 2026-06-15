@@ -67,9 +67,12 @@ export const api = {
   // helpers currently have no mobile call site. They're kept in lockstep with
   // client/src/utils/api.js for parity so a future mobile bulk-clear screen can
   // use them directly. `clearPushedSessions` (renamed from the former
-  // `clearInactiveSessions`) hits the pushed-only archive endpoint.
+  // `clearInactiveSessions`) hits the pushed-only archive endpoint;
+  // `clearMergedSessions` is its merged-only companion.
   clearPushedSessions: (agentId) =>
     fetchJSON(`/agents/${agentId}/sessions/pushed`, { method: 'DELETE' }),
+  clearMergedSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/merged`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

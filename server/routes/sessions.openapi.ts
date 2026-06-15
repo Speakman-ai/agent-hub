@@ -361,6 +361,25 @@ registerPath({
   },
 });
 
+// DELETE /api/agents/:agentId/sessions/merged
+registerPath({
+  method: 'delete',
+  path: '/api/agents/{agentId}/sessions/merged',
+  tags: ['Sessions'],
+  summary: 'Bulk soft-delete (archive) every *merged* session for an agent',
+  description:
+    'Archives only sessions whose resolved lifecycle state is `merged` (the work landed on the default branch). Sessions in any other state — working, waiting, in-flight Finalize phases, or pushed-but-not-merged — are left untouched, as are sessions with an active in-flight CLI process. Companion to the pushed-only bulk clear: under Merge Automatically, shipped sessions settle in `merged`, not `pushed`.',
+  request: { params: agentIdParams },
+  responses: {
+    200: {
+      description: 'Archive counts.',
+      content: jsonContent(
+        z.object({ ok: z.literal(true), archived: z.number().int(), deleted: z.number().int() }),
+      ),
+    },
+  },
+});
+
 // GET /api/sessions/:sessionId
 registerPath({
   method: 'get',

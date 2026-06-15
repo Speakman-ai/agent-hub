@@ -953,6 +953,38 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, archived, deleted: archived });
   });
 
+  // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
+  // is `merged` — i.e. the work has landed on the default branch. With per-session
+  // Merge Automatically as the default, sessions blow straight through the
+  // transient `pushed` state into `merged`, so "Clear pushed" rarely matches the
+  // shipped sessions cluttering the sidebar. This is the companion that reaps
+  // them. Everything else (working / waiting / in-flight Finalize phases /
+  // pushed-but-not-merged) is left untouched. A session with an active CLI
+  // process can never resolve to `merged` (live activity outranks the settled
+  // merged marker), but we keep the explicit guard as defence-in-depth so a
+  // racing process is never archived out from under itself.
+  router.delete('/api/agents/:agentId/sessions/merged', (req: Request, res: Response) => {
+    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
+      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
+    );
+    let archived = 0;
+    for (const session of sessions) {
+      if (session.deleted_at) continue;
+      if (activeProcesses.has(session.id)) continue;
+      if (computeSessionState(stmts, session.id) !== 'merged') continue;
+      closeBrowserBestEffort(session.id);
+      stopPreviewsBestEffort(session.id);
+      stmts.softDeleteSession.run(session.id);
+      archived++;
+      try {
+        deps.broadcast({ type: 'session_deleted', sessionId: session.id });
+      } catch {
+        /* best-effort */
+      }
+    }
+    res.json({ ok: true, archived, deleted: archived });
+  });
+
   // Single-session DELETE is a *soft* delete (archive). The row is marked with
   // `deleted_at` so it disappears from the live sidebar but stays recoverable
   // via POST /api/sessions/:sessionId/restore for 24 hours. We deliberately

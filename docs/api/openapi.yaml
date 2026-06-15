@@ -9749,6 +9749,40 @@ paths:
                   - ok
                   - archived
                   - deleted
+  /api/agents/{agentId}/sessions/merged:
+    delete:
+      tags:
+        - Sessions
+      summary: Bulk soft-delete (archive) every *merged* session for an agent
+      description: "Archives only sessions whose resolved lifecycle state is `merged` (the work landed on the default branch). Sessions in any other state — working, waiting, in-flight Finalize phases, or pushed-but-not-merged — are left untouched, as are sessions with an active in-flight CLI process. Companion to the pushed-only bulk clear: under Merge Automatically, shipped sessions settle in `merged`, not `pushed`."
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Archive counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                required:
+                  - ok
+                  - archived
+                  - deleted
   /api/sessions/{sessionId}:
     get:
       tags:

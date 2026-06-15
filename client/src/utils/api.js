@@ -509,6 +509,8 @@ export const api = {
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
   clearPushedSessions: (agentId) =>
     fetchJSON(`/agents/${agentId}/sessions/pushed`, { method: 'DELETE' }),
+  clearMergedSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/merged`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

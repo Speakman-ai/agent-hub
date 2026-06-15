@@ -3520,6 +3520,34 @@ export default function App({ initialView } = {}) {
     }
   };
 
+  const handleClearMergedSessions = async () => {
+    if (!activeAgentId) return;
+    setDeletingBulk('merged');
+    // Resolve which sessions the server will archive (state === 'merged') using
+    // the same shared resolver the sidebar status icon uses, so the optimistic
+    // local update matches what the server does.
+    const isMerged = (s) =>
+      deriveSessionState(s, {
+        activeTaskSessionIds: activeTasks,
+        finalizeStatusBySession,
+      }) === 'merged';
+    const mergedIds = new Set(sessions.filter(isMerged).map((s) => s.id));
+    for (const id of mergedIds) tearDownSessionPreview(id);
+    try {
+      const result = await api.clearMergedSessions(activeAgentId);
+      if (result.ok) {
+        // Drop only the merged sessions; everything else stays.
+        setSessions((prev) => prev.filter((s) => !mergedIds.has(s.id)));
+        if (activeSessionId && mergedIds.has(activeSessionId)) {
+          const remaining = sessions.filter((s) => !mergedIds.has(s.id));
+          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+        }
+      }
+    } finally {
+      setDeletingBulk(null);
+    }
+  };
+
   const handleRenameSession = async (sessionId, newName) => {
     await api.renameSession(sessionId, newName);
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
@@ -4158,6 +4186,7 @@ export default function App({ initialView } = {}) {
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
             onClearPushedSessions={handleClearPushedSessions}
+            onClearMergedSessions={handleClearMergedSessions}
             archivedSessions={archivedSessions}
             onRestoreSession={handleRestoreSession}
             restoringSessionIds={restoringSessionIds}

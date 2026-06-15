@@ -179,6 +179,88 @@ describe('Session archive & restore', () => {
     expect(archivedIds).toEqual([pushedId]);
   });
 
+  it('bulk DELETE merged archives only sessions whose state is `merged`, keeping the rest', async () => {
+    const agent = await createAgent({
+      projectId: 'archive-proj',
+      id: `merged-bulk-agent-${Date.now()}`,
+      name: 'Merged bulk isolation',
+    });
+    const aid = agent.id as string;
+
+    // One session whose linked kanban card sits in a Done column → state
+    // resolves to `merged` and should be archived.
+    const merged = await createSession({ agentId: aid, name: 'merged-1' });
+    const mergedId = merged.id as string;
+    // One session with a settled `pushed` finalize run → state is `pushed` and
+    // must be kept (this is the companion endpoint's blind spot, not its job).
+    const pushed = await createSession({ agentId: aid, name: 'pushed-keep' });
+    const pushedId = pushed.id as string;
+    // One plain idle session (no finalize run, no card) → default
+    // `waiting_for_user_input` and must be kept.
+    const idle = await createSession({ agentId: aid, name: 'idle-keep' });
+    const idleId = idle.id as string;
+
+    const { randomUUID } = await import('node:crypto');
+    const { db, stmts } = await import('../db.js');
+    if (!db || !stmts) throw new Error('Database not initialized');
+
+    // Build a board with a Done column and link the merged session's card to it.
+    const boardId = randomUUID();
+    const doneColId = randomUUID();
+    const cardId = randomUUID();
+    db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?,?,?)').run(
+      boardId,
+      'archive-proj',
+      'Merged bulk board',
+    );
+    db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?,?,?,?)').run(
+      doneColId,
+      boardId,
+      'Done',
+      0,
+    );
+    db.prepare(
+      'INSERT INTO kanban_cards (id, column_id, board_id, title, session_id) VALUES (?,?,?,?,?)',
+    ).run(cardId, doneColId, boardId, 'merged card', mergedId);
+
+    // Settle the kept session into `pushed`.
+    const runId = randomUUID();
+    stmts.insertFinalizeRun.run(
+      runId,
+      `card-${runId}`,
+      pushedId,
+      'archive-proj',
+      'feature/pushed',
+      'sha-pushed',
+      `pushed-${runId}`,
+      'pushed',
+      'push',
+      'ui_button',
+      '/tmp/pushed',
+      'owner-user',
+      'Agent Hub',
+      'agent@example.test',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+
+    const bulk = await request.delete(`/api/agents/${aid}/sessions/merged`).expect(200);
+    expect(bulk.body.archived).toBe(1);
+    expect(bulk.body.deleted).toBe(1);
+
+    // The pushed + idle sessions remain live; merged is gone.
+    const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
+    const liveIds = (liveList.body as Array<{ id: string }>).map((s) => s.id).sort();
+    expect(liveIds).toEqual([pushedId, idleId].sort());
+
+    // The merged session is the only one archived.
+    const archived = await request.get(`/api/agents/${aid}/archived-sessions`).expect(200);
+    const archivedIds = (archived.body as Array<{ id: string }>).map((s) => s.id);
+    expect(archivedIds).toEqual([mergedId]);
+  });
+
   it('archiving the same session twice is idempotent (still 200, stays archived)', async () => {
     const session = await createSession({ agentId, name: 'double-archive' });
     const sessionId = session.id as string;
