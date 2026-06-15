@@ -166,6 +166,16 @@ resource "aws_lb" "agenthub" {
   ip_address_type = "ipv4"
   idle_timeout    = var.alb_idle_timeout
 
+  # Access logs are on in prod (adopted from live). Empty bucket → no block →
+  # logging disabled, so non-prod envs are unaffected.
+  dynamic "access_logs" {
+    for_each = trimspace(var.alb_access_logs_bucket) != "" ? [1] : []
+    content {
+      bucket  = var.alb_access_logs_bucket
+      enabled = true
+    }
+  }
+
   lifecycle {
     precondition {
       condition     = !var.enable_dedicated_alb || local.has_public_fqdn || (var.name != null && var.name != "")
@@ -193,8 +203,8 @@ resource "aws_lb_target_group" "agenthub" {
     protocol            = "HTTP"
     port                = "traffic-port"
     healthy_threshold   = 2
-    unhealthy_threshold = 2
-    timeout             = 5
+    unhealthy_threshold = var.alb_health_check_unhealthy_threshold
+    timeout             = var.alb_health_check_timeout
     interval            = 30
     matcher             = "200"
   }

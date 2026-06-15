@@ -81,3 +81,39 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
     }]
   })
 }
+
+# ── Quota guard: fleet ceiling can never outrun the live On-Demand vCPU quota ──
+# One agent == one instance. An ON-DEMAND fleet draws from the "Running On-Demand
+# Standard" vCPU quota (L-1216C47A); the mixed pool can fall back to m-family
+# 2xlarge, so size for the WORST case of 8 vCPU/agent plus a baseline for the Hub
+# and any other on-demand usage. This reads the LIVE quota and FAILS the plan if
+# finalize_runner_max_size would exceed it — so a future bump past the approved
+# quota is blocked at plan time, not just discouraged by a comment. (Spot fleets
+# draw from a different quota, so the guard only applies when use_spot = false.)
+data "aws_servicequotas_service_quota" "finalize_ondemand_vcpu" {
+  count        = var.enable_finalize_runners && !var.finalize_runner_use_spot ? 1 : 0
+  service_code = "ec2"
+  quota_code   = "L-1216C47A" # Running On-Demand Standard (A,C,D,H,I,M,R,T,Z) instances
+}
+
+locals {
+  finalize_worst_case_vcpu_per_agent = 8  # m-family 2xlarge fallback
+  finalize_nonfleet_baseline_vcpu    = 16 # Hub + headroom for other on-demand usage
+  finalize_fleet_worst_case_vcpu = (
+    var.finalize_runner_max_size * local.finalize_worst_case_vcpu_per_agent
+    + local.finalize_nonfleet_baseline_vcpu
+  )
+}
+
+resource "terraform_data" "finalize_quota_guard" {
+  count = var.enable_finalize_runners && !var.finalize_runner_use_spot ? 1 : 0
+
+  # No arguments: a marker whose only job is to carry the precondition, which
+  # Terraform evaluates on every plan/apply (even with no resource changes).
+  lifecycle {
+    precondition {
+      condition     = local.finalize_fleet_worst_case_vcpu <= data.aws_servicequotas_service_quota.finalize_ondemand_vcpu[0].value
+      error_message = "finalize_runner_max_size (${var.finalize_runner_max_size}) needs up to ${local.finalize_fleet_worst_case_vcpu} On-Demand Standard vCPUs worst-case (8 vCPU/agent + ${local.finalize_nonfleet_baseline_vcpu} baseline), but the live EC2 quota L-1216C47A in this account/region is only ${data.aws_servicequotas_service_quota.finalize_ondemand_vcpu[0].value}. Raise the AWS quota first (and wait for approval), or lower finalize_runner_max_size."
+    }
+  }
+}

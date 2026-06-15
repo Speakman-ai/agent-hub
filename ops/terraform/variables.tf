@@ -313,6 +313,18 @@ variable "alb_idle_timeout" {
   default     = 300
 }
 
+variable "alb_health_check_timeout" {
+  description = "Target-group health-check response timeout (s). Default 5 suits multi-target groups; single-instance envs (e.g. prod) should use a more tolerant value (10) so a transient slowdown can't flap the only target into a site-wide 503."
+  type        = number
+  default     = 5
+}
+
+variable "alb_health_check_unhealthy_threshold" {
+  description = "Consecutive failed health checks before a target is marked unhealthy. Default 2 = fast failover for multi-target groups; single-instance envs should use a higher value (5) to tolerate transient blips (no peer to fail over to)."
+  type        = number
+  default     = 2
+}
+
 variable "second_public_subnet_cidr_block" {
   description = "CIDR for the second public subnet (other AZ) used only when enable_dedicated_alb = true. Must be within vpc_cidr_block and not overlap public_subnet_cidr_block."
   type        = string
@@ -386,6 +398,36 @@ variable "manage_shared_finalize_infra" {
   type        = bool
   default     = false
   description = "Create account-wide finalize S3 buckets + ECR repos here (ONE env only)."
+}
+
+variable "alb_access_logs_bucket" {
+  type        = string
+  default     = ""
+  description = "S3 bucket name for ALB access logs. Empty disables access logging (no access_logs block). Set to the live bucket to keep logs on (prod adopts agenthub-alb-logs-<acct>)."
+}
+
+variable "enable_hub_data_volume" {
+  type        = bool
+  default     = false
+  description = "Create the dedicated encrypted Hub data EBS volume (mounted /dev/sdf) + its DLM daily-snapshot policy. Prod-only; see hub-data.tf. Leave false in every other env."
+}
+
+variable "hub_data_volume_size" {
+  type        = number
+  default     = 256
+  description = "Size (GiB) of the Hub data volume when enable_hub_data_volume = true."
+}
+
+variable "hub_data_kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "KMS CMK ARN encrypting the Hub data volume. Required (account-specific) when enable_hub_data_volume = true; must match the live volume's key exactly or Terraform will plan a replacement. Enforced by a precondition in hub-data.tf."
+}
+
+variable "hub_data_availability_zone" {
+  type        = string
+  default     = ""
+  description = "AZ of the Hub data volume (e.g. us-east-2a). Required when enable_hub_data_volume = true and must match the live volume's AZ exactly. Pinned explicitly rather than derived from aws_instance.app so a future instance replacement in another AZ cannot force-replace the database volume. Enforced by a precondition in hub-data.tf."
 }
 
 variable "finalize_runner_instance_type" {

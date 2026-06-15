@@ -50,8 +50,29 @@ agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
 # Hub no longer runs CI (the fleet does) → right-sized vs the test box.
-instance_type    = "m7i-flex.xlarge" # 4 vCPU / 16 GB — app + registry mirror + worktree bundling
+instance_type    = "m7i.2xlarge" # 8 vCPU / 32 GB — adopted to match the live (manually scaled-up) Hub; avoids a downsize+reboot on apply
 root_volume_size = 150
+
+# ── Hub data volume + daily snapshots (hub-data.tf) ──────────────────────────
+# Dedicated encrypted 256 GiB volume (mounted /dev/sdf) holding the Hub DB +
+# data dir, with a DLM 14-day daily-snapshot policy. Re-adopted into source
+# control 2026-06-15 after being found applied out-of-band (state-only). The
+# KMS ARN must match the live volume's CMK exactly, or TF plans a replacement.
+enable_hub_data_volume     = true
+hub_data_volume_size       = 256
+hub_data_availability_zone = "us-east-2a" # must match the live volume vol-083f7a0f95116d80e
+hub_data_kms_key_arn       = "arn:aws:kms:us-east-2:350025135582:key/8bd60c33-06da-4257-8a77-28a99fd67ee4"
+
+# ALB access logs — adopted from live (was applied out-of-band; config would
+# otherwise disable them). Bucket already exists in this account.
+alb_access_logs_bucket = "agenthub-alb-logs-350025135582"
+
+# Health check — keep the tolerant live values (10s timeout, 5 failures). prod is
+# a SINGLE-instance target group, so tightening (the 5/2 default) only risks a
+# transient slowdown flapping the only target into a site-wide 503; there is no
+# peer to fail over to. Deliberately more forgiving than the multi-target default.
+alb_health_check_timeout             = 10
+alb_health_check_unhealthy_threshold = 5
 
 # ── Finalize remote-runner fleet (full production config) ────────────────────
 enable_finalize_runners       = true
@@ -63,17 +84,20 @@ finalize_runner_instance_type = "r7i.xlarge"
 # already retry on a fresh agent, so Spot is safe to re-enable).
 finalize_runner_use_spot = false
 finalize_runner_min_size = 0 # scale-to-zero when idle
-# 32-agent ceiling. This single var drives the ASG max_size, on_demand_base_capacity,
+# 64-agent ceiling. This single var drives the ASG max_size, on_demand_base_capacity,
 # and maximum_scaling_step_size (modules/finalize-runners) AND the Hub env
 # FINALIZE_FLEET_MAX_AGENTS (finalize-hub.tf) in lockstep — one task per instance
 # (28 GiB reservation on 32 GiB hosts), so agents == instances.
 # Sized from measured demand: 14-day peak queue depth hit 50 with p99 queue wait
-# ~27 min at the old ceiling of 8; 32 absorbs the queue for ~99.8% of time-at-depth.
-# Capacity headroom: us-east-2 On-Demand Standard vCPU quota = 512, ~40 in use; 32x
-# r7i.xlarge = 128 vCPU (worst-case all-2xlarge fallback ~256) — no quota increase.
-# NOTE (drift): the live ASG had drifted to MaxSize=16 (on_demand_base/step also 16)
-# while this committed value was 8; bumping to 32 reconciles both upward in one apply.
-finalize_runner_max_size = 32 # up to 32 shards/agents concurrently (was 8; live ASG had drifted to 16)
+# ~27 min at the old ceiling of 8.
+# Quota: worst case the mixed pool falls back to m-family 2xlarge (8 vCPU/agent),
+# so 64 agents ≈ 16 baseline + 64*8 = 528 On-Demand Standard vCPUs. The L-1216C47A
+# quota (acct 350025135582 us-east-2) was raised 512 -> 768 and APPROVED 2026-06-15,
+# so 64 agents sit at ~69% of quota. This value is not enforced by comment alone:
+# terraform_data.finalize_quota_guard (finalize-runners.tf) reads the LIVE quota and
+# FAILS the plan if finalize_runner_max_size would exceed it, so a future bump past
+# the approved quota is blocked until the quota is raised first.
+finalize_runner_max_size = 64 # up to 64 shards/agents concurrently; guarded against the live On-Demand vCPU quota
 # Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
 # instances skip the multi-GB boot `docker pull` and provision much faster.
 # Re-bake (ops/scripts or the runbook) when the base AMI / runner image change;

@@ -348,6 +348,19 @@ resource "aws_instance" "app" {
     # adopt a new base image only when you explicitly replace the instance
     # (`terraform apply -replace=aws_instance.app`), or temporarily drop this
     # line, plan, and apply.
+    #
+    # user_data_base64 is deliberately NOT ignored. Ignoring it globally would
+    # silently suppress future bootstrap/.env rollouts in EVERY env (non-prod
+    # included) while plans still show clean — too broad. Rendered user-data
+    # changes instead roll out through explicit managed paths:
+    #   - set user_data_replace_on_change = true for a deliberate instance
+    #     replace (fresh cloud-init), or
+    #   - apply out-of-band via SSM (edit the .env + recreate the agenthub-server
+    #     container — the path used for the FINALIZE_FLEET_MAX_AGENTS fleet bump).
+    # On the live prod host cloud-init will not re-run on a stop/start, so a
+    # plain user_data update is a no-op reboot; prefer the SSM path and run any
+    # deliberate instance change via `-target`/`-replace` rather than a routine
+    # full apply.
     ignore_changes = [ami]
 
     # PR-env cert_renewal_email precondition removed in PR-Env Removal #6.
