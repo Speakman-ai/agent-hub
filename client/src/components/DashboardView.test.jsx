@@ -35,7 +35,26 @@ const SAMPLE = {
       engine: 'claude-code',
       model: 'claude-sonnet-4',
       prompt: 'Split the parser into modules',
+      state: 'working',
+      ownerUserId: 'u1',
+      ownerName: 'alice',
       startedAt: new Date(Date.now() - 90_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 60_000).toISOString(),
+    },
+    {
+      sessionId: 'sess-2',
+      sessionName: 'Awaiting review feedback',
+      agentId: 'a2',
+      agentName: 'Hub Frontend',
+      agentColor: '#A78BFA',
+      engine: 'claude-code',
+      model: 'claude-sonnet-4',
+      prompt: '',
+      state: 'reviewing',
+      ownerUserId: 'u2',
+      ownerName: 'bob',
+      startedAt: null,
+      lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
     },
   ],
   openPRs: [
@@ -446,7 +465,7 @@ describe('DashboardView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Org not active.');
   });
 
-  it('renders the active sessions panel with running session rows', async () => {
+  it('renders the active sessions queue with in-flight session rows, owner, and state', async () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
@@ -456,8 +475,15 @@ describe('DashboardView', () => {
     expect(panel).toHaveTextContent('Hub Backend');
     expect(panel).toHaveTextContent('claude-code');
     expect(panel).toHaveTextContent('Split the parser into modules');
-    // Header count reflects the number of running sessions.
-    expect(screen.getByText('1 running now')).toBeInTheDocument();
+    // Owning user is surfaced on the row.
+    expect(panel).toHaveTextContent('alice');
+    // A non-streaming, in-flight session stays in the queue (regression guard)
+    // and renders its lifecycle state short label.
+    expect(panel).toHaveTextContent('Awaiting review feedback');
+    expect(panel).toHaveTextContent('bob');
+    expect(panel).toHaveTextContent('Reviewing');
+    // Header count reflects every in-flight session, not just streaming ones.
+    expect(screen.getByText('2 in flight')).toBeInTheDocument();
   });
 
   it('opens the session when an active session row is clicked', async () => {
@@ -471,7 +497,7 @@ describe('DashboardView', () => {
     expect(onOpenSession).toHaveBeenCalledWith('a1', 'sess-1');
   });
 
-  it('shows an empty state when no sessions are running', async () => {
+  it('shows an empty state when there are no in-flight sessions', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -487,8 +513,10 @@ describe('DashboardView', () => {
     await waitFor(() => {
       expect(screen.getByTestId('active-sessions')).toBeInTheDocument();
     });
-    expect(screen.getByText('No sessions are running right now.')).toBeInTheDocument();
-    expect(screen.getByText('0 running now')).toBeInTheDocument();
+    expect(
+      screen.getByText('No active sessions. Everything has merged or there is no work in flight.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('0 in flight')).toBeInTheDocument();
   });
 });
 

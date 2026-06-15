@@ -14,6 +14,8 @@ import { getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
 import { relativeTime } from '../utils/time';
 import { colors } from '../theme/colors';
+import SessionStateIcon from '../components/SessionStateIcon';
+import { sessionStateMeta } from '../../../shared/utils/sessionState.js';
 import {
   formatHeadlineTiles,
   priorityRows,
@@ -163,36 +165,45 @@ export default function DashboardScreen() {
               ))}
             </View>
 
-            {/* Active sessions */}
+            {/* Active sessions — every in-flight (non-merged) session, not
+                just the ones whose CLI is currently streaming. */}
             <SectionHeader
               title="Active sessions"
-              subtitle={`${(data.activeSessions || []).length} running now`}
+              subtitle={`${(data.activeSessions || []).length} in flight`}
             />
             <View style={styles.card} testID="active-sessions">
               {(data.activeSessions || []).length === 0 ? (
-                <Text style={styles.muted}>No sessions are running right now.</Text>
+                <Text style={styles.muted}>
+                  No active sessions. Everything has merged or there is no work in flight.
+                </Text>
               ) : (
                 (data.activeSessions || []).map((s) => (
                   <View key={s.sessionId} style={styles.activityRow}>
-                    <View
-                      style={[
-                        styles.activityDot,
-                        { backgroundColor: s.agentColor || colors.emerald400 },
-                      ]}
-                    />
+                    <SessionStateIcon state={s.state} size={16} style={styles.activitySessionIcon} />
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.activityTitle} numberOfLines={1}>
                         {s.sessionName || 'Untitled session'}
                       </Text>
                       <Text style={styles.activityMeta} numberOfLines={1}>
-                        {[s.agentName || s.agentId, s.engine, s.model, s.prompt]
+                        {[
+                          s.agentName || s.agentId,
+                          s.ownerName ? `👤 ${s.ownerName}` : null,
+                          s.engine,
+                          s.model,
+                          s.prompt,
+                        ]
                           .filter(Boolean)
                           .join(' · ')}
                       </Text>
                     </View>
-                    <Text style={styles.activityTime}>
-                      {s.startedAt ? relativeTime(s.startedAt) : ''}
-                    </Text>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.sessionStateLabel}>{sessionStateMeta(s.state).short}</Text>
+                      <Text style={styles.activityTime}>
+                        {s.startedAt || s.lastActivityAt
+                          ? relativeTime(s.startedAt || s.lastActivityAt)
+                          : ''}
+                      </Text>
+                    </View>
                   </View>
                 ))
               )}
@@ -543,6 +554,16 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  activitySessionIcon: {
+    width: 16,
+    textAlign: 'center',
+  },
+  sessionStateLabel: {
+    color: colors.gray400,
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   activityTitle: {
     color: colors.white,

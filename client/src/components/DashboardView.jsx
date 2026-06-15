@@ -13,11 +13,13 @@ import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
 import { parseNativePrUrl } from '../utils/prFormatting.js';
+import SessionStateIcon from './SessionStateIcon.jsx';
+import { sessionStateMeta } from '../../../shared/utils/sessionState.js';
 
 /**
  * Org-wide dashboard. Renders the response from
  * `GET /api/orgs/:id/dashboard`, top to bottom:
- *   - active sessions (what each agent is streaming right now)
+ *   - active sessions (every in-flight session that has not merged yet)
  *   - open PRs (cards with an unmerged PR link)
  *   - kanban breakdown (byColumn + byPriority bar charts)
  *   - recent activity feed
@@ -272,12 +274,15 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
 }
 
 /**
- * Live work feed: the sessions whose agent CLI is currently streaming.
- * Sourced from `data.activeSessions` (running rows in `active_tasks`,
- * enriched server-side with the session name + agent label/color). Each
- * row deep-links into the chat via `onOpenSession(agentId, sessionId)`.
+ * In-flight work queue: every non-deleted session in the org that has not yet
+ * merged — not just the ones whose CLI is currently streaming. Sourced from
+ * `data.activeSessions`, enriched server-side with the session name, agent
+ * label/color, resolved lifecycle `state`, and owning user. Sessions that are
+ * running tests, under review, pending push, or waiting for user input stay in
+ * the queue instead of vanishing the moment the lead agent stops streaming.
+ * Each row deep-links into the chat via `onOpenSession(agentId, sessionId)`.
  *
- * @param {Array<{sessionId, sessionName, agentId, agentName, agentColor, engine, model, prompt, startedAt}>} [sessions]
+ * @param {Array<{sessionId, sessionName, agentId, agentName, agentColor, engine, model, prompt, state, ownerUserId, ownerName, startedAt, lastActivityAt}>} [sessions]
  * @param {(agentId: string, sessionId: string) => void} [onOpenSession]
  */
 function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
@@ -288,7 +293,7 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
         <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
           Active sessions
         </h2>
-        <div className="text-xs text-gray-500">{list.length} running now</div>
+        <div className="text-xs text-gray-500">{list.length} in flight</div>
       </div>
       <div
         data-testid="active-sessions"
@@ -296,7 +301,7 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
       >
         {list.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs text-gray-600">
-            No sessions are running right now.
+            No active sessions. Everything has merged or there is no work in flight.
           </div>
         ) : (
           list.map((s) => {
@@ -304,21 +309,17 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
             const rowClass = actionable
               ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
               : 'px-4 py-3 flex items-center gap-3';
+            const meta = sessionStateMeta(s.state);
+            // Time-stamp by the freshest signal: an actively-streaming turn's
+            // start, otherwise the session's last activity.
+            const stamp = s.startedAt || s.lastActivityAt;
             const inner = (
               <>
                 <span
-                  className="relative flex h-2.5 w-2.5 flex-shrink-0"
-                  aria-hidden
-                  title="Running"
+                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center"
+                  title={meta.label}
                 >
-                  <span
-                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
-                    style={{ backgroundColor: s.agentColor || '#34D399' }}
-                  />
-                  <span
-                    className="relative inline-flex rounded-full h-2.5 w-2.5"
-                    style={{ backgroundColor: s.agentColor || '#34D399' }}
-                  />
+                  <SessionStateIcon state={s.state} size={14} />
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-white truncate">
@@ -328,13 +329,19 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
                     <span style={s.agentColor ? { color: s.agentColor } : undefined}>
                       {s.agentName || s.agentId}
                     </span>
+                    {s.ownerName ? ` · 👤 ${s.ownerName}` : ''}
                     {s.engine ? ` · ${s.engine}` : ''}
                     {s.model ? ` · ${s.model}` : ''}
                     {s.prompt ? ` · ${s.prompt}` : ''}
                   </div>
                 </div>
-                <div className="text-[11px] text-gray-500 flex-shrink-0">
-                  {s.startedAt ? relativeTime(s.startedAt) : ''}
+                <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
+                  <span className="text-[10px] uppercase tracking-wide text-gray-400">
+                    {meta.short}
+                  </span>
+                  <span className="text-[11px] text-gray-500">
+                    {stamp ? relativeTime(stamp) : ''}
+                  </span>
                 </div>
               </>
             );

@@ -8,6 +8,8 @@ import config from '../config.js';
 import type { RouteDeps } from '../types.js';
 import { isColumnDone, isColumnShippedLane } from '../kanban-blockers.js';
 import { isNativePrUrl } from '../native-pr/url.js';
+import { computeSessionState } from '../session-state.js';
+import { getUserById } from '../users-store.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -149,55 +151,157 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const sessionsTotal =
       (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }).c || 0;
 
-    // ── Active sessions (detail + count) ───────────────────────────
-    // The panel wants per-session rows so it can list what each agent is
-    // working on and deep-link into the chat; the headline `activeSessions`
-    // counter is the same set, just counted.
+    // ── Active sessions queue (detail + count) ─────────────────────
+    // The queue surfaces *every in-flight session* in this org, not just the
+    // ones whose CLI is currently streaming. A session that is running tests,
+    // under review, pending a push, or waiting for user input is still work
+    // the team needs eyes on — it must not drop out of the queue the moment
+    // the lead agent stops streaming a turn (the old `active_tasks WHERE
+    // status='running'` filter made exactly those sessions disappear). We
+    // enumerate non-deleted sessions, resolve each one's lifecycle state, and
+    // keep everything that has not reached the terminal `merged` state (the
+    // linked card parked in a Done column). Each row carries the owning user
+    // so the queue shows who a session belongs to.
     //
-    // Org scoping: `getDb()` is the active org's database and the route has
-    // already 409'd any non-active org, so `active_tasks` here only contains
-    // this org's rows — the same hard boundary the kanban/recent-activity
-    // queries rely on. On top of that physical isolation we restrict to the
-    // org's *current* agent roster: `allAgents()` is reloaded per-org from
-    // this org's `projects.json`, so an `agent_id` it contains is by
-    // definition an agent in a project in this org. This walks the
-    // session → agent → project → org relationship explicitly (rather than
-    // leaning solely on the per-org DB handle), and as a bonus drops orphaned
-    // rows for deleted agents instead of surfacing a bare unknown id.
+    // The display cap is applied **after** the merged/roster filter, never
+    // before: capping the raw `sessions` scan up front would let a burst of
+    // recently-merged sessions push older still-in-flight sessions off the
+    // queue (and out of the count). To do that without resolving the full
+    // lifecycle state of every historical merged row, we cheaply pre-exclude
+    // merged sessions in SQL (linked card sitting in a Done column — the same
+    // `isColumnDone` signal `computeSessionState` reads), so the per-session
+    // state resolver only runs over the genuinely-active remainder.
+    //
+    // Org scoping mirrors the rest of the payload: `getDb()` is the active
+    // org's database (a non-active org already 409'd), and we additionally
+    // restrict to the org's *current* agent roster (`allAgents()` reloaded
+    // per-org from this org's projects.json). That walks
+    // session → agent → project → org explicitly and drops orphaned rows for
+    // since-deleted agents instead of surfacing a bare unknown id.
+    const ACTIVE_SESSIONS_DISPLAY_LIMIT = 200;
     const agentsById = new Map(allAgents().map((a) => [a.id, a]));
-    const activeSessionRows = db
+
+    // Prompt + start time for the rows whose CLI is *currently* streaming —
+    // fetched in one pass and looked up per session. Most sessions in the
+    // queue are not streaming, so a join would mostly return nulls.
+    const runningTaskBySession = new Map(
+      (
+        db
+          .prepare(
+            `SELECT session_id, prompt, started_at FROM active_tasks WHERE status = 'running'`,
+          )
+          .all() as Array<{ session_id: string; prompt: string; started_at: string }>
+      ).map((t) => [t.session_id, t]),
+    );
+
+    // Cheap, set-based "merged" pre-filter. `computeSessionState` treats a
+    // session as merged when its linked kanban card sits in a Done column
+    // (`isColumnDone`). Resolving that one signal in SQL lets us drop the bulk
+    // of historical merged sessions before the (relatively pricier) per-session
+    // state resolution, so we never have to enumerate-then-resolve thousands of
+    // terminal rows just to honor "every session that has not merged yet".
+    const mergedColumnIds = (
+      db.prepare('SELECT id, name FROM kanban_columns').all() as { id: string; name: string }[]
+    )
+      .filter((row) => isColumnDone(row.name))
+      .map((r) => r.id);
+
+    const mergedSessionIds = new Set<string>();
+    if (mergedColumnIds.length) {
+      const mergedCol = mergedColumnIds.map(() => '?').join(',');
+      for (const row of db
+        .prepare(
+          `SELECT DISTINCT session_id FROM kanban_cards
+           WHERE session_id IS NOT NULL AND column_id IN (${mergedCol})`,
+        )
+        .all(...mergedColumnIds) as { session_id: string | null }[]) {
+        if (row.session_id) mergedSessionIds.add(row.session_id);
+      }
+    }
+
+    // Enumerate *all* non-deleted sessions (no pre-truncation). The roster +
+    // merged pre-filter below runs in JS before any cap, so the cap only ever
+    // trims the already-active set.
+    const candidateSessionRows = db
       .prepare(
-        `SELECT t.session_id, t.agent_id, t.engine, t.model, t.prompt, t.started_at,
-                s.name as session_name
-         FROM active_tasks t
-         LEFT JOIN sessions s ON s.id = t.session_id
-         WHERE t.status = 'running'
-         ORDER BY t.started_at ASC`,
+        `SELECT id, agent_id, name, engine, model, owner_user_id, updated_at
+         FROM sessions
+         WHERE deleted_at IS NULL
+         ORDER BY updated_at DESC`,
       )
       .all() as Array<{
-      session_id: string;
+      id: string;
       agent_id: string;
-      engine: string;
+      name: string | null;
+      engine: string | null;
       model: string | null;
-      prompt: string;
-      started_at: string;
-      session_name: string | null;
+      owner_user_id: string | null;
+      updated_at: string;
     }>;
 
-    const activeSessionsList = activeSessionRows
-      .filter((r) => agentsById.has(r.agent_id))
-      .map((r) => {
+    // Cache owner lookups — many sessions share an owner and getUserById hits
+    // the shared orgs DB on each call.
+    const ownerNameCache = new Map<string, string | null>();
+    const resolveOwnerName = (ownerId: string | null): string | null => {
+      if (!ownerId) return null;
+      if (ownerNameCache.has(ownerId)) return ownerNameCache.get(ownerId) ?? null;
+      let name: string | null = null;
+      try {
+        name = getUserById(ownerId)?.username ?? null;
+      } catch {
+        name = null;
+      }
+      ownerNameCache.set(ownerId, name);
+      return name;
+    };
+
+    const activeSessionsResolved = candidateSessionRows
+      // Drop orphaned/cross-org rows, then cheaply pre-exclude merged sessions.
+      // A merged-card session is kept *only* if it is actively streaming again
+      // (reopened work) — `computeSessionState` ranks live activity above the
+      // sticky `merged` marker, so the authoritative filter below still keeps
+      // it. This is the lone case where a Done-column session is not terminal.
+      .filter(
+        (r) =>
+          agentsById.has(r.agent_id) &&
+          (!mergedSessionIds.has(r.id) || runningTaskBySession.has(r.id)),
+      )
+      .map((r) => ({ r, state: computeSessionState(stmts, r.id) }))
+      // Authoritative terminal-state filter (covers the reopened edge above and
+      // any finalize-phase nuance the SQL pre-filter can't express). Everything
+      // earlier in the pipeline (waiting → working → tests → review → checks →
+      // push → pushed) stays visible until it lands.
+      .filter(({ state }) => state !== 'merged');
+
+    // Cap is applied AFTER filtering, so a merged session can never displace an
+    // in-flight one. Count and list stay the same scoped set, so they can never
+    // disagree; if the active set ever exceeds the cap we log the truncation
+    // rather than silently hide it.
+    if (activeSessionsResolved.length > ACTIVE_SESSIONS_DISPLAY_LIMIT) {
+      console.warn(
+        `[dashboard] active sessions (${activeSessionsResolved.length}) exceed display cap ${ACTIVE_SESSIONS_DISPLAY_LIMIT}; truncating the queue for org ${orgId}.`,
+      );
+    }
+
+    const activeSessionsList = activeSessionsResolved
+      .slice(0, ACTIVE_SESSIONS_DISPLAY_LIMIT)
+      .map(({ r, state }) => {
         const agent = agentsById.get(r.agent_id)!;
+        const task = runningTaskBySession.get(r.id) || null;
         return {
-          sessionId: r.session_id,
-          sessionName: r.session_name || 'Untitled session',
+          sessionId: r.id,
+          sessionName: r.name || 'Untitled session',
           agentId: r.agent_id,
           agentName: agent.name || r.agent_id,
           agentColor: agent.color ?? null,
-          engine: r.engine,
-          model: r.model,
-          prompt: r.prompt || '',
-          startedAt: r.started_at,
+          engine: r.engine || '',
+          model: r.model ?? null,
+          prompt: task?.prompt || '',
+          state,
+          ownerUserId: r.owner_user_id ?? null,
+          ownerName: resolveOwnerName(r.owner_user_id ?? null),
+          startedAt: task?.started_at ?? null,
+          lastActivityAt: r.updated_at,
         };
       });
 

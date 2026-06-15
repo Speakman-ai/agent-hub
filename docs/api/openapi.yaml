@@ -2752,7 +2752,27 @@ components:
                 nullable: true
               prompt:
                 type: string
+              state:
+                type: string
+                enum:
+                  - waiting_for_user_input
+                  - working
+                  - running_tests
+                  - reviewing
+                  - pending_checks
+                  - pending_push
+                  - pushed
+                  - merged
+              ownerUserId:
+                type: string
+                nullable: true
+              ownerName:
+                type: string
+                nullable: true
               startedAt:
+                type: string
+                nullable: true
+              lastActivityAt:
                 type: string
             required:
               - sessionId
@@ -2763,7 +2783,11 @@ components:
               - engine
               - model
               - prompt
+              - state
+              - ownerUserId
+              - ownerName
               - startedAt
+              - lastActivityAt
         openPRs:
           type: array
           items:

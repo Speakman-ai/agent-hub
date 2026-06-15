@@ -7,6 +7,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { SESSION_STATES } from '../../shared/utils/sessionState.js';
 
 const ErrorResponse = registerComponent(
   'DashboardErrorResponse',
@@ -50,7 +51,20 @@ const ActiveSessionEntry = z.object({
   engine: z.string(),
   model: z.string().nullable(),
   prompt: z.string(),
-  startedAt: z.string(),
+  // Resolved lifecycle state (shared/utils/sessionState.js). The queue lists
+  // every non-deleted session that has not reached `merged`, so this is one
+  // of the earlier pipeline states.
+  state: z.enum(SESSION_STATES as unknown as [string, ...string[]]),
+  // Owning user (sessions.owner_user_id) resolved to a username. Null for
+  // pre-auth-phase-4 sessions or when the user record is gone.
+  ownerUserId: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  // Start time of the currently-streaming turn, or null when the session is
+  // in-flight but not actively streaming (testing / reviewing / waiting).
+  startedAt: z.string().nullable(),
+  // Last activity timestamp (sessions.updated_at) — always present, used to
+  // order and time-stamp the queue regardless of streaming state.
+  lastActivityAt: z.string(),
 });
 
 const OpenPrEntry = z.object({

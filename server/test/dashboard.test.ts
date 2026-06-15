@@ -45,7 +45,11 @@ interface DashboardBody {
     engine: string;
     model: string | null;
     prompt: string;
-    startedAt: string;
+    state: string;
+    ownerUserId: string | null;
+    ownerName: string | null;
+    startedAt: string | null;
+    lastActivityAt: string;
   }>;
   openPRs: Array<{
     cardId: string;
@@ -156,7 +160,7 @@ describe('GET /api/orgs/:id/dashboard', () => {
     }
   });
 
-  it('lists running active_tasks rows in activeSessions, enriched with agent + session labels', async () => {
+  it('lists a streaming session in activeSessions with state=working, enriched with agent + session labels', async () => {
     const project = await createProject({ name: 'Dashboard Active Sessions Project' });
     const projectId = project.id as string;
     const agent = await createAgent({
@@ -170,9 +174,9 @@ describe('GET /api/orgs/:id/dashboard', () => {
 
     const { getDb } = await import('../db.js');
     const db = getDb();
-    // Two rows for the same agent: one running (must appear) and one done
-    // (must NOT appear). Direct insert — tests never spawn a real CLI, so
-    // there's no streaming path to create these for us.
+    // A running active_task → the session resolves to state 'working' and the
+    // panel surfaces the running turn's prompt + start time. Direct insert —
+    // tests never spawn a real CLI, so there's no streaming path otherwise.
     db.prepare(
       `INSERT OR REPLACE INTO active_tasks
          (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
@@ -188,22 +192,6 @@ describe('GET /api/orgs/:id/dashboard', () => {
       '2026-06-09 00:00:00',
     );
 
-    const doneSession = await createSession({ agentId, name: 'Finished Session' });
-    db.prepare(
-      `INSERT OR REPLACE INTO active_tasks
-         (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
-       VALUES (?, ?, ?, ?, ?, '', ?, ?, 'done', ?)`,
-    ).run(
-      doneSession.id as string,
-      'msg-done-1',
-      agentId,
-      0,
-      'Already finished',
-      'claude-code',
-      null,
-      '2026-06-09 00:00:01',
-    );
-
     const res = await request.get('/api/orgs/default/dashboard').expect(200);
     const body = res.body as DashboardBody;
 
@@ -214,17 +202,162 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(row!.agentId).toBe(agentId);
     expect(row!.agentName).toBe('Active Panel Agent');
     expect(row!.agentColor).toBe('#FF8800');
-    expect(row!.engine).toBe('claude-code');
-    expect(row!.model).toBe('claude-sonnet-4');
+    expect(row!.state).toBe('working');
     expect(row!.prompt).toBe('Implement the active sessions panel');
     expect(row!.startedAt).toBe('2026-06-09 00:00:00');
+    expect(typeof row!.lastActivityAt).toBe('string');
 
-    // The 'done' row is excluded from the list (only status='running').
-    expect(body.activeSessions.some((s) => s.sessionId === (doneSession.id as string))).toBe(false);
-
-    // The headline count is at least the one running row we inserted, and it
-    // never counts the 'done' row.
+    // The headline count agrees with the list and includes our session.
     expect(body.headline.activeSessions).toBeGreaterThanOrEqual(1);
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
+  });
+
+  it('keeps non-streaming in-flight sessions in the queue (regression: they used to disappear)', async () => {
+    // The core fix: a session with no running active_task is still in-flight
+    // work (waiting for user input, reviewing, etc.) and must stay in the
+    // queue — the old `active_tasks WHERE status='running'` filter dropped it.
+    const project = await createProject({ name: 'Dashboard Idle Session Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Idle Panel Agent' });
+    const agentId = agent.id as string;
+    const session = await createSession({ agentId, name: 'Awaiting Feedback Session' });
+    const sessionId = session.id as string;
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    const row = body.activeSessions.find((s) => s.sessionId === sessionId);
+    expect(row).toBeDefined();
+    // No running task → default lifecycle state, no streaming start time.
+    expect(row!.state).toBe('waiting_for_user_input');
+    expect(row!.startedAt).toBeNull();
+    expect(typeof row!.lastActivityAt).toBe('string');
+  });
+
+  it('resolves the owning user (owner_user_id → username) on activeSessions rows', async () => {
+    const project = await createProject({ name: 'Dashboard Owner Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Owner Panel Agent' });
+    const agentId = agent.id as string;
+    const session = await createSession({ agentId, name: 'Owned Session' });
+    const sessionId = session.id as string;
+
+    const { createUser } = await import('../users-store.js');
+    const owner = createUser({
+      username: `dash-owner-${Date.now()}`,
+      passwordHash: 'scrypt$deadbeef',
+    });
+
+    const { getDb } = await import('../db.js');
+    getDb().prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?').run(owner.id, sessionId);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    const row = body.activeSessions.find((s) => s.sessionId === sessionId);
+    expect(row).toBeDefined();
+    expect(row!.ownerUserId).toBe(owner.id);
+    expect(row!.ownerName).toBe(owner.username);
+  });
+
+  it('excludes merged sessions (linked card in a Done column) from the queue + count', async () => {
+    const project = await createProject({ name: 'Dashboard Merged Session Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Merged Panel Agent' });
+    const agentId = agent.id as string;
+    const session = await createSession({ agentId, name: 'Already Merged Session' });
+    const sessionId = session.id as string;
+
+    // Link a kanban card to the session and park it in the Done column — the
+    // authoritative "merged" signal `computeSessionState` reads.
+    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardRes.body as { columns: Array<{ id: string; name: string }> };
+    const doneCol = board.columns.find((c) => c.name === 'Done');
+    expect(doneCol).toBeDefined();
+
+    const card = await createCard(projectId, {
+      title: 'Merged work card',
+      columnId: doneCol!.id,
+    });
+    const { getDb } = await import('../db.js');
+    getDb()
+      .prepare('UPDATE kanban_cards SET session_id = ? WHERE id = ?')
+      .run(sessionId, card.id as string);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    // Merged → terminal → absent from the queue and uncounted.
+    expect(body.activeSessions.some((s) => s.sessionId === sessionId)).toBe(false);
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
+  });
+
+  it('does not let a flood of merged sessions truncate older non-merged ones (cap applies after filtering)', async () => {
+    // Regression for the review finding: the display cap must be applied AFTER
+    // the merged/roster filter. We seed MORE THAN the 200-row display cap worth
+    // of merged sessions, all sorted ahead (future updated_at) of a single
+    // older non-merged session. With the old "scan top-200 then filter" logic
+    // the merged flood filled the entire scan window, so the non-merged session
+    // (and its headline count) silently disappeared. It must now survive.
+    const project = await createProject({ name: 'Dashboard Cap-After-Filter Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Cap After Filter Agent' });
+    const agentId = agent.id as string;
+
+    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardRes.body as { columns: Array<{ id: string; name: string }> };
+    const doneCol = board.columns.find((c) => c.name === 'Done');
+    expect(doneCol).toBeDefined();
+
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+    const boardId = (
+      db.prepare('SELECT board_id FROM kanban_columns WHERE id = ?').get(doneCol!.id) as {
+        board_id: string;
+      }
+    ).board_id;
+
+    const tag = `capfilter-${Date.now()}`;
+    // Order is keyed on `updated_at` (the active-sessions scan key). We push
+    // `updated_at` far into the future so these rows sort ahead of the cap, but
+    // keep `created_at` (and the cards' timestamps) in the past so they never
+    // pollute the created_at/updated_at-ordered recent-activity feed other
+    // tests assert against.
+    const targetId = `${tag}-target`;
+    db.prepare(
+      `INSERT INTO sessions (id, agent_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, '2020-01-01 00:00:00', '2099-01-01 00:00:00')`,
+    ).run(targetId, agentId, 'Older non-merged session that must survive');
+
+    // 205 merged sessions (linked card parked in Done), each sorted AHEAD of the
+    // target on `updated_at` — enough to overflow the 200-row display cap on
+    // their own.
+    const insertSession = db.prepare(
+      `INSERT INTO sessions (id, agent_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, '2020-01-01 00:00:00', '2099-06-01 00:00:00')`,
+    );
+    const insertCard = db.prepare(
+      `INSERT INTO kanban_cards (id, column_id, board_id, title, priority, session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'low', ?, '2020-01-01 00:00:00', '2020-01-01 00:00:00')`,
+    );
+    const seedMerged = db.transaction((n: number) => {
+      for (let i = 0; i < n; i++) {
+        const sid = `${tag}-merged-${i}`;
+        insertSession.run(sid, agentId, `Merged flood session ${i}`);
+        insertCard.run(`${tag}-card-${i}`, doneCol!.id, boardId, `Merged flood card ${i}`, sid);
+      }
+    });
+    seedMerged(205);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    // The non-merged session survives the merged flood…
+    expect(body.activeSessions.some((s) => s.sessionId === targetId)).toBe(true);
+    // …and none of the merged flood leaks into the queue.
+    expect(body.activeSessions.some((s) => s.sessionId.startsWith(`${tag}-merged-`))).toBe(false);
+    // Count stays consistent with the (post-filter) list.
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
   });
 
   it('excludes running tasks whose agent is not in the org roster from activeSessions + count', async () => {
