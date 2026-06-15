@@ -61,7 +61,6 @@ export default function Sidebar({
   onNewSession,
   onDeleteSession,
   onClearAllSessions,
-  onClearPushedSessions,
   onClearMergedSessions,
   onRenameSession,
   onNavigate,
@@ -781,21 +780,20 @@ export default function Sidebar({
                                           </button>
                                           {sessions.length > 0 && (
                                             <div className="ml-auto flex items-center gap-0.5 pr-1">
-                                              <button
-                                                onClick={() => setConfirmAction('clear-pushed')}
-                                                disabled={!!deletingBulk}
-                                                className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                title="Clear sessions with pushed changes"
-                                              >
-                                                {deletingBulk === 'pushed' ? '...' : 'Clear pushed'}
-                                              </button>
+                                              {/* Single bulk-clear affordance. The
+                                                  underlying action clears sessions whose
+                                                  work has merged (the settled terminal
+                                                  state once per-session auto-merge runs);
+                                                  it is labelled "Clear pushed" because that
+                                                  is the term users think in ("pushed =
+                                                  shipped"). */}
                                               <button
                                                 onClick={() => setConfirmAction('clear-merged')}
                                                 disabled={!!deletingBulk}
                                                 className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                title="Clear sessions whose changes have merged"
+                                                title="Clear sessions with pushed changes"
                                               >
-                                                {deletingBulk === 'merged' ? '...' : 'Clear merged'}
+                                                {deletingBulk === 'merged' ? '...' : 'Clear pushed'}
                                               </button>
                                               <button
                                                 onClick={() => setConfirmAction('clear-all')}
@@ -893,9 +891,7 @@ export default function Sidebar({
                                             <p className="text-xs text-gray-300 mb-2">
                                               {confirmAction === 'clear-all'
                                                 ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
-                                                : confirmAction === 'clear-merged'
-                                                  ? `Delete all sessions whose changes have merged? Sessions in any other state will be kept.`
-                                                  : `Delete all sessions with pushed changes? Sessions in any other state will be kept.`}
+                                                : `Delete all sessions with pushed changes? Sessions in any other state will be kept.`}
                                             </p>
                                             <div className="flex gap-2 justify-end">
                                               <button
@@ -908,10 +904,8 @@ export default function Sidebar({
                                                 onClick={async () => {
                                                   if (confirmAction === 'clear-all') {
                                                     await onClearAllSessions();
-                                                  } else if (confirmAction === 'clear-merged') {
-                                                    await onClearMergedSessions();
                                                   } else {
-                                                    await onClearPushedSessions();
+                                                    await onClearMergedSessions();
                                                   }
                                                   setConfirmAction(null);
                                                 }}
@@ -926,9 +920,7 @@ export default function Sidebar({
                                                   ? 'Deleting...'
                                                   : confirmAction === 'clear-all'
                                                     ? 'Delete All'
-                                                    : confirmAction === 'clear-merged'
-                                                      ? 'Delete Merged'
-                                                      : 'Delete Pushed'}
+                                                    : 'Delete Pushed'}
                                               </button>
                                             </div>
                                           </div>

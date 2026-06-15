@@ -60,7 +60,7 @@ const buildProps = (overrides = {}) => {
     onNewSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onClearAllSessions: vi.fn(),
-    onClearPushedSessions: vi.fn(),
+    onClearMergedSessions: vi.fn(),
     onRenameSession: vi.fn(),
     onNavigate,
     currentView: 'chat',
@@ -79,6 +79,29 @@ describe('Sidebar — loading overlay', () => {
   it('does not show the loading overlay when isLoading is false', () => {
     render(<Sidebar {...buildProps({ isLoading: false })} />);
     expect(screen.queryByTestId('sidebar-loading')).not.toBeInTheDocument();
+  });
+});
+
+describe('Sidebar — bulk clear affordance', () => {
+  it('renders a single "Clear pushed" button and no "Clear merged" button', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.getByRole('button', { name: 'Clear pushed' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear merged' })).not.toBeInTheDocument();
+  });
+
+  it('"Clear pushed" confirms then runs the merged-clear action (the correct action)', async () => {
+    const onClearMergedSessions = vi.fn();
+    const onClearPushedSessions = vi.fn();
+    render(<Sidebar {...buildProps({ onClearMergedSessions, onClearPushedSessions })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear pushed' }));
+    // Confirmation dialog uses pushed wording.
+    expect(screen.getByText(/Delete all sessions with pushed changes\?/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Pushed' }));
+    await waitFor(() => expect(onClearMergedSessions).toHaveBeenCalledTimes(1));
+    // The abandoned pushed-clear action must never fire from this button.
+    expect(onClearPushedSessions).not.toHaveBeenCalled();
   });
 });
 
