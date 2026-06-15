@@ -42,6 +42,18 @@ export const DEFAULT_TITLE_OPENAI_MODEL = 'gpt-4o-mini';
  */
 const MAX_CONTENT_BYTES = 4_000;
 
+/**
+ * Maximum UTF-8 byte length of the whole-session transcript forwarded to the
+ * title model when titling from session theme (multiple user messages).
+ */
+const MAX_TRANSCRIPT_BYTES = 6_000;
+
+/**
+ * Maximum UTF-8 byte length kept from any single message inside a transcript.
+ * Keeps one verbose turn from crowding out the rest of the session.
+ */
+const MAX_TRANSCRIPT_MESSAGE_BYTES = 1_000;
+
 // Conversational filler patterns. Each is applied repeatedly against the
 // start of the string until no further reduction happens.
 const FILLER_PATTERNS: RegExp[] = [
@@ -324,12 +336,58 @@ export function deriveHeuristicTitle(content: string): string {
   return candidate || 'New chat';
 }
 
+/**
+ * Build a compact transcript of the user's messages for whole-session theme
+ * titling.
+ *
+ * The first message (the session anchor — usually where intent is stated) is
+ * always kept; the remaining byte budget is filled with the most-recent
+ * messages so the title reflects both where the session started AND where it
+ * is now. Selected messages are emitted in chronological order, one per line,
+ * each whitespace-collapsed and clipped on a UTF-8 codepoint boundary.
+ *
+ * Returns an empty string for no usable input, and a single clipped message
+ * (no transcript framing) when only one message is present.
+ */
+export function buildTitleTranscript(userMessages: readonly string[]): string {
+  const msgs = (userMessages ?? [])
+    .map((m) => (typeof m === 'string' ? m : '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (msgs.length === 0) return '';
+  if (msgs.length === 1) return clipUtf8StringToMaxBytes(msgs[0], MAX_CONTENT_BYTES);
+
+  const clipped = msgs.map((m) => clipUtf8StringToMaxBytes(m, MAX_TRANSCRIPT_MESSAGE_BYTES));
+  // Always keep the first message; fill the rest of the budget newest-first.
+  const include = new Set<number>([0]);
+  let used = Buffer.byteLength(clipped[0], 'utf-8');
+  for (let i = clipped.length - 1; i >= 1; i -= 1) {
+    if (include.has(i)) continue;
+    const cost = Buffer.byteLength(clipped[i], 'utf-8') + 1; // +1 for the joining newline
+    if (used + cost > MAX_TRANSCRIPT_BYTES) break;
+    include.add(i);
+    used += cost;
+  }
+  return [...include]
+    .sort((a, b) => a - b)
+    .map((i) => clipped[i])
+    .join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // LLM-backed title generation
 // ---------------------------------------------------------------------------
 
 export interface LlmTitleOptions {
   content: string;
+  /**
+   * Ordered user messages for the session, oldest first (the latest turn
+   * last). When 2+ messages are supplied the title is generated from the
+   * whole-session theme rather than from `content` alone — this is what keeps
+   * a session name from chasing whatever the latest turn happens to be about.
+   * Omit (or pass 0–1 entries) to fall back to the single-message behaviour
+   * using `content`.
+   */
+  messages?: readonly string[] | null;
   /** Anthropic API key. If both are set, Anthropic wins. */
   anthropicApiKey?: string | null;
   /** OpenAI API key. Used when no Anthropic key is set. */
@@ -354,6 +412,17 @@ const TITLE_PROMPT = [
   '- Focus on the subject, not the speaker (avoid "User wants to...").',
 ].join('\n');
 
+const SESSION_TITLE_PROMPT = [
+  'You generate concise session titles for a chat app.',
+  "Given the user's messages from one chat session (oldest first, latest last), write a 4-to-8 word title that captures the OVERALL theme or goal of the whole session — not just the most recent message.",
+  'Rules:',
+  '- Output ONLY the title text. No quotes, no trailing punctuation, no preamble.',
+  '- Title case is fine; sentence case is fine. No ALL CAPS.',
+  '- Do not exceed 60 characters.',
+  '- Capture the through-line of the session. If a later message narrows or shifts focus, prefer the dominant overall topic over any single turn.',
+  '- Focus on the subject, not the speaker (avoid "User wants to...").',
+].join('\n');
+
 function sanitizeLlmTitle(raw: string): string {
   let t = raw.trim();
   // Strip surrounding quotes / backticks.
@@ -372,17 +441,34 @@ function sanitizeLlmTitle(raw: string): string {
  * throws.
  */
 export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | null> {
-  const rawContent = (opts.content ?? '').toString();
-  if (!rawContent.trim()) return null;
+  const messages = (opts.messages ?? []).filter(
+    (m): m is string => typeof m === 'string' && m.trim().length > 0,
+  );
+  // 2+ messages → title the whole-session theme; otherwise fall back to the
+  // single-message behaviour using `messages[0]` (when present) or `content`.
+  const useSessionTheme = messages.length > 1;
+
+  let content: string;
+  let systemPrompt: string;
+  if (useSessionTheme) {
+    // `buildTitleTranscript` already collapses whitespace and clips each
+    // message + the total on UTF-8 codepoint boundaries.
+    content = buildTitleTranscript(messages);
+    systemPrompt = SESSION_TITLE_PROMPT;
+  } else {
+    const single = messages.length === 1 ? messages[0] : (opts.content ?? '').toString();
+    // Byte-aware clip so a 4-byte emoji at the boundary doesn't end up as a
+    // lone UTF-16 surrogate or a mojibake replacement char in the JSON body.
+    content = clipUtf8StringToMaxBytes(single, MAX_CONTENT_BYTES);
+    systemPrompt = TITLE_PROMPT;
+  }
+  if (!content.trim()) return null;
+
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') return null;
   // Short-circuit before allocating the AbortController + timer when no key
   // is configured — keeps the no-op path allocation-free.
   if (!opts.anthropicApiKey && !opts.openaiApiKey) return null;
-
-  // Byte-aware clip so a 4-byte emoji at the boundary doesn't end up as a
-  // lone UTF-16 surrogate or a mojibake replacement char in the JSON body.
-  const content = clipUtf8StringToMaxBytes(rawContent, MAX_CONTENT_BYTES);
 
   const timeoutMs = Math.max(500, opts.timeoutMs ?? 8_000);
   const controller = new AbortController();
@@ -402,7 +488,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
         body: JSON.stringify({
           model,
           max_tokens: 40,
-          system: TITLE_PROMPT,
+          system: systemPrompt,
           messages: [{ role: 'user', content }],
         }),
       });
@@ -427,7 +513,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
           model,
           max_tokens: 40,
           messages: [
-            { role: 'system', content: TITLE_PROMPT },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content },
           ],
         }),
@@ -460,6 +546,12 @@ export interface ScheduleTitleUpgradeOptions {
   heuristicTitle: string;
   /** Raw user message text — passed unmodified to `generate`. */
   content: string;
+  /**
+   * Ordered user messages for the session, oldest first (latest turn last).
+   * Forwarded to `generate` so the upgraded title reflects the whole-session
+   * theme rather than just `content`. Omit for single-message behaviour.
+   */
+  messages?: readonly string[] | null;
   /** API-key config snapshot. If both are null/empty, the call is a no-op. */
   config: {
     anthropicApiKey?: string | null;
@@ -492,6 +584,7 @@ export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): P
   try {
     const llmTitle = await generate({
       content: opts.content,
+      messages: opts.messages ?? null,
       anthropicApiKey: opts.config.anthropicApiKey ?? null,
       openaiApiKey: opts.config.openaiApiKey ?? null,
     });

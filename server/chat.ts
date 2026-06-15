@@ -2069,6 +2069,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               sessionId,
               heuristicTitle,
               content,
+              // Whole-session transcript (oldest first, this turn last) so the
+              // upgraded title captures the session theme, not just this turn.
+              messages: [...priorUserMessages, content],
               config: {
                 // No host Anthropic key — Claude auth is per-account. The
                 // LLM title upgrade uses the host OpenAI key when configured.

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  buildTitleTranscript,
   DEFAULT_TITLE_ANTHROPIC_MODEL,
   deriveHeuristicTitle,
   generateLlmTitle,
@@ -443,10 +444,138 @@ describe('pickTurnSessionTitle', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('buildTitleTranscript', () => {
+  it('returns an empty string for no usable messages', () => {
+    expect(buildTitleTranscript([])).toBe('');
+    expect(buildTitleTranscript(['', '   '])).toBe('');
+  });
+
+  it('returns a single clipped message without transcript framing', () => {
+    expect(buildTitleTranscript(['  Fix the streaming bug  '])).toBe('Fix the streaming bug');
+  });
+
+  it('joins multiple messages in chronological order, one per line', () => {
+    const out = buildTitleTranscript([
+      'Fix the streaming reconnect bug',
+      'Now add a retry backoff',
+      'And surface a toast on failure',
+    ]);
+    expect(out).toBe(
+      [
+        'Fix the streaming reconnect bug',
+        'Now add a retry backoff',
+        'And surface a toast on failure',
+      ].join('\n'),
+    );
+  });
+
+  it('collapses internal whitespace/newlines within each message', () => {
+    const out = buildTitleTranscript(['line one\n\n  line two', 'second\tmessage']);
+    expect(out).toBe('line one line two\nsecond message');
+  });
+
+  it('clips any single oversized message to the per-message cap', () => {
+    const out = buildTitleTranscript(['short anchor', 'y'.repeat(9000)]);
+    const lines = out.split('\n');
+    expect(lines[0]).toBe('short anchor');
+    // The huge message is clipped, not passed through whole.
+    expect(lines[1].length).toBeLessThanOrEqual(1_000);
+    expect(lines[1].startsWith('y')).toBe(true);
+  });
+
+  it('drops middle messages but keeps the anchor + newest within the byte budget', () => {
+    // 12 messages of ~1000 bytes each (12k) exceeds the 6k transcript budget,
+    // so the builder keeps the first (anchor) and as many newest as fit.
+    const msgs = Array.from({ length: 12 }, (_v, i) => `m${i}-${'z'.repeat(1000)}`);
+    const out = buildTitleTranscript(msgs);
+    const lines = out.split('\n');
+    expect(lines[0].startsWith('m0-')).toBe(true); // anchor kept
+    expect(lines[lines.length - 1].startsWith('m11-')).toBe(true); // newest kept
+    expect(lines.length).toBeLessThan(msgs.length); // some middle messages dropped
+    expect(Buffer.byteLength(out, 'utf-8')).toBeLessThanOrEqual(6_000);
+  });
+});
+
 describe('generateLlmTitle', () => {
   it('returns null when no API key is configured', async () => {
     const out = await generateLlmTitle({ content: 'Fix the bug' });
     expect(out).toBeNull();
+  });
+
+  it('titles from the whole-session theme when 2+ messages are supplied', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'Streaming Reliability Work' }] }),
+    })) as unknown as typeof fetch;
+
+    const out = await generateLlmTitle({
+      content: 'And surface a toast on failure',
+      messages: [
+        'Fix the streaming reconnect bug',
+        'Now add a retry backoff',
+        'And surface a toast on failure',
+      ],
+      anthropicApiKey: 'sk-ant',
+      fetchImpl,
+    });
+
+    expect(out).toBe('Streaming Reliability Work');
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      system: string;
+      messages: Array<{ content: string }>;
+    };
+    // Uses the whole-session theme prompt, not the first-message prompt.
+    expect(body.system).toContain('OVERALL theme');
+    // Forwards the full transcript (anchor + every later turn), not just the
+    // latest message.
+    expect(body.messages[0].content).toContain('Fix the streaming reconnect bug');
+    expect(body.messages[0].content).toContain('Now add a retry backoff');
+    expect(body.messages[0].content).toContain('And surface a toast on failure');
+  });
+
+  it('uses the single-message prompt for one message', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'Fix Reconnect Bug' }] }),
+    })) as unknown as typeof fetch;
+
+    await generateLlmTitle({
+      content: 'ignored when messages is set',
+      messages: ['Fix the streaming reconnect bug'],
+      anthropicApiKey: 'sk-ant',
+      fetchImpl,
+    });
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      system: string;
+      messages: Array<{ content: string }>;
+    };
+    expect(body.system).toContain("user's first message");
+    expect(body.system).not.toContain('OVERALL theme');
+    expect(body.messages[0].content).toBe('Fix the streaming reconnect bug');
+  });
+
+  it('falls back to content when messages is omitted (backward compatible)', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'A Title' }] }),
+    })) as unknown as typeof fetch;
+
+    await generateLlmTitle({
+      content: 'why are webhook replays failing',
+      anthropicApiKey: 'sk-ant',
+      fetchImpl,
+    });
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      system: string;
+      messages: Array<{ content: string }>;
+    };
+    expect(body.system).toContain("user's first message");
+    expect(body.messages[0].content).toBe('why are webhook replays failing');
   });
 
   it('returns null on empty content', async () => {
@@ -674,6 +803,28 @@ describe('scheduleTitleUpgrade', () => {
     expect(h.onUpgrade).toHaveBeenCalledTimes(1);
     expect(h.onUpgrade).toHaveBeenCalledWith('Fix the streaming reconnect bug');
     expect(h.store.name).toBe('Fix the streaming reconnect bug');
+  });
+
+  it('forwards the whole-session transcript to the generator', async () => {
+    const h = makeHarness('Fix the bug');
+    const generate = vi.fn(async () => 'Streaming Reliability Work');
+    const messages = ['Fix the streaming reconnect bug', 'Now add a retry backoff', 'Fix the bug'];
+
+    await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Fix the bug',
+      content: 'Fix the bug',
+      messages,
+      config: { anthropicApiKey: 'sk-ant', openaiApiKey: null },
+      getSessionName: h.getSessionName,
+      updateSessionName: h.updateSessionName,
+      onUpgrade: h.onUpgrade,
+      generate,
+    });
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    const passed = (generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as LlmTitleOptions;
+    expect(passed.messages).toEqual(messages);
   });
 
   it('renames when the title source is still auto-owned', async () => {
