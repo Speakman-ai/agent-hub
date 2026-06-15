@@ -12,6 +12,7 @@ import {
   SessionReplayRecorder,
   getRecorder,
   flushSessionReplayRef,
+  setReplayBreadcrumbSink,
   isMaskAllEnabled,
   setReplayMaskingMode,
   resolveMaskingMode,
@@ -570,5 +571,88 @@ describe('flushSessionReplayRef', () => {
 
     const ref = await flushSessionReplayRef({ trigger: 'bug-report' }, 1000);
     expect(ref).toBe('/uploads/replay-x.json');
+  });
+});
+
+describe('flushSessionReplayRef — null-flush breadcrumbs', () => {
+  let sink;
+  beforeEach(() => {
+    sink = vi.fn();
+    setReplayBreadcrumbSink(sink);
+  });
+  afterEach(() => _resetSessionReplayForTest());
+
+  function fakeRecord() {
+    const calls = { emit: null };
+    const record = ({ emit }) => {
+      calls.emit = emit;
+      return () => {};
+    };
+    return { record, calls };
+  }
+
+  it('reports recorder-not-initialized when no recorder exists', async () => {
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' })).toBeNull();
+    expect(sink).toHaveBeenCalledWith({
+      reason: 'recorder-not-initialized',
+      trigger: 'bug-report',
+    });
+  });
+
+  it('reports recorder-inactive when the recorder exists but is not recording', async () => {
+    getRecorder(); // creates the singleton without starting it
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' })).toBeNull();
+    expect(sink).toHaveBeenCalledWith({ reason: 'recorder-inactive', trigger: 'bug-report' });
+  });
+
+  it('reports buffer-too-small when fewer than minFlushEvents are buffered', async () => {
+    const rec = getRecorder();
+    rec._now = () => 1000;
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(snap(1)); // a single event — below minFlushEvents (2)
+
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' })).toBeNull();
+    expect(sink).toHaveBeenCalledWith({ reason: 'buffer-too-small', trigger: 'bug-report' });
+  });
+
+  it('reports no-full-snapshot when the buffer cannot be replayed', async () => {
+    const rec = getRecorder();
+    rec._now = () => 1000;
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit(incr(2)); // two events, but no full snapshot
+
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' })).toBeNull();
+    expect(sink).toHaveBeenCalledWith({ reason: 'no-full-snapshot', trigger: 'bug-report' });
+  });
+
+  it('reports upload-failed when a replayable buffer yields no ref', async () => {
+    const rec = getRecorder();
+    rec._now = () => 1000;
+    rec._submit = vi.fn().mockResolvedValue(null); // ingest returns nothing usable
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit(snap(2));
+
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' }, 1000)).toBeNull();
+    expect(sink).toHaveBeenCalledWith({ reason: 'upload-failed', trigger: 'bug-report' });
+  });
+
+  it('emits no breadcrumb on a successful flush', async () => {
+    const rec = getRecorder();
+    rec._now = () => 1000;
+    rec._submit = vi.fn().mockResolvedValue({ replayId: 'x', replayRef: '/uploads/replay-x.json' });
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit(snap(2));
+
+    expect(await flushSessionReplayRef({ trigger: 'bug-report' }, 1000)).toBe(
+      '/uploads/replay-x.json',
+    );
+    expect(sink).not.toHaveBeenCalled();
   });
 });

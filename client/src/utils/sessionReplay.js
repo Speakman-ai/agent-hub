@@ -560,6 +560,49 @@ export async function initSessionReplay(opts = {}) {
   return startRecorder();
 }
 
+// ─── Null-flush breadcrumbs ───────────────────────────────────────
+//
+// A bug-report flush that yields no replay ref is best-effort by design (it
+// must never block the report). That historically made a missing replay
+// *silent* — indistinguishable from "replay was turned off" — so a captured
+// bug report with no attached session showed up with no trace of why. Emit a
+// single structured breadcrumb naming the reason instead, so a missing capture
+// is diagnosable from the console (and hookable by telemetry) rather than
+// invisible.
+//
+// Reasons: 'recorder-not-initialized' | 'recorder-inactive' |
+//          'buffer-too-small' | 'no-full-snapshot' | 'upload-failed'
+
+function defaultBreadcrumbSink(entry) {
+  try {
+    if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+      console.warn('[session-replay] no replay ref produced', entry);
+    }
+  } catch {
+    // ignore — diagnostics must never throw into the caller's flow
+  }
+}
+
+let _breadcrumbSink = defaultBreadcrumbSink;
+
+/**
+ * Override the sink that receives null-flush breadcrumbs (default:
+ * `console.warn`). Pass a function to forward `{ reason, trigger }` to
+ * telemetry; pass anything else to restore the default. Best-effort: the sink
+ * is invoked inside a try/catch so a faulty sink never breaks a flush.
+ */
+export function setReplayBreadcrumbSink(sink) {
+  _breadcrumbSink = typeof sink === 'function' ? sink : defaultBreadcrumbSink;
+}
+
+function reportNullFlush(reason, meta) {
+  try {
+    _breadcrumbSink({ reason, trigger: meta?.trigger ?? null });
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * Flush the active replay buffer and return its `/uploads/...` ref, or null if
  * recording is inactive / empty / not replayable / the upload failed or stalled.
@@ -569,12 +612,38 @@ export async function initSessionReplay(opts = {}) {
  * own `_flushing` state on timeout), so this helper never leaves the recorder
  * wedged and the report always proceeds. `timeoutMs`, when given, overrides the
  * recorder's default flush bound.
+ *
+ * Whenever it returns null it first emits a breadcrumb (see above) naming the
+ * reason, so a "captured the report but no replay" case is never silent.
  */
 export async function flushSessionReplayRef(meta, timeoutMs) {
-  if (!_recorder || !_recorder.active) return null;
+  if (!_recorder) {
+    reportNullFlush('recorder-not-initialized', meta);
+    return null;
+  }
+  if (!_recorder.active) {
+    reportNullFlush('recorder-inactive', meta);
+    return null;
+  }
+  // Pre-classify the no-op cases that `flush()` would otherwise collapse into a
+  // silent null, so the breadcrumb can name *why* nothing shipped. These mirror
+  // flush()'s own guards (pure checks), leaving its behaviour unchanged.
+  const buffered = _recorder.snapshot();
+  if (buffered.length < _recorder.minFlushEvents) {
+    reportNullFlush('buffer-too-small', meta);
+    return null;
+  }
+  if (!hasFullSnapshot(buffered)) {
+    reportNullFlush('no-full-snapshot', meta);
+    return null;
+  }
   const opts = timeoutMs != null ? { timeoutMs } : undefined;
   const result = await _recorder.flush(meta, opts);
-  return result?.replayRef || null;
+  const ref = result?.replayRef || null;
+  // A replayable buffer that still produced no ref means the ingest upload
+  // failed, timed out, or was rate-limited.
+  if (!ref) reportNullFlush('upload-failed', meta);
+  return ref;
 }
 
 /** Test-only: reset the module singleton. */
@@ -582,4 +651,5 @@ export function _resetSessionReplayForTest() {
   _recorder = null;
   _initialized = false;
   _errorListenersWired = false;
+  _breadcrumbSink = defaultBreadcrumbSink;
 }
