@@ -219,6 +219,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // ── AI RUM (real user monitoring) setup wizard ──────────────────
+  // Read-only repo scan: framework, injection target, CSP hits,
+  // already-instrumented status. Returns `{ projectId, draft }`.
+  getRumSetupDraft: (projectId) => fetchJSON(`/projects/${projectId}/rum/setup-draft`),
+  // Spawn the worktree-backed `[RUM Setup]` wizard session loaded with
+  // the `rum-setup` skill. Returns `{ sessionId, agentId, draft, session }`.
+  startRumWizard: (projectId) =>
+    fetchJSON(`/projects/${projectId}/rum/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // Per-project RUM ingest clients (vendor-site `X-RUM-Token` creds).
+  // List active (non-revoked) clients — metadata only, never the token.
+  getRumClients: (projectId) => fetchJSON(`/projects/${projectId}/rum/clients`),
+  // Mint a new ingest token. The plaintext `token` is returned ONCE.
+  createRumClient: (projectId, name) =>
+    fetchJSON(`/projects/${projectId}/rum/clients`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  // Revoke (soft-delete) an ingest client.
+  revokeRumClient: (projectId, clientId) =>
+    fetchJSON(`/projects/${projectId}/rum/clients/${clientId}`, { method: 'DELETE' }),
   // Single-path configure + secrets + compose boot test. Admin+.
   buildPreviewEnvironment: (projectId, body) =>
     fetchJSON(`/projects/${projectId}/preview/build`, {

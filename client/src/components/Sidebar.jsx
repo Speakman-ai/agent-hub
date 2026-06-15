@@ -12,6 +12,7 @@ import {
   Monitor,
   Play,
   Cloud,
+  Activity,
   AlertTriangle,
   BarChart3,
   Plus,
@@ -200,6 +201,7 @@ export default function Sidebar({
     view === `project-crons:${pid}` ||
     view === `runners:${pid}` ||
     view === `preview:${pid}` ||
+    view === `rum:${pid}` ||
     view === `aws:${pid}` ||
     (view === 'reviewer' && reviewerProjectId === pid);
 
@@ -1107,6 +1109,20 @@ export default function Sidebar({
                               >
                                 <Monitor size={14} className="flex-shrink-0" />
                                 <span className="truncate">Previews</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  expandProjectMenu(project.id);
+                                  onNavigate(`rum:${project.id}`);
+                                }}
+                                className={projectMenuLinkClass(
+                                  currentView === `rum:${project.id}`,
+                                )}
+                              >
+                                <Activity size={14} className="flex-shrink-0" />
+                                <span className="truncate">RUM</span>
                               </button>
 
                               {project.awsEnabled && (
