@@ -18,6 +18,13 @@ services:
       - AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=${AGENT_HUB_PREVIEW_READY_TIMEOUT_MS:-600000}
       - AGENT_HUB_CODEX_DANGER_BYPASS=${AGENT_HUB_CODEX_DANGER_BYPASS:-true}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://localhost:3050}
+      # A preview of agent-hub gets NO host docker socket (a preview must not
+      # reach the host daemon). Tell the nested Hub so it skips its
+      # docker-dependent background reapers instead of spamming docker-socket
+      # connection errors every 60 s. The Hub also auto-detects the missing
+      # socket; this just makes the intent explicit and skips the probe.
+      # See server/docker-availability.ts.
+      - AGENT_HUB_DISABLE_DOCKER_FEATURES=1
     expose:
       - '3051'
     healthcheck:

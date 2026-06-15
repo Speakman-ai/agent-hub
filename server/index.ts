@@ -182,6 +182,7 @@ import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
+import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
 import {
@@ -797,6 +798,20 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // row passed to the legacy reaper is a guarded no-op rather than a
   // silent `DELETE FROM worktree_preview_groups` that would leak the
   // docker stack.
+  // The legacy preview reaper drives *process-based* worktree previews and
+  // never touches docker — it must run on every host, including docker-less
+  // ones (e.g. a preview of agent-hub itself). The compose-mode reaper and the
+  // finalize reaper both shell out to `docker`; on a host with no reachable
+  // docker daemon they would throw `dial unix /var/run/docker.sock …` once a
+  // minute, forever. `resolveDockerAvailability()` gates only those two so a
+  // docker-less Hub stays quiet. See server/docker-availability.ts.
+  const dockerAvailability = resolveDockerAvailability();
+  if (!dockerAvailability.enabled) {
+    console.warn(
+      `[reapers] ${dockerAvailability.reason}; skipping finalize + compose-preview reapers`,
+    );
+  }
+
   cron.schedule(
     PREVIEW_REAPER_CRON,
     () => {
@@ -807,15 +822,17 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       }).catch((err) => {
         console.warn('[preview-reaper] tick failed:', (err as Error).message);
       });
-      void runPreviewReaper({
-        db: getDb(),
-        runtime: previewComposeRuntime as unknown as Parameters<
-          typeof runPreviewReaper
-        >[0]['runtime'],
-        getProject: (id) => findProject(id) ?? null,
-      }).catch((err) => {
-        console.warn('[preview-reaper:compose] tick failed:', (err as Error).message);
-      });
+      if (dockerAvailability.enabled) {
+        void runPreviewReaper({
+          db: getDb(),
+          runtime: previewComposeRuntime as unknown as Parameters<
+            typeof runPreviewReaper
+          >[0]['runtime'],
+          getProject: (id) => findProject(id) ?? null,
+        }).catch((err) => {
+          console.warn('[preview-reaper:compose] tick failed:', (err as Error).message);
+        });
+      }
     },
     { name: 'preview-reaper' },
   );
@@ -823,27 +840,31 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // Finalize DinD runner reaper — sweep orphaned runner containers + graph
   // volumes left behind when a run is hard-killed (OOM / ENOSPC / Hub crash)
   // before its per-job teardown could run. Active runs (ended_at IS NULL) are
-  // never touched. See server/finalize/finalize-reaper.ts.
-  cron.schedule(
-    FINALIZE_REAPER_CRON,
-    () => {
-      void runFinalizeReaper({
-        activeRunIds: () =>
-          new Set(
-            (
-              getDb()
-                .prepare('SELECT id FROM finalize_runs WHERE ended_at IS NULL')
-                .all() as Array<{
-                id: string;
-              }>
-            ).map((r) => r.id),
-          ),
-      }).catch((err) => {
-        console.warn('[finalize-reaper] tick failed:', (err as Error).message);
-      });
-    },
-    { name: 'finalize-reaper' },
-  );
+  // never touched. Docker-gated: a docker-less Hub never runs Finalize jobs, so
+  // there is nothing to reap and the daemon probe would only spam.
+  // See server/finalize/finalize-reaper.ts.
+  if (dockerAvailability.enabled) {
+    cron.schedule(
+      FINALIZE_REAPER_CRON,
+      () => {
+        void runFinalizeReaper({
+          activeRunIds: () =>
+            new Set(
+              (
+                getDb()
+                  .prepare('SELECT id FROM finalize_runs WHERE ended_at IS NULL')
+                  .all() as Array<{
+                  id: string;
+                }>
+              ).map((r) => r.id),
+            ),
+        }).catch((err) => {
+          console.warn('[finalize-reaper] tick failed:', (err as Error).message);
+        });
+      },
+      { name: 'finalize-reaper' },
+    );
+  }
 }
 
 /** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
