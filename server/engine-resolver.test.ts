@@ -124,13 +124,46 @@ describe('resolveOneShotEngine', () => {
   });
 
   it('walks the chain top-to-bottom when no preferred is given', async () => {
-    // Only gemini-cli is set up. The chain order is claude → cursor →
-    // codex → gemini, so gemini wins.
+    // Only grok-cli is set up. The chain order is claude → cursor →
+    // codex → grok, so grok wins.
     const r = await resolveOneShotEngine(CFG, {
-      availability: makeAvailability({ 'gemini-cli': ok('gemini-cli') }),
+      availability: makeAvailability({ 'grok-cli': ok('grok-cli') }),
     });
-    expect(r.engine).toBe('gemini-cli');
+    expect(r.engine).toBe('grok-cli');
     expect(r.fallbackUsed).toBe(false); // No "preferred" was missed
+  });
+
+  it('never auto-selects gemini-cli for a userless run — grok is the host fallback', async () => {
+    // Regression for the support-ticket AI investigation 429 storm: it resolves
+    // with `preferred: 'claude-code'` and no acting user, so claude/cursor/codex
+    // are all unavailable (per-account, no host fallback). Gemini USED to be the
+    // sole host-configured fallback, so the chain landed on it — and after Google
+    // removed Pro from the free tier (2026-04-01) every such run 429'd with
+    // limit:0. Gemini is now reserved for RAG only; the default chain must skip
+    // it and fall to host-configured Grok instead, even when Gemini is the only
+    // other "available" engine.
+    const r = await resolveOneShotEngine(CFG, {
+      preferred: 'claude-code',
+      availability: makeAvailability({
+        // Both host-configured engines report available...
+        'gemini-cli': ok('gemini-cli'),
+        'grok-cli': ok('grok-cli'),
+      }),
+    });
+    expect(r.engine).toBe('grok-cli');
+    expect(r.engine).not.toBe('gemini-cli');
+    expect(r.fallbackUsed).toBe(true);
+    expect(DEFAULT_FALLBACK_CHAIN).not.toContain('gemini-cli');
+  });
+
+  it('throws NoEnginesAvailableError when only gemini-cli is available (RAG-only, not an agent engine)', async () => {
+    // A host configured with ONLY Gemini (for RAG) and no other engine creds must
+    // NOT silently run background work on Gemini — it should surface "no engines".
+    await expect(
+      resolveOneShotEngine(CFG, {
+        availability: makeAvailability({ 'gemini-cli': ok('gemini-cli') }),
+      }),
+    ).rejects.toBeInstanceOf(NoEnginesAvailableError);
   });
 
   it('treats an unsupported preferred engine as no preference (walks the chain)', async () => {
@@ -144,23 +177,25 @@ describe('resolveOneShotEngine', () => {
   });
 
   it('respects an explicit fallbackChain override', async () => {
-    // Reverse the chain so gemini comes first.
+    // Custom chain in a non-default order (grok first) — proves an explicit
+    // override is honored over DEFAULT_FALLBACK_CHAIN's claude-first priority,
+    // even though grok sits last in the default chain.
     const r = await resolveOneShotEngine(CFG, {
-      fallbackChain: ['gemini-cli', 'codex-cli', 'cursor-agent', 'claude-code'],
+      fallbackChain: ['grok-cli', 'codex-cli', 'cursor-agent', 'claude-code'],
       availability: makeAvailability({
-        'gemini-cli': ok('gemini-cli'),
+        'grok-cli': ok('grok-cli'),
         'claude-code': ok('claude-code'),
       }),
     });
-    expect(r.engine).toBe('gemini-cli');
+    expect(r.engine).toBe('grok-cli');
   });
 
-  it('exports the default fallback chain as a named constant', () => {
+  it('exports the default fallback chain as a named constant (gemini excluded, grok included)', () => {
     expect(DEFAULT_FALLBACK_CHAIN).toEqual([
       'claude-code',
       'cursor-agent',
       'codex-cli',
-      'gemini-cli',
+      'grok-cli',
     ]);
   });
 });

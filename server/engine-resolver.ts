@@ -40,8 +40,10 @@ export interface ResolveOneShotEngineInput {
   preferredModel?: string | null;
   /**
    * Override the fallback chain. Useful for tests and for surfaces that
-   * want a different priority (e.g. cost-sensitive flows preferring
-   * Gemini). Defaults to `DEFAULT_FALLBACK_CHAIN`.
+   * want a different priority (e.g. an analyze flow pinning a specific
+   * engine order). Defaults to `DEFAULT_FALLBACK_CHAIN`. Do not add
+   * `gemini-cli` here — Gemini is reserved for RAG/embeddings and is not an
+   * agent engine.
    */
   fallbackChain?: readonly SupportedEngine[];
   /**
@@ -81,12 +83,30 @@ export interface ResolvedOneShotEngine {
  * common install and the historical default for these surfaces (this
  * minimizes behaviour drift for existing users); the rest follow in
  * rough order of UI prominence in the engine picker.
+ *
+ * Gemini is deliberately EXCLUDED — it is reserved for RAG/embeddings
+ * (wiki + code search) and transcription, which call the Gemini API key
+ * directly and never go through this engine path. It is not offered as a
+ * selectable agent engine (the web/mobile pickers omit it) and must not be
+ * auto-selected for userless background work. Google removed the Pro models
+ * from the Gemini free tier on 2026-04-01, so a host free-tier key now 429s
+ * (`limit: 0`) anyway — letting background features (support-ticket AI
+ * investigation, memory reconcile, auto-review, userless heartbeats) silently
+ * fall back to it left them dead. Grok takes Gemini's old slot as the
+ * host-configured automation fallback: like Gemini it resolves from a host
+ * key (`xaiApiKey` / `XAI_API_KEY` / `grok login` cache) with no per-account
+ * credential, so it can drive userless runs. This mirrors the analyze-path
+ * `ANALYZE_FALLBACK_CHAIN` in routes/projects.ts, which already excludes
+ * Gemini. NOTE: a host that configures ONLY Gemini (for RAG) and no
+ * Claude/Cursor/Codex/Grok credentials will now get a clear
+ * `NoEnginesAvailableError` for background work instead of silently running
+ * on Gemini — that is the intended behaviour.
  */
 export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
   'claude-code',
   'cursor-agent',
   'codex-cli',
-  'gemini-cli',
+  'grok-cli',
 ] as const;
 
 /**
