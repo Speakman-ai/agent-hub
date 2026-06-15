@@ -13,6 +13,7 @@ A full-stack command center for AI agent orchestration. Manage, monitor, and int
 - **GitHub Integration** — Webhook-driven PR lifecycle, automated reviews, and CI monitoring
 - **Slack Bot** — Multi-agent Slack integration for team communication
 - **Cross-Platform** — Web (React), mobile (React Native/Expo), and desktop (Electron) clients
+- **Customer Support** — Per-project support ticket queue with severity ordering and convert-to-card workflow
 
 ## Architecture
 
