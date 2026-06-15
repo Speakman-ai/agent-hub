@@ -69,6 +69,66 @@ const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
 /**
+ * Resolve the authoritative origin SHA for `branch` via `ls-remote`, used to
+ * pin `--force-with-lease=<branch>:<sha>` on the push below.
+ *
+ * Why this is required (not a nicety): a *bare* `--force-with-lease` resolves
+ * its expected value by applying origin's configured *fetch refspec* to the
+ * pushed branch. Agent Hub session clones fetch only
+ * `+refs/heads/main:refs/remotes/origin/main`, so any push to a branch other
+ * than `main` — notably a Resolve-PR session's PR head branch — has no refspec
+ * mapping. Git then can't find the lease's expected value and rejects the push
+ * with `! [rejected] <branch> -> <branch> (stale info)`, *even though*
+ * `refs/remotes/origin/<branch>` physically exists and matches the remote.
+ * Pinning the lease to an explicit `ls-remote` SHA sidesteps the refspec lookup
+ * while preserving force-with-lease's concurrent-update protection. Mirrors the
+ * `pre-push-rebase.ts` + `auto-git.ts buildPushArgs` pattern used by the
+ * auto-commit pipeline.
+ *
+ * Returns `null` for a brand-new branch (empty `ls-remote`) or any `ls-remote`
+ * failure (network/auth) — callers then fall back to a bare
+ * `--force-with-lease`, which is correct for ref creation and degrades to the
+ * legacy behavior for the rare lookup failure.
+ */
+export async function resolveExpectedRemoteSha(
+  worktreePath: string,
+  branch: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<string | null> {
+  try {
+    const { stdout } = await execGit('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
+      cwd: worktreePath,
+      env,
+      timeout: 30_000,
+      maxBuffer: MAX_BUFFER,
+    });
+    // ls-remote output for an existing ref: `<sha>\trefs/heads/<branch>`. For a
+    // missing branch stdout is empty (exit 0). Match a 40- or 64-hex SHA prefix
+    // to cover SHA-1 and SHA-256 repos.
+    const firstLine = stdout.split(/\r?\n/, 1)[0]?.trim() ?? '';
+    const shaMatch = firstLine.match(/^([0-9a-f]{40,64})\s/i);
+    return shaMatch ? shaMatch[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the `git push` argv with a `--force-with-lease` that is pinned to an
+ * explicit expected SHA when known, falling back to a bare lease otherwise.
+ * See {@link resolveExpectedRemoteSha} for why the pin matters.
+ */
+export function buildForceWithLeasePushArgs(
+  branch: string,
+  expectedRemoteSha: string | null,
+): string[] {
+  const lease = expectedRemoteSha
+    ? `--force-with-lease=${branch}:${expectedRemoteSha}`
+    : '--force-with-lease';
+  return ['push', lease, '-u', 'origin', branch];
+}
+
+/**
  * Extract the PR URL from `gh pr create` stdout. `gh` emits the URL on its
  * own line (typically last); we take the first https:// line as the
  * authoritative URL.
@@ -270,8 +330,11 @@ export function createPushAndCreatePr(deps: {
       (await resolveOrgOwnerGithubToken(deps.config, args.project.githubRepo ?? null));
     const env = autoGitChildEnv(token);
 
-    // git push --force-with-lease -u origin <branch>
-    await execGit('git', ['push', '--force-with-lease', '-u', 'origin', args.branch], {
+    // git push --force-with-lease=<branch>:<sha> -u origin <branch> — the lease
+    // is pinned to an explicit ls-remote SHA so it does not depend on origin's
+    // fetch refspec (which only covers `main`). See resolveExpectedRemoteSha.
+    const expectedRemoteSha = await resolveExpectedRemoteSha(args.worktreePath, args.branch, env);
+    await execGit('git', buildForceWithLeasePushArgs(args.branch, expectedRemoteSha), {
       cwd: args.worktreePath,
       env,
       timeout: PUSH_TIMEOUT_MS,
@@ -321,4 +384,10 @@ export function createPushAndCreatePr(deps: {
 }
 
 // Exported for tests.
-export const __test = { buildPrDetails, parsePrListUrl, parsePrUrl };
+export const __test = {
+  buildPrDetails,
+  parsePrListUrl,
+  parsePrUrl,
+  resolveExpectedRemoteSha,
+  buildForceWithLeasePushArgs,
+};

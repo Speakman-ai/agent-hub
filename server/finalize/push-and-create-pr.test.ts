@@ -107,6 +107,13 @@ describe('createPushAndCreatePr', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'ls-remote') {
+          cb(null, {
+            stdout: '1111111111111111111111111111111111111111\trefs/heads/feature/x\n',
+            stderr: '',
+          });
+          return;
+        }
         if (cmd === 'gh' && args[1] === 'list') {
           cb(null, { stdout: '[]\n', stderr: '' });
           return;
@@ -148,16 +155,29 @@ describe('createPushAndCreatePr', () => {
     });
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/7' });
 
-    // Five execFile calls: git push, gh pr list, git log, git diff, then gh pr create.
-    expect(mockExecFile).toHaveBeenCalledTimes(5);
-    const firstArgs = mockExecFile.mock.calls[0]!;
+    // Six execFile calls: git ls-remote (lease pin), git push, gh pr list,
+    // git log, git diff, then gh pr create.
+    expect(mockExecFile).toHaveBeenCalledTimes(6);
+    const lsRemoteArgs = mockExecFile.mock.calls[0]!;
+    expect(lsRemoteArgs[0]).toBe('git');
+    expect(lsRemoteArgs[1]).toEqual(['ls-remote', 'origin', 'refs/heads/feature/x']);
+
+    const firstArgs = mockExecFile.mock.calls[1]!;
     expect(firstArgs[0]).toBe('git');
-    expect(firstArgs[1]).toEqual(['push', '--force-with-lease', '-u', 'origin', 'feature/x']);
+    // Lease is pinned to the ls-remote SHA, not bare — this is what keeps the
+    // push from being rejected as `(stale info)` on a non-`main` branch.
+    expect(firstArgs[1]).toEqual([
+      'push',
+      '--force-with-lease=feature/x:1111111111111111111111111111111111111111',
+      '-u',
+      'origin',
+      'feature/x',
+    ]);
     const firstOpts = firstArgs[2] as { cwd: string; env: NodeJS.ProcessEnv };
     expect(firstOpts.cwd).toBe('/tmp/wt');
     expect(firstOpts.env.GH_TOKEN).toBe('ghs_fake_token');
 
-    const secondArgs = mockExecFile.mock.calls[1]!;
+    const secondArgs = mockExecFile.mock.calls[2]!;
     expect(secondArgs[0]).toBe('gh');
     expect(secondArgs[1]).toEqual([
       'pr',
@@ -170,15 +190,15 @@ describe('createPushAndCreatePr', () => {
       '1',
     ]);
 
-    const thirdArgs = mockExecFile.mock.calls[2]!;
+    const thirdArgs = mockExecFile.mock.calls[3]!;
     expect(thirdArgs[0]).toBe('git');
     expect(thirdArgs[1]).toEqual(['log', 'main..HEAD', '-z', '--format=%s%n%b']);
 
-    const fourthArgs = mockExecFile.mock.calls[3]!;
+    const fourthArgs = mockExecFile.mock.calls[4]!;
     expect(fourthArgs[0]).toBe('git');
     expect(fourthArgs[1]).toEqual(['diff', '--stat', 'main...HEAD']);
 
-    const fifthArgs = mockExecFile.mock.calls[4]!;
+    const fifthArgs = mockExecFile.mock.calls[5]!;
     expect(fifthArgs[0]).toBe('gh');
     expect(fifthArgs[1]).toEqual([
       'pr',
@@ -209,6 +229,14 @@ describe('createPushAndCreatePr', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'ls-remote') {
+          cb(null, {
+            stdout:
+              '2222222222222222222222222222222222222222\trefs/heads/feature/fix-reviewer-initial-reply-routing\n',
+            stderr: '',
+          });
+          return;
+        }
         if (cmd === 'gh' && args[1] === 'list') {
           cb(null, {
             stdout: '[{"url":"https://github.com/acme/proj/pull/1241"}]\n',
@@ -234,15 +262,21 @@ describe('createPushAndCreatePr', () => {
     });
 
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/1241' });
-    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    // ls-remote (lease pin) → git push → gh pr list.
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
     expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'ls-remote',
+      'origin',
+      'refs/heads/feature/fix-reviewer-initial-reply-routing',
+    ]);
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
       'push',
-      '--force-with-lease',
+      '--force-with-lease=feature/fix-reviewer-initial-reply-routing:2222222222222222222222222222222222222222',
       '-u',
       'origin',
       'feature/fix-reviewer-initial-reply-routing',
     ]);
-    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+    expect(mockExecFile.mock.calls[2]![1]).toEqual([
       'pr',
       'list',
       '--head',
@@ -283,6 +317,137 @@ describe('createPushAndCreatePr', () => {
         project: mkProject(),
       }),
     ).rejects.toThrow(/no parseable PR URL/);
+  });
+});
+
+/**
+ * Regression: bare `--force-with-lease` is rejected with `! [rejected]
+ * <branch> -> <branch> (stale info)` when force-updating any branch not covered
+ * by origin's fetch refspec. Agent Hub session clones fetch only
+ * `+refs/heads/main:refs/remotes/origin/main`, so a Resolve-PR session pushing
+ * its PR head branch hit this and the Finalize push 502'd
+ * (`github_push_5xx`) — the work never reached the PR. The push now pins the
+ * lease to an explicit `ls-remote` SHA, which does not depend on the refspec.
+ */
+describe('buildForceWithLeasePushArgs', () => {
+  it('pins the lease to the expected SHA when known', () => {
+    expect(__test.buildForceWithLeasePushArgs('fix/pr-head', 'abc123')).toEqual([
+      'push',
+      '--force-with-lease=fix/pr-head:abc123',
+      '-u',
+      'origin',
+      'fix/pr-head',
+    ]);
+  });
+
+  it('falls back to a bare lease when the expected SHA is unknown (brand-new branch)', () => {
+    expect(__test.buildForceWithLeasePushArgs('agent-hub/dev/session-1', null)).toEqual([
+      'push',
+      '--force-with-lease',
+      '-u',
+      'origin',
+      'agent-hub/dev/session-1',
+    ]);
+  });
+});
+
+describe('createPushAndCreatePr — force-with-lease pinning', () => {
+  beforeEach(() => {
+    mockExecFile.mockReset();
+  });
+
+  it('pins the lease to the ls-remote SHA for an existing branch (Resolve-PR head)', async () => {
+    mockExecFile.mockImplementation(
+      (
+        cmd,
+        args,
+        _opts,
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'git' && args[0] === 'ls-remote') {
+          cb(null, {
+            stdout: 'cafef00dcafef00dcafef00dcafef00dcafef00d\trefs/heads/fix/pr-head\n',
+            stderr: '',
+          });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, { stdout: '[{"url":"https://github.com/acme/proj/pull/5"}]\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await push({
+      runId: 'run-lease',
+      worktreePath: '/tmp/wt',
+      branch: 'fix/pr-head',
+      baseBranch: 'main',
+      headSha: 'deadbeef',
+      card: mkCard(),
+      project: mkProject(),
+    });
+
+    // calls[0] = ls-remote (lease pin), calls[1] = git push.
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'ls-remote',
+      'origin',
+      'refs/heads/fix/pr-head',
+    ]);
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+      'push',
+      '--force-with-lease=fix/pr-head:cafef00dcafef00dcafef00dcafef00dcafef00d',
+      '-u',
+      'origin',
+      'fix/pr-head',
+    ]);
+  });
+
+  it('falls back to a bare lease for a brand-new branch (empty ls-remote)', async () => {
+    mockExecFile.mockImplementation(
+      (
+        cmd,
+        args,
+        _opts,
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'git' && args[0] === 'ls-remote') {
+          // Empty output = branch not yet on origin (brand-new session branch).
+          cb(null, { stdout: '', stderr: '' });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, { stdout: '[{"url":"https://github.com/acme/proj/pull/5"}]\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await push({
+      runId: 'run-lease-new',
+      worktreePath: '/tmp/wt',
+      branch: 'agent-hub/dev/session-1',
+      baseBranch: 'main',
+      headSha: 'deadbeef',
+      card: mkCard(),
+      project: mkProject(),
+    });
+
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+      'push',
+      '--force-with-lease',
+      '-u',
+      'origin',
+      'agent-hub/dev/session-1',
+    ]);
   });
 });
 

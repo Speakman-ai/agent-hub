@@ -21,10 +21,12 @@
 import { bareRepoPath } from '../native-pr/host.js';
 import type { NativePrService } from '../native-pr/service.js';
 import {
+  buildForceWithLeasePushArgs,
   buildPrDetails,
   collectPrCommits,
   collectPrDiffStat,
   execGit,
+  resolveExpectedRemoteSha,
 } from './push-and-create-pr.js';
 import type { PushAndCreatePrArgs, PushAndCreatePrResult } from './orchestrator.js';
 
@@ -54,7 +56,17 @@ export async function pushAndCreateNativePr(
     );
   }
 
-  await execGit('git', ['push', '--force-with-lease', '-u', 'origin', args.branch], {
+  // Pin the lease to an explicit ls-remote SHA so it does not depend on
+  // origin's fetch refspec (session clones fetch only `main`). A bare
+  // `--force-with-lease` is rejected as `(stale info)` when force-updating any
+  // other branch — notably a Resolve-PR session's PR head branch. See
+  // resolveExpectedRemoteSha in push-and-create-pr.ts.
+  const expectedRemoteSha = await resolveExpectedRemoteSha(
+    args.worktreePath,
+    args.branch,
+    process.env,
+  );
+  await execGit('git', buildForceWithLeasePushArgs(args.branch, expectedRemoteSha), {
     cwd: args.worktreePath,
     timeout: PUSH_TIMEOUT_MS,
     maxBuffer: MAX_BUFFER,
