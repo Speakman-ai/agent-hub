@@ -7,16 +7,17 @@
  * project's intake agent in a fresh session so the target agent's transcript
  * stays clean.
  *
- * The REST endpoint `POST /api/bug-reports` already dispatches to the intake
- * agent. This module is the belt-and-suspenders guard on the websocket/chat
- * path, where a user (or another agent) might paste the bug-report payload
- * into a non-intake chat directly.
+ * The REST endpoint `POST /api/bug-reports` now lands a support ticket directly
+ * (it no longer dispatches an intake chat session). This module remains the
+ * belt-and-suspenders guard on the websocket/chat path, where a user (or
+ * another agent) might paste a `## Bug Report`-formatted payload into a
+ * non-intake chat directly.
  */
 import type { Agent, Project } from './types.js';
 
 /**
- * Detect whether a chat message body is a bug-report payload produced by
- * `buildBugReportPrompt` (or any client pasting the same structured header).
+ * Detect whether a chat message body is a bug-report payload (any client or
+ * agent pasting the canonical `## Bug Report` structured header).
  *
  * Matches the literal header at the **start** of the body:
  *   "## Bug Report"

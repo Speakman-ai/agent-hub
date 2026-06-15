@@ -162,6 +162,18 @@ export function recordSupportTicketInvestigation(
   return getSupportTicket(id);
 }
 
+/**
+ * Replace a ticket's free-text body. Returns the updated row, or null if the
+ * ticket doesn't exist. Used by the bug-report intake to finalize the body once
+ * the replay ref has been accepted (or cleared) by the attribution guard, so a
+ * rejected ref never lingers in the operator-visible body.
+ */
+export function setSupportTicketBody(id: string, body: string): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().setSupportTicketBody.run(body, id);
+  return getSupportTicket(id);
+}
+
 /** Attach (or clear, with null) a session-replay reference. */
 export function setSupportTicketReplayRef(
   id: string,

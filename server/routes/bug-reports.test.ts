@@ -1,156 +1,96 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 import supertest from 'supertest';
 import os from 'os';
-import path from 'path';
-import { mkdirSync, rmSync, existsSync, readdirSync } from 'fs';
+
+// Stub the investigation trigger so creating a bug ticket here never spawns a
+// CLI (the real fire-and-forget path would shell out to an engine). We still
+// assert it is wired correctly below. Mocked at the module the shared intake
+// helper imports from, so both the support-ticket route and this endpoint see
+// the stub.
+const triggerInvestigation = vi.fn();
+vi.mock('../support-ticket-investigation.js', () => ({
+  triggerSupportTicketInvestigation: (...args: unknown[]) => triggerInvestigation(...args),
+}));
+
 import createBugReportRoutes, {
   _resetRateLimit,
-  buildBugReportPrompt,
+  buildBugReportTicketBody,
   sanitizeReplayRef,
 } from './bug-reports.js';
-import type { RouteDeps, ChatMessage } from '../types.js';
+import { getStmts } from '../db.js';
+import { getSupportTicket, listSupportTickets } from '../support-tickets-store.js';
+import type { RouteDeps } from '../types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
-interface TestCtx {
+const INTAKE_PROJECT = { id: 'agent-hub', name: 'Agent Hub', cwd: '/tmp', color: '#000' };
+
+function makeApp(opts: { projectExists?: boolean } = {}): {
   app: Express;
-  handleChat: Mock<(ws: unknown, msg: ChatMessage) => Promise<void>>;
-  createSession: Mock;
-  insertBackgroundTask: Mock;
-  uploadsDir: string;
-}
-
-function makeRouteDeps(overrides: Partial<RouteDeps> = {}): {
-  deps: RouteDeps;
-  handleChat: Mock<(ws: unknown, msg: ChatMessage) => Promise<void>>;
-  createSession: Mock;
-  insertBackgroundTask: Mock;
-  uploadsDir: string;
+  broadcast: ReturnType<typeof vi.fn>;
 } {
-  const uploadsDir = path.join(
-    os.tmpdir(),
-    `agent-hub-bug-test-${process.pid}-${Math.random().toString(36).slice(2)}`,
-  );
-  mkdirSync(path.join(uploadsDir, 'uploads'), { recursive: true });
-
-  const createSession = vi.fn();
-  const insertBackgroundTask = vi.fn();
-  const handleChat = vi.fn(async () => {}) as Mock<
-    (ws: unknown, msg: ChatMessage) => Promise<void>
-  >;
-
+  const broadcast = vi.fn();
   const deps = {
-    stmts: {
-      createSession: { run: createSession },
-      insertBackgroundTask: { run: insertBackgroundTask },
-    },
-    findAgent: vi.fn((id: string) =>
-      id === 'agent-hub-intake'
-        ? {
-            project: { id: 'agent-hub', name: 'Agent Hub', agents: [] },
-            agent: {
-              id: 'agent-hub-intake',
-              name: 'Ticket Intake',
-              engine: 'claude-code',
-              role: 'intake',
-            },
-          }
-        : null,
+    stmts: getStmts(),
+    broadcast,
+    findProject: vi.fn((id: string) =>
+      opts.projectExists === false ? null : id === INTAKE_PROJECT.id ? INTAKE_PROJECT : null,
     ),
-    handleChat,
-    serverDir: uploadsDir,
-    DEFAULT_MODEL: 'claude-sonnet-4-5',
-    ...overrides,
+    config: {},
+    serverDir: os.tmpdir(),
   } as unknown as RouteDeps;
 
-  return { deps, handleChat, createSession, insertBackgroundTask, uploadsDir };
-}
-
-function makeApp(deps: RouteDeps): Express {
   const app = express();
   app.use(createBugReportRoutes(deps));
-  return app;
+  return { app, broadcast };
 }
 
-function setupCtx(overrides?: Partial<RouteDeps>): TestCtx {
-  _resetRateLimit();
-  const { deps, handleChat, createSession, insertBackgroundTask, uploadsDir } =
-    makeRouteDeps(overrides);
-  const app = makeApp(deps);
-  return { app, handleChat, createSession, insertBackgroundTask, uploadsDir };
-}
+// ─── Unit: buildBugReportTicketBody ───────────────────────────────
 
-// A fake PNG file (minimal valid header bytes — we don't decode).
-const PNG_MAGIC = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-]);
-
-// ─── Tests ────────────────────────────────────────────────────────
-
-describe('buildBugReportPrompt', () => {
-  it('starts with "## Bug Report" header', () => {
-    const out = buildBugReportPrompt({
-      title: 'Crash',
-      description: 'boom',
-      severity: 'high',
-    });
-    expect(out.startsWith('## Bug Report')).toBe(true);
+describe('buildBugReportTicketBody', () => {
+  it('uses the description as the lead paragraph', () => {
+    const out = buildBugReportTicketBody({ title: 'Crash', description: 'boom', severity: 'high' });
+    expect(out.startsWith('boom')).toBe(true);
   });
 
-  it('includes screenshot markdown when URL given', () => {
-    const out = buildBugReportPrompt({
-      title: 'x',
-      description: 'y',
-      severity: 'low',
-      screenshotUrl: '/uploads/foo.png',
-    });
-    expect(out).toContain('![bug report screenshot](/uploads/foo.png)');
+  it('falls back to a placeholder when no description is given', () => {
+    const out = buildBugReportTicketBody({ title: 'x', description: '', severity: 'low' });
+    expect(out).toContain('_(no description provided)_');
   });
 
-  it('includes final instruction line about user-request epic', () => {
-    const out = buildBugReportPrompt({
+  it('includes a Reporter Context section with source metadata', () => {
+    const out = buildBugReportTicketBody({
       title: 'x',
       description: 'y',
       severity: 'medium',
+      sourceUrl: 'https://hub.example/app',
+      userAgent: 'Mozilla/5.0',
+      clientType: 'web',
+      currentAgentId: 'agent-hub-dev',
     });
-    expect(out).toContain('user-request');
-    expect(out).toContain('End the session after the card is created');
+    expect(out).toContain('### Reporter Context');
+    expect(out).toContain('https://hub.example/app');
+    expect(out).toContain('Mozilla/5.0');
+    expect(out).toContain('web');
+    expect(out).toContain('agent-hub-dev');
   });
 
-  it('includes a Session Replay section when a replayRef is given', () => {
-    const out = buildBugReportPrompt({
+  it('includes a Session Replay line when a replayRef is given', () => {
+    const out = buildBugReportTicketBody({
       title: 'x',
       description: 'y',
       severity: 'medium',
       replayRef: '/uploads/replay-abc123.json',
     });
-    expect(out).toContain('### Session Replay');
+    expect(out).toContain('Session Replay');
     expect(out).toContain('/uploads/replay-abc123.json');
-    expect(out).toMatch(/replayRef/);
   });
 
-  it('omits the Session Replay section when no replayRef is given', () => {
-    const out = buildBugReportPrompt({ title: 'x', description: 'y', severity: 'medium' });
-    expect(out).not.toContain('### Session Replay');
-  });
-
-  it('instructs the intake agent NOT to pass session_id on the created card', () => {
-    // Regression guard for the "Session active / Open Session" stuck state:
-    // if the ephemeral intake session stamps its id on the bug-report card,
-    // the UI permanently shows the card as assigned with no way to clear it
-    // (see board PUT endpoint — session_id is nullable but must be explicitly
-    // cleared, which requires an accessible Assignee dropdown the UI hides
-    // when session_id is set).
-    const out = buildBugReportPrompt({
-      title: 'x',
-      description: 'y',
-      severity: 'medium',
-    });
-    expect(out).toMatch(/do not pass .*session_?id/i);
-    // And the snake_case form the JSON API accepts
-    expect(out).toContain('session_id');
+  it('omits the Session Replay line when no replayRef is given', () => {
+    const out = buildBugReportTicketBody({ title: 'x', description: 'y', severity: 'medium' });
+    expect(out).not.toContain('Session Replay');
   });
 });
 
@@ -181,155 +121,190 @@ describe('sanitizeReplayRef', () => {
   });
 });
 
+// ─── Integration: POST /api/bug-reports ───────────────────────────
+
 describe('POST /api/bug-reports', () => {
-  let ctx: TestCtx;
+  let app: Express;
+  let broadcast: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    ctx = setupCtx();
+    _resetRateLimit();
+    triggerInvestigation.mockClear();
+    ({ app, broadcast } = makeApp());
   });
 
-  afterEach(() => {
-    try {
-      if (ctx && existsSync(ctx.uploadsDir)) {
-        rmSync(ctx.uploadsDir, { recursive: true, force: true });
-      }
-    } catch {
-      /* noop */
-    }
-  });
-
-  it('returns 202 with sessionId on a valid submission', async () => {
-    const res = await supertest(ctx.app)
+  it('creates a bug support ticket in the agent-hub queue and returns 201', async () => {
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Button does nothing')
       .field('description', 'Clicking Save does nothing')
       .field('severity', 'high')
       .field('clientType', 'web')
-      .attach('screenshot', PNG_MAGIC, {
-        filename: 'shot.png',
-        contentType: 'image/png',
-      })
-      .expect(202);
+      .expect(201);
 
-    expect(res.body).toHaveProperty('sessionId');
-    expect(typeof res.body.sessionId).toBe('string');
-    expect(res.body.status).toBe('dispatched');
+    expect(typeof res.body.ticketId).toBe('string');
+    expect(res.body.status).toBe('received');
+    // No more session-spawn contract — the old response shape is gone.
+    expect(res.body).not.toHaveProperty('sessionId');
 
-    expect(ctx.createSession).toHaveBeenCalledTimes(1);
-    const sessionArgs = ctx.createSession.mock.calls[0]!;
-    expect(sessionArgs[1]).toBe('agent-hub-intake');
-
-    // CORS header on response
+    // CORS header still present (cross-origin intake surface).
     expect(res.headers['access-control-allow-origin']).toBe('*');
 
-    // handleChat is scheduled via setImmediate — wait for it.
-    await new Promise((r) => setImmediate(r));
-    expect(ctx.handleChat).toHaveBeenCalledTimes(1);
-    const [, chatMsg] = ctx.handleChat.mock.calls[0]!;
-    expect(chatMsg.agentId).toBe('agent-hub-intake');
-    expect(chatMsg.content.startsWith('## Bug Report')).toBe(true);
-    expect(chatMsg.content).toContain('Button does nothing');
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket).not.toBeNull();
+    expect(ticket!.project_id).toBe('agent-hub');
+    expect(ticket!.type).toBe('bug');
+    expect(ticket!.severity).toBe('high');
+    expect(ticket!.status).toBe('new');
+    expect(ticket!.subject).toBe('Button does nothing');
+    expect(ticket!.body).toContain('Clicking Save does nothing');
+    expect(ticket!.body).toContain('### Reporter Context');
+    expect(ticket!.reporter).toBe('bug-report (web)');
 
-    // Screenshot was saved into uploads dir
-    const uploads = readdirSync(path.join(ctx.uploadsDir, 'uploads'));
-    expect(uploads.length).toBe(1);
-    expect(uploads[0]).toMatch(/\.png$/);
-
-    // Prompt that is actually sent must tell the intake agent not to stamp
-    // its ephemeral session id on the resulting card.
-    expect(chatMsg.content).toMatch(/do not pass .*session_?id/i);
+    // Created event broadcast + AI investigation fired for the bug ticket.
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'support_ticket_created' }),
+    );
+    expect(triggerInvestigation).toHaveBeenCalledTimes(1);
+    expect(triggerInvestigation.mock.calls[0]![0]).toBe(res.body.ticketId);
   });
 
-  it('threads a valid replayRef into the intake prompt', async () => {
-    await supertest(ctx.app)
+  it('persists a valid, attributable replayRef on the ticket', async () => {
+    // Seed an unattributed replay row so the intake guard can claim it for the
+    // agent-hub project and keep the ref.
+    const replayId = `bugreplay-${Date.now()}`;
+    getStmts().insertSessionReplay.run(
+      replayId,
+      null, // project_id (unattributed)
+      0,
+      0,
+      0,
+      0,
+      'local',
+      `replays/${replayId}.bin`,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    const ref = `/uploads/replay-${replayId}.json`;
+
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Replay attached')
       .field('severity', 'medium')
-      .field('replayRef', '/uploads/replay-deadbeef.json')
-      .expect(202);
+      .field('replayRef', ref)
+      .expect(201);
 
-    await new Promise((r) => setImmediate(r));
-    const [, chatMsg] = ctx.handleChat.mock.calls[0]!;
-    expect(chatMsg.content).toContain('### Session Replay');
-    expect(chatMsg.content).toContain('/uploads/replay-deadbeef.json');
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.replay_ref).toBe(ref);
+    // The accepted ref is also surfaced in the operator-visible body.
+    expect(ticket!.body).toContain(ref);
+
+    // The body is finalized BEFORE the support_ticket_created broadcast and the
+    // investigation fire, so consumers never see a stale (replay-free) body.
+    const created = broadcast.mock.calls
+      .map((c) => c[0] as { type: string; ticket?: { replay_ref: string | null; body: string } })
+      .find((e) => e.type === 'support_ticket_created');
+    expect(created?.ticket?.replay_ref).toBe(ref);
+    expect(created?.ticket?.body).toContain(ref);
+
+    // The investigation is triggered after finalization, so the ticket it reads
+    // back by id already carries the accepted ref.
+    expect(triggerInvestigation).toHaveBeenCalledTimes(1);
+    const investigatedId = triggerInvestigation.mock.calls[0]![0] as string;
+    expect(getSupportTicket(investigatedId)!.body).toContain(ref);
   });
 
-  it('drops a non-replay (malicious) replayRef rather than echoing it', async () => {
-    await supertest(ctx.app)
+  it('drops a well-formed but unattributable replayRef (no matching capture)', async () => {
+    const ghostRef = '/uploads/replay-does-not-exist.json';
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Ghost replay')
+      .field('severity', 'medium')
+      .field('replayRef', ghostRef)
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.replay_ref).toBeNull();
+    // Regression: a rejected ref must NOT linger in the body (it would
+    // otherwise reach operators and the AI investigation prompt). The body is
+    // rebuilt from the persisted (cleared) replay_ref, not the raw input.
+    expect(ticket!.body).not.toContain(ghostRef);
+    expect(ticket!.body).not.toContain('Session Replay');
+  });
+
+  it('drops a malicious (non-replay) replayRef before it reaches the ticket', async () => {
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Bad ref')
       .field('severity', 'medium')
       .field('replayRef', 'https://evil.example/x.json')
-      .expect(202);
+      .expect(201);
 
-    await new Promise((r) => setImmediate(r));
-    const [, chatMsg] = ctx.handleChat.mock.calls[0]!;
-    expect(chatMsg.content).not.toContain('### Session Replay');
-    expect(chatMsg.content).not.toContain('evil.example');
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.replay_ref).toBeNull();
+    expect(ticket!.body).not.toContain('evil.example');
+  });
+
+  it('tolerates (and ignores) a legacy screenshot part', async () => {
+    const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const before = listSupportTickets('agent-hub').length;
+    await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Has screenshot')
+      .field('severity', 'low')
+      .attach('screenshot', PNG_MAGIC, { filename: 'shot.png', contentType: 'image/png' })
+      .expect(201);
+    // Ticket still lands; the screenshot is simply not referenced anywhere.
+    expect(listSupportTickets('agent-hub').length).toBe(before + 1);
   });
 
   it('returns 400 when title is missing', async () => {
-    const res = await supertest(ctx.app)
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('description', 'No title here')
       .field('severity', 'low')
       .expect(400);
-
     expect(res.body.error).toMatch(/title/i);
-    expect(ctx.handleChat).not.toHaveBeenCalled();
+    expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 
   it('returns 400 for invalid severity', async () => {
-    const res = await supertest(ctx.app)
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Something')
       .field('severity', 'catastrophic')
       .expect(400);
-
     expect(res.body.error).toMatch(/severity/i);
-    expect(ctx.handleChat).not.toHaveBeenCalled();
   });
 
   it('rate-limits to 10 reports per IP per hour', async () => {
     for (let i = 0; i < 10; i++) {
-      await supertest(ctx.app).post('/api/bug-reports').field('title', `Report ${i}`).expect(202);
+      await supertest(app).post('/api/bug-reports').field('title', `Report ${i}`).expect(201);
     }
-
-    const res = await supertest(ctx.app)
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Report 11')
       .expect(429);
-
     expect(res.body.error).toMatch(/rate limit/i);
     expect(res.headers['retry-after']).toBeDefined();
   });
 
   it('handles OPTIONS preflight with 204 + CORS headers', async () => {
-    const res = await supertest(ctx.app).options('/api/bug-reports').expect(204);
+    const res = await supertest(app).options('/api/bug-reports').expect(204);
     expect(res.headers['access-control-allow-origin']).toBe('*');
     expect(res.headers['access-control-allow-methods']).toMatch(/POST/);
   });
 
-  it('rejects non-image screenshot content types', async () => {
-    const res = await supertest(ctx.app)
-      .post('/api/bug-reports')
-      .field('title', 'Bad file')
-      .attach('screenshot', Buffer.from('not an image'), {
-        filename: 'x.txt',
-        contentType: 'text/plain',
-      })
-      .expect(400);
-    expect(res.body.error).toMatch(/image/i);
-  });
-
-  it('returns 500 when intake agent is not configured', async () => {
-    const missingDeps = setupCtx({
-      findAgent: vi.fn(() => null) as unknown as RouteDeps['findAgent'],
-    });
-    const res = await supertest(missingDeps.app)
+  it('returns 500 when the intake project is not configured', async () => {
+    _resetRateLimit();
+    const { app: noProjectApp } = makeApp({ projectExists: false });
+    const res = await supertest(noProjectApp)
       .post('/api/bug-reports')
       .field('title', 'Something')
       .expect(500);
-    expect(res.body.error).toMatch(/intake agent/i);
+    expect(res.body.error).toMatch(/intake project/i);
   });
 });

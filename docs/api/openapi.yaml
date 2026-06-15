@@ -1995,11 +1995,11 @@ components:
           type: string
         replayRef:
           type: string
-          description: Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Surfaced to the intake agent for investigation.
+          description: Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.
         screenshot:
           type: string
           format: binary
-          description: Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.
+          description: Deprecated/ignored. A legacy PNG/JPEG part is tolerated for backwards compatibility but no longer persisted — session replay supersedes it.
       required:
         - title
       description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
@@ -10697,38 +10697,32 @@ paths:
       tags:
         - Bug Reports
       summary: Public bug-report intake (multipart)
-      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Optional `screenshot` is a PNG or JPEG up to 5 MB. Spawns a session for `agent-hub-intake` to land a kanban card under the `user-request` epic.
+      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". A legacy `screenshot` part is tolerated but ignored.
       requestBody:
         content:
           multipart/form-data:
             schema:
               $ref: "#/components/schemas/BugReportFormFields"
       responses:
-        "202":
-          description: Dispatched.
+        "201":
+          description: Support ticket created.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  sessionId:
+                  ticketId:
                     type: string
                   status:
                     type: string
                     enum:
-                      - dispatched
+                      - received
                 required:
-                  - sessionId
+                  - ticketId
                   - status
-                description: The intake session has been spawned. Result is the session id; the kanban card lands when the session completes.
+                description: A `bug` support ticket has been created in the `agent-hub` Customer Support queue. Result is the new ticket id; the AI investigation runs asynchronously.
         "400":
           description: Validation failed (missing title, bad severity, malformed multipart).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BugReportsErrorResponse"
-        "413":
-          description: Screenshot exceeds 5 MB.
           content:
             application/json:
               schema:
@@ -10740,7 +10734,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BugReportsErrorResponse"
         "500":
-          description: Intake agent missing or handler threw.
+          description: Intake project missing or handler threw.
           content:
             application/json:
               schema:

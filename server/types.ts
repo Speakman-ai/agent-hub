@@ -1635,6 +1635,7 @@ export interface Stmts {
   updateSupportTicketStatus: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;
+  setSupportTicketBody: Stmt;
   convertSupportTicketToCard: Stmt;
   deleteSupportTicket: Stmt;
   deleteSupportTicketsByProject: Stmt;

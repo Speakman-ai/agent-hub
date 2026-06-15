@@ -3655,6 +3655,9 @@ function initDb(dataDir: string): void {
     setSupportTicketReplayRef: db.prepare(
       `UPDATE support_tickets SET replay_ref = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    setSupportTicketBody: db.prepare(
+      `UPDATE support_tickets SET body = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
     convertSupportTicketToCard: db.prepare(
       `UPDATE support_tickets
          SET converted_card_id = ?, status = 'converted', updated_at = datetime('now')

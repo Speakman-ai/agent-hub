@@ -2,8 +2,9 @@
  * OpenAPI registration for the public bug-report intake endpoint.
  *
  * The endpoint is unauthenticated, multipart-only, and rate-limited
- * per-IP. It accepts an optional PNG/JPEG screenshot, persists fields,
- * and dispatches a session to the `agent-hub-intake` agent.
+ * per-IP. It lands a `bug` support ticket in the hub's own (`agent-hub`)
+ * Customer Support queue, which fires the same one-shot AI investigation
+ * as the authenticated support-ticket route.
  *
  * The handler parses multipart by hand (no multer) — Zod can't validate
  * the raw `Buffer` body. We document the field set here for spec
@@ -36,11 +37,11 @@ export const BugReportFormFieldsComponent = registerComponent(
       currentAgentId: z.string().optional(),
       replayRef: z.string().optional().openapi({
         description:
-          'Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Surfaced to the intake agent for investigation.',
+          'Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.',
       }),
       screenshot: z.string().optional().openapi({
         description:
-          'Optional PNG or JPEG (≤5 MB). Sent as a binary file part in the multipart body.',
+          'Deprecated/ignored. A legacy PNG/JPEG part is tolerated for backwards compatibility but no longer persisted — session replay supersedes it.',
         format: 'binary',
       }),
     })
@@ -52,12 +53,12 @@ export const BugReportFormFieldsComponent = registerComponent(
 
 const BugReportSuccessResponse = z
   .object({
-    sessionId: z.string(),
-    status: z.literal('dispatched'),
+    ticketId: z.string(),
+    status: z.literal('received'),
   })
   .openapi({
     description:
-      'The intake session has been spawned. Result is the session id; the kanban card lands when the session completes.',
+      'A `bug` support ticket has been created in the `agent-hub` Customer Support queue. Result is the new ticket id; the AI investigation runs asynchronously.',
   });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -83,7 +84,7 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public bug-report intake (multipart)',
   description:
-    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Optional `screenshot` is a PNG or JPEG up to 5 MB. Spawns a session for `agent-hub-intake` to land a kanban card under the `user-request` epic.',
+    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". A legacy `screenshot` part is tolerated but ignored.',
   request: {
     body: {
       content: {
@@ -92,10 +93,9 @@ registerPath({
     },
   },
   responses: {
-    202: { description: 'Dispatched.', content: jsonContent(BugReportSuccessResponse) },
+    201: { description: 'Support ticket created.', content: jsonContent(BugReportSuccessResponse) },
     400: errorResponse('Validation failed (missing title, bad severity, malformed multipart).'),
-    413: errorResponse('Screenshot exceeds 5 MB.'),
     429: errorResponse('Per-IP rate limit exceeded.'),
-    500: errorResponse('Intake agent missing or handler threw.'),
+    500: errorResponse('Intake project missing or handler threw.'),
   },
 });

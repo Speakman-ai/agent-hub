@@ -1,18 +1,21 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
-import path from 'path';
-import { writeFileSync, mkdirSync } from 'fs';
-import { v4 as uuidv4 } from 'uuid';
-import type { RouteDeps, ChatMessage, Agent } from '../types.js';
-import { setSessionOwner } from '../session-ownership.js';
+import type { RouteDeps, SupportTicketSeverity } from '../types.js';
+import { intakeSupportTicket } from '../support-ticket-intake.js';
 
 /**
  * Public, rate-limited bug-report intake endpoint.
  *
- * Accepts multipart/form-data from any Agent Hub client (web, electron, mobile).
- * Saves an optional screenshot to `server/uploads/`, then spawns a session for the
- * built-in `agent-hub-intake` agent to create a kanban card under the
- * `user-request` epic.
+ * Accepts multipart/form-data from any Agent Hub client (web, electron, mobile)
+ * and lands a `bug` support ticket in the hub's own (`agent-hub`) Customer
+ * Support queue — the same persistent queue, severity ordering, and one-shot AI
+ * investigation that `POST /api/projects/:projectId/support-tickets` produces.
+ * The operator triages from the queue and promotes a ticket to a kanban card
+ * with the existing "Convert to card" action.
+ *
+ * Visual context comes from the attached session replay (rrweb), so screenshots
+ * are no longer used: any `screenshot` part in the multipart body is accepted
+ * for backwards compatibility but ignored (not persisted, not referenced).
  *
  * The endpoint is intentionally unauthenticated (it's a cross-hub feedback
  * surface), so we gate it with an in-memory per-IP rate limiter: max
@@ -21,13 +24,10 @@ import { setSessionOwner } from '../session-ownership.js';
 
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
-const MAX_MULTIPART_BYTES = 6 * 1024 * 1024; // small buffer over the screenshot cap
-const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
+const MAX_MULTIPART_BYTES = 6 * 1024 * 1024; // tolerate a legacy screenshot part we ignore
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const VALID_CLIENT_TYPES = new Set(['web', 'electron', 'mobile']);
 const INTAKE_PROJECT_ID = 'agent-hub';
-const INTAKE_AGENT_ID = 'agent-hub-intake';
 
 // ─── Rate limit ──────────────────────────────────────────────────
 // Module-scoped so tests / the live server share the same window.
@@ -153,7 +153,6 @@ interface BugReportInput {
   clientType?: string;
   currentProjectId?: string;
   currentAgentId?: string;
-  screenshotUrl?: string | null;
   replayRef?: string | null;
 }
 
@@ -161,8 +160,8 @@ interface BugReportInput {
  * Accept only a locally-resolvable session-replay ref produced by the
  * `/api/replays` ingest endpoint (`/uploads/replay-<id>.json`). Anything else
  * (remote URLs, traversal, other upload kinds) is dropped — the value flows
- * untrusted into the intake prompt and, downstream, into `replay_ref`, so we
- * keep it to the exact shape `resolveReplayContext` is willing to read.
+ * untrusted into the ticket body and, downstream, into `replay_ref`, so we keep
+ * it to the exact shape `resolveReplayContext` is willing to read.
  */
 export function sanitizeReplayRef(raw: string | undefined | null): string | null {
   if (!raw) return null;
@@ -172,53 +171,40 @@ export function sanitizeReplayRef(raw: string | undefined | null): string | null
   return ref;
 }
 
-export function buildBugReportPrompt(input: BugReportInput): string {
+/**
+ * Build the support-ticket `body` for a bug report. The report's `title`
+ * becomes the ticket `subject` and `severity` its own column, so the body
+ * carries the free-text description plus the reporter context (URL, user agent,
+ * client, etc.) that `support_tickets` has no dedicated columns for. The whole
+ * body is treated as untrusted input by the investigation step (it fences and
+ * escapes it), so no sanitisation beyond shape is required here.
+ */
+export function buildBugReportTicketBody(input: BugReportInput): string {
   const lines: string[] = [];
-  lines.push('## Bug Report');
+  lines.push(input.description?.trim() || '_(no description provided)_');
   lines.push('');
-  lines.push(`**Title:** ${input.title}`);
-  lines.push(`**Severity:** ${input.severity}`);
+  lines.push('---');
   lines.push('');
-  lines.push('### Description');
-  lines.push(input.description || '_(no description provided)_');
-  lines.push('');
-  lines.push('### Source Metadata');
-  lines.push(`- **URL:** ${input.sourceUrl || '_unknown_'}`);
+  lines.push('### Reporter Context');
+  lines.push(`- **Source URL:** ${input.sourceUrl || '_unknown_'}`);
   lines.push(`- **User Agent:** ${input.userAgent || '_unknown_'}`);
   lines.push(`- **App Version:** ${input.appVersion || '_unknown_'}`);
   lines.push(`- **Client Type:** ${input.clientType || '_unknown_'}`);
-  lines.push(`- **Current Project:** ${input.currentProjectId || '_unknown_'}`);
-  lines.push(`- **Current Agent:** ${input.currentAgentId || '_unknown_'}`);
-  if (input.screenshotUrl) {
-    lines.push('');
-    lines.push('### Screenshot');
-    lines.push(`![bug report screenshot](${input.screenshotUrl})`);
-  }
+  lines.push(`- **Reported From Project:** ${input.currentProjectId || '_unknown_'}`);
+  lines.push(`- **Reported From Agent:** ${input.currentAgentId || '_unknown_'}`);
   if (input.replayRef) {
-    lines.push('');
-    lines.push('### Session Replay');
     lines.push(
-      `A session replay (trailing window of rrweb DOM events) was captured for this report: \`${input.replayRef}\`. Include this ref in the card description (and as the support ticket \`replayRef\` if one is created) so investigation can replay the steps leading up to the issue.`,
+      `- **Session Replay:** \`${input.replayRef}\` (trailing window of rrweb DOM events captured for this report)`,
     );
   }
-  lines.push('');
-  lines.push(
-    'Create a kanban card in the To Do column of the agent-hub project under the `user-request` epic (create the epic if missing, color `#EF4444`). Link the card to that epic. Map severity→priority (critical→urgent, high→high, medium→medium, low→low). End the session after the card is created.',
-  );
-  lines.push('');
-  lines.push(
-    '**IMPORTANT:** Do NOT pass `session_id` (or `sessionId`) when creating this card. Your session is ephemeral and will exit immediately after creation — a stamped `session_id` will permanently mark the card as "assigned" and hide the Assignee dropdown from the user. Leave `session_id` and `assignee` unset so the user can assign the card to a real agent.',
-  );
   return lines.join('\n');
 }
 
 // ─── Route factory ───────────────────────────────────────────────
 
 export default function createBugReportRoutes(deps: RouteDeps): Router {
-  const { stmts, findAgent, handleChat, serverDir } = deps;
+  const { stmts, broadcast, findProject, config, serverDir } = deps;
   const router = Router();
-  const UPLOADS_DIR = path.join(serverDir, 'uploads');
-  mkdirSync(UPLOADS_DIR, { recursive: true });
 
   function applyCors(_req: Request, res: Response, next: NextFunction): void {
     res.header('Access-Control-Allow-Origin', '*');
@@ -239,7 +225,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
       type: (req) => /^multipart\/form-data/i.test(req.headers['content-type'] || ''),
       limit: MAX_MULTIPART_BYTES,
     }),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       try {
         // ── Rate limit ─────────────────────────────────────
         const ip = ipFromReq(req);
@@ -264,7 +250,8 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           return res.status(400).json({ error: 'Empty request body' });
         }
 
-        const { fields, files } = parseMultipart(rawBody, boundary);
+        // `files` (e.g. a legacy `screenshot` part) is parsed but ignored.
+        const { fields } = parseMultipart(rawBody, boundary);
 
         // ── Validate fields ────────────────────────────────
         const title = (fields.title || '').trim();
@@ -281,7 +268,11 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             error: `severity must be one of: ${[...VALID_SEVERITIES].join(', ')}`,
           });
         }
-        const severity = severityRaw as BugReportInput['severity'];
+        // Narrowed to the canonical support-ticket severity union after the
+        // VALID_SEVERITIES runtime check above, so it satisfies both
+        // `buildBugReportTicketBody` and `CreateSupportTicketInput` without a
+        // cast at the intake call site.
+        const severity: SupportTicketSeverity = severityRaw as SupportTicketSeverity;
 
         const clientTypeRaw = (fields.clientType || '').trim().toLowerCase();
         if (clientTypeRaw && !VALID_CLIENT_TYPES.has(clientTypeRaw)) {
@@ -298,39 +289,29 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const currentAgentId = (fields.currentAgentId || '').toString();
         const replayRef = sanitizeReplayRef(fields.replayRef);
 
-        // ── Save screenshot (optional) ─────────────────────
-        let screenshotUrl: string | null = null;
-        const screenshot = files.screenshot;
-        if (screenshot) {
-          if (!ALLOWED_IMAGE_TYPES.has(screenshot.contentType)) {
-            return res.status(400).json({
-              error: `screenshot must be image/png or image/jpeg (got ${screenshot.contentType})`,
-            });
-          }
-          if (screenshot.data.length > MAX_SCREENSHOT_BYTES) {
-            return res.status(413).json({ error: 'screenshot exceeds 5 MB limit' });
-          }
-          const ext = screenshot.contentType === 'image/png' ? 'png' : 'jpg';
-          const filename = `${uuidv4()}.${ext}`;
-          const dest = path.join(UPLOADS_DIR, filename);
-          writeFileSync(dest, screenshot.data);
-          screenshotUrl = `/uploads/${filename}`;
-        }
+        // A `screenshot` part may still be present from older clients — the
+        // multipart parser tolerates it, but we no longer persist or reference
+        // it (session replay supersedes it). Intentionally ignore `files`.
 
-        // ── Verify intake agent exists ─────────────────────
-        const lookup = findAgent(INTAKE_AGENT_ID);
-        if (!lookup) {
+        // ── Resolve the intake (agent-hub) project ─────────
+        const project = findProject(INTAKE_PROJECT_ID);
+        if (!project) {
           console.error(
-            `[Bug Reports] Intake agent ${INTAKE_AGENT_ID} not found — cannot dispatch`,
+            `[Bug Reports] Intake project ${INTAKE_PROJECT_ID} not found — cannot file ticket`,
           );
           return res.status(500).json({
-            error: `Intake agent ${INTAKE_AGENT_ID} is not configured on this server`,
+            error: `Intake project ${INTAKE_PROJECT_ID} is not configured on this server`,
           });
         }
-        const agent: Agent = lookup.agent;
 
-        // ── Build prompt ───────────────────────────────────
-        const prompt = buildBugReportPrompt({
+        // ── Land a bug support ticket in the queue ─────────
+        // Build the body WITHOUT the replay line first. The raw `replayRef`
+        // is still untrusted here — `intakeSupportTicket` runs the project
+        // attribution guard and clears `replay_ref` for a foreign/nonexistent
+        // ref. Embedding the ref now would leak a rejected ref into the
+        // operator-visible body (and the AI prompt) even after the column is
+        // cleared, so we reflect only the PERSISTED ref into the body below.
+        const bodyFields = {
           title,
           description,
           severity,
@@ -340,52 +321,36 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           clientType: clientTypeRaw,
           currentProjectId,
           currentAgentId,
-          screenshotUrl,
-          replayRef,
-        });
-
-        // ── Spawn session ──────────────────────────────────
-        const sessionId = uuidv4();
-        const engine = (agent.engine as string) || 'claude-code';
-        const model = (agent.model as string) || deps.DEFAULT_MODEL;
-        const sessionName = `[Bug] ${title.substring(0, 80)}`;
-
-        stmts.createSession.run(sessionId, INTAKE_AGENT_ID, sessionName, engine, model, 1, 0, 1);
-        // Public bug-report endpoint has no JWT context and no real triggering
-        // user. There is no org-owner fallback, so the session stays
-        // NULL-owner; the intake spawn hard-fails unless it resolves to the
-        // host-global Gemini.
-        setSessionOwner(sessionId, null);
-
-        const taskId = uuidv4();
-        stmts.insertBackgroundTask.run(taskId, sessionId, INTAKE_AGENT_ID, prompt);
-
-        const chatMsg: ChatMessage = {
-          type: 'chat',
-          agentId: INTAKE_AGENT_ID,
-          sessionId,
-          content: prompt,
         };
-        setImmediate(() => {
-          try {
-            const result = handleChat(null, chatMsg);
-            if (result && typeof (result as Promise<unknown>).catch === 'function') {
-              (result as Promise<unknown>).catch((err: Error) => {
-                console.error(
-                  `[Bug Reports] handleChat failed for session ${sessionId}:`,
-                  err.message,
-                );
-              });
-            }
-          } catch (err) {
-            console.error(
-              `[Bug Reports] handleChat threw for session ${sessionId}:`,
-              (err as Error).message,
-            );
-          }
-        });
 
-        return res.status(202).json({ sessionId, status: 'dispatched' });
+        const ticket = await intakeSupportTicket(
+          {
+            projectId: project.id,
+            type: 'bug',
+            severity,
+            subject: title,
+            body: buildBugReportTicketBody({ ...bodyFields, replayRef: null }),
+            reporter: clientTypeRaw ? `bug-report (${clientTypeRaw})` : 'bug-report',
+            replayRef,
+          },
+          {
+            stmts,
+            broadcast,
+            config,
+            serverDir,
+            cwd: project.cwd,
+            // Surface the replay ref in the body only once the guard has
+            // accepted it for persistence (`ticket.replay_ref`). The helper
+            // applies this before broadcast/investigation, so a rejected ref
+            // never reaches the body and consumers see the finalized one.
+            finalizeBody: (t) =>
+              t.replay_ref
+                ? buildBugReportTicketBody({ ...bodyFields, replayRef: t.replay_ref })
+                : null,
+          },
+        );
+
+        return res.status(201).json({ ticketId: ticket.id, status: 'received' });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Bug Reports] Unexpected failure:', message);
