@@ -340,7 +340,8 @@ const PLUGIN_API_KEYS = [
     id: 'xai',
     label: 'xAI API key',
     placeholder: 'xai-...',
-    description: 'Used for voice transcription (the default provider).',
+    description:
+      'Authenticates the Grok (grok-cli) agent engine and powers voice transcription (the default provider). Host-wide; alternatively run `grok login` on the host.',
     loadConfigured: (body) => !!body.xaiApiKeySet || !!body.xaiApiKey,
     load: () => api.getConfig(),
     save: (value) => api.updateConfig({ xaiApiKey: value }),

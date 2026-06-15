@@ -200,9 +200,12 @@ describe('PluginApiKeysSection', () => {
 
     expect(screen.getByText('Plugin API keys')).toBeInTheDocument();
     expect(await screen.findByText('xAI API key')).toBeInTheDocument();
-    expect(
-      screen.getByText('Used for voice transcription (the default provider).'),
-    ).toBeInTheDocument();
+    // The xAI key powers both the Grok agent engine and voice transcription;
+    // the description must surface the engine use so it's discoverable as
+    // Grok credentials (regression: was labeled transcription-only).
+    const xaiDescription = screen.getByText(/Authenticates the Grok \(grok-cli\) agent engine/i);
+    expect(xaiDescription).toBeInTheDocument();
+    expect(xaiDescription).toHaveTextContent(/voice transcription/i);
     expect(screen.getByText('Gemini API key')).toBeInTheDocument();
     expect(screen.getByText('Used for voice transcription and wiki RAG.')).toBeInTheDocument();
     expect(screen.getByText('OpenAI API key')).toBeInTheDocument();
