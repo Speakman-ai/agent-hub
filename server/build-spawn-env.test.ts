@@ -216,6 +216,40 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     expect(env.XAI_API_KEY).toBe('xai-host');
   });
 
+  it('per-user grok key overrides the host xAI key on grok-cli spawns', () => {
+    const env = buildSpawnEnv(
+      { ...config, xaiApiKey: 'xai-host' },
+      { engine: 'grok-cli', userOverride: { grokApiKey: 'xai-user' } },
+    );
+    expect(env.XAI_API_KEY).toBe('xai-user');
+  });
+
+  it('falls back to the host xAI key when the user has no grok override', () => {
+    const env = buildSpawnEnv(
+      { ...config, xaiApiKey: 'xai-host' },
+      { engine: 'grok-cli', userOverride: { cursorApiKey: 'curs-user' } },
+    );
+    expect(env.XAI_API_KEY).toBe('xai-host');
+  });
+
+  it('a per-user grok key still never leaks into a non-grok spawn', () => {
+    const env = buildSpawnEnv(
+      { ...config, xaiApiKey: 'xai-host' },
+      { engine: 'codex-cli', userOverride: { grokApiKey: 'xai-user' } },
+    );
+    expect(env.XAI_API_KEY).toBeUndefined();
+  });
+
+  it('applyEngineScopedSpawnEnv prefers the override key over host for grok-cli', () => {
+    const env = applyEngineScopedSpawnEnv(
+      {},
+      { ...config, xaiApiKey: 'xai-host' },
+      'grok-cli',
+      'xai-user-override',
+    );
+    expect(env.XAI_API_KEY).toBe('xai-user-override');
+  });
+
   it('sanitizes direct helper callers before applying engine-scoped keys', () => {
     const env = applyEngineScopedSpawnEnv(
       { XAI_API_KEY: 'xai-existing-should-not-leak' },

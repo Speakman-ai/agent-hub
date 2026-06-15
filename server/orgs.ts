@@ -153,6 +153,36 @@ export function initOrgsDb(): void {
   orgsDb.exec(MCP_SERVERS_SCHEMA);
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
+  // Migration: widen the `user_engine_auth_audit.engine` CHECK to admit
+  // 'grok'. `CREATE TABLE IF NOT EXISTS` can't alter an existing CHECK, so
+  // DBs created before Grok per-user auth still carry the narrower
+  // constraint — under which a grok audit insert silently fails (the writer
+  // is best-effort). SQLite has no ALTER for CHECK, so rebuild the table
+  // in place when the stored DDL predates 'grok'. The audit log is
+  // append-only and small, so copy-through is cheap.
+  try {
+    const tableSql = (
+      orgsDb
+        .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get('user_engine_auth_audit') as { sql?: string } | undefined
+    )?.sql;
+    if (tableSql && !tableSql.includes("'grok'")) {
+      orgsDb.exec('DROP INDEX IF EXISTS idx_uengineauth_audit_user');
+      orgsDb.exec('DROP INDEX IF EXISTS idx_uengineauth_audit_engine');
+      orgsDb.exec('ALTER TABLE user_engine_auth_audit RENAME TO user_engine_auth_audit_old');
+      orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
+      orgsDb.exec(
+        `INSERT INTO user_engine_auth_audit
+           (id, user_id, engine, field, action, actor_user_id, created_at)
+         SELECT id, user_id, engine, field, action, actor_user_id, created_at
+         FROM user_engine_auth_audit_old`,
+      );
+      orgsDb.exec('DROP TABLE user_engine_auth_audit_old');
+    }
+  } catch {
+    // Best-effort: a failed rebuild leaves the old table intact (grok audit
+    // rows just won't persist), never blocks orgs.db init.
+  }
   // Multi-tenant Finalize runner control-plane queue (shared across orgs).
   orgsDb.exec(RUNNER_QUEUE_SCHEMA);
 
@@ -290,6 +320,8 @@ export function initOrgsDb(): void {
     { name: 'gemini_auth_updated_at', ddl: 'TEXT' },
     { name: 'codex_api_key', ddl: 'TEXT' },
     { name: 'codex_auth_updated_at', ddl: 'TEXT' },
+    { name: 'grok_api_key', ddl: 'TEXT' },
+    { name: 'grok_auth_updated_at', ddl: 'TEXT' },
   ];
   for (const col of userEngineAuthColumns) {
     try {

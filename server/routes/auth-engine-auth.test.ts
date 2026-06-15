@@ -28,6 +28,7 @@ const mockConfig: {
   cursorApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;
+  xaiApiKey: string | null;
   codexBin: string;
   dataDir: string;
 } = {
@@ -37,6 +38,7 @@ const mockConfig: {
   cursorApiKey: null,
   geminiApiKey: null,
   codexApiKey: null,
+  xaiApiKey: null,
   codexBin: '',
   get dataDir() {
     return TMP_DIR;
@@ -49,8 +51,13 @@ const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
 const { initOrgsDb, setOrgsDbPathForTests, updateOrg } = await import('../orgs.js');
-const { getUserByUsername, getUserCursorAuth, getUserGeminiAuth, getUserCodexAuth } =
-  await import('../users-store.js');
+const {
+  getUserByUsername,
+  getUserCursorAuth,
+  getUserGeminiAuth,
+  getUserCodexAuth,
+  getUserGrokAuth,
+} = await import('../users-store.js');
 
 function buildGatedApp() {
   const app = express();
@@ -100,6 +107,7 @@ beforeEach(() => {
   mockConfig.cursorApiKey = null;
   mockConfig.geminiApiKey = null;
   mockConfig.codexApiKey = null;
+  mockConfig.xaiApiKey = null;
   // Default to a binary path that does NOT exist on disk. Individual
   // tests that need the binary "installed" can stamp a fixture into
   // `TMP_DIR` and point `codexBin` at it.
@@ -107,7 +115,7 @@ beforeEach(() => {
 });
 
 type EngineFixture = {
-  engine: 'cursor' | 'gemini' | 'codex';
+  engine: 'cursor' | 'gemini' | 'codex' | 'grok';
   path: string;
   /** Mutates `mockConfig.<engineHostKey>`. */
   setHost: (v: string | null) => void;
@@ -153,6 +161,18 @@ const engineFixtures: EngineFixture[] = [
     read: (userId) => getUserCodexAuth(userId),
     sampleKey: 'sk-codex-RoundTrip',
     hasHostFallback: false,
+  },
+  {
+    engine: 'grok',
+    path: '/api/auth/me/grok-auth',
+    // Grok (xAI) is host-configured like Gemini: the host xaiApiKey is a
+    // valid fallback, so `hostConfigFallback.apiKey` must reflect it.
+    setHost: (v) => {
+      mockConfig.xaiApiKey = v;
+    },
+    read: (userId) => getUserGrokAuth(userId),
+    sampleKey: 'xai-RoundTrip-1234',
+    hasHostFallback: true,
   },
 ];
 

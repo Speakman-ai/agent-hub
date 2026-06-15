@@ -56,6 +56,8 @@ import {
   setUserGeminiAuth,
   getUserCodexAuth,
   setUserCodexAuth,
+  getUserGrokAuth,
+  setUserGrokAuth,
 } from '../users-store.js';
 import {
   getUserPreferencesRow,
@@ -326,7 +328,7 @@ const CodexAuthGetResponse = SingleKeyAuthGetResponse.extend({
   deviceLogin: CodexAuthDeviceLoginShape,
 });
 
-for (const engine of ['cursor', 'gemini'] as const) {
+for (const engine of ['cursor', 'gemini', 'grok'] as const) {
   registerPath({
     method: 'get',
     path: `/api/auth/me/${engine}-auth`,
@@ -1803,13 +1805,14 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── Per-user single-key engine credentials (Cursor / Gemini / Codex) ──
+  // ── Per-user single-key engine credentials (Cursor / Gemini / Codex / Grok) ──
   //
   // Each engine carries one API key today. The shape is intentionally
-  // identical across the three so the UI can render them with one
-  // component. Cursor / Codex are strictly per-account (no host fallback);
-  // only Gemini has a host-configured key (`buildSpawnEnv` falls back to it).
-  type SingleKeyEngine = 'cursor' | 'gemini' | 'codex';
+  // identical across them so the UI can render them with one component.
+  // Cursor / Codex are strictly per-account (no host fallback); Gemini and
+  // Grok have host-configured keys (`buildSpawnEnv` / `applyEngineScopedSpawnEnv`
+  // fall back to them when the user has no key of their own).
+  type SingleKeyEngine = 'cursor' | 'gemini' | 'codex' | 'grok';
   const singleKeyEngines: Array<{
     engine: SingleKeyEngine;
     path: string;
@@ -1842,6 +1845,15 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       set: setUserCodexAuth,
       // Codex auth is strictly per-account — no host fallback.
       hostHasKey: () => false,
+    },
+    {
+      engine: 'grok',
+      path: '/api/auth/me/grok-auth',
+      get: getUserGrokAuth,
+      set: setUserGrokAuth,
+      // Grok (xAI) is host-configured like Gemini: per-user key wins, but the
+      // host xaiApiKey is a valid fallback for spawns.
+      hostHasKey: () => !!config.xaiApiKey,
     },
   ];
 

@@ -12,6 +12,7 @@ import {
   getUserCodexAuth,
   getUserCursorAuth,
   getUserGeminiAuth,
+  getUserGrokAuth,
 } from './users-store.js';
 import { perUserHomePath } from './per-user-home.js';
 import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
@@ -181,11 +182,13 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
       const userCursor = getUserCursorAuth(actingUserId);
       const userGemini = getUserGeminiAuth(actingUserId);
       const userCodex = getUserCodexAuth(actingUserId);
+      const userGrok = getUserGrokAuth(actingUserId);
       const hasAny =
         !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
         !!(userCursor && userCursor.apiKey) ||
         !!(userGemini && userGemini.apiKey) ||
-        !!(userCodex && userCodex.apiKey);
+        !!(userCodex && userCodex.apiKey) ||
+        !!(userGrok && userGrok.apiKey);
       if (hasAny) {
         userOverride = {
           anthropicApiKey: userClaude?.anthropicApiKey ?? null,
@@ -193,6 +196,7 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
           cursorApiKey: userCursor?.apiKey ?? null,
           geminiApiKey: userGemini?.apiKey ?? null,
           codexApiKey: userCodex?.apiKey ?? null,
+          grokApiKey: userGrok?.apiKey ?? null,
         };
       }
     }

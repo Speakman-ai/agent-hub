@@ -14,12 +14,17 @@ import os from 'os';
 import path from 'path';
 import type { AppConfig } from './types.js';
 
-const { mockUserHasEngineCreds } = vi.hoisted(() => ({
+const { mockUserHasEngineCreds, mockGetUserGrokAuth } = vi.hoisted(() => ({
   mockUserHasEngineCreds: vi.fn(),
+  mockGetUserGrokAuth: vi.fn(),
 }));
 
 vi.mock('./per-user-cli-spawn.js', () => ({
   userHasEngineCreds: mockUserHasEngineCreds,
+}));
+
+vi.mock('./users-store.js', () => ({
+  getUserGrokAuth: mockGetUserGrokAuth,
 }));
 
 const { probeEngineAvailability, probeAllEngineAvailability, resolveGrokAuthCachePath } =
@@ -85,6 +90,8 @@ beforeEach(() => {
   fakeBin = makeFakeBin(path.join(tmpDir, 'fake-cli'));
   mockUserHasEngineCreds.mockReset();
   mockUserHasEngineCreds.mockReturnValue(false);
+  mockGetUserGrokAuth.mockReset();
+  mockGetUserGrokAuth.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -245,9 +252,25 @@ describe('probeEngineAvailability — grok-cli (host-configured / global)', () =
     expect(r.available).toBe(true);
   });
 
+  it('reports available when the acting user has their own xAI key (no host key)', async () => {
+    const cfg = makeConfig();
+    mockGetUserGrokAuth.mockReturnValue({ apiKey: 'xai-user-key', updatedAt: 'now' });
+    const r = await probeEngineAvailability('grok-cli', cfg, { env: {}, userId: 'u1' });
+    expect(r.available).toBe(true);
+    expect(mockGetUserGrokAuth).toHaveBeenCalledWith('u1');
+  });
+
   it('reports no-credentials when nothing is configured', async () => {
     const cfg = makeConfig();
     const r = await probeEngineAvailability('grok-cli', cfg, { env: {} });
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('no-credentials');
+  });
+
+  it('reports no-credentials when the acting user has no grok key and no host fallback', async () => {
+    const cfg = makeConfig();
+    mockGetUserGrokAuth.mockReturnValue({ apiKey: null, updatedAt: null });
+    const r = await probeEngineAvailability('grok-cli', cfg, { env: {}, userId: 'u1' });
     expect(r.available).toBe(false);
     expect(r.reason).toBe('no-credentials');
   });

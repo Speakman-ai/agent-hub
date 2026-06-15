@@ -107,7 +107,7 @@ export function updateUserPassword(id: string, passwordHash: string): void {
 // two rows). The action is `delete` when the new value is empty/null
 // AND the previous value was set; `upsert` otherwise.
 
-type EngineAuditTag = 'claude' | 'cursor' | 'gemini' | 'codex';
+type EngineAuditTag = 'claude' | 'cursor' | 'gemini' | 'codex' | 'grok';
 
 const ENCRYPTED_BLOB_RE = /^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/;
 
@@ -518,6 +518,25 @@ export function setUserCodexAuth(
     'codex',
     'codex_api_key',
     'codex_auth_updated_at',
+    patch,
+    opts?.actorUserId,
+  );
+}
+
+export function getUserGrokAuth(userId: string): UserSingleKeyAuth | null {
+  return getSingleKeyAuth(userId, 'grok_api_key', 'grok_auth_updated_at');
+}
+
+export function setUserGrokAuth(
+  userId: string,
+  patch: { apiKey?: string | null },
+  opts?: { actorUserId?: string },
+): UserSingleKeyAuth | null {
+  return setSingleKeyAuth(
+    userId,
+    'grok',
+    'grok_api_key',
+    'grok_auth_updated_at',
     patch,
     opts?.actorUserId,
   );

@@ -6819,6 +6819,108 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/grok-auth:
+    get:
+      tags:
+        - Auth
+      summary: Per-user grok credentials (masked).
+      responses:
+        "200":
+          description: Stored credentials with masking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Update per-user grok credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSingleKeyAuthBody"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engine:
+                    type: string
+                  apiKey:
+                    type: string
+                    nullable: true
+                  updatedAt:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  hostConfigFallback:
+                    type: object
+                    properties:
+                      apiKey:
+                        type: boolean
+                    required:
+                      - apiKey
+                required:
+                  - engine
+                  - apiKey
+                  - hostConfigFallback
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/me/codex-auth:
     get:
       tags:

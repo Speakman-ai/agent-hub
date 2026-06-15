@@ -4,7 +4,7 @@
  * Parallels `user_skill_credential_audit` (see
  * `skill-credentials-schema.ts`). One row per write to a per-user engine
  * credential column (`users.{anthropic_api_key, claude_code_oauth_token,
- * cursor_api_key, gemini_api_key, codex_api_key}`); one row per delete
+ * cursor_api_key, gemini_api_key, codex_api_key, grok_api_key}`); one row per delete
  * (write of empty / null that clears a previously-set field).
  *
  * The `engine` + `field` split lets a single PUT of `claude-auth` that
@@ -22,7 +22,7 @@ export const AUTH_CREDENTIAL_AUDIT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS user_engine_auth_audit (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  engine TEXT NOT NULL CHECK(engine IN ('claude','cursor','gemini','codex')),
+  engine TEXT NOT NULL CHECK(engine IN ('claude','cursor','gemini','codex','grok')),
   field TEXT NOT NULL,
   action TEXT NOT NULL CHECK(action IN ('upsert','delete')),
   actor_user_id TEXT NOT NULL,

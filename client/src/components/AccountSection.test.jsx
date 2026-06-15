@@ -122,6 +122,50 @@ describe('AccountSection — Log out button', () => {
   });
 });
 
+describe('AccountSection — Grok personal credentials', () => {
+  it('renders a per-user Grok section wired to /auth/me/grok-auth', async () => {
+    hasRole.mockReturnValue(false);
+    getUserRole.mockReturnValue('User');
+
+    let grokHit = false;
+    const fetchMock = mockFetchByUrl([
+      {
+        // The per-user Grok section's on-mount load.
+        match: (u, m) => m === 'GET' && u.includes('/auth/me/grok-auth'),
+        response: () => {
+          grokHit = true;
+          return jsonResponse({
+            engine: 'grok',
+            apiKey: null,
+            updatedAt: null,
+            hostConfigFallback: { apiKey: false },
+          });
+        },
+      },
+      {
+        // Current-user probe.
+        match: (u, m) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () => jsonResponse({ user: { id: 'u-self', username: 'plain', role: 'User' } }),
+      },
+      {
+        // Permissive catch-all for the other child auth sections' loads so
+        // their network calls don't throw and abort the render.
+        match: () => true,
+        response: () => jsonResponse({}),
+      },
+    ]);
+
+    render(<AccountSection />);
+
+    // The generic single-key panel renders "Personal Grok credentials" once
+    // its getter resolves — proving AccountSection wired the Grok descriptor.
+    expect(await screen.findByText('Personal Grok credentials')).toBeInTheDocument();
+    expect(screen.getByLabelText('Grok API key')).toBeInTheDocument();
+    expect(grokHit).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/auth/me/grok-auth'))).toBe(true);
+  });
+});
+
 describe('AccountSection — Add user button visibility', () => {
   it('hides the Add user button for role=User', async () => {
     hasRole.mockReturnValue(false);
@@ -203,7 +247,7 @@ describe('PluginApiKeysSection', () => {
     // The xAI key powers both the Grok agent engine and voice transcription;
     // the description must surface the engine use so it's discoverable as
     // Grok credentials (regression: was labeled transcription-only).
-    const xaiDescription = screen.getByText(/Authenticates the Grok \(grok-cli\) agent engine/i);
+    const xaiDescription = screen.getByText(/Grok \(grok-cli\) agent engine/i);
     expect(xaiDescription).toBeInTheDocument();
     expect(xaiDescription).toHaveTextContent(/voice transcription/i);
     expect(screen.getByText('Gemini API key')).toBeInTheDocument();

@@ -13,6 +13,7 @@ import {
   Trash2,
   Users,
   X,
+  Zap,
 } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
@@ -222,6 +223,17 @@ export default function AccountSection() {
       {me && <MyCodexAuthSection />}
 
       {me && (
+        <MySingleKeyAuthSection
+          engineLabel="Grok"
+          Icon={Zap}
+          placeholder="xai-..."
+          hostSettingHint="Settings → Plugin API keys → xAI"
+          getter={() => api.getMyGrokAuth()}
+          setter={(body) => api.putMyGrokAuth(body)}
+        />
+      )}
+
+      {me && (
         <MySkillCredentialSection
           skillId="linear"
           keyName="LINEAR_API_KEY"
@@ -341,7 +353,7 @@ const PLUGIN_API_KEYS = [
     label: 'xAI API key',
     placeholder: 'xai-...',
     description:
-      'Authenticates the Grok (grok-cli) agent engine and powers voice transcription (the default provider). Host-wide; alternatively run `grok login` on the host.',
+      'Host-wide xAI key: powers voice transcription (the default provider) and is the fallback for the Grok (grok-cli) agent engine when a user has no key of their own (set yours under Personal Grok credentials above).',
     loadConfigured: (body) => !!body.xaiApiKeySet || !!body.xaiApiKey,
     load: () => api.getConfig(),
     save: (value) => api.updateConfig({ xaiApiKey: value }),

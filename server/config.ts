@@ -526,6 +526,8 @@ export interface SpawnEnvOverride {
   geminiApiKey?: string | null;
   /** Codex CLI key — fanned out to OPENAI_API_KEY and CODEX_API_KEY. */
   codexApiKey?: string | null;
+  /** Grok (xAI) CLI key — exported as XAI_API_KEY, scoped to grok-cli only. */
+  grokApiKey?: string | null;
 }
 
 export interface BuildSpawnEnvOptions {
@@ -636,9 +638,9 @@ export function buildSpawnEnv(
   // https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments
   env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
   // XAI_API_KEY must never leak into non-Grok sessions. The engine-scoped
-  // helper strips inherited values and adds the host xAI key back only for
-  // grok-cli.
-  applyEngineScopedSpawnEnv(env, cfg, opts.engine);
+  // helper strips inherited values and adds the key back only for grok-cli —
+  // preferring the acting user's own key over the host xAI key.
+  applyEngineScopedSpawnEnv(env, cfg, opts.engine, override?.grokApiKey);
   const codexApiKey = presentString(override?.codexApiKey);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
@@ -763,14 +765,19 @@ export function applyEngineScopedSpawnEnv(
   env: NodeJS.ProcessEnv,
   cfg: AppConfig = config,
   engine?: string | null,
+  overrideXaiApiKey?: string | null,
 ): NodeJS.ProcessEnv {
   delete env.XAI_API_KEY;
   if (engine !== 'grok-cli') return env;
-  // Grok Build CLI is host-configured like Gemini for now: it reads XAI_API_KEY
-  // from the environment when no `grok login` cached token is present. Scope it
-  // to Grok only because other agent CLIs can execute shell commands and should
-  // not be able to read the host xAI key from their environment.
-  const xaiApiKey = presentString(cfg.xaiApiKey) ?? presentString(process.env.XAI_API_KEY);
+  // Grok Build CLI reads XAI_API_KEY from the environment when no `grok login`
+  // cached token is present. Precedence: the acting user's own per-user key
+  // (`overrideXaiApiKey`) → host config → inherited process env. Scope it to
+  // Grok only because other agent CLIs can execute shell commands and should
+  // not be able to read the xAI key from their environment.
+  const xaiApiKey =
+    presentString(overrideXaiApiKey) ??
+    presentString(cfg.xaiApiKey) ??
+    presentString(process.env.XAI_API_KEY);
   if (xaiApiKey) {
     env.XAI_API_KEY = xaiApiKey;
   }

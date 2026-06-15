@@ -32,6 +32,8 @@ const {
   setUserGeminiAuth,
   getUserCodexAuth,
   setUserCodexAuth,
+  getUserGrokAuth,
+  setUserGrokAuth,
   listUserEngineAuthAudit,
 } = await import('./users-store.js');
 const { __resetSecretCryptoForTests, __setSecretCryptoKeyFilePathForTests } =
@@ -253,6 +255,12 @@ describe.each([
     set: () => setUserCodexAuth,
     sample: 'sk-codex-XYZ',
   },
+  {
+    engine: 'grok',
+    get: () => getUserGrokAuth,
+    set: () => setUserGrokAuth,
+    sample: 'xai-grok-XYZ',
+  },
 ])('users-store — per-user $engine credentials', ({ engine, get, set, sample }) => {
   beforeEach(() => freshDb());
 
@@ -292,14 +300,16 @@ describe.each([
     const u = createUser({ username: `${engine}-iso`, passwordHash: 'h' });
     set()(u.id, { apiKey: sample });
     // The other two single-key engines should still be untouched.
-    const others = (['cursor', 'gemini', 'codex'] as const).filter((e) => e !== engine);
+    const others = (['cursor', 'gemini', 'codex', 'grok'] as const).filter((e) => e !== engine);
     for (const other of others) {
       const fn =
         other === 'cursor'
           ? getUserCursorAuth
           : other === 'gemini'
             ? getUserGeminiAuth
-            : getUserCodexAuth;
+            : other === 'codex'
+              ? getUserCodexAuth
+              : getUserGrokAuth;
       expect(fn(u.id)!.apiKey).toBeNull();
     }
     // Claude should also be untouched.
@@ -346,7 +356,7 @@ describe('users-store — encryption at rest', () => {
     expect(getUserClaudeAuth(u.id)!.claudeCodeOAuthToken).toBe('sk-ant-oat01-bearer-XYZ');
   });
 
-  it.each(['cursor_api_key', 'gemini_api_key', 'codex_api_key'])(
+  it.each(['cursor_api_key', 'gemini_api_key', 'codex_api_key', 'grok_api_key'])(
     'stores %s as encrypted blob',
     (column) => {
       const u = createUser({ username: `enc-${column}`, passwordHash: 'h' });
@@ -354,6 +364,7 @@ describe('users-store — encryption at rest', () => {
       if (column === 'cursor_api_key') setUserCursorAuth(u.id, { apiKey: sample });
       if (column === 'gemini_api_key') setUserGeminiAuth(u.id, { apiKey: sample });
       if (column === 'codex_api_key') setUserCodexAuth(u.id, { apiKey: sample });
+      if (column === 'grok_api_key') setUserGrokAuth(u.id, { apiKey: sample });
       const stored = rawColumn(u.id, column);
       expect(stored).not.toBe(sample);
       expect(stored).toMatch(ENCRYPTED_BLOB_RE);
@@ -363,7 +374,9 @@ describe('users-store — encryption at rest', () => {
           ? getUserCursorAuth(u.id)
           : column === 'gemini_api_key'
             ? getUserGeminiAuth(u.id)
-            : getUserCodexAuth(u.id);
+            : column === 'codex_api_key'
+              ? getUserCodexAuth(u.id)
+              : getUserGrokAuth(u.id);
       expect(reread!.apiKey).toBe(sample);
     },
   );
@@ -385,6 +398,7 @@ describe('users-store — encryption at rest', () => {
     setUserCursorAuth(u.id, { apiKey: 'cur-all-3' });
     setUserGeminiAuth(u.id, { apiKey: 'gem-all-4' });
     setUserCodexAuth(u.id, { apiKey: 'sk-codex-all-5' });
+    setUserGrokAuth(u.id, { apiKey: 'xai-grok-all-6' });
     // Every column on disk must be encrypted.
     for (const c of [
       'anthropic_api_key',
@@ -392,6 +406,7 @@ describe('users-store — encryption at rest', () => {
       'cursor_api_key',
       'gemini_api_key',
       'codex_api_key',
+      'grok_api_key',
     ]) {
       expect(rawColumn(u.id, c)).toMatch(ENCRYPTED_BLOB_RE);
     }
@@ -401,6 +416,7 @@ describe('users-store — encryption at rest', () => {
     expect(getUserCursorAuth(u.id)!.apiKey).toBe('cur-all-3');
     expect(getUserGeminiAuth(u.id)!.apiKey).toBe('gem-all-4');
     expect(getUserCodexAuth(u.id)!.apiKey).toBe('sk-codex-all-5');
+    expect(getUserGrokAuth(u.id)!.apiKey).toBe('xai-grok-all-6');
   });
 
   it('lazily backfills a legacy plaintext row as encrypted on first read', () => {
@@ -519,12 +535,13 @@ describe('users-store — audit logging on credential writes', () => {
     { engine: 'cursor', set: () => setUserCursorAuth, field: 'cursor_api_key' },
     { engine: 'gemini', set: () => setUserGeminiAuth, field: 'gemini_api_key' },
     { engine: 'codex', set: () => setUserCodexAuth, field: 'codex_api_key' },
+    { engine: 'grok', set: () => setUserGrokAuth, field: 'grok_api_key' },
   ])('emits one upsert and one delete row for $engine over set→clear', ({ engine, set, field }) => {
     const u = createUser({ username: `aud-${engine}`, passwordHash: 'h' });
     set()(u.id, { apiKey: `${engine}-key-1` });
     set()(u.id, { apiKey: '' });
     const rows = listUserEngineAuthAudit(u.id, {
-      engine: engine as 'cursor' | 'gemini' | 'codex',
+      engine: engine as 'cursor' | 'gemini' | 'codex' | 'grok',
     });
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.action).sort()).toEqual(['delete', 'upsert']);
@@ -559,5 +576,69 @@ describe('users-store — audit logging on credential writes', () => {
     expect(rows).toHaveLength(2);
     const actors = rows.map((r) => r.actor_user_id).sort();
     expect(actors).toEqual([u.id, 'admin-user-id'].sort());
+  });
+});
+
+// ── Audit-table CHECK migration (grok) ───────────────────────────────
+//
+// DBs created before Grok per-user auth carry a narrower
+// `engine IN ('claude','cursor','gemini','codex')` CHECK. Because the
+// audit writer is best-effort, a grok write under the old constraint
+// silently drops the audit row. `initOrgsDb()` must rebuild the table so
+// grok audit rows persist — without losing the pre-existing rows.
+describe('users-store — audit-table grok CHECK migration', () => {
+  beforeEach(() => freshDb());
+
+  it('rebuilds a pre-grok audit table and preserves existing rows', () => {
+    const db = getOrgsDb();
+    // Sanity: a fresh DB already admits grok.
+    const u = createUser({ username: 'mig-fresh', passwordHash: 'h' });
+
+    // Simulate a pre-grok install: replace the audit table with the
+    // narrower-CHECK version and seed a legacy row.
+    db.exec('DROP INDEX IF EXISTS idx_uengineauth_audit_user');
+    db.exec('DROP INDEX IF EXISTS idx_uengineauth_audit_engine');
+    db.exec('DROP TABLE user_engine_auth_audit');
+    db.exec(`
+      CREATE TABLE user_engine_auth_audit (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        engine TEXT NOT NULL CHECK(engine IN ('claude','cursor','gemini','codex')),
+        field TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('upsert','delete')),
+        actor_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    db.prepare(
+      `INSERT INTO user_engine_auth_audit (id, user_id, engine, field, action, actor_user_id)
+       VALUES ('legacy-1', ?, 'cursor', 'cursor_api_key', 'upsert', ?)`,
+    ).run(u.id, u.id);
+
+    // Under the old constraint, a grok insert is rejected.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO user_engine_auth_audit (id, user_id, engine, field, action, actor_user_id)
+           VALUES ('grok-pre', ?, 'grok', 'grok_api_key', 'upsert', ?)`,
+        )
+        .run(u.id, u.id),
+    ).toThrow();
+
+    // Re-init triggers the in-place rebuild.
+    initOrgsDb();
+
+    // Legacy row survived the rebuild.
+    const legacy = getOrgsDb()
+      .prepare(`SELECT engine, field FROM user_engine_auth_audit WHERE id = 'legacy-1'`)
+      .get() as { engine: string; field: string } | undefined;
+    expect(legacy).toEqual({ engine: 'cursor', field: 'cursor_api_key' });
+
+    // And grok writes now persist an audit row end-to-end.
+    setUserGrokAuth(u.id, { apiKey: 'xai-after-migration' });
+    const grokRows = listUserEngineAuthAudit(u.id, { engine: 'grok' });
+    expect(grokRows).toHaveLength(1);
+    expect(grokRows[0].field).toBe('grok_api_key');
+    expect(grokRows[0].action).toBe('upsert');
   });
 });

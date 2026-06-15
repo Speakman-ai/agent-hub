@@ -789,6 +789,9 @@ export const api = {
   getMyCodexAuth: () => fetchJSON('/auth/me/codex-auth'),
   putMyCodexAuth: (body) =>
     fetchJSON('/auth/me/codex-auth', { method: 'PUT', body: JSON.stringify(body) }),
+  getMyGrokAuth: () => fetchJSON('/auth/me/grok-auth'),
+  putMyGrokAuth: (body) =>
+    fetchJSON('/auth/me/grok-auth', { method: 'PUT', body: JSON.stringify(body) }),
 
   getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
   putMyAgentEngineOverrides: (body) =>

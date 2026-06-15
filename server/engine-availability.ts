@@ -17,6 +17,7 @@ import path from 'path';
 import type { AppConfig } from './types.js';
 import { invalidateCursorAuthCache } from './cursor-auth-cache.js';
 import { userHasEngineCreds } from './per-user-cli-spawn.js';
+import { getUserGrokAuth } from './users-store.js';
 
 export type SupportedEngine =
   | 'claude-code'
@@ -129,7 +130,8 @@ export async function probeEngineAvailability(
         detail: `grok binary not found at "${bin || '(unset)'}". Install the Grok Build CLI or update grokBin in Settings.`,
       };
     }
-    if (cfg.xaiApiKey || env.XAI_API_KEY || hasGrokCachedLogin(env)) {
+    const userGrokKey = userId ? getUserGrokAuth(userId)?.apiKey : null;
+    if (userGrokKey || cfg.xaiApiKey || env.XAI_API_KEY || hasGrokCachedLogin(env)) {
       return { engine, available: true };
     }
     return {
@@ -137,7 +139,7 @@ export async function probeEngineAvailability(
       available: false,
       reason: 'no-credentials',
       detail:
-        'No Grok credentials. Set XAI_API_KEY in environment or Settings, or run `grok login`.',
+        'No Grok credentials. Add your own xAI key under Account settings, set XAI_API_KEY / xaiApiKey in Settings, or run `grok login`.',
     };
   }
 
