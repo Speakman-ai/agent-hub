@@ -16966,13 +16966,19 @@ paths:
                   - durationMs
                 description: The persisted replay id, its uploads ref, and blob stats.
         "400":
-          description: Validation failed (empty events, bad event shape, non-object meta).
+          description: Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON body.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "401":
           description: An X-RUM-Token header was supplied but is invalid or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "413":
+          description: Request body exceeds the JSON size limit.
           content:
             application/json:
               schema:

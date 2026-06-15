@@ -125,8 +125,11 @@ registerPath({
   },
   responses: {
     201: { description: 'Stored.', content: jsonContent(ReplayIngestSuccessResponse) },
-    400: errorResponse('Validation failed (empty events, bad event shape, non-object meta).'),
+    400: errorResponse(
+      'Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON body.',
+    ),
     401: errorResponse('An X-RUM-Token header was supplied but is invalid or revoked.'),
+    413: errorResponse('Request body exceeds the JSON size limit.'),
     429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
     500: errorResponse('Handler threw while persisting the replay.'),
   },

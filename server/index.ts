@@ -70,6 +70,7 @@ import { cancelSessionChatRun } from './session-chat-cancel.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
+import { publicCorsErrorHandler } from './public-cors-error-handler.js';
 import createNoteRoutes from './routes/notes.js';
 import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
@@ -1383,6 +1384,15 @@ if (CLIENT_DIST && existsSync(CLIENT_DIST)) {
 // above should already have rejected these). Other errors fall through
 // to Express's default handler, preserving existing behavior.
 app.use(uriErrorHandler);
+
+// Public permissive-CORS ingest endpoints (rrweb replay recorder,
+// bug-report widget) advertise `Access-Control-Allow-Origin: *` so they
+// can be POSTed from third-party origins. Their per-route applyCors only
+// runs once the request reaches the router, so a failure in the GLOBAL
+// body parser above (oversized / malformed body) would otherwise answer
+// with NO CORS headers and the browser reports a misleading "CORS error"
+// instead of the honest 413 / 400. Stamp the headers on those errors.
+app.use(publicCorsErrorHandler);
 
 export { app, server };
 
