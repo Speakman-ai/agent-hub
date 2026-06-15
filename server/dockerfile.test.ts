@@ -49,4 +49,26 @@ describe('server/Dockerfile', () => {
       /(^|\s)ripgrep(\s|$|\\)/m,
     );
   });
+
+  it('installs every supported agent-engine CLI in the runtime stage', () => {
+    // Each engine in ALL_SUPPORTED_ENGINES needs its CLI baked into the image
+    // so the engine works out of the box (config.ts points the *Bin paths at
+    // these install locations). Adding an engine without its binary here is the
+    // regression this guards: the engine is selectable but every spawn ENOENTs.
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+    // engine id → a substring of the install command that fetches its binary.
+    const engineInstallMarkers: Record<string, string> = {
+      'claude-code': '@anthropic-ai/claude-code',
+      'gemini-cli': '@google/gemini-cli',
+      'codex-cli': '@openai/codex',
+      'cursor-agent': 'cursor.com/install',
+      'grok-cli': 'x.ai/cli/install.sh',
+    };
+    for (const [engine, marker] of Object.entries(engineInstallMarkers)) {
+      expect(runtimeStage, `expected runtime stage to install the ${engine} CLI`).toContain(marker);
+    }
+  });
 });

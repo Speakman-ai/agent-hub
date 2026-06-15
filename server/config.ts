@@ -180,6 +180,11 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // drop --model when an unsupported/stale ID is still persisted on a
   // session (so resumes from old DBs don't spin forever).
   'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
+  // Grok Build CLI model slug per xAI docs (https://docs.x.ai/build/cli).
+  // The headless CLI model id aligns with the Responses API early-access slug
+  // `grok-build-0.1` (replaces the retired grok-code-fast-1). Keep in sync with
+  // client TopBar.jsx and mobile engineOptions.js.
+  'grok-cli': ['grok-build-0.1'],
 };
 
 const mergedEngineValidModelsRaw =
@@ -198,6 +203,7 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
   // "Codex not working (round 2)".
   'codex-cli': 'gpt-5.5',
+  'grok-cli': 'grok-build-0.1',
 };
 
 const mergedEngineDefaultModelsRaw =
@@ -308,6 +314,7 @@ const config: AppConfig = {
   cursorBin: pickBin('agent', 'CURSOR_BIN', 'cursorBin', path.join(HOME, '.local', 'bin', 'agent')),
   geminiBin: pickBin('gemini', 'GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini'),
   codexBin: pickBin('codex', 'CODEX_BIN', 'codexBin', '/usr/local/bin/codex'),
+  grokBin: pickBin('grok', 'GROK_BIN', 'grokBin', path.join(HOME, '.local', 'bin', 'grok')),
 
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
@@ -378,9 +385,10 @@ const config: AppConfig = {
   // intentionally NO host-wide key for these engines: every spawn must use
   // the acting user's own login.
   //
-  // OpenAI + Gemini stay host-configured: they are not agent-engine spawn
-  // credentials. `openaiApiKey` powers Whisper transcription + LLM session
-  // titles; `geminiApiKey` backs wiki embeddings + the Gemini CLI.
+  // OpenAI, Gemini, and xAI stay host-configured. `openaiApiKey` powers
+  // Whisper transcription + LLM session titles; `geminiApiKey` backs wiki
+  // embeddings + the Gemini CLI; `xaiApiKey` backs Grok transcription and the
+  // Grok CLI when the host has not run `grok login`.
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
   xaiApiKey: resolve('XAI_API_KEY', 'xaiApiKey', null),
@@ -549,6 +557,11 @@ export interface BuildSpawnEnvOptions {
    * the legacy global-apiKey path.
    */
   userId?: string | null;
+  /**
+   * Engine about to receive this env. Host-wide provider keys that are only
+   * safe for a specific CLI are injected exclusively through this gate.
+   */
+  engine?: string | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -622,6 +635,10 @@ export function buildSpawnEnv(
   // binary reads this var; other engines ignore it. See
   // https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments
   env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
+  // XAI_API_KEY must never leak into non-Grok sessions. The engine-scoped
+  // helper strips inherited values and adds the host xAI key back only for
+  // grok-cli.
+  applyEngineScopedSpawnEnv(env, cfg, opts.engine);
   const codexApiKey = presentString(override?.codexApiKey);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
@@ -739,6 +756,24 @@ export function buildSpawnEnv(
     }
   }
 
+  return env;
+}
+
+export function applyEngineScopedSpawnEnv(
+  env: NodeJS.ProcessEnv,
+  cfg: AppConfig = config,
+  engine?: string | null,
+): NodeJS.ProcessEnv {
+  delete env.XAI_API_KEY;
+  if (engine !== 'grok-cli') return env;
+  // Grok Build CLI is host-configured like Gemini for now: it reads XAI_API_KEY
+  // from the environment when no `grok login` cached token is present. Scope it
+  // to Grok only because other agent CLIs can execute shell commands and should
+  // not be able to read the host xAI key from their environment.
+  const xaiApiKey = presentString(cfg.xaiApiKey) ?? presentString(process.env.XAI_API_KEY);
+  if (xaiApiKey) {
+    env.XAI_API_KEY = xaiApiKey;
+  }
   return env;
 }
 

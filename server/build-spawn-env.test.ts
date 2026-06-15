@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, statSync, writeFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } from './config.js';
+import config, {
+  applyEngineScopedSpawnEnv,
+  buildSpawnEnv,
+  normalizeClaudeSetupToken,
+  refreshShellPath,
+} from './config.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { perUserHomePath } from './per-user-home.js';
 import { perUserCliHomePath } from './per-user-cli-home.js';
@@ -187,6 +192,37 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     const env = buildSpawnEnv(config, { userOverride: { codexApiKey: 'sk-codex-user' } });
     expect(env.CODEX_API_KEY).toBe('sk-codex-user');
     expect(env.OPENAI_API_KEY).toBe('sk-codex-user');
+  });
+
+  it('does not leak host XAI_API_KEY into non-Grok spawns', () => {
+    const prevXai = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = 'xai-process-should-not-leak';
+    try {
+      const base = buildSpawnEnv({ ...config, xaiApiKey: 'xai-host' });
+      const claude = buildSpawnEnv({ ...config, xaiApiKey: 'xai-host' }, { engine: 'claude-code' });
+      const codex = buildSpawnEnv({ ...config, xaiApiKey: 'xai-host' }, { engine: 'codex-cli' });
+
+      expect(base.XAI_API_KEY).toBeUndefined();
+      expect(claude.XAI_API_KEY).toBeUndefined();
+      expect(codex.XAI_API_KEY).toBeUndefined();
+    } finally {
+      if (prevXai === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = prevXai;
+    }
+  });
+
+  it('scopes host XAI_API_KEY to grok-cli spawns only', () => {
+    const env = buildSpawnEnv({ ...config, xaiApiKey: 'xai-host' }, { engine: 'grok-cli' });
+    expect(env.XAI_API_KEY).toBe('xai-host');
+  });
+
+  it('sanitizes direct helper callers before applying engine-scoped keys', () => {
+    const env = applyEngineScopedSpawnEnv(
+      { XAI_API_KEY: 'xai-existing-should-not-leak' },
+      { ...config, xaiApiKey: 'xai-host' },
+      'gemini-cli',
+    );
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
   it('per-engine fields are independent — Cursor override does not affect Gemini/Codex', () => {

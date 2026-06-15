@@ -82,6 +82,7 @@ function makeDeps(agentId: string, bin: string): ChatHandlerDeps {
     getCursorBin: () => bin,
     getGeminiBin: () => bin,
     getCodexBin: () => bin,
+    getGrokBin: () => bin,
     uploadsDir: '/tmp',
     resolveSlashSkill: vi.fn(),
     ensureWorktree: vi.fn(async () => '/tmp'),

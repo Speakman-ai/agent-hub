@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   AUTO_CONTINUATION_MAX_RETRIES,
   AUTO_CONTINUATION_PROMPT,
+  buildGrokHeadlessPrompt,
   buildAutoContinuationPrompt,
   clipUtf8StringToMaxBytes,
   detectReActBlock,
@@ -12,6 +13,33 @@ import {
   utf8SuffixMaxBytes,
 } from './chat.js';
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
+
+describe('buildGrokHeadlessPrompt', () => {
+  it('does not prepend the enriched prompt again on history-bootstrap turns', () => {
+    const out = buildGrokHeadlessPrompt({
+      enrichedPrompt: 'SYSTEM INSTRUCTIONS',
+      finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: continue',
+      needsHistoryBootstrap: true,
+      forceSystemPromptThisTurn: false,
+    });
+
+    expect(out).toBe('Previous conversation:\nHuman: hello\n\nHuman: continue');
+    expect(out).not.toContain('SYSTEM INSTRUCTIONS');
+  });
+
+  it('reinjects the enriched prompt when a pending skill forces it', () => {
+    const out = buildGrokHeadlessPrompt({
+      enrichedPrompt: 'SYSTEM INSTRUCTIONS\n\n## Loaded Skill: test',
+      finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: use the skill',
+      needsHistoryBootstrap: true,
+      forceSystemPromptThisTurn: true,
+    });
+
+    expect(out).toContain('SYSTEM INSTRUCTIONS');
+    expect(out).toContain('## Loaded Skill: test');
+    expect(out).toContain('Previous conversation:');
+  });
+});
 
 describe('buildAutoContinuationPrompt', () => {
   it('matches AUTO_CONTINUATION_PROMPT when browser tools are enabled', () => {

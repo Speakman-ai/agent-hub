@@ -3,6 +3,7 @@ import path from 'path';
 import type { AppConfig } from './types.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { runOneShotPrompt } from './one-shot-spawn.js';
+import { applyEngineScopedSpawnEnv } from './config.js';
 import type { SupportedEngine } from './engine-availability.js';
 import { summarizeCliError } from './cli-error-summary.js';
 
@@ -277,7 +278,7 @@ async function runMemoryPrompt(
       systemPrompt,
       cwd: cwd || process.env.HOME || '/tmp',
       timeoutMs,
-      env: spawnEnv,
+      env: applyEngineScopedSpawnEnv(spawnEnv, cfg, resolved.engine),
     },
     cfg,
   );

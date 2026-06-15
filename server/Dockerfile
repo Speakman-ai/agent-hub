@@ -193,6 +193,13 @@ RUN mkdir -p /data /app/uploads /home/node/.agent-hub/projects /home/node/.agent
 USER node
 RUN curl -fsSL https://cursor.com/install | bash
 
+# Grok Build CLI — xAI's official installer drops the `grok` binary at
+# ~/.local/bin/grok (per-user, same shape as Cursor), which is where config.ts
+# defaults grokBin for HOME=/home/node so the `grok-cli` engine works without a
+# manual path override. Auth is XAI_API_KEY (headless) or `grok login`.
+# Install URL: https://x.ai/cli — see https://docs.x.ai/build/overview
+RUN curl -fsSL https://x.ai/cli/install.sh | bash
+
 # Install Playwright Chromium as the node user
 RUN npx --yes playwright install chromium
 

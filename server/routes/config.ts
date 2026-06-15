@@ -20,6 +20,7 @@ import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
+import { hasGrokCachedLogin } from '../engine-availability.js';
 import { normalizeCronEngine, normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { resolveCronEngine } from '../cron-engine.js';
 import { getProjects } from '../project-model.js';
@@ -32,6 +33,7 @@ interface FileConfig {
   cursorBin?: string;
   geminiBin?: string;
   codexBin?: string;
+  grokBin?: string;
   githubApp?: GitHubAppConfig;
   personalOAuth?: PersonalOAuthConfig;
   [key: string]: unknown;
@@ -222,6 +224,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       cursorBin: config.cursorBin,
       geminiBin: config.geminiBin,
       codexBin: config.codexBin,
+      grokBin: config.grokBin,
       defaultModel: config.defaultModel,
       defaultCwd: config.defaultCwd,
       port: config.port,
@@ -258,6 +261,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         cursorBin: fileConfig.cursorBin || null,
         geminiBin: fileConfig.geminiBin || null,
         codexBin: fileConfig.codexBin || null,
+        grokBin: fileConfig.grokBin || null,
       },
       // Feature flags surfaced to clients so the UI can hide deprecated
       // sections (Settings → PR Environments, the provisioning wizard,
@@ -283,6 +287,14 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       dataDir: config.dataDir,
     });
     const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
+    // Grok is host-authenticated like Gemini — either via XAI_API_KEY or an
+    // existing `grok login` cache under the server HOME. It is not yet a
+    // per-account engine in getEngineAuthStatus.
+    const grokAuthenticated = !!(
+      config.xaiApiKey ||
+      process.env.XAI_API_KEY ||
+      hasGrokCachedLogin()
+    );
 
     res.json(
       buildAuthenticatedModelConfig(config, {
@@ -290,6 +302,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         'cursor-agent': engineStatus.cursor,
         'gemini-cli': geminiAuthenticated,
         'codex-cli': engineStatus.codex,
+        'grok-cli': grokAuthenticated,
       }),
     );
   });
@@ -300,6 +313,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'cursorBin',
       'geminiBin',
       'codexBin',
+      'grokBin',
       'defaultModel',
       'defaultCwd',
       'port',
@@ -419,6 +433,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if ('codexBin' in updates && typeof updates.codexBin === 'string' && deps.setCodexBin) {
       deps.setCodexBin(updates.codexBin);
+    }
+    if ('grokBin' in updates && typeof updates.grokBin === 'string' && deps.setGrokBin) {
+      deps.setGrokBin(updates.grokBin);
     }
 
     res.json({

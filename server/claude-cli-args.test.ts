@@ -203,6 +203,7 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
         cursor: '/bin/cursor-agent',
         gemini: '/bin/gemini',
         codex: '/bin/codex',
+        grok: '/bin/grok',
       },
       engine: 'claude-code',
       model: 'claude-opus-4-8',

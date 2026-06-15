@@ -30,6 +30,7 @@ function makeAvailability(
     'cursor-agent': bad('cursor-agent'),
     'codex-cli': bad('codex-cli'),
     'gemini-cli': bad('gemini-cli'),
+    'grok-cli': bad('grok-cli'),
     ...overrides,
   };
 }

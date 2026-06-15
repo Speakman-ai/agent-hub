@@ -59,6 +59,7 @@ interface DesignChatDeps {
   getCursorBin: () => string;
   getGeminiBin: () => string;
   getCodexBin: () => string;
+  getGrokBin: () => string;
   getConfig: () => AppConfig;
   getDesign: (id: string) => DesignWithProjects | null;
   getDesignsRoot: () => string;
@@ -326,6 +327,7 @@ export async function handleDesignChat(
           cursor: d.getCursorBin(),
           gemini: d.getGeminiBin(),
           codex: d.getCodexBin(),
+          grok: d.getGrokBin(),
         },
         codexDangerBypass: !!config.codexDangerBypass,
         codexProfile: config.codexProfile,
@@ -466,7 +468,9 @@ export async function handleDesignChat(
                   ? 'geminiBin'
                   : engine === 'codex-cli'
                     ? 'codexBin'
-                    : 'claudeBin';
+                    : engine === 'grok-cli'
+                      ? 'grokBin'
+                      : 'claudeBin';
             const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
             errorMsg =
               `${engine} binary ${reason} at ${bin}. ` +

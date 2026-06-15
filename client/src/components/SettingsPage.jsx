@@ -785,6 +785,7 @@ export function GeneralSection() {
           cursorBin: data.cursorBin,
           geminiBin: data.geminiBin,
           codexBin: data.codexBin,
+          grokBin: data.grokBin,
         });
         setLoading(false);
       })
@@ -796,7 +797,8 @@ export function GeneralSection() {
     (edits.claudeBin !== config.claudeBin ||
       (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
       (edits.geminiBin ?? '') !== (config.geminiBin ?? '') ||
-      (edits.codexBin ?? '') !== (config.codexBin ?? ''));
+      (edits.codexBin ?? '') !== (config.codexBin ?? '') ||
+      (edits.grokBin ?? '') !== (config.grokBin ?? ''));
 
   const handleSave = async () => {
     setSaving(true);
@@ -806,6 +808,7 @@ export function GeneralSection() {
         cursorBin: edits.cursorBin,
         geminiBin: edits.geminiBin,
         codexBin: edits.codexBin,
+        grokBin: edits.grokBin,
       };
       await api.updateConfig(payload);
       setConfig((prev) => ({ ...prev, ...payload }));
@@ -906,6 +909,20 @@ export function GeneralSection() {
           <p className="text-xs text-gray-600 mt-1">
             Path to the <code>codex</code> binary (install via{' '}
             <code>npm install -g @openai/codex</code>). Used for all codex-cli engine sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Grok Build CLI</label>
+          <input
+            value={edits.grokBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, grokBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/grok"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>grok</code> binary (xAI Grok Build CLI). Used for all grok-cli engine
+            sessions. Auth uses <code>XAI_API_KEY</code> or <code>grok login</code>.
           </p>
         </div>
 

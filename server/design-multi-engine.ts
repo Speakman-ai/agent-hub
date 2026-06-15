@@ -13,6 +13,7 @@ export const DESIGN_CHAT_ENGINES = [
   'cursor-agent',
   'gemini-cli',
   'codex-cli',
+  'grok-cli',
 ] as const;
 
 export type DesignChatEngine = (typeof DESIGN_CHAT_ENGINES)[number];
@@ -82,6 +83,7 @@ export interface DesignSpawnBins {
   cursor: string;
   gemini: string;
   codex: string;
+  grok: string;
 }
 
 export interface BuildDesignSpawnArgsInput {
@@ -172,6 +174,20 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     // with Claude's bypassPermissions default.
     args.push('--yolo');
     return { bin: bins.gemini, args };
+  }
+
+  if (engine === 'grok-cli') {
+    // Grok Build CLI is stateless here (like Gemini) — no resume flag, so the
+    // system prompt + history bootstrap ride in the prompt body each turn.
+    const prompt = `${systemPrompt}\n\n${promptWithHistory}`;
+    const args = ['-p', prompt, '--output-format', 'streaming-json', '--no-auto-update'];
+    if (model) {
+      args.push('--model', model);
+    }
+    // Design Studio has no Ask/plan mode — always auto-approve tool calls for
+    // parity with Claude's bypassPermissions default.
+    args.push('--always-approve');
+    return { bin: bins.grok, args };
   }
 
   if (engine === 'codex-cli') {

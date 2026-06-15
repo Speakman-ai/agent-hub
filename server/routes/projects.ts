@@ -1915,7 +1915,13 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // Currently only consulted in workflow scaffolding below; ignored for
     // dev mode (the onboard route owns dev agent rosters). Validation is
     // permissive — the per-engine binary check happens at spawn time.
-    const VALID_ENGINES = ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'] as const;
+    const VALID_ENGINES = [
+      'claude-code',
+      'cursor-agent',
+      'gemini-cli',
+      'codex-cli',
+      'grok-cli',
+    ] as const;
     let resolvedEngine: (typeof VALID_ENGINES)[number] = 'claude-code';
     if (requestedEngine !== undefined && requestedEngine !== null && requestedEngine !== '') {
       if (
@@ -2580,7 +2586,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       try {
         proc = spawn(CLAUDE_BIN, args, {
           cwd: resolvedCwd,
-          env: buildSpawnEnv(config),
+          env: buildSpawnEnv(config, { engine: resolved.engine }),
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: true,
         });
@@ -2737,7 +2743,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
           systemPrompt: ANALYZE_SYSTEM_PROMPT,
           cwd: resolvedCwd,
           timeoutMs: ANALYZE_TIMEOUT_MS,
-          env: buildSpawnEnv(config),
+          env: buildSpawnEnv(config, { engine: resolved.engine }),
         },
         config,
       )

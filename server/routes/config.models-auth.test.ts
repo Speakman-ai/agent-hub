@@ -52,9 +52,10 @@ describe('GET /api/config/models — authenticated engine contract', () => {
         'cursor-agent': expect.any(Boolean),
         'gemini-cli': expect.any(Boolean),
         'codex-cli': expect.any(Boolean),
+        'grok-cli': expect.any(Boolean),
       }),
     );
-    for (const engine of ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli']) {
+    for (const engine of ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli']) {
       expect(Array.isArray(body.engineValidModels[engine])).toBe(true);
     }
   });

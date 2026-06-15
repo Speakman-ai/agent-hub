@@ -215,6 +215,7 @@ let CLAUDE_BIN: string = config.claudeBin;
 let CURSOR_BIN: string = config.cursorBin;
 let GEMINI_BIN: string = config.geminiBin;
 let CODEX_BIN: string = config.codexBin;
+let GROK_BIN: string = config.grokBin;
 
 let handleChat: ((ws: unknown, msg: ChatMessage) => Promise<void>) | undefined;
 let saveErrorMessage:
@@ -560,6 +561,7 @@ initDesignChat({
   getCursorBin: () => CURSOR_BIN,
   getGeminiBin: () => GEMINI_BIN,
   getCodexBin: () => CODEX_BIN,
+  getGrokBin: () => GROK_BIN,
   getConfig: () => config,
   getDesign: (id: string) => getDesignStore(id, findProject, getActiveOrgId()),
   getDesignsRoot,
@@ -888,6 +890,10 @@ export const routeDeps: RouteDeps = {
   setCodexBin: (v: string) => {
     CODEX_BIN = v;
   },
+  getGrokBin: () => GROK_BIN,
+  setGrokBin: (v: string) => {
+    GROK_BIN = v;
+  },
   initDb,
   reloadProjects,
   setActiveDataDir: (v: string) => {
@@ -1064,6 +1070,7 @@ const chatHandler = createChatHandler({
   getCursorBin: () => CURSOR_BIN,
   getGeminiBin: () => GEMINI_BIN,
   getCodexBin: () => CODEX_BIN,
+  getGrokBin: () => GROK_BIN,
   uploadsDir: UPLOADS_DIR,
   resolveSlashSkill,
   createCursorChat: undefined,

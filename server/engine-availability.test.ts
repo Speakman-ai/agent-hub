@@ -22,7 +22,7 @@ vi.mock('./per-user-cli-spawn.js', () => ({
   userHasEngineCreds: mockUserHasEngineCreds,
 }));
 
-const { probeEngineAvailability, probeAllEngineAvailability } =
+const { probeEngineAvailability, probeAllEngineAvailability, resolveGrokAuthCachePath } =
   await import('./engine-availability.js');
 
 let tmpDir: string;
@@ -41,7 +41,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     cursorBin: fakeBin,
     geminiBin: fakeBin,
     codexBin: fakeBin,
+    grokBin: fakeBin,
     geminiApiKey: null,
+    xaiApiKey: null,
     openaiApiKey: null,
     // Other fields aren't read by the probe but the type demands them.
     port: 3051,
@@ -210,17 +212,59 @@ describe('probeEngineAvailability — gemini-cli (host-configured / global)', ()
   });
 });
 
+describe('probeEngineAvailability — grok-cli (host-configured / global)', () => {
+  it('reports no-binary when grokBin does not exist', async () => {
+    const cfg = makeConfig({ grokBin: '/no/such/path/grok' });
+    const r = await probeEngineAvailability('grok-cli', cfg, { env: {} });
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('no-binary');
+  });
+
+  it('reports available when XAI_API_KEY env var is present', async () => {
+    const cfg = makeConfig();
+    const r = await probeEngineAvailability('grok-cli', cfg, {
+      env: { XAI_API_KEY: 'xai-test' },
+    });
+    expect(r.available).toBe(true);
+  });
+
+  it('reports available when the host config carries an xAI key', async () => {
+    const cfg = makeConfig({ xaiApiKey: 'xai-host' });
+    const r = await probeEngineAvailability('grok-cli', cfg, { env: {} });
+    expect(r.available).toBe(true);
+  });
+
+  it('reports available when grok login has cached a host token', async () => {
+    const cfg = makeConfig();
+    const env = { HOME: tmpDir };
+    const authPath = resolveGrokAuthCachePath(env);
+    mkdirSync(path.dirname(authPath), { recursive: true });
+    writeFileSync(authPath, '{"token":"cached"}', 'utf-8');
+
+    const r = await probeEngineAvailability('grok-cli', cfg, { env });
+    expect(r.available).toBe(true);
+  });
+
+  it('reports no-credentials when nothing is configured', async () => {
+    const cfg = makeConfig();
+    const r = await probeEngineAvailability('grok-cli', cfg, { env: {} });
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('no-credentials');
+  });
+});
+
 describe('probeAllEngineAvailability', () => {
   it('returns a record keyed by every supported engine', async () => {
     const cfg = makeConfig();
     // No acting user + no Gemini key → nothing is available.
     const all = await probeAllEngineAvailability(cfg, { env: {} });
     expect(Object.keys(all).sort()).toEqual(
-      ['claude-code', 'codex-cli', 'cursor-agent', 'gemini-cli'].sort(),
+      ['claude-code', 'codex-cli', 'cursor-agent', 'gemini-cli', 'grok-cli'].sort(),
     );
     expect(all['claude-code'].available).toBe(false);
     expect(all['cursor-agent'].available).toBe(false);
     expect(all['codex-cli'].available).toBe(false);
     expect(all['gemini-cli'].available).toBe(false);
+    expect(all['grok-cli'].available).toBe(false);
   });
 });

@@ -2673,6 +2673,7 @@ export interface AppConfig {
   cursorBin: string;
   geminiBin: string;
   codexBin: string;
+  grokBin: string;
   defaultCwd: string;
   dataDir: string;
   projectsDir: string;
@@ -2744,9 +2745,9 @@ export interface AppConfig {
   geminiApiKey: string | null;
   /**
    * Host-wide xAI (Grok) API key. Powers the default `/api/transcribe`
-   * provider via the xAI speech-to-text endpoint (`POST https://api.x.ai/v1/stt`).
-   * Not an agent-engine credential. Configure via `xaiApiKey` in config.json,
-   * `PATCH /api/config`, or env `XAI_API_KEY`.
+   * provider via the xAI speech-to-text endpoint (`POST https://api.x.ai/v1/stt`)
+   * and the Grok CLI when the host has not run `grok login`. Configure via
+   * `xaiApiKey` in config.json, `PATCH /api/config`, or env `XAI_API_KEY`.
    */
   xaiApiKey: string | null;
   /**
@@ -3195,6 +3196,8 @@ export interface RouteDeps {
   setGeminiBin?: (v: string) => void;
   getCodexBin?: () => string;
   setCodexBin?: (v: string) => void;
+  getGrokBin?: () => string;
+  setGrokBin?: (v: string) => void;
   initDb: (dataDir: string) => void;
   reloadProjects: (dataDir: string) => void;
   setActiveDataDir: (v: string) => void;

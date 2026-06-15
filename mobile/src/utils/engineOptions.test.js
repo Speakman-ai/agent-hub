@@ -6,9 +6,15 @@ import {
 } from './engineOptions.js';
 
 describe('mobile engine picker constants', () => {
-  it('exposes exactly claude-code, cursor-agent, and codex-cli as engine options', () => {
+  it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
     const ids = ENGINE_OPTIONS.map((e) => e.id);
-    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli']);
+    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
+  });
+
+  it('defaults grok-cli to grok-build-0.1', () => {
+    expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-build-0.1');
+    const allowed = ENGINE_MODELS['grok-cli'].map((m) => m.id);
+    expect(allowed).toContain('grok-build-0.1');
   });
 
   it('does not list gemini-cli as an engine option', () => {

@@ -16,6 +16,9 @@ const ENGINE_OPTIONS = [
   // OpenAI Codex CLI — green brand color (#10A37F) per openai.com. See
   // server/routes/codex-auth.ts + server/config.ts for the auth + model contract.
   { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
+  // xAI Grok Build CLI — host-key authed (XAI_API_KEY) like Gemini. See
+  // server/engine-availability.ts + the grok branches in server/chat.ts.
+  { id: 'grok-cli', label: 'Grok', color: '#1D9BF0' },
 ];
 
 const MODEL_LABELS = {
@@ -30,6 +33,7 @@ const MODEL_LABELS = {
   'gpt-5.4': { label: 'GPT-5.4', short: '5.4' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', short: '5.4 Mini' },
   'gpt-5.2': { label: 'GPT-5.2', short: '5.2' },
+  'grok-build-0.1': { label: 'Grok Build', short: 'Grok' },
 };
 
 function modelDisplay(id) {
@@ -43,6 +47,7 @@ function modelDisplay(id) {
 function fallbackModelsForEngine(engine) {
   if (engine === 'cursor-agent') return ['composer-2.5'];
   if (engine === 'codex-cli') return ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
+  if (engine === 'grok-cli') return ['grok-build-0.1'];
   return [
     'claude-fable-5',
     'claude-opus-4-8',

@@ -8,6 +8,7 @@ export interface EngineAuthState {
   'cursor-agent': boolean;
   'gemini-cli': boolean;
   'codex-cli': boolean;
+  'grok-cli': boolean;
 }
 
 export interface PublicModelConfig {

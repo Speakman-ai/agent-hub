@@ -12,11 +12,18 @@
 // auth files.
 
 import { existsSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import type { AppConfig } from './types.js';
 import { invalidateCursorAuthCache } from './cursor-auth-cache.js';
 import { userHasEngineCreds } from './per-user-cli-spawn.js';
 
-export type SupportedEngine = 'claude-code' | 'cursor-agent' | 'codex-cli' | 'gemini-cli';
+export type SupportedEngine =
+  | 'claude-code'
+  | 'cursor-agent'
+  | 'codex-cli'
+  | 'gemini-cli'
+  | 'grok-cli';
 
 /**
  * Why an engine is unavailable. Used by the resolver to pick a clear
@@ -46,6 +53,7 @@ export const ALL_SUPPORTED_ENGINES: readonly SupportedEngine[] = [
   'cursor-agent',
   'codex-cli',
   'gemini-cli',
+  'grok-cli',
 ] as const;
 
 interface ProbeOptions {
@@ -57,6 +65,22 @@ interface ProbeOptions {
    * unavailable.
    */
   userId?: string | null;
+}
+
+export function resolveGrokAuthCachePath(env: NodeJS.ProcessEnv = process.env): string {
+  const home =
+    (typeof env.HOME === 'string' && env.HOME.trim()) ||
+    (typeof env.USERPROFILE === 'string' && env.USERPROFILE.trim()) ||
+    os.homedir();
+  return path.join(home, '.grok', 'auth.json');
+}
+
+export function hasGrokCachedLogin(env: NodeJS.ProcessEnv = process.env): boolean {
+  try {
+    return existsSync(resolveGrokAuthCachePath(env));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -88,6 +112,32 @@ export async function probeEngineAvailability(
       available: false,
       reason: 'no-credentials',
       detail: 'No Gemini credentials. Set GEMINI_API_KEY in environment or Settings.',
+    };
+  }
+
+  // Grok Build CLI — host-configured like Gemini for API-key automation, with
+  // browser login accepted when the host HOME already has Grok's cached token.
+  // xAI documents browser auth on first launch, but not the cache file as a
+  // stable public API; this check is best-effort and read-only.
+  if (engine === 'grok-cli') {
+    const bin = cfg.grokBin;
+    if (!bin || !existsSync(bin)) {
+      return {
+        engine,
+        available: false,
+        reason: 'no-binary',
+        detail: `grok binary not found at "${bin || '(unset)'}". Install the Grok Build CLI or update grokBin in Settings.`,
+      };
+    }
+    if (cfg.xaiApiKey || env.XAI_API_KEY || hasGrokCachedLogin(env)) {
+      return { engine, available: true };
+    }
+    return {
+      engine,
+      available: false,
+      reason: 'no-credentials',
+      detail:
+        'No Grok credentials. Set XAI_API_KEY in environment or Settings, or run `grok login`.',
     };
   }
 

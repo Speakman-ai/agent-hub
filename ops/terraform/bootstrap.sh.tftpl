@@ -94,3 +94,8 @@ sudo -H -u "$${APP_USER}" bash -c 'curl -fsSL https://cursor.com/install | bash'
 
 npm install -g @openai/codex \
   || echo "codex CLI install failed" >&2
+
+# Install grok (Grok Build CLI) for engine=grok-cli — per-user installer to
+# ~/.local/bin/grok, matching grokBin default in server/config.ts.
+sudo -H -u "$${APP_USER}" bash -c 'curl -fsSL https://x.ai/cli/install.sh | bash' \
+  || echo "grok CLI install failed" >&2

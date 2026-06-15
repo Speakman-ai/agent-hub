@@ -480,7 +480,7 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
 %{ endif ~}
 
 %{ if use_pm2_bootstrap ~}
-sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; if [ -x scripts/ensure-cursor-agent.sh ]; then bash scripts/ensure-cursor-agent.sh; fi; if [ -x scripts/ensure-codex.sh ]; then bash scripts/ensure-codex.sh; fi"
+sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; if [ -x scripts/ensure-cursor-agent.sh ]; then bash scripts/ensure-cursor-agent.sh; fi; if [ -x scripts/ensure-codex.sh ]; then bash scripts/ensure-codex.sh; fi; if [ -x scripts/ensure-grok.sh ]; then bash scripts/ensure-grok.sh; fi"
 sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; npm install --include=dev; (cd server && npm install --include=dev); (cd client && npm install --include=dev && npm run build)"
 mkdir -p /home/${app_user}/.pm2
 chown -R ${app_user}:${app_user} /home/${app_user}/.pm2

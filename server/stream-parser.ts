@@ -376,6 +376,10 @@ export function createStreamParser(engine: string): StreamParser {
   const cursorFileToolStartedEmitted = new Set<string>();
   /** Args emitted on `started` when we did not defer — used to upgrade on `completed`. */
   const cursorFileToolStartedInputs = new Map<string, Record<string, unknown>>();
+  // Grok streaming-json is ACP JSON-RPC notifications: `agent_message_chunk`
+  // text arrives as token-level deltas. We accumulate the full message so the
+  // terminal stop event can run ask/step extraction over the whole thing.
+  const grokAgentMessage = { text: '' };
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
       ? (raw) =>
@@ -389,7 +393,9 @@ export function createStreamParser(engine: string): StreamParser {
         ? normalizeGemini
         : engine === 'codex-cli'
           ? (raw) => normalizeCodex(raw, codexFileChangeToolUseIssued)
-          : normalizeClaude;
+          : engine === 'grok-cli'
+            ? (raw) => normalizeGrok(raw, grokAgentMessage)
+            : normalizeClaude;
 
   return {
     feed(chunk: Buffer | string): StreamEvent[] {
@@ -1009,6 +1015,161 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
     default:
       return [{ type: 'unknown', text: `unhandled gemini event: ${raw.type as string}` }];
   }
+}
+
+// ─── Grok Build CLI normalizer ─────────────────────────────────────────
+//
+// Shape reference: xAI Grok Build CLI headless mode
+// (https://docs.x.ai/build/cli/headless-scripting). `grok -p "..."
+// --output-format streaming-json` emits newline-delimited Agent Client
+// Protocol (ACP) JSON-RPC notifications:
+//
+//   { "jsonrpc":"2.0", "method":"session/update", "params": {
+//       "sessionId": "...",
+//       "update": { "sessionUpdate":"agent_message_chunk",
+//                   "content": { "type":"text", "text":"..." } } }
+//
+// `update.sessionUpdate` discriminator values we handle:
+//   agent_message_chunk  — assistant text delta (emit partial assistant_text)
+//   agent_thought_chunk  — reasoning delta       (emit thinking)
+//   tool_call            — tool invocation        (emit tool_use)
+//   tool_call_update     — tool status/result     (emit tool_result on terminal status)
+//
+// The terminal signal is the JSON-RPC *response* to the `session/prompt`
+// request: `{ "jsonrpc":"2.0", "id":<n>, "result": { "stopReason":"..." } }`.
+// On that we finalize: run ask/step extraction over the accumulated message
+// and emit a non-partial assistant_text (replacing the streamed buffer) plus
+// a `result` event. Token deltas otherwise accumulate into `partialFallback`
+// on the caller side, so text is never lost even if the terminal line is
+// missing. Field names follow the ACP spec; fallbacks tolerate minor drift.
+function normalizeGrok(
+  raw: Record<string, unknown>,
+  agentMessage: { text: string },
+): StreamEvent[] {
+  // Terminal JSON-RPC response: `{ id, result: { stopReason } }`.
+  const result = raw.result as Record<string, unknown> | undefined;
+  const isJsonRpc = raw.jsonrpc !== undefined || raw.method !== undefined || result !== undefined;
+  if (result && (result.stopReason !== undefined || result.stop_reason !== undefined)) {
+    const finalText = agentMessage.text;
+    agentMessage.text = '';
+    const out: StreamEvent[] = [];
+    if (finalText) {
+      const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
+      const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+      // Replace the streamed partial buffer with the cleaned, finalized text so
+      // the persisted message matches what's rendered (pickers stripped out).
+      out.push({
+        type: 'assistant_text',
+        text: afterSteps,
+        partial: false,
+        replacesAssistantBuffer: true,
+      });
+      for (const s of steps) out.push(stepEvent(s));
+      for (const ask of asks) out.push(askEvent(ask));
+    }
+    const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
+    const inTok =
+      (usage.inputTokens as number | undefined) ?? (usage.input_tokens as number | undefined);
+    const outTok =
+      (usage.outputTokens as number | undefined) ?? (usage.output_tokens as number | undefined);
+    out.push({
+      type: 'result',
+      text: finalText,
+      durationMs: null,
+      costUsd: null,
+      numTurns: null,
+      isError:
+        (result.stopReason as string) === 'error' || (result.stop_reason as string) === 'error',
+      stopReason: (result.stopReason as string) ?? (result.stop_reason as string) ?? null,
+      inputTokens: typeof inTok === 'number' && Number.isFinite(inTok) ? inTok : null,
+      outputTokens: typeof outTok === 'number' && Number.isFinite(outTok) ? outTok : null,
+    });
+    return out;
+  }
+
+  // JSON-RPC response carrying the new session id (`session/new` result).
+  if (result && (result.sessionId !== undefined || result.session_id !== undefined)) {
+    return [
+      {
+        type: 'system',
+        sessionId: (result.sessionId as string) ?? (result.session_id as string) ?? null,
+        model: (result.model as string) ?? null,
+        cwd: (result.cwd as string) ?? null,
+        tools: [],
+      },
+    ];
+  }
+
+  if (raw.method === 'session/update') {
+    const params = (raw.params as Record<string, unknown> | undefined) ?? {};
+    const update = (params.update as Record<string, unknown> | undefined) ?? {};
+    const kind = update.sessionUpdate as string | undefined;
+    const content = update.content as Record<string, unknown> | undefined;
+    const contentText = typeof content?.text === 'string' ? (content.text as string) : '';
+
+    switch (kind) {
+      case 'agent_message_chunk': {
+        if (!contentText) return [];
+        agentMessage.text += contentText;
+        return [{ type: 'assistant_text', text: contentText, partial: true }];
+      }
+      case 'agent_thought_chunk': {
+        if (!contentText) return [];
+        return [{ type: 'thinking', text: contentText }];
+      }
+      case 'tool_call': {
+        const id =
+          (update.toolCallId as string) ??
+          (update.tool_call_id as string) ??
+          simpleHash(JSON.stringify(update));
+        const tool =
+          (update.title as string) ?? (update.kind as string) ?? (update.name as string) ?? 'tool';
+        const input =
+          (update.rawInput as Record<string, unknown>) ??
+          (update.input as Record<string, unknown>) ??
+          {};
+        const out: StreamEvent[] = [{ type: 'tool_use', id, tool, input }];
+        // A tool_call may already carry a terminal status + output.
+        const status = update.status as string | undefined;
+        if (status === 'completed' || status === 'failed') {
+          out.push({
+            type: 'tool_result',
+            toolUseId: id,
+            output: stringifyToolResult(update.content),
+            isError: status === 'failed',
+          });
+        }
+        return out;
+      }
+      case 'tool_call_update': {
+        const id = (update.toolCallId as string) ?? (update.tool_call_id as string) ?? '';
+        const status = update.status as string | undefined;
+        if (status !== 'completed' && status !== 'failed') return [];
+        return [
+          {
+            type: 'tool_result',
+            toolUseId: id,
+            output: stringifyToolResult(update.content),
+            isError: status === 'failed',
+          },
+        ];
+      }
+      default:
+        return [];
+    }
+  }
+
+  // Explicit error notification.
+  if (raw.method === 'error' || raw.error !== undefined) {
+    const errObj = raw.error as Record<string, unknown> | undefined;
+    const message =
+      (errObj?.message as string) ?? (raw.message as string) ?? JSON.stringify(raw.error ?? raw);
+    return [{ type: 'unknown', text: `grok error: ${message}` }];
+  }
+
+  // Unknown JSON-RPC bookkeeping lines (handshake, request echoes) are noise.
+  if (isJsonRpc) return [];
+  return [{ type: 'unknown', text: `unhandled grok event: ${JSON.stringify(raw).slice(0, 200)}` }];
 }
 
 // ─── Codex CLI normalizer ──────────────────────────────────────────────

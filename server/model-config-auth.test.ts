@@ -10,6 +10,7 @@ function makeConfig(): AppConfig {
     cursorBin: '/usr/local/bin/agent',
     geminiBin: '/usr/local/bin/gemini',
     codexBin: '/usr/local/bin/codex',
+    grokBin: '/usr/local/bin/grok',
     defaultCwd: '/tmp',
     dataDir: '/tmp',
     projectsDir: '/tmp/projects',
@@ -68,6 +69,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'cursor-agent': false,
       'gemini-cli': false,
       'codex-cli': true,
+      'grok-cli': false,
     });
 
     expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
@@ -95,6 +97,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'cursor-agent': true,
       'gemini-cli': false,
       'codex-cli': false,
+      'grok-cli': false,
     });
 
     expect(out.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);

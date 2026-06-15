@@ -1547,6 +1547,133 @@ describe('createStreamParser — Gemini CLI', () => {
   });
 });
 
+describe('createStreamParser — Grok Build CLI', () => {
+  function parse(lines: string[]): StreamEvent[] {
+    const parser = createStreamParser('grok-cli');
+    const events: StreamEvent[] = [];
+    for (const line of lines) {
+      events.push(...parser.feed(line + '\n'));
+    }
+    events.push(...parser.flush());
+    return events;
+  }
+
+  function update(sessionUpdate: string, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: { sessionId: 'grok-1', update: { sessionUpdate, ...extra } },
+    });
+  }
+
+  it('emits partial assistant_text for agent_message_chunk deltas', () => {
+    const events = parse([
+      update('agent_message_chunk', { content: { type: 'text', text: 'Hel' } }),
+      update('agent_message_chunk', { content: { type: 'text', text: 'lo' } }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { partial: boolean }).partial).toBe(true);
+    expect((events[0] as { text: string }).text).toBe('Hel');
+    expect((events[1] as { text: string }).text).toBe('lo');
+  });
+
+  it('emits thinking for agent_thought_chunk deltas', () => {
+    const events = parse([
+      update('agent_thought_chunk', { content: { type: 'text', text: 'pondering' } }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('thinking');
+    expect((events[0] as { text: string }).text).toBe('pondering');
+  });
+
+  it('emits tool_use for a tool_call notification', () => {
+    const events = parse([
+      update('tool_call', { toolCallId: 't1', title: 'read_file', rawInput: { path: 'a.ts' } }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    expect((events[0] as { id: string }).id).toBe('t1');
+    expect((events[0] as { tool: string }).tool).toBe('read_file');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({ path: 'a.ts' });
+  });
+
+  it('emits tool_result on a completed tool_call_update', () => {
+    const events = parse([
+      update('tool_call_update', {
+        toolCallId: 't1',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_result');
+    expect((events[0] as { toolUseId: string }).toolUseId).toBe('t1');
+    expect((events[0] as { isError: boolean }).isError).toBe(false);
+  });
+
+  it('ignores in-progress tool_call_update events', () => {
+    const events = parse([update('tool_call_update', { toolCallId: 't1', status: 'in_progress' })]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('finalizes on the terminal stopReason response with a result event', () => {
+    const events = parse([
+      update('agent_message_chunk', { content: { type: 'text', text: 'Hi there' } }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: { stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } },
+      }),
+    ]);
+    // partial chunk, finalized assistant_text (buffer replace), result
+    const finalText = events.find(
+      (e) => e.type === 'assistant_text' && (e as { partial: boolean }).partial === false,
+    );
+    expect(finalText).toBeDefined();
+    expect((finalText as { text: string }).text).toBe('Hi there');
+    expect((finalText as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer).toBe(true);
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toBeDefined();
+    expect((result as { stopReason: string }).stopReason).toBe('end_turn');
+    expect((result as { inputTokens: number }).inputTokens).toBe(10);
+    expect((result as { outputTokens: number }).outputTokens).toBe(5);
+  });
+
+  it('extracts fenced ask pickers from the finalized message', () => {
+    const asked =
+      'Pick one:\n```agenthub:ask\n' +
+      JSON.stringify({
+        question: 'Which?',
+        header: 'Pick',
+        options: [{ label: 'A' }, { label: 'B' }],
+      }) +
+      '\n```';
+    const events = parse([
+      update('agent_message_chunk', { content: { type: 'text', text: asked } }),
+      JSON.stringify({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } }),
+    ]);
+    const ask = events.find((e) => e.type === 'ask_user_question');
+    expect(ask).toBeDefined();
+  });
+
+  it('surfaces error notifications as unknown events', () => {
+    const events = parse([
+      JSON.stringify({ jsonrpc: '2.0', method: 'error', error: { message: 'boom' } }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toContain('boom');
+  });
+
+  it('ignores unrelated JSON-RPC bookkeeping lines', () => {
+    const events = parse([
+      JSON.stringify({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1 } }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+});
+
 describe('createStreamParser — Codex CLI', () => {
   function parse(lines: string[]): StreamEvent[] {
     const parser = createStreamParser('codex-cli');

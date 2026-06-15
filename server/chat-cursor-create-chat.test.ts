@@ -44,6 +44,7 @@ function stubChatHandlerDeps(): ChatHandlerDeps {
     getCursorBin: () => '/tmp/cursor-agent',
     getGeminiBin: () => '/tmp/gemini',
     getCodexBin: () => '/tmp/codex',
+    getGrokBin: () => '/tmp/grok',
     uploadsDir: '/tmp',
     resolveSlashSkill: vi.fn(),
     createCursorChat: undefined,

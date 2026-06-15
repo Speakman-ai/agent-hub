@@ -77,6 +77,7 @@ function stubChatDeps(
     getCursorBin: () => '/bin/true',
     getGeminiBin: () => '/bin/true',
     getCodexBin: () => '/bin/true',
+    getGrokBin: () => '/bin/true',
     uploadsDir: '/tmp',
     resolveSlashSkill: vi.fn(),
     ensureWorktree: vi.fn(async () => '/tmp'),

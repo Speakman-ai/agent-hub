@@ -72,7 +72,7 @@ export interface ResolveSessionCliSpawnEnvOpts {
   sessionId?: string | null;
   /**
    * Engine about to be spawned (`claude-code`, `cursor-agent`, `codex-cli`,
-   * `gemini-cli`). For the per-account engines (claude/cursor/codex) this
+   * `gemini-cli`, `grok-cli`). For the per-account engines (claude/cursor/codex) this
    * gates the hard-fail guard: a spawn with no acting user — or a user
    * lacking creds for that engine — throws `EngineAuthRequiredError` rather
    * than running a CLI that would silently 401 or borrow another identity.
@@ -225,6 +225,7 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
     userId: actingUserId,
     sessionId: sessionId ?? null,
     spawnCredsUserId: actingUserId,
+    engine,
   };
   return buildSpawnEnv(cfg, buildOpts);
 }

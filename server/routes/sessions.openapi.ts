@@ -240,8 +240,8 @@ export const AddSessionAgentRequestSchema = z.object({
 });
 
 export const PutSessionEngineRequestSchema = z.object({
-  engine: z.enum(['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'], {
-    error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, or codex-cli',
+  engine: z.enum(['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli'], {
+    error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, codex-cli, or grok-cli',
   }),
 });
 

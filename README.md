@@ -99,9 +99,10 @@ You need at least one of:
 | Cursor Agent  | [cursor.com/install](https://cursor.com/install)                     | `bash scripts/ensure-cursor-agent.sh`   | Symlinks to `~/.local/bin/agent`, server's default.         |
 | Codex         | `@openai/codex` (npm)                                                | `bash scripts/ensure-codex.sh`          | Symlinks `codex` into `~/.local/bin`.                       |
 | Gemini CLI    | Google's official installer                                          | _none_                                  | Same plug-in story as the others — point `geminiBin` at it. |
+| Grok Build    | [x.ai/cli](https://x.ai/cli)                                         | `bash scripts/ensure-grok.sh`           | Symlinks to `~/.local/bin/grok`. Auth via `XAI_API_KEY`.    |
 
 Once a binary exists on disk, the Hub finds it three ways (in priority order):
-**env var** (`CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN`) →
+**env var** (`CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN` / `GROK_BIN`) →
 **`~/.agent-hub/data/config.json`** (`claudeBin` etc.) → a **smart PATH probe**
 across common install locations (`/usr/local/bin`, `~/.local/bin`,
 Homebrew, `~/.nvm/.../bin`, etc.) so GUI launches with a minimal `PATH`
@@ -126,6 +127,14 @@ Installs `@openai/codex` via npm and symlinks `codex` into
 `~/.local/bin`. Same Terraform + workflow auto-install story as above
 (plus a `npm install -g @openai/codex` for the system Node) so PM2
 hosts always have it.
+
+#### `scripts/ensure-grok.sh`
+
+Wraps `curl -fsS https://x.ai/cli/install.sh | bash` with an idempotent
+check. The installer drops `grok` at `~/.local/bin/grok`, the server's
+default `grokBin` — no further configuration needed. Same Terraform +
+workflow auto-install story as above. Auth is the `XAI_API_KEY` env var
+(headless) or an interactive `grok login`.
 
 ## Quick Start
 
@@ -281,6 +290,7 @@ Configuration resolves in priority order: **environment variables** >
 | `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`     | Path to Cursor Agent CLI                             |
 | `GEMINI_BIN`            | `geminiBin`     | _smart probe_            | Path to Gemini CLI                                   |
 | `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`     | Path to Codex CLI                                    |
+| `GROK_BIN`              | `grokBin`       | `~/.local/bin/grok`      | Path to Grok Build CLI                              |
 | `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                  | Fallback working directory                           |
 | `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                   | Break-glass API key (treated as Owner for all orgs)  |
 | `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback |

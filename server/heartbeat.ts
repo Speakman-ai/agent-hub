@@ -237,6 +237,7 @@ export function runClaude(
       options.spawnEnv ??
       buildSpawnEnv(config, {
         userId: options.skillCredentialMerge?.ownerId ?? null,
+        engine: 'claude-code',
       });
     if (options.skillCredentialMerge) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
@@ -416,7 +417,10 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       preferredModel: heartbeatModel,
       userId: heartbeatOwnerId,
     });
-    const heartbeatEnv = buildSpawnEnv(config, { userId: heartbeatOwnerId });
+    const heartbeatEnv = buildSpawnEnv(config, {
+      userId: heartbeatOwnerId,
+      engine: resolved.engine,
+    });
     if (hbProject) {
       mergeSkillCredentialSpawnEnv(heartbeatEnv, {
         ownerId: heartbeatOwnerId,
@@ -630,7 +634,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       preferredModel: requestedModel,
       userId: cronOwnerId,
     });
-    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId });
+    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId, engine: resolved.engine });
     if (cronProject && cronSkillAgentId) {
       mergeSkillCredentialSpawnEnv(cronEnv, {
         ownerId: cronOwnerId,

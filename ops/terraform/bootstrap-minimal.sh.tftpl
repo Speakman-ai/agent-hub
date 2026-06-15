@@ -23,3 +23,6 @@ sudo -H -u ${app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
 
 npm install -g @openai/codex \
   || echo "codex CLI install failed" >&2
+
+sudo -H -u ${app_user} bash -c 'curl -fsSL https://x.ai/cli/install.sh | bash' \
+  || echo "grok CLI install failed" >&2

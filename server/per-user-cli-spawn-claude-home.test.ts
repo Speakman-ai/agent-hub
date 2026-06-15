@@ -33,6 +33,7 @@ function makeCfg(dataDir: string): AppConfig {
     dataDir,
     apiKey: '',
     geminiApiKey: null,
+    xaiApiKey: null,
   } as unknown as AppConfig;
 }
 
@@ -153,6 +154,38 @@ describe('resolveSessionCliSpawnEnv — per-account auth + per-user HOME', () =>
 
     expect(env.HOME).toBe(perUserHomePath(ownerId, tmpDataDir));
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-user-token');
+  });
+
+  it('claude-code spawn does not inherit the host xAI key', () => {
+    setUserClaudeAuth(ownerId, {
+      claudeCodeOAuthToken: 'sk-ant-oat01-user-token',
+    });
+    const prevXai = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = 'xai-process-should-not-leak';
+    try {
+      const env = resolveSessionCliSpawnEnv({
+        cfg: { ...makeCfg(tmpDataDir), xaiApiKey: 'xai-host' } as AppConfig,
+        ownerId: null,
+        credsOwnerId: ownerId,
+        engine: 'claude-code',
+      });
+
+      expect(env.XAI_API_KEY).toBeUndefined();
+    } finally {
+      if (prevXai === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = prevXai;
+    }
+  });
+
+  it('grok-cli spawn receives the host xAI key', () => {
+    const env = resolveSessionCliSpawnEnv({
+      cfg: { ...makeCfg(tmpDataDir), xaiApiKey: 'xai-host' } as AppConfig,
+      ownerId: null,
+      credsOwnerId: null,
+      engine: 'grok-cli',
+    });
+
+    expect(env.XAI_API_KEY).toBe('xai-host');
   });
 
   it('cursor-agent spawn hard-fails when the user has only Codex (no Cursor creds)', () => {

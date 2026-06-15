@@ -235,6 +235,7 @@ const ENGINE_BADGES = {
   'claude-code': { dotClass: 'bg-purple-500', label: 'Claude Code' },
   'cursor-agent': { dotClass: 'bg-emerald-500', label: 'Cursor Agent' },
   'codex-cli': { dotClass: 'bg-sky-500', label: 'Codex' },
+  'grok-cli': { dotClass: 'bg-blue-400', label: 'Grok' },
 };
 
 function SystemShipRequestedMessage({ message }) {

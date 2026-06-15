@@ -376,6 +376,7 @@ export interface ChatHandlerDeps {
   getCursorBin: () => string;
   getGeminiBin: () => string;
   getCodexBin: () => string;
+  getGrokBin: () => string;
   uploadsDir: string;
   resolveSlashSkill: (agent: Agent, content: string, project: Project) => SlashSkillResult | null;
   createCursorChat: ((cwd: string, env: NodeJS.ProcessEnv) => Promise<string>) | undefined;
@@ -1512,6 +1513,19 @@ export function augmentChatTurnForSlashSkill(args: {
   return { slashSkillSuffix, cliContent };
 }
 
+export function buildGrokHeadlessPrompt(args: {
+  enrichedPrompt: string;
+  finalPrompt: string;
+  needsHistoryBootstrap: boolean;
+  forceSystemPromptThisTurn: boolean;
+}): string {
+  const { enrichedPrompt, finalPrompt, needsHistoryBootstrap, forceSystemPromptThisTurn } = args;
+  if (needsHistoryBootstrap && !forceSystemPromptThisTurn) {
+    return finalPrompt;
+  }
+  return `${enrichedPrompt}\n\n${finalPrompt}`;
+}
+
 // ─── createChatHandler (factory) ───────────────────────────────────
 
 export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerResult {
@@ -1526,6 +1540,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getCursorBin,
     getGeminiBin,
     getCodexBin,
+    getGrokBin,
     uploadsDir,
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
@@ -2653,6 +2668,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const CURSOR_BIN = getCursorBin();
       const GEMINI_BIN = getGeminiBin();
       const CODEX_BIN = getCodexBin();
+      const GROK_BIN = getGrokBin();
 
       // `ownerId` / `credsOwnerId` / `sessionCliEnv` resolved above (before
       // cursor create-chat). Per-user MCP servers (claude-code only — cursor/gemini/codex have
@@ -2801,6 +2817,42 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('--yolo');
         }
         bin = GEMINI_BIN;
+      } else if (engine === 'grok-cli') {
+        // Grok Build CLI headless flags per https://docs.x.ai/build/cli:
+        //   -p / --single <PROMPT>   one-shot headless prompt
+        //   -m / --model <MODEL>     model selector (we pass the session model)
+        //   --output-format streaming-json  ACP JSON-RPC events parsed in
+        //                            normalizeGrok (agent_message_chunk / tool_* / result)
+        //   --always-approve         auto-approve tool calls (CI/headless) — matches
+        //                            Claude's bypassPermissions; omitted in Ask Mode
+        //   --no-auto-update         skip background update checks in automation
+        //
+        // Grok does not expose a resume flag we key off here. After the first
+        // turn, the history-bootstrap path above has already assembled the
+        // prior transcript into `finalPrompt`, so do not prepend the enriched
+        // prompt again unless a pending skill explicitly forced reinjection.
+        // The prompt rides in a single `-p` argv element, so the same kernel
+        // MAX_ARG_STRLEN cap as cursor/gemini applies.
+        const rawPrompt = buildGrokHeadlessPrompt({
+          enrichedPrompt,
+          finalPrompt,
+          needsHistoryBootstrap,
+          forceSystemPromptThisTurn,
+        });
+        const capped = applyArgvPromptCap(rawPrompt);
+        if (capped.truncated) {
+          logArgvCapTruncation('grok-cli', sessionId, capped.originalBytes, rawPrompt.length);
+        }
+        const prompt = capped.prompt;
+        args = ['-p', prompt, '--output-format', 'streaming-json', '--no-auto-update'];
+        if (model) {
+          args.push('--model', model);
+        }
+        const isAskMode = !!session!.ask_mode;
+        if (!isAskMode) {
+          args.push('--always-approve');
+        }
+        bin = GROK_BIN;
       } else if (engine === 'codex-cli') {
         // Codex CLI flags per https://developers.openai.com/codex/noninteractive:
         //   codex exec --json "<prompt>"                  — new turn
@@ -3693,7 +3745,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   ? 'geminiBin'
                   : engine === 'codex-cli'
                     ? 'codexBin'
-                    : 'claudeBin';
+                    : engine === 'grok-cli'
+                      ? 'grokBin'
+                      : 'claudeBin';
             const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
             errorMsg =
               `${engine} binary ${reason} at ${bin}. ` +
@@ -5173,7 +5227,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               ? 'gemini'
               : engine === 'codex-cli'
                 ? 'codex'
-                : 'claude';
+                : engine === 'grok-cli'
+                  ? 'grok'
+                  : 'claude';
         // Point the user at the correct config key. ENOENT here almost always
         // means the configured bin path is wrong (wiki: "Spawn PATH Propagation").
         const configKey =
@@ -5183,7 +5239,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               ? 'geminiBin'
               : engine === 'codex-cli'
                 ? 'codexBin'
-                : 'claudeBin';
+                : engine === 'grok-cli'
+                  ? 'grokBin'
+                  : 'claudeBin';
         const errnoCode = (err as NodeJS.ErrnoException).code;
         // Node reports ENOENT against the command when *either* the binary or
         // the cwd is missing. Re-check the cwd here so the user gets an

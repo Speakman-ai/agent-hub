@@ -276,6 +276,7 @@ jobs:
           # Idempotent — no-op when already installed at \$HOME/.local/bin/agent.
           bash scripts/ensure-cursor-agent.sh
           bash scripts/ensure-codex.sh
+          bash scripts/ensure-grok.sh
           npm ci --include=dev
           (cd server && npm ci --include=dev)
           (cd client && npm ci --include=dev)

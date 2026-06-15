@@ -46,6 +46,7 @@ export const AppConfigComponent = registerComponent(
       cursorBin: z.string().optional(),
       geminiBin: z.string().optional(),
       codexBin: z.string().optional(),
+      grokBin: z.string().optional(),
       defaultModel: z.string().optional(),
       defaultCwd: z.string(),
       port: z.number().int(),
@@ -92,6 +93,7 @@ export const AppConfigComponent = registerComponent(
         cursorBin: z.string().nullable(),
         geminiBin: z.string().nullable(),
         codexBin: z.string().nullable(),
+        grokBin: z.string().nullable(),
       }),
       features: z.object({
         prEnv: z.boolean(),
@@ -250,6 +252,7 @@ export const PatchConfigRequestSchema = z
     cursorBin: z.string().optional(),
     geminiBin: z.string().optional(),
     codexBin: z.string().optional(),
+    grokBin: z.string().optional(),
     defaultModel: z.string().optional(),
     defaultCwd: z.string().optional(),
     port: z.number().int().optional(),
@@ -345,7 +348,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

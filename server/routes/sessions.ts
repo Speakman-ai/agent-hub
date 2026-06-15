@@ -248,6 +248,24 @@ export function buildSummarizeSpawnArgs(
     args.push(userPromptPlaceholder);
     return { bin: config.codexBin, args };
   }
+  if (engine === 'grok-cli') {
+    // Grok Build CLI has no `--system-prompt` flag — the caller concatenates the
+    // system prompt into the placeholder body before spawning (the `grok-cli`
+    // arm of the `gemini-cli || codex-cli || grok-cli` branch in
+    // `summarizeTranscript`, which is about prompt ASSEMBLY, not output parsing).
+    //
+    // Output format is intentionally LEFT AT THE DEFAULT (`plain`), NOT
+    // `streaming-json`. `summarizeTranscript` collects the child's raw stdout
+    // and resolves `output.trim()` directly — it does NOT run the result through
+    // `createStreamParser` / `normalizeGrok`. Requesting streaming-json here
+    // would make the "summary" a blob of raw JSON-RPC events instead of text,
+    // exactly like it would for the Gemini summarize path (also plain `-p`).
+    const args: string[] = ['-p', userPromptPlaceholder, '--no-auto-update'];
+    if (model) {
+      args.push('--model', model);
+    }
+    return { bin: config.grokBin, args };
+  }
   return {
     bin: CLAUDE_BIN,
     args: [
@@ -278,7 +296,7 @@ export function summarizeTranscript(
     const built = buildSummarizeSpawnArgs({ engine, model }, config);
     const bin = built.bin;
     let args: string[];
-    if (engine === 'gemini-cli' || engine === 'codex-cli') {
+    if (engine === 'gemini-cli' || engine === 'codex-cli' || engine === 'grok-cli') {
       // These engines have no --system-prompt; replace the placeholder with
       // the concatenated system + user body.
       const combined = `${systemPrompt}\n\n${userPrompt}`;

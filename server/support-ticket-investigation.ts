@@ -260,7 +260,7 @@ export type InvestigationRunner = (input: {
 
 const defaultRunner: InvestigationRunner = async ({ prompt, cfg, cwd }) => {
   const resolved = await resolveOneShotEngine(cfg, { preferred: 'claude-code', userId: null });
-  const env = buildSpawnEnv(cfg, { userId: null });
+  const env = buildSpawnEnv(cfg, { userId: null, engine: resolved.engine });
   return runOneShotPrompt(
     {
       engine: resolved.engine,

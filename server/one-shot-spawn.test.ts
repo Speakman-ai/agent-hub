@@ -13,6 +13,7 @@ const CFG: AppConfig = {
   cursorBin: '/bin/cursor-agent',
   geminiBin: '/bin/gemini',
   codexBin: '/bin/codex',
+  grokBin: '/bin/grok',
 } as AppConfig;
 
 describe('buildOneShotSpawnArgs — claude-code', () => {
@@ -87,6 +88,28 @@ describe('buildOneShotSpawnArgs — gemini-cli', () => {
   it('omits --model when model is "auto"', () => {
     const out = buildOneShotSpawnArgs({ engine: 'gemini-cli', model: 'auto', prompt: 'P' }, CFG);
     expect(out.args).not.toContain('--model');
+  });
+});
+
+describe('buildOneShotSpawnArgs — grok-cli', () => {
+  it('concatenates system + prompt and sets headless flags', () => {
+    const out = buildOneShotSpawnArgs(
+      { engine: 'grok-cli', model: 'grok-build-0.1', prompt: 'P', systemPrompt: 'S' },
+      CFG,
+    );
+    expect(out.bin).toBe('/bin/grok');
+    expect(out.args[0]).toBe('-p');
+    expect(out.args[1]).toBe('S\n\nP');
+    expect(out.args).toContain('--no-auto-update');
+    expect(out.args).toContain('--always-approve');
+    expect(out.args).toContain('--model');
+    expect(out.args).toContain('grok-build-0.1');
+  });
+
+  it('omits --model when no model is provided', () => {
+    const out = buildOneShotSpawnArgs({ engine: 'grok-cli', model: '', prompt: 'P' }, CFG);
+    expect(out.args).not.toContain('--model');
+    expect(out.args[1]).toBe('P');
   });
 });
 

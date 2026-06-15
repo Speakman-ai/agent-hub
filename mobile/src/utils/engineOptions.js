@@ -10,6 +10,7 @@ export const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
   { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
   { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
+  { id: 'grok-cli', label: 'Grok', color: '#1D9BF0' },
 ];
 
 export const ENGINE_MODELS = {
@@ -31,12 +32,16 @@ export const ENGINE_MODELS = {
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
     { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
   ],
+  // Grok Build CLI — xAI. Keep in sync with server/config.ts and
+  // client/src/components/TopBar.jsx.
+  'grok-cli': [{ id: 'grok-build-0.1', label: 'Grok Build', short: 'Grok' }],
 };
 
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'codex-cli': 'gpt-5.5',
+  'grok-cli': 'grok-build-0.1',
 };
 
 export function modelDisplay(id) {

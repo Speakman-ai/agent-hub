@@ -2154,6 +2154,8 @@ components:
           type: string
         codexBin:
           type: string
+        grokBin:
+          type: string
         defaultModel:
           type: string
         defaultCwd:
@@ -2231,11 +2233,15 @@ components:
             codexBin:
               type: string
               nullable: true
+            grokBin:
+              type: string
+              nullable: true
           required:
             - claudeBin
             - cursorBin
             - geminiBin
             - codexBin
+            - grokBin
         features:
           type: object
           properties:
@@ -10015,6 +10021,7 @@ paths:
                     - cursor-agent
                     - gemini-cli
                     - codex-cli
+                    - grok-cli
               required:
                 - engine
       responses:
@@ -11241,7 +11248,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
       requestBody:
         content:
           application/json:
@@ -11255,6 +11262,8 @@ paths:
                 geminiBin:
                   type: string
                 codexBin:
+                  type: string
+                grokBin:
                   type: string
                 defaultModel:
                   type: string
@@ -11681,7 +11690,7 @@ paths:
       tags:
         - Crons
       summary: Create a new cron job
-      description: "`schedule` must be a valid cron expression. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      description: "`schedule` must be a valid cron expression. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli, grok-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
       requestBody:
         content:
           application/json:

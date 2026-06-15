@@ -18,6 +18,7 @@ const bins = {
   cursor: '/bin/cursor',
   gemini: '/bin/gemini',
   codex: '/bin/codex',
+  grok: '/bin/grok',
 };
 
 const userMsg = (content: string): DesignMessageRow =>
@@ -213,6 +214,25 @@ describe('buildDesignSpawnArgs', () => {
       isNewEngineSession: true,
     });
     expect(args.includes('--model')).toBe(false);
+  });
+
+  it('grok-cli: merges system + user prompt and adds streaming-json + always-approve', () => {
+    const { bin, args } = buildDesignSpawnArgs({
+      ...baseInput,
+      engine: 'grok-cli',
+      model: 'grok-build-0.1',
+      engineSessionId: null,
+      isNewEngineSession: true,
+    });
+    expect(bin).toBe(bins.grok);
+    expect(args[0]).toBe('-p');
+    expect(args[1]).toContain('SYS');
+    expect(args[1]).toContain('Do the thing');
+    expect(args).toContain('--output-format');
+    expect(args).toContain('streaming-json');
+    expect(args).toContain('--always-approve');
+    expect(args).toContain('--model');
+    expect(args).toContain('grok-build-0.1');
   });
 
   it('codex-cli: first exec has no resume subcommand', () => {

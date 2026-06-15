@@ -7,6 +7,8 @@ import { resolveAgentDisplayName } from '../utils/agentDisplayName.js';
 const ENGINE_BADGES = {
   'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
   'cursor-agent': { color: '#10B981', label: 'Cursor Agent' },
+  'codex-cli': { color: '#10A37F', label: 'Codex' },
+  'grok-cli': { color: '#1D9BF0', label: 'Grok' },
 };
 
 const markdownStyles = {

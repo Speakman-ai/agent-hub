@@ -103,6 +103,26 @@ export function buildOneShotSpawnArgs(
     return { bin: cfg.geminiBin, args };
   }
 
+  if (engine === 'grok-cli') {
+    // Grok Build CLI has no `--system-prompt` flag — concatenate into the body
+    // like Gemini. `--always-approve` skips interactive approvals so a headless
+    // one-shot can't hang; `--no-auto-update` skips background update checks.
+    //
+    // Output format is intentionally LEFT AT THE DEFAULT (`plain`), NOT
+    // `streaming-json`. This is the plain-text one-shot path: `runOneShotPrompt`
+    // returns the child's raw stdout (`stdout.trim()`) and never runs it through
+    // `createStreamParser` / `normalizeGrok`. Passing `--output-format
+    // streaming-json` here would make the returned "answer" a stream of raw
+    // JSON-RPC `session/update` lines instead of human text — the same reason
+    // the Gemini one-shot branch above stays on plain `-p` output. Only the
+    // interactive chat (chat.ts) and Design (design-multi-engine.ts) paths,
+    // which DO feed stdout through the parser, request streaming-json.
+    const body = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const args = ['-p', body, '--no-auto-update', '--always-approve'];
+    if (trimmedModel) args.push('--model', trimmedModel);
+    return { bin: cfg.grokBin, args };
+  }
+
   if (engine === 'codex-cli') {
     // No --system-prompt; concatenate. `--skip-git-repo-check` lets us
     // run from any cwd; `--sandbox read-only` is conservative for
