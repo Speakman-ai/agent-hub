@@ -88,6 +88,7 @@ import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
 import createPreviewWizardRoutes from './routes/preview-wizard.js';
+import createRumWizardRoutes from './routes/rum-wizard.js';
 import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
 import createPreviewInstancesRoutes from './routes/preview-instances.js';
 import createProvisioningRoutes from './routes/provisioning.js';
@@ -954,6 +955,7 @@ app.use(createPullsNativeRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createPreviewWizardRoutes(routeDeps));
+app.use(createRumWizardRoutes(routeDeps));
 app.use(
   createPreviewEnvironmentRoutes({
     ...routeDeps,

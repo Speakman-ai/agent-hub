@@ -4982,6 +4982,146 @@ components:
       required:
         - events
       description: "A chunk of a streamed replay. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body)."
+    RumWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for RUM wizard routes.
+    RumEntryCandidate:
+      type: object
+      properties:
+        path:
+          type: string
+        kind:
+          type: string
+          enum:
+            - root-layout
+            - app-entry
+            - html-entry
+            - document
+      required:
+        - path
+        - kind
+    RumCspHit:
+      type: object
+      properties:
+        path:
+          type: string
+        source:
+          type: string
+          enum:
+            - meta
+            - header
+      required:
+        - path
+        - source
+    RumInstrumentationPlan:
+      type: object
+      properties:
+        alreadyInstrumented:
+          type: boolean
+        targetFile:
+          type: string
+          nullable: true
+        injectionStyle:
+          type: string
+          nullable: true
+          enum:
+            - module-init
+            - client-component
+            - script-tag
+            - null
+        recommendedConnectSrc:
+          type: string
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+        - alreadyInstrumented
+        - targetFile
+        - injectionStyle
+        - recommendedConnectSrc
+        - notes
+    RumSetupDraft:
+      type: object
+      properties:
+        framework:
+          type: string
+          enum:
+            - next
+            - nuxt
+            - sveltekit
+            - remix
+            - astro
+            - vue
+            - angular
+            - react
+            - vanilla
+            - unknown
+        frameworkEvidence:
+          type: array
+          items:
+            type: string
+        packageManager:
+          type: string
+          nullable: true
+          enum:
+            - npm
+            - pnpm
+            - yarn
+            - bun
+            - null
+        typescript:
+          type: boolean
+        entryCandidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RumEntryCandidate"
+        cspHits:
+          type: array
+          items:
+            $ref: "#/components/schemas/RumCspHit"
+        recorder:
+          type: object
+          properties:
+            dependencyPresent:
+              type: boolean
+            initDetected:
+              type: boolean
+          required:
+            - dependencyPresent
+            - initDetected
+        plan:
+          $ref: "#/components/schemas/RumInstrumentationPlan"
+        readme:
+          nullable: true
+      required:
+        - framework
+        - frameworkEvidence
+        - packageManager
+        - typescript
+        - entryCandidates
+        - cspHits
+        - recorder
+        - plan
+      description: "Server-precomputed RUM instrumentation scan: detected framework, injection-target candidates, existing CSP locations, recorder state, and a recommended instrumentation plan."
+    RumSetupDraftResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/RumSetupDraft"
+      required:
+        - projectId
+        - draft
+      description: RUM instrumentation detection result for a project.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -16658,6 +16798,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/projects/{projectId}/rum/setup-draft:
+    get:
+      tags:
+        - RUM
+      summary: Scan a project for RUM instrumentation signal
+      description: "Admin+. Reads the project working copy and returns the detection draft the RUM recorder-injection wizard needs: frontend framework, injection-target candidates, existing Content-Security-Policy locations, recorder state, and a recommended plan. Read-only — no session is spawned and no files are written."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Detection draft computed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumSetupDraftResponse"
+        "400":
+          description: Project has no cwd configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
   /api/projects/{projectId}/support-requests:
     options:
       tags:
