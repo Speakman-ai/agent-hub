@@ -99,6 +99,39 @@ describe('rebaseOntoBase', () => {
     expect(git(clone, 'log --oneline -10')).toContain('feature commit');
   });
 
+  it('sets a repo-local fallback committer identity when the runner has none', async () => {
+    // Sibling pushes a non-conflicting change to main so the rebase must
+    // rewrite the feature commit and therefore needs a committer identity.
+    const sibling = path.join(tmpRoot, 'sibling-no-identity');
+    execSync(`git clone --quiet "${originBare}" "${sibling}"`, { stdio: 'pipe' });
+    git(sibling, 'config user.email "sib@example.com"');
+    git(sibling, 'config user.name "Sib"');
+    writeFileSync(path.join(sibling, 'sibling.txt'), 'sibling change\n');
+    git(sibling, 'add sibling.txt');
+    git(sibling, 'commit -m "sibling commit"');
+    git(sibling, 'push origin main');
+
+    git(clone, 'config --unset user.email');
+    git(clone, 'config --unset user.name');
+    const isolatedHome = path.join(tmpRoot, 'empty-home');
+    mkdirSync(isolatedHome, { recursive: true });
+    const env = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      HOME: isolatedHome,
+      XDG_CONFIG_HOME: isolatedHome,
+    };
+
+    const out = await rebaseOntoBase({ cwd: clone, baseBranch: 'main', env });
+
+    expect(out.kind).toBe('rebased');
+    expect(git(clone, 'config --get user.name')).toBe('Agent Hub Finalize');
+    expect(git(clone, 'config --get user.email')).toBe('agent-hub-finalize@example.invalid');
+    expect(git(clone, 'log --oneline -10')).toContain('sibling commit');
+    expect(git(clone, 'log --oneline -10')).toContain('feature commit');
+  });
+
   it('aborts cleanly and returns "conflict" when the rebase produces conflicts', async () => {
     // Feature branch edits main.txt one way …
     writeFileSync(path.join(clone, 'main.txt'), 'feature-side edit\n');

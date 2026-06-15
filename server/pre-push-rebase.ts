@@ -30,6 +30,8 @@ const execFileAsync = promisify(execFile);
 export const PRE_PUSH_FETCH_TIMEOUT_MS = 60_000;
 /** Time budget for the rebase itself; can take a few seconds on deep stacks. */
 export const PRE_PUSH_REBASE_TIMEOUT_MS = 120_000;
+const FALLBACK_GIT_USER_NAME = 'Agent Hub Finalize';
+const FALLBACK_GIT_USER_EMAIL = 'agent-hub-finalize@example.invalid';
 
 /** Same regex the rest of auto-git.ts uses to validate branch refs before exec. */
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
@@ -220,6 +222,8 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
       : { kind: 'skipped', reason: `fetch failed: ${msg.split('\n')[0]}` };
   }
 
+  await ensureGitCommitterIdentity(runGit, cwd, env, prLog);
+
   // Resolve the authoritative origin SHA for the feature branch via
   // `ls-remote`. This is what the caller pins `--force-with-lease` to so the
   // lease check doesn't depend on the local `refs/remotes/origin/<branch>`
@@ -354,9 +358,61 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
   }
 }
 
+async function ensureGitCommitterIdentity(
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+  prLog: ((text: string) => void) | undefined,
+): Promise<void> {
+  const hasName = await hasGitConfigValue(runGit, cwd, env, 'user.name');
+  const hasEmail = await hasGitConfigValue(runGit, cwd, env, 'user.email');
+  if (hasName && hasEmail) return;
+
+  prLog?.('  (git committer identity missing — setting repo-local Finalize fallback)\n');
+  try {
+    if (!hasName) {
+      await runGit(['config', 'user.name', FALLBACK_GIT_USER_NAME], {
+        cwd,
+        env,
+        timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+      });
+    }
+    if (!hasEmail) {
+      await runGit(['config', 'user.email', FALLBACK_GIT_USER_EMAIL], {
+        cwd,
+        env,
+        timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    prLog?.(`  (failed to set fallback git identity: ${msg.split('\n')[0]})\n`);
+  }
+}
+
+async function hasGitConfigValue(
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+  key: 'user.name' | 'user.email',
+): Promise<boolean> {
+  try {
+    const { stdout } = await runGit(['config', '--get', key], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+    });
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Re-export the internals only via a __test bag, matching the project pattern.
 export const __test = {
   defaultRunGit,
+  ensureGitCommitterIdentity,
+  hasGitConfigValue,
   isRebaseInProgressOnDisk,
   SAFE_BRANCH_RE,
 };
