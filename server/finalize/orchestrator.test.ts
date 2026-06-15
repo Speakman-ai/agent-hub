@@ -37,6 +37,7 @@ import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
 import type { FixDispatchResult } from './fix-dispatch.js';
 import type { CardLifecycle } from './card-lifecycle.js';
+import { createFinalizeRunSignal } from './run-abort-registry.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -254,14 +255,19 @@ function makeStmts(): {
       }),
     } as unknown as OrchestratorDeps['stmts']['markFinalizeRunPushed'],
     markFinalizeRunReadyToPush: {
+      // Mirror the guarded UPDATE (`WHERE id = ? AND status != 'cancelled'`):
+      // refuse to resurrect a cancelled row and report `changes` like
+      // better-sqlite3 so the orchestrator's changes-check is exercised.
       run: vi.fn((validatedHeadSha: string, id: string) => {
         const row = rows.get(id);
-        if (row) {
-          row.status = 'ready_to_push';
-          row.phase = null;
-          row.validated_head_sha = validatedHeadSha;
-          row.ended_at = Date.now();
+        if (!row || row.status === 'cancelled') {
+          return { changes: 0, lastInsertRowid: 0 };
         }
+        row.status = 'ready_to_push';
+        row.phase = null;
+        row.validated_head_sha = validatedHeadSha;
+        row.ended_at = Date.now();
+        return { changes: 1, lastInsertRowid: 0 };
       }),
     } as unknown as OrchestratorDeps['stmts']['markFinalizeRunReadyToPush'],
     getLatestChecksRunForSession: {
@@ -680,6 +686,58 @@ describe('runFinalize — split modes', () => {
       (call) => JSON.parse(call[7] as string).kind,
     );
     expect(timelineKinds).not.toContain('finalize_ready_to_push');
+  });
+
+  it('cancels instead of parking ready_to_push when Stop is pressed during CI', async () => {
+    // Regression: a Stop pressed while the CI/runner phase is in flight must
+    // end the run `cancelled`, never `ready_to_push`, and must not fire the
+    // auto-push hook. Previously the runner ran to completion and the
+    // orchestrator clobbered the cancelled row back to ready_to_push, so
+    // auto-push shipped a run the user had explicitly stopped.
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { signal, abort } = createFinalizeRunSignal();
+    // The runner does not yet honor the signal, so it completes normally — but
+    // by the time it returns the user has pressed Stop (the cancel endpoint
+    // tripped the in-process signal).
+    const steps = vi.fn().mockImplementation(async () => {
+      abort();
+      return STEPS_OK;
+    }) as unknown as NonNullable<OrchestratorDeps['runStepPhase']>;
+    const { deps, stmts } = makeDeps({ runStepPhase: steps });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full', signal }));
+
+    expect(steps).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe('cancelled');
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).not.toHaveBeenCalled();
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('refuses to resurrect a row cancelled in the mark window (guarded UPDATE)', async () => {
+    // Defense in depth: even if Stop lands in the race window AFTER the
+    // post-CI abort check but BEFORE markFinalizeRunReadyToPush, the guarded
+    // UPDATE (`status != 'cancelled'`) reports changes === 0 and the
+    // orchestrator bails to the cancelled terminal instead of pushing.
+    const hook = vi.fn();
+    setReadyToPushAutomationHook(hook);
+    const { deps, stmts } = makeDeps();
+    // No signal is tripped here, so only the guarded write can catch it: the
+    // mock flips the run's own row to `cancelled` as the CI phase returns,
+    // standing in for a concurrent cancel-endpoint write.
+    (deps as { runStepPhase?: unknown }).runStepPhase = vi
+      .fn()
+      .mockImplementation(async (_deps: unknown, o: { runId: string }) => {
+        const row = stmts.rows.get(o.runId);
+        if (row) row.status = 'cancelled';
+        return STEPS_OK;
+      });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full' }));
+
+    expect(result.kind).toBe('cancelled');
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+    expect(hook).not.toHaveBeenCalled();
   });
 });
 

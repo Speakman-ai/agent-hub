@@ -110,6 +110,33 @@ describe('runFinalizePush force', () => {
     expect(pushAndCreatePr).toHaveBeenCalledOnce();
   });
 
+  it('refuses a cancelled run even with force=true', async () => {
+    // Regression: pressing Stop during Finalize must be authoritative. A
+    // cancelled run is never pushable, including via the force bypass, so a
+    // stale push dispatch can never ship a run the user stopped.
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+    const run = { ...baseRun(), status: 'cancelled' as const };
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run,
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe('cancelled');
+      expect(outcome.httpStatus).toBe(409);
+    }
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+  });
+
   it('rejects push without force when not ready_to_push', async () => {
     const { deps } = makeDeps();
     const run = { ...baseRun(), status: 'running' as const };

@@ -3960,13 +3960,20 @@ function initDb(dataDir: string): void {
               ended_at = unixepoch() * 1000
         WHERE id = ?`,
     ),
+    // Park a run at ready_to_push. The `status != 'cancelled'` guard is load
+    // bearing: the cancel endpoint (POST .../finalize/:runId/cancel) can flip a
+    // row to `cancelled` while the CI/runner phase is still in flight. Without
+    // the guard this unconditional `WHERE id = ?` write would resurrect that
+    // cancelled row back to ready_to_push, and auto-push would then ship a run
+    // the user explicitly stopped. The orchestrator checks `changes === 0` and
+    // bails to the cancelled terminal when the guard refuses the write.
     markFinalizeRunReadyToPush: db.prepare(
       `UPDATE finalize_runs
           SET status = 'ready_to_push',
               phase = NULL,
               validated_head_sha = ?,
               ended_at = unixepoch() * 1000
-        WHERE id = ?`,
+        WHERE id = ? AND status != 'cancelled'`,
     ),
     // Update the session id on a finalize_runs row. The orchestrator calls
     // this when it spawns or resolves a session after the row has been

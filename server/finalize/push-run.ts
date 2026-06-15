@@ -327,6 +327,19 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
+  // A cancelled run is never pushable, including via `force` — Stop is
+  // authoritative. This is the backstop for the orchestrator's abort
+  // checkpoints: even if a push is dispatched against a stale run object, the
+  // cancel must win.
+  if (run.status === 'cancelled') {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: 'cancelled',
+      message: 'This run was cancelled and cannot be pushed.',
+    };
+  }
+
   if (!force && run.status !== 'ready_to_push') {
     return {
       ok: false,

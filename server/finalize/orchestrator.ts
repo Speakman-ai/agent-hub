@@ -1338,6 +1338,14 @@ export async function runFinalize(
         trace('checks', { round: loopCount, status: 'skipped_changes_requested' });
       }
 
+      // A Stop pressed while the CI/runner phase was in flight lands here: the
+      // runner does not yet honor the signal, so it runs to completion before
+      // returning. Bail before the push gate so a cancelled run can never be
+      // clobbered back to ready_to_push and auto-push never fires.
+      if (opts.signal?.aborted) {
+        return cancelTerminal(deps, runId, log);
+      }
+
       // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
       // The combined gate and the push gate fold together: we only
       // re-resolve HEAD when steps + reviewer agree, because the head-sha
@@ -1522,8 +1530,23 @@ export async function runFinalize(
         // the operator confirms via POST .../finalize/:runId/push. The flake
         // gate verdict is already durably persisted above, so the moment this
         // row becomes `ready_to_push` its automation-gate column is consistent.
+        // Final cancel checkpoint before the row goes terminal-success. A Stop
+        // landing in the gate-evaluation window above is honored here.
+        if (opts.signal?.aborted) {
+          return cancelTerminal(deps, runId, log);
+        }
         try {
-          deps.stmts.markFinalizeRunReadyToPush.run(gateOutcome.validatedHeadSha, runId);
+          const info = deps.stmts.markFinalizeRunReadyToPush.run(
+            gateOutcome.validatedHeadSha,
+            runId,
+          );
+          // The guarded UPDATE (`status != 'cancelled'`) refuses to resurrect a
+          // row the cancel endpoint flipped in the race window after the check
+          // above. `changes === 0` means the row is gone or already cancelled —
+          // do not announce ready_to_push or fire the auto-push hook.
+          if (info && typeof info.changes === 'number' && info.changes === 0) {
+            return cancelTerminal(deps, runId, log);
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return terminate(
