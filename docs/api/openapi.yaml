@@ -5122,6 +5122,23 @@ components:
         - projectId
         - draft
       description: RUM instrumentation detection result for a project.
+    RumWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/RumSetupDraft"
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned wizard session.
+      required:
+        - sessionId
+        - agentId
+        - draft
+      description: RUM recorder-injection wizard session spawned successfully.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -16827,6 +16844,60 @@ paths:
                 $ref: "#/components/schemas/RumWizardErrorResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+  /api/projects/{projectId}/rum/setup-wizard:
+    post:
+      tags:
+        - RUM
+      summary: Spawn the RUM recorder-injection wizard
+      description: |-
+        Admin+. Scans the project and spawns a **worktree-backed** chat session
+        (`use_worktree=1`) loaded with the `rum-setup` skill. The detection draft
+        (framework, target file, injection style, CSP hits, recommended
+        `connect-src`) is embedded in the kickoff prompt. The agent injects the
+        rrweb recorder init into `draft.plan.targetFile` using
+        `draft.plan.injectionStyle`, extends any `draft.cspHits` with the ingest
+        origin, commits to its branch, and uses Finalize Code Changes to push and
+        open a PR.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Body is empty.
+      responses:
+        "201":
+          description: Wizard session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardStartResponse"
+        "400":
+          description: Project has no cwd configured, or no agents to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+        "500":
+          description: Wizard agent could not be resolved.
           content:
             application/json:
               schema:

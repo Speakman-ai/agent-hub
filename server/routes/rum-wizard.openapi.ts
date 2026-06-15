@@ -95,6 +95,20 @@ const RumSetupDraftResponse = registerComponent(
     .openapi({ description: 'RUM instrumentation detection result for a project.' }),
 );
 
+const RumWizardStartResponse = registerComponent(
+  'RumWizardStartResponse',
+  z
+    .object({
+      sessionId: z.string(),
+      agentId: z.string(),
+      draft: RumSetupDraft,
+      session: z
+        .unknown()
+        .openapi({ description: 'Raw `sessions` row for the spawned wizard session.' }),
+    })
+    .openapi({ description: 'RUM recorder-injection wizard session spawned successfully.' }),
+);
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/rum/setup-draft',
@@ -112,5 +126,35 @@ registerPath({
     },
     400: errorResponse('Project has no cwd configured.'),
     404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/rum/setup-wizard',
+  tags: ['RUM'],
+  summary: 'Spawn the RUM recorder-injection wizard',
+  description: [
+    'Admin+. Scans the project and spawns a **worktree-backed** chat session',
+    '(`use_worktree=1`) loaded with the `rum-setup` skill. The detection draft',
+    '(framework, target file, injection style, CSP hits, recommended',
+    '`connect-src`) is embedded in the kickoff prompt. The agent injects the',
+    'rrweb recorder init into `draft.plan.targetFile` using',
+    '`draft.plan.injectionStyle`, extends any `draft.cspHits` with the ingest',
+    'origin, commits to its branch, and uses Finalize Code Changes to push and',
+    'open a PR.',
+  ].join('\n'),
+  request: {
+    params: ProjectIdParam,
+    body: { content: jsonContent(z.object({}).openapi({ description: 'Body is empty.' })) },
+  },
+  responses: {
+    201: {
+      description: 'Wizard session spawned.',
+      content: jsonContent(RumWizardStartResponse),
+    },
+    400: errorResponse('Project has no cwd configured, or no agents to host the wizard.'),
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Wizard agent could not be resolved.'),
   },
 });
