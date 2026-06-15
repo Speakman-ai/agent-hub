@@ -647,6 +647,38 @@ export function compressSkillDescription(
 
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
 
+/**
+ * Render the `## Project AWS (IAM Identity Center)` system-prompt section for a
+ * project that has configured SSO profiles. Returns `''` when there are none.
+ *
+ * Behavioral contract (see card 6f7014c9): agents must NOT initiate their own
+ * `aws sso login` device-code flow when the status probe reports `loggedIn:
+ * false`. A spawned agent calls `/aws-sso/status` with the break-glass
+ * `x-api-key`, which resolves to the shared host HOME, so it can only see SSO
+ * tokens cached there. When a human logs in through the web **AWS** settings
+ * module they authenticate under their own per-user HOME, whose token cache the
+ * agent's probe deliberately never reads (cross-user token enumeration is a
+ * security no-go — see `aws-sso-identity.ts`). The result is a false-negative:
+ * the user IS logged in, the agent just can't see it. Starting a second
+ * device-code login here is exactly the redundant "log in again" prompt users
+ * hit. So a false probe result points the user at the AWS settings module
+ * rather than spawning a login.
+ */
+export function buildProjectAwsPromptSection(projectId: string, profileNames: string[]): string {
+  if (profileNames.length === 0) return '';
+  return `\n\n## Project AWS (IAM Identity Center)
+Configured SSO profiles for this project: ${profileNames.join(', ')}.
+This session sets \`AWS_CONFIG_FILE\` to the project-specific config. SSO tokens cache under the HOME of whoever logged in — the web **AWS** settings module logs the user in under their own HOME, which your status probe (it runs under the shared host HOME) usually can't read.
+
+**Before any AWS CLI work:**
+1. Ask which profile to use if the user did not say (e.g. dev, staging, prod).
+2. Check login: \`GET $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/status?profile=<name>\` with \`Authorization: Bearer $AGENT_HUB_API_KEY\`. If \`loggedIn\` is true, proceed.
+3. If \`loggedIn\` is false, **do not start an SSO login yourself** — do not kick off any login endpoint, do not surface a device-code URL, do not run an interactive sign-in. A false result usually just means the user is already signed in under a HOME your probe can't see. Point them to the project's **AWS** settings module (the **AWS** entry in project settings), have them click **Check login** / **SSO login** there, then re-check status.
+4. Use \`scripts/aws-whoami.sh --profile <name>\` and \`scripts/aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
+
+Do not print access keys or session tokens.`;
+}
+
 export function buildEnrichedPrompt(
   projectOrAgent: ProjectWithCommands | EnrichedAgent,
   maybeAgent?: AgentWithModel,
@@ -709,19 +741,7 @@ You have access to a real Chromium browser in this session. When a user asks you
     const awsProject = findProject(projectId);
     const awsProfiles = awsProject ? getProjectAwsSsoProfiles(awsProject) : {};
     const awsNames = Object.keys(awsProfiles).sort((a, b) => a.localeCompare(b));
-    if (awsNames.length > 0) {
-      prompt += `\n\n## Project AWS (IAM Identity Center)
-Configured SSO profiles for this project: ${awsNames.join(', ')}.
-This session sets \`AWS_CONFIG_FILE\` to the project-specific config. SSO tokens cache under your per-user HOME.
-
-**Before any AWS CLI work:**
-1. Ask which profile to use if the user did not say (e.g. dev, staging, prod).
-2. Check login: \`GET $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/status?profile=<name>\` with \`Authorization: Bearer $AGENT_HUB_API_KEY\`.
-3. If \`loggedIn\` is false, \`POST $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/login\` with body \`{"profile":"<name>"}\`, give the user the \`loginUrl\` to open in a browser, wait for them to finish, then re-check status.
-4. Use \`scripts/aws-whoami.sh --profile <name>\` and \`scripts/aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
-
-Do not print access keys or session tokens. Prefer the Hub SSO login API over running \`aws sso login\` directly so the device URL is surfaced in chat.`;
-    }
+    prompt += buildProjectAwsPromptSection(projectId, awsNames);
   }
 
   if (!project.ahw) return prompt;
