@@ -173,3 +173,56 @@ export function worktreeStatusLine(worktree) {
   if (worktree.hasUnpushed) parts.push('unpushed commits');
   return parts.length > 0 ? parts.join(' · ') : null;
 }
+
+/**
+ * Resolve the freshest available session row for the Changes screen.
+ *
+ * The screen is reached via React Navigation, whose route params carry only a
+ * one-time snapshot of the session. `FinalizeBar` re-syncs its dropdown from
+ * the `session` prop, so a stale snapshot reintroduces the wrong-mode bug it
+ * fixes (e.g. showing `Build` while the server is in Ask mode). Resolution
+ * order, freshest first:
+ *
+ *   1. The live copy from app context (`sessions` / `cronSessions`), kept
+ *      current by WebSocket events — this reflects mode changes made elsewhere.
+ *   2. A row fetched directly for this id (covers sessions not in the active
+ *      agent's context list, or opened before that list loaded).
+ *   3. The route-param snapshot, as a last resort so the bar still renders.
+ *
+ * @param {{
+ *   sessionId?: string|null,
+ *   sessions?: Array<{ id?: string }>|null,
+ *   cronSessions?: Array<{ id?: string }>|null,
+ *   fetched?: { id?: string }|null,
+ *   routeSession?: object|null,
+ * }} params
+ * @returns {object|null}
+ */
+export function resolveLiveSession({
+  sessionId,
+  sessions,
+  cronSessions,
+  fetched,
+  routeSession,
+} = {}) {
+  if (sessionId) {
+    const fromContext =
+      (Array.isArray(sessions) && sessions.find((s) => s?.id === sessionId)) ||
+      (Array.isArray(cronSessions) && cronSessions.find((s) => s?.id === sessionId));
+    if (fromContext) return fromContext;
+    if (fetched && fetched.id === sessionId) return fetched;
+  }
+  return routeSession || null;
+}
+
+/**
+ * Whether the Changes screen should fetch the session row directly: only when
+ * we have an id but no live copy in app context (else context — kept fresh via
+ * WS — is authoritative and a fetch would be redundant/staler).
+ *
+ * @param {{ sessionId?: string|null, contextSession?: object|null }} params
+ * @returns {boolean}
+ */
+export function shouldFetchSessionRow({ sessionId, contextSession } = {}) {
+  return !!sessionId && !contextSession;
+}

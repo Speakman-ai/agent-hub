@@ -439,3 +439,29 @@ describe('api.startFinalizeWizard — Finalize setup parity with web client', ()
     expect(res).toEqual(payload);
   });
 });
+
+describe('api.getHealth — drawer footer / mount-effect contract', () => {
+  // DrawerContent mounts a useEffect that calls `api.getHealth()` to populate
+  // the footer's server version/git hash. Guard the contract that effect relies
+  // on: `getHealth` must be a callable method on the `api` named export and must
+  // issue a plain GET /health. (A missing method or wrong export would surface
+  // as a runtime error only when the drawer mounts, which the node suite can't
+  // render — so we pin it here.)
+  it('is a function on the api named export', () => {
+    expect(typeof api.getHealth).toBe('function');
+  });
+
+  it('getHealth() → GET /health and returns the parsed payload', async () => {
+    const payload = { version: '2.11.0', gitHash: 'abc1234' };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => payload,
+    });
+    const res = await api.getHealth();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe('https://example.test/api/health');
+    expect(init?.method).toBeUndefined(); // GET
+    expect(res).toEqual(payload);
+  });
+});

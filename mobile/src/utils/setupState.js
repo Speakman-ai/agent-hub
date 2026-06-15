@@ -51,6 +51,20 @@ export function shouldShowWizard(state, dismissed) {
   return needsFirstRunSetup(state);
 }
 
+/**
+ * After the first-run server address is saved, decide whether to raise the
+ * login gate. Mobile is a pure client: once a server URL exists, the user must
+ * authenticate against that server — so we route to the LoginScreen rather than
+ * dropping into a main app that can't load data. The only time we skip the gate
+ * is when a valid token is already held for the server.
+ *
+ * @param {{ hasServerUrl: boolean, isAuthenticated: boolean }} params
+ * @returns {boolean} true when the LoginScreen should be shown next
+ */
+export function shouldGateLoginAfterSetup({ hasServerUrl, isAuthenticated } = {}) {
+  return Boolean(hasServerUrl) && !isAuthenticated;
+}
+
 /** Read the persisted dismissed flag. Defaults to `false` on error. */
 export async function loadSetupDismissed() {
   try {

@@ -154,6 +154,9 @@ export const api = {
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (projectId) => fetchJSON(`/projects/${projectId}`, { method: 'DELETE' }),
 
+  // Health (server version / git hash for the sidebar footer)
+  getHealth: () => fetchJSON('/health'),
+
   // Usage
   getUsage: () => fetchJSON('/usage'),
 
@@ -322,6 +325,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // Push a finalized run's branch and open a PR (Push to Agent Hub / GitHub).
+  // `force: true` pushes even when review + checks have not both passed.
+  pushFinalizeRun: (projectId, runId, { force = false } = {}) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/push`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
+  // Reviewer findings for a finalize run. Returns
+  // `{ threads: [...], reviewer_verdict: 'approved'|'changes_requested'|null }`.
+  getReviewerThreads: (projectId, runId) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/reviewer-threads`),
   // Finalize Code Changes — `.agent-hub/ci.yaml` setup wizard. Spawns a
   // guided chat session loaded with the `finalize-setup` skill. Returns
   // `{ sessionId, agentId, draft, session, target }`. Mirrors the web

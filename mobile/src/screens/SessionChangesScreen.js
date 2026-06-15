@@ -20,7 +20,14 @@ import {
   basename,
   dirname,
   worktreeStatusLine,
+  resolveLiveSession,
+  shouldFetchSessionRow,
 } from '../utils/sessionChangesView';
+import { useApp } from '../context/AppContext';
+import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
+import FinalizeBar from '../components/FinalizeBar';
+import FinalizeChecksCard from '../components/FinalizeChecksCard';
+import ReviewerThreadsCard from '../components/ReviewerThreadsCard';
 
 // Same monospace handling as code blocks elsewhere in the app: Android's
 // generic 'monospace' family, Menlo on iOS (RN iOS has no generic alias).
@@ -105,6 +112,53 @@ function DiffBody({ body }) {
 export default function SessionChangesScreen({ navigation, route }) {
   const sessionId = route?.params?.sessionId;
   const sessionName = route?.params?.sessionName;
+  // Finalize controls (build dropdown + Finalize + Push) need project context.
+  const projectId = route?.params?.projectId || null;
+  const cardId = route?.params?.cardId || null;
+  const hosted = !!route?.params?.hosted;
+
+  // Route params carry only a one-time snapshot of the session. FinalizeBar
+  // re-syncs its dropdown from the `session` prop, so a stale snapshot would
+  // show/mutate the wrong mode (e.g. Build while the server is in Ask). Prefer
+  // the live session from app context (kept fresh via WS), then a directly
+  // fetched row, then the route snapshot as a last resort.
+  const { sessions = [], cronSessions = [] } = useApp();
+  const routeSession = route?.params?.session || null;
+  const [fetchedSession, setFetchedSession] = useState(null);
+  const contextSession =
+    sessions.find((s) => s?.id === sessionId) ||
+    cronSessions.find((s) => s?.id === sessionId) ||
+    null;
+  const sessionObj = resolveLiveSession({
+    sessionId,
+    sessions,
+    cronSessions,
+    fetched: fetchedSession,
+    routeSession,
+  });
+
+  // Fetch the session row directly only when app context doesn't have it (a
+  // session for a non-active agent, or opened before the list loaded), so the
+  // bar still gets live ask_mode / finalize_automation rather than the stale
+  // route snapshot. When it's in context, that live copy wins.
+  useEffect(() => {
+    if (!shouldFetchSessionRow({ sessionId, contextSession })) return undefined;
+    let cancelled = false;
+    api
+      .getSessionDetail(sessionId)
+      .then((s) => {
+        if (!cancelled) setFetchedSession(s);
+      })
+      .catch(() => {
+        /* fall back to the route snapshot — best-effort freshness */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, contextSession]);
+
+  // One poll drives the Finalize bar + CI card (status, steps, phases).
+  const finalize = useFinalizeRunPoll(sessionId, { enabled: !!projectId });
 
   const [summary, setSummary] = useState(null);
   const [worktree, setWorktree] = useState(null);
@@ -182,6 +236,38 @@ export default function SessionChangesScreen({ navigation, route }) {
 
   const files = summary?.files || [];
   const wtHint = worktreeStatusLine(worktree);
+  const hasChanges = files.length > 0;
+
+  // CI + review cards. Rendered in exactly one place — the FlatList's
+  // ListHeaderComponent (`listHeader`) — which the list draws above both the
+  // file rows AND the empty-state component, so the cards stay visible whether
+  // or not the diff has files yet, without being duplicated.
+  const finalizeCards = projectId ? (
+    <>
+      <FinalizeChecksCard steps={finalize.steps} />
+      <ReviewerThreadsCard
+        projectId={projectId}
+        runId={finalize.run?.id}
+        status={finalize.status}
+      />
+    </>
+  ) : null;
+
+  const finalizeBar = projectId ? (
+    <FinalizeBar
+      projectId={projectId}
+      sessionId={sessionId}
+      cardId={cardId}
+      session={sessionObj}
+      hosted={hosted}
+      hasChanges={hasChanges}
+      status={finalize.status}
+      phase={finalize.phase}
+      phases={finalize.phases}
+      run={finalize.run}
+      onChanged={finalize.refetch}
+    />
+  ) : null;
 
   const renderFile = ({ item }) => {
     const meta = statusMeta(item.status);
@@ -235,6 +321,7 @@ export default function SessionChangesScreen({ navigation, route }) {
 
   const listHeader = (
     <View>
+      {finalizeCards}
       {summary?.branch ? (
         <View style={styles.branchBlock}>
           <Text style={styles.branchText} numberOfLines={1}>
@@ -249,6 +336,19 @@ export default function SessionChangesScreen({ navigation, route }) {
           Showing the first {files.length} files (list truncated).
         </Text>
       ) : null}
+    </View>
+  );
+
+  // Empty-state body. Holds ONLY the "no changes" copy — the finalize cards
+  // live in `listHeader`, which the FlatList already renders above this when
+  // the data array is empty, so the cards must not be repeated here.
+  const emptyState = (
+    <View style={styles.emptyBlock}>
+      <Text style={styles.emptyTitle}>No changes yet</Text>
+      <Text style={styles.emptyDesc}>
+        Files the agent creates or edits in this session's worktree will show up here as a diff
+        against the base branch.
+      </Text>
     </View>
   );
 
@@ -281,6 +381,8 @@ export default function SessionChangesScreen({ navigation, route }) {
         )}
       </View>
 
+      {finalizeBar}
+
       {loading ? (
         <View style={styles.centerState}>
           <ActivityIndicator size="large" color={colors.gray400} />
@@ -293,30 +395,14 @@ export default function SessionChangesScreen({ navigation, route }) {
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
-      ) : files.length === 0 ? (
-        <ScrollView
-          contentContainerStyle={styles.emptyScroll}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => load({ asRefresh: true })}
-              tintColor={colors.gray400}
-            />
-          }
-        >
-          <Text style={styles.emptyTitle}>No changes yet</Text>
-          <Text style={styles.emptyDesc}>
-            Files the agent creates or edits in this session's worktree will show up here as a
-            diff against the base branch.
-          </Text>
-        </ScrollView>
       ) : (
         <FlatList
           data={files}
           keyExtractor={(item) => item.path}
           renderItem={renderFile}
           ListHeaderComponent={listHeader}
-          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={emptyState}
+          contentContainerStyle={hasChanges ? styles.listContent : styles.listContentEmpty}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -439,7 +525,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   retryButtonText: { color: colors.gray300, fontSize: 14, fontWeight: '600' },
-  emptyScroll: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  listContentEmpty: { padding: 12, flexGrow: 1 },
+  emptyBlock: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    paddingHorizontal: 20,
+  },
   emptyTitle: { fontSize: 18, fontWeight: '600', color: colors.gray400, marginBottom: 8 },
   emptyDesc: {
     fontSize: 14,

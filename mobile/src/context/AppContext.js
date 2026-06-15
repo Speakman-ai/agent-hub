@@ -10,6 +10,7 @@ import {
   loadSetupDismissed,
   saveSetupDismissed,
   shouldShowWizard,
+  shouldGateLoginAfterSetup,
 } from '../utils/setupState';
 import { hydrateChangesReady } from '../utils/changesReady';
 import { applyDetectedFlag } from '../utils/worktreeState';
@@ -953,13 +954,27 @@ export function AppProvider({ children }) {
   }, []);
 
   /**
-   * Called from `SetupWizard` once the user finishes (or skips) the first-run
-   * flow. Persists the "dismissed" flag so the wizard never reappears, then
-   * hides it. If the user actually entered a server URL, the connection
-   * config was already written by the wizard's `updateOrg`/`createOrg` call.
+   * Called from `SetupWizard` once the user has entered the server address.
+   * Persists the "dismissed" flag so the wizard never reappears, then hides it.
+   * The connection config was already written by the wizard's
+   * `updateOrg`/`createOrg` call, so a server URL now exists.
+   *
+   * Mobile is a pure client: with a server configured, the user must sign in to
+   * that server. We raise the login gate here (unless a valid token is already
+   * held) so the next screen is the LoginScreen rather than a main app that
+   * can't load any data. LoginScreen re-probes the server and renders the
+   * correct sign-in / first-run-owner form.
    */
   const completeSetup = useCallback(async () => {
     await saveSetupDismissed(true);
+    if (
+      shouldGateLoginAfterSetup({
+        hasServerUrl: !!getApiBaseUrl(),
+        isAuthenticated: isAuthenticated(),
+      })
+    ) {
+      setNeedsAuth(true);
+    }
     setNeedsSetup(false);
     // Reconnect so the newly-configured WebSocket picks up the server URL.
     reconnect();

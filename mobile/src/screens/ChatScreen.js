@@ -19,10 +19,8 @@ import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
-// ChangesReadyBox replaced by FinalizeButton (card 2bce78c2). The component
-// file is intentionally retained — its removal is tracked as a separate
-// cleanup card.
-import FinalizeButton from '../components/FinalizeButton';
+// Finalize Code Changes moved to the Changes screen (FinalizeBar). The chat
+// surface no longer renders the Runner banner inline.
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import SessionExtrasBar from '../components/SessionExtrasBar';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -143,20 +141,9 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    // Finalize Code Changes — shown for any session on a project.
-    ...(activeSessionId && activeProject?.id
-      ? [
-          {
-            type: 'finalize-button',
-            key: 'finalize-button',
-            data: {
-              projectId: activeProject.id,
-              cardId: activeSession?.card_id ?? null,
-              branch: activeSession?.worktree_branch || '',
-            },
-          },
-        ]
-      : []),
+    // Finalize Code Changes lives on the Changes screen now (build dropdown +
+    // Finalize + Push), reached via the "View changes" button — no in-chat
+    // Runner banner.
   ];
 
   const renderItem = ({ item }) => {
@@ -255,16 +242,6 @@ export default function ChatScreen() {
             onDismiss={dismissChangesReady}
           />
         );
-      case 'finalize-button':
-        return (
-          <FinalizeButton
-            projectId={item.data.projectId}
-            cardId={item.data.cardId}
-            sessionId={activeSessionId}
-            branchLabel={item.data.branch || ''}
-            pendingChanges={pendingChanges}
-          />
-        );
       default:
         return null;
     }
@@ -303,6 +280,10 @@ export default function ChatScreen() {
             navigation.navigate('SessionChanges', {
               sessionId: activeSessionId,
               sessionName: activeSession?.name || '',
+              projectId: activeProject?.id || null,
+              cardId: activeSession?.card_id ?? null,
+              hosted: activeProject?.gitHost === 'agenthub',
+              session: activeSession || null,
             })
           }
         />

@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   needsFirstRunSetup,
   shouldShowWizard,
+  shouldGateLoginAfterSetup,
   loadSetupDismissed,
   saveSetupDismissed,
   normalizeServerUrl,
@@ -118,6 +119,34 @@ describe('shouldShowWizard', () => {
   it('never shows the wizard when already configured', () => {
     expect(shouldShowWizard(configured, false)).toBe(false);
     expect(shouldShowWizard(configured, true)).toBe(false);
+  });
+});
+
+describe('shouldGateLoginAfterSetup', () => {
+  it('gates on login once a server URL exists and no token is held', () => {
+    expect(
+      shouldGateLoginAfterSetup({ hasServerUrl: true, isAuthenticated: false }),
+    ).toBe(true);
+  });
+
+  it('does not gate when a valid token is already held', () => {
+    expect(
+      shouldGateLoginAfterSetup({ hasServerUrl: true, isAuthenticated: true }),
+    ).toBe(false);
+  });
+
+  it('does not gate when no server URL is configured (e.g. skipped)', () => {
+    expect(
+      shouldGateLoginAfterSetup({ hasServerUrl: false, isAuthenticated: false }),
+    ).toBe(false);
+    expect(
+      shouldGateLoginAfterSetup({ hasServerUrl: false, isAuthenticated: true }),
+    ).toBe(false);
+  });
+
+  it('treats missing args as not-gated rather than throwing', () => {
+    expect(shouldGateLoginAfterSetup()).toBe(false);
+    expect(shouldGateLoginAfterSetup({})).toBe(false);
   });
 });
 

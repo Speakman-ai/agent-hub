@@ -9,6 +9,8 @@ import {
   describeDiff,
   worktreeStatusLine,
   MAX_RENDER_LINES,
+  resolveLiveSession,
+  shouldFetchSessionRow,
 } from './sessionChangesView.js';
 
 describe('statusMeta', () => {
@@ -285,5 +287,88 @@ describe('worktreeStatusLine', () => {
     expect(worktreeStatusLine({ hasUncommitted: true, hasUnpushed: true })).toBe(
       'uncommitted changes · unpushed commits',
     );
+  });
+});
+
+describe('resolveLiveSession', () => {
+  const routeSession = { id: 's1', ask_mode: 1, finalize_automation: 'manual' };
+
+  it('prefers the live app-context session over the route snapshot', () => {
+    const live = { id: 's1', ask_mode: 0, finalize_automation: 'merge' };
+    expect(
+      resolveLiveSession({
+        sessionId: 's1',
+        sessions: [{ id: 's0' }, live],
+        cronSessions: [],
+        fetched: null,
+        routeSession,
+      }),
+    ).toBe(live);
+  });
+
+  it('checks cronSessions when not found in sessions', () => {
+    const cron = { id: 's1', finalize_automation: 'push' };
+    expect(
+      resolveLiveSession({
+        sessionId: 's1',
+        sessions: [{ id: 'other' }],
+        cronSessions: [cron],
+        fetched: null,
+        routeSession,
+      }),
+    ).toBe(cron);
+  });
+
+  it('uses a directly-fetched row when context has no match', () => {
+    const fetched = { id: 's1', ask_mode: 0, finalize_automation: 'review' };
+    expect(
+      resolveLiveSession({
+        sessionId: 's1',
+        sessions: [],
+        cronSessions: [],
+        fetched,
+        routeSession,
+      }),
+    ).toBe(fetched);
+  });
+
+  it('ignores a fetched row whose id does not match (avoids cross-session bleed)', () => {
+    const fetched = { id: 'other', finalize_automation: 'merge' };
+    expect(
+      resolveLiveSession({
+        sessionId: 's1',
+        sessions: [],
+        cronSessions: [],
+        fetched,
+        routeSession,
+      }),
+    ).toBe(routeSession);
+  });
+
+  it('falls back to the route snapshot when nothing fresher exists', () => {
+    expect(
+      resolveLiveSession({ sessionId: 's1', sessions: [], cronSessions: [], routeSession }),
+    ).toBe(routeSession);
+    expect(resolveLiveSession({ sessionId: 's1', routeSession })).toBe(routeSession);
+  });
+
+  it('returns null when there is no session anywhere', () => {
+    expect(resolveLiveSession({ sessionId: 's1', sessions: [], cronSessions: [] })).toBeNull();
+    expect(resolveLiveSession({})).toBeNull();
+  });
+
+  it('tolerates non-array context inputs', () => {
+    expect(
+      resolveLiveSession({ sessionId: 's1', sessions: null, cronSessions: undefined, routeSession }),
+    ).toBe(routeSession);
+  });
+});
+
+describe('shouldFetchSessionRow', () => {
+  it('fetches only when there is an id and no live context copy', () => {
+    expect(shouldFetchSessionRow({ sessionId: 's1', contextSession: null })).toBe(true);
+    expect(shouldFetchSessionRow({ sessionId: 's1', contextSession: { id: 's1' } })).toBe(false);
+    expect(shouldFetchSessionRow({ sessionId: null, contextSession: null })).toBe(false);
+    expect(shouldFetchSessionRow({})).toBe(false);
   });
 });

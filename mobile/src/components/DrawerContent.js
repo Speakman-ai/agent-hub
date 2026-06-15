@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -15,6 +16,7 @@ import { colors } from '../theme/colors';
 import { relativeTime, daysUntilPurge } from '../utils/time';
 import humanCron from '../utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
+import { projectMenuEntries } from '../utils/projectMenu';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 
@@ -44,8 +46,28 @@ export default function DrawerContent({ navigation }) {
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
   const [collapsedProjects, setCollapsedProjects] = useState({});
+  // Per-project "<project> Settings" submenu — collapsed by default, mirroring
+  // the web sidebar (`collapsedProjectMenus[id] ?? true`).
+  const [collapsedProjectMenus, setCollapsedProjectMenus] = useState({});
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [showOrgPicker, setShowOrgPicker] = useState(false);
+  // Server version / git hash for the footer (matches the web sidebar footer).
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getHealth()
+      .then((h) => {
+        if (!cancelled) setHealth(h);
+      })
+      .catch(() => {
+        /* footer version is best-effort — ignore failures */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const orgState = getOrgs();
   const orgs = orgState?.orgs || [];
@@ -282,6 +304,68 @@ export default function DrawerContent({ navigation }) {
     </View>
   );
 
+  // Collapsible "<project> Settings" submenu — the web sidebar groups every
+  // project-scoped destination (Board, Threads, Pulls, …) under this menu
+  // instead of crowding the project header with inline buttons.
+  const renderProjectMenu = (project) => {
+    const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
+    const entries = projectMenuEntries(project);
+    return (
+      <View style={styles.projectMenu}>
+        <TouchableOpacity
+          style={styles.projectMenuToggle}
+          onPress={() =>
+            setCollapsedProjectMenus((prev) => ({
+              ...prev,
+              [project.id]: !(prev[project.id] ?? true),
+            }))
+          }
+        >
+          <Text style={styles.projectMenuChevron}>
+            {isMenuCollapsed ? '▸' : '▾'}
+          </Text>
+          <Text style={styles.projectMenuGear}>{'⚙'}</Text>
+          <Text style={styles.projectMenuToggleText} numberOfLines={1}>
+            {project.name} Settings
+          </Text>
+        </TouchableOpacity>
+
+        {!isMenuCollapsed && (
+          <View style={styles.projectMenuItems}>
+            {entries.map((entry) => (
+              <TouchableOpacity
+                key={entry.key}
+                style={styles.projectMenuItem}
+                onPress={() => {
+                  navigation.navigate(entry.screen, {
+                    projectId: project.id,
+                    project,
+                  });
+                  navigation.closeDrawer();
+                }}
+              >
+                <Text style={styles.projectMenuItemIcon}>{entry.icon}</Text>
+                <Text style={styles.projectMenuItemText} numberOfLines={1}>
+                  {entry.label}
+                </Text>
+                {entry.key === 'threads' &&
+                  unreadThreadCounts?.[project.id] > 0 && (
+                    <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadBadgeText}>
+                        {unreadThreadCounts[project.id] > 99
+                          ? '99+'
+                          : unreadThreadCounts[project.id]}
+                      </Text>
+                    </View>
+                  )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Org Switcher Header */}
@@ -396,16 +480,12 @@ export default function DrawerContent({ navigation }) {
                   <View style={styles.projectHeaderRow}>
                     <TouchableOpacity
                       style={[styles.projectHeader, { flex: 1 }]}
-                      onPress={() => {
-                        if (projectAgents.length === 1) {
-                          handleAgentSelect(projectAgents[0].id);
-                        } else {
-                          setCollapsedProjects((prev) => ({
-                            ...prev,
-                            [project.id]: !prev[project.id],
-                          }));
-                        }
-                      }}
+                      onPress={() =>
+                        setCollapsedProjects((prev) => ({
+                          ...prev,
+                          [project.id]: !prev[project.id],
+                        }))
+                      }
                       onLongPress={() => {
                         Alert.alert(
                           'Delete Project',
@@ -438,64 +518,18 @@ export default function DrawerContent({ navigation }) {
                           <Text style={styles.workflowTag}> Wf</Text>
                         ) : null}
                       </Text>
-                      {projectAgents.length > 1 && (
-                        <Text style={styles.collapseIcon}>
-                          {isCollapsed ? '\u25B8' : '\u25BE'}
-                        </Text>
-                      )}
+                      <Text style={styles.collapseIcon}>
+                        {isCollapsed ? '\u25B8' : '\u25BE'}
+                      </Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.boardButton}
-                      onPress={() => {
-                        navigation.navigate('Kanban', { projectId: project.id, project });
-                        navigation.closeDrawer();
-                      }}
-                    >
-                      <Text style={styles.boardButtonText}>{'\u25A6'} Board</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.boardButton}
-                      onPress={() => {
-                        navigation.navigate('Threads', { projectId: project.id, project });
-                        navigation.closeDrawer();
-                      }}
-                    >
-                      <View style={styles.threadsButtonContent}>
-                        <Text style={styles.boardButtonText}>{'\u2630'} Threads</Text>
-                        {unreadThreadCounts?.[project.id] > 0 && (
-                          <View style={styles.unreadBadge}>
-                            <Text style={styles.unreadBadgeText}>
-                              {unreadThreadCounts[project.id] > 99
-                                ? '99+'
-                                : unreadThreadCounts[project.id]}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.boardButton}
-                      onPress={() => {
-                        navigation.navigate('CustomerSupport', { projectId: project.id, project });
-                        navigation.closeDrawer();
-                      }}
-                    >
-                      <Text style={styles.boardButtonText}>{'\u26d1'} Support</Text>
-                    </TouchableOpacity>
-                    {project.githubRepo && !isWorkflowProject(project) ? (
-                      <TouchableOpacity
-                        style={styles.boardButton}
-                        onPress={() => {
-                          navigation.navigate('PullRequests', { projectId: project.id, project });
-                          navigation.closeDrawer();
-                        }}
-                      >
-                        <Text style={styles.boardButtonText}>{'\u2387'} PRs</Text>
-                      </TouchableOpacity>
-                    ) : null}
                   </View>
 
-                  {!isCollapsed && projectAgents.map((agent) => renderAgentRow(agent))}
+                  {!isCollapsed && (
+                    <>
+                      {projectAgents.map((agent) => renderAgentRow(agent))}
+                      {renderProjectMenu(project)}
+                    </>
+                  )}
                 </View>
               );
             })}
@@ -514,28 +548,10 @@ export default function DrawerContent({ navigation }) {
 
       </ScrollView>
 
-      {/* Bottom Nav */}
+      {/* Bottom Nav — mirrors the web sidebar footer (Skills, Settings, then
+          the server version line). Wiki / Notes now live under each project's
+          "Settings" submenu, matching the web sidebar's project-scoped grouping. */}
       <View style={styles.bottomNav}>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            const pid = projects?.[0]?.id;
-            if (pid) navigation.navigate('Wiki', { projectId: pid });
-            navigation.closeDrawer();
-          }}
-        >
-          <Text style={styles.navButtonText}>Wiki</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            const pid = projects?.[0]?.id;
-            if (pid) navigation.navigate('Notes', { projectId: pid });
-            navigation.closeDrawer();
-          }}
-        >
-          <Text style={styles.navButtonText}>Notes</Text>
-        </TouchableOpacity>
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => {
@@ -543,6 +559,7 @@ export default function DrawerContent({ navigation }) {
             navigation.closeDrawer();
           }}
         >
+          <Text style={styles.navButtonIcon}>{'\u{1F4D6}'}</Text>
           <Text style={styles.navButtonText}>Skills</Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -552,8 +569,17 @@ export default function DrawerContent({ navigation }) {
             navigation.closeDrawer();
           }}
         >
+          <Text style={styles.navButtonIcon}>{'⚙'}</Text>
           <Text style={styles.navButtonText}>Settings</Text>
         </TouchableOpacity>
+        {health?.version && (
+          <View style={styles.versionBox}>
+            <Text style={styles.versionText}>v{health.version}</Text>
+            {health.gitHash && (
+              <Text style={styles.versionHash}>{health.gitHash}</Text>
+            )}
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -690,22 +716,6 @@ const styles = StyleSheet.create({
   projectHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  boardButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 6,
-    marginRight: 8,
-  },
-  boardButtonText: {
-    fontSize: 11,
-    color: colors.gray500,
-    fontWeight: '500',
-  },
-  threadsButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
   },
   unreadBadge: {
     backgroundColor: colors.rose400,
@@ -885,12 +895,87 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   navButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderRadius: 8,
   },
+  navButtonIcon: {
+    fontSize: 14,
+    color: colors.gray400,
+    width: 18,
+    textAlign: 'center',
+  },
   navButtonText: {
     fontSize: 14,
+    color: colors.gray400,
+  },
+  versionBox: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  versionText: {
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  versionHash: {
+    fontSize: 10,
+    color: colors.gray600,
+    marginTop: 1,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  // Per-project "<project> Settings" submenu (mirrors the web sidebar).
+  projectMenu: {
+    marginLeft: 24,
+    marginBottom: 6,
+  },
+  projectMenuToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  projectMenuChevron: {
+    color: colors.gray500,
+    fontSize: 11,
+    width: 12,
+  },
+  projectMenuGear: {
+    color: colors.gray500,
+    fontSize: 12,
+  },
+  projectMenuToggleText: {
+    flex: 1,
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  projectMenuItems: {
+    marginLeft: 9,
+    paddingLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: colors.gray800,
+  },
+  projectMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  projectMenuItemIcon: {
+    fontSize: 12,
+    color: colors.gray500,
+    width: 16,
+    textAlign: 'center',
+  },
+  projectMenuItemText: {
+    flex: 1,
+    fontSize: 13,
     color: colors.gray400,
   },
 });
