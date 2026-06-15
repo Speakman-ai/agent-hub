@@ -259,6 +259,56 @@ export function pruneBuffer(
 }
 
 /**
+ * Select the slice of a rolling buffer to upload as a replay, opening on a
+ * RECENT full snapshot.
+ *
+ * The buffer can span far more than the trailing window when rrweb's
+ * activity-gated `checkoutEveryNms` doesn't fire: the page idles for minutes
+ * (no events → no checkout), or the very first snapshot is taken at `record()`
+ * start before the SPA has mounted (an empty `#root`). The memory pruner
+ * (`pruneBuffer`) anchors to "the newest snapshot at/before the cutoff" to keep
+ * a full window of context — but when that snapshot is stale or pre-mount, the
+ * upload opens on a blank page and replays the whole dead gap.
+ *
+ * For a flush we instead prefer a recent snapshot:
+ *   - cutoff = now - windowMs.
+ *   - If any full snapshot falls inside the trailing window (ts >= cutoff),
+ *     anchor to the OLDEST such snapshot — the most recent context that still
+ *     opens on a populated, replayable state, with any older pre-mount/idle
+ *     snapshot and its dead gap dropped.
+ *   - Otherwise (every snapshot predates the window) anchor to the NEWEST
+ *     snapshot overall — the freshest state available rather than the oldest.
+ * The Meta event rrweb emits immediately before a snapshot is included so the
+ * slice always opens replayable.
+ *
+ * Pure — no DOM, no rrweb import — so it is unit-testable in isolation. Returns
+ * the array unchanged when it holds no full snapshot (flush() then declines it
+ * as non-replayable).
+ */
+export function selectFlushWindow(events, now, windowMs = DEFAULT_WINDOW_MS) {
+  if (!Array.isArray(events) || events.length === 0) return events;
+  const cutoff = now - windowMs;
+
+  let oldestInWindow = -1; // first (oldest) full snapshot with ts >= cutoff
+  let newestSnapshot = -1; // last full snapshot overall
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (!e || e.type !== RRWEB_FULL_SNAPSHOT) continue;
+    newestSnapshot = i;
+    if (oldestInWindow === -1 && e.timestamp >= cutoff) oldestInWindow = i;
+  }
+
+  if (newestSnapshot === -1) return events; // no snapshot — flush() declines it
+
+  let startIdx = oldestInWindow !== -1 ? oldestInWindow : newestSnapshot;
+  // Include the Meta event rrweb emits immediately before a snapshot.
+  if (startIdx > 0 && events[startIdx - 1] && events[startIdx - 1].type === RRWEB_META) {
+    startIdx -= 1;
+  }
+  return startIdx > 0 ? events.slice(startIdx) : events;
+}
+
+/**
  * POST a buffered replay to the ingest endpoint. Resolves with the parsed
  * `{ replayId, replayRef }` on success; throws on a non-2xx response.
  */
@@ -310,9 +360,14 @@ export class SessionReplayRecorder {
     errorThrottleMs = ERROR_FLUSH_THROTTLE_MS,
     flushTimeoutMs = FLUSH_TIMEOUT_MS,
     recordOptions = DEFAULT_RECORD_PRIVACY_OPTIONS,
+    takeFullSnapshot = null,
   } = {}) {
     this._record = record;
     this._submit = submit;
+    // An explicitly-injected snapshot fn (tests) always wins; otherwise it's
+    // picked up from rrweb's `record.takeFullSnapshot` static in start().
+    this._injectedTakeFullSnapshot = takeFullSnapshot;
+    this._takeFullSnapshot = takeFullSnapshot;
     this._now = now;
     this.windowMs = windowMs;
     this.maxEvents = maxEvents;
@@ -339,6 +394,11 @@ export class SessionReplayRecorder {
     if (typeof record !== 'function') {
       throw new Error('SessionReplayRecorder.start requires an rrweb record function');
     }
+    // rrweb exposes `takeFullSnapshot` as a static on the record fn; capture it
+    // so flush() can force a fresh checkout. An injected fn (tests) wins.
+    this._takeFullSnapshot =
+      this._injectedTakeFullSnapshot ||
+      (typeof record.takeFullSnapshot === 'function' ? record.takeFullSnapshot : null);
     this.active = true;
     this._stopFn =
       record({
@@ -361,6 +421,25 @@ export class SessionReplayRecorder {
   }
 
   /**
+   * Force rrweb to emit a fresh full snapshot (a checkout) of the current DOM,
+   * so the next flush can open on the exact state at flush time rather than a
+   * stale or pre-mount snapshot left behind when no periodic checkout fired
+   * during an idle stretch. The snapshot lands in the buffer via the normal
+   * emit handler. Best-effort: a no-op when recording is inactive or no
+   * snapshot fn was wired, and never throws into the caller's flow. Returns
+   * true when a snapshot was taken.
+   */
+  forceFullSnapshot() {
+    if (!this.active || typeof this._takeFullSnapshot !== 'function') return false;
+    try {
+      this._takeFullSnapshot(true); // isCheckout=true → emits Meta + FullSnapshot
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Flush the trailing window to the ingest endpoint. Returns the ingest result
    * (`{ replayId, replayRef }`) or null when there's nothing worth sending or
    * the upload fails (never throws — a flush must not break the caller's flow).
@@ -371,7 +450,14 @@ export class SessionReplayRecorder {
     // promise and get the same fresh result, instead of an immediate stale
     // lastResult.
     if (this._activeFlush) return this._activeFlush;
-    const events = this.snapshot();
+    // Capture the current DOM as a fresh checkout first, so the upload opens on
+    // the exact state at flush time even when no periodic checkout fired during
+    // an idle stretch (otherwise the only snapshot may be stale or pre-mount).
+    this.forceFullSnapshot();
+    // Open the replay on a recent snapshot rather than the memory pruner's
+    // "newest snapshot before the cutoff" — which, after an idle gap or a
+    // pre-mount initial snapshot, would open blank and replay the dead gap.
+    const events = selectFlushWindow(this.snapshot(), this._now(), this.windowMs);
     if (events.length < this.minFlushEvents) return null;
     // A buffer with no full snapshot can't be replayed — don't ship a ref that
     // would later be surfaced (untrusted) into an intake prompt.

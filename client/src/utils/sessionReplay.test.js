@@ -7,6 +7,7 @@ import {
   setSessionReplayEnabled,
   REPLAY_SAMPLE_RATE_KEY,
   pruneBuffer,
+  selectFlushWindow,
   hasFullSnapshot,
   submitReplay,
   SessionReplayRecorder,
@@ -274,6 +275,65 @@ describe('pruneBuffer', () => {
   });
 });
 
+describe('selectFlushWindow', () => {
+  it('keeps a full window of recent context, anchored on the in-window snapshot', () => {
+    // Snapshots at 200 and 980; window [now-100, now] = [900, 1000].
+    const events = [meta(190), snap(200), incr(500), meta(970), snap(980), incr(990)];
+    const out = selectFlushWindow(events, 1000, 100);
+    // Opens on the oldest snapshot inside the window (980) and its Meta (970).
+    expect(out[0]).toEqual(meta(970));
+    expect(out[1]).toEqual(snap(980));
+    expect(out).toContainEqual(incr(990));
+    expect(out).not.toContainEqual(snap(200));
+  });
+
+  it('drops a stale pre-mount snapshot and the idle dead-gap before a recent checkout', () => {
+    // The real bug: an empty snapshot at boot, a long idle, then a fresh
+    // checkout. The cutoff sits in the gap, so the boot snapshot is excluded
+    // and the window opens on the recent (populated) checkout.
+    const events = [
+      meta(0),
+      snap(5), // pre-mount, empty #root
+      incr(2522), // app mounts
+      incr(40000),
+      // ── 180s idle, no checkout ──
+      meta(224350),
+      snap(224355), // checkout when activity resumes (populated)
+      incr(230000),
+      incr(244186),
+    ];
+    const out = selectFlushWindow(events, 244186, 45000);
+    expect(out[0]).toEqual(meta(224350));
+    expect(out[1]).toEqual(snap(224355));
+    expect(hasFullSnapshot(out)).toBe(true);
+    // The stale boot snapshot and the 180s dead gap are gone.
+    expect(out).not.toContainEqual(snap(5));
+    expect(out).not.toContainEqual(incr(2522));
+    expect(out).not.toContainEqual(incr(40000));
+  });
+
+  it('falls back to the newest snapshot when every snapshot predates the window', () => {
+    // No checkout inside the trailing window at all → open on the freshest
+    // state available rather than the oldest stale one.
+    const events = [meta(0), snap(5), incr(10), meta(100), snap(105), incr(110)];
+    const out = selectFlushWindow(events, 200_000, 45_000);
+    expect(out[0]).toEqual(meta(100));
+    expect(out[1]).toEqual(snap(105));
+    expect(out).not.toContainEqual(snap(5));
+  });
+
+  it('returns the array unchanged when there is no full snapshot', () => {
+    const events = [incr(1), incr(2), incr(3)];
+    expect(selectFlushWindow(events, 1000, 100)).toBe(events);
+  });
+
+  it('returns the input unchanged for empty / non-array input', () => {
+    const empty = [];
+    expect(selectFlushWindow(empty, 1000, 100)).toBe(empty);
+    expect(selectFlushWindow(null, 1000, 100)).toBe(null);
+  });
+});
+
 describe('hasFullSnapshot', () => {
   it('detects a full snapshot anywhere in the array', () => {
     expect(hasFullSnapshot([incr(1), meta(2), snap(3)])).toBe(true);
@@ -357,6 +417,60 @@ describe('SessionReplayRecorder', () => {
     expect(out.replayRef).toBe('/uploads/replay-r9.json');
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit.mock.calls[0][0].meta).toEqual({ trigger: 'bug-report' });
+  });
+
+  it('forceFullSnapshot emits a fresh checkout into the buffer', () => {
+    const { record, calls } = fakeRecord();
+    let now = 5000;
+    const takeFullSnapshot = vi.fn(() => {
+      calls.emit(meta(now));
+      calls.emit(snap(now));
+    });
+    const rec = new SessionReplayRecorder({ now: () => now, takeFullSnapshot });
+    rec.start(record);
+    calls.emit(snap(10));
+    expect(rec.forceFullSnapshot()).toBe(true);
+    expect(takeFullSnapshot).toHaveBeenCalledWith(true);
+    expect(rec.snapshot()).toContainEqual(snap(5000));
+  });
+
+  it('forceFullSnapshot is a no-op (false) when no snapshot fn is wired', () => {
+    const { record } = fakeRecord();
+    const rec = new SessionReplayRecorder({ now: () => 1000 });
+    rec.start(record); // fakeRecord exposes no takeFullSnapshot static
+    expect(rec.forceFullSnapshot()).toBe(false);
+  });
+
+  it('flush() forces a fresh checkout so a stale pre-mount buffer opens on the current state', async () => {
+    // Regression: the only snapshot in the buffer is a 5-minute-old, pre-mount
+    // (empty #root) one because no checkout fired during a long idle. flush()
+    // must force a fresh checkout and open the upload on THAT, not the stale one.
+    const { record, calls } = fakeRecord();
+    const submit = vi
+      .fn()
+      .mockResolvedValue({ replayId: 'r', replayRef: '/uploads/replay-r.json' });
+    const now = 300_000;
+    const takeFullSnapshot = () => {
+      calls.emit(meta(now));
+      calls.emit(snap(now));
+    };
+    const rec = new SessionReplayRecorder({
+      now: () => now,
+      submit,
+      windowMs: 45_000,
+      takeFullSnapshot,
+    });
+    rec.start(record);
+    calls.emit(meta(4));
+    calls.emit(snap(5)); // stale, pre-mount
+    calls.emit(incr(6));
+
+    const out = await rec.flush({ trigger: 'bug-report' });
+    expect(out.replayRef).toBe('/uploads/replay-r.json');
+    const sent = submit.mock.calls[0][0].events;
+    const firstSnap = sent.find((e) => e.type === RRWEB_FULL_SNAPSHOT);
+    expect(firstSnap.timestamp).toBe(300_000); // the forced checkout, not snap(5)
+    expect(sent).not.toContainEqual(snap(5));
   });
 
   it('flush() declines a snapshot-less buffer (not replayable)', async () => {
