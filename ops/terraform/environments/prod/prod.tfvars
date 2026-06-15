@@ -63,7 +63,17 @@ finalize_runner_instance_type = "r7i.xlarge"
 # already retry on a fresh agent, so Spot is safe to re-enable).
 finalize_runner_use_spot = false
 finalize_runner_min_size = 0 # scale-to-zero when idle
-finalize_runner_max_size = 8 # up to 8 shards concurrently
+# 32-agent ceiling. This single var drives the ASG max_size, on_demand_base_capacity,
+# and maximum_scaling_step_size (modules/finalize-runners) AND the Hub env
+# FINALIZE_FLEET_MAX_AGENTS (finalize-hub.tf) in lockstep — one task per instance
+# (28 GiB reservation on 32 GiB hosts), so agents == instances.
+# Sized from measured demand: 14-day peak queue depth hit 50 with p99 queue wait
+# ~27 min at the old ceiling of 8; 32 absorbs the queue for ~99.8% of time-at-depth.
+# Capacity headroom: us-east-2 On-Demand Standard vCPU quota = 512, ~40 in use; 32x
+# r7i.xlarge = 128 vCPU (worst-case all-2xlarge fallback ~256) — no quota increase.
+# NOTE (drift): the live ASG had drifted to MaxSize=16 (on_demand_base/step also 16)
+# while this committed value was 8; bumping to 32 reconciles both upward in one apply.
+finalize_runner_max_size = 32 # up to 32 shards/agents concurrently (was 8; live ASG had drifted to 16)
 # Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
 # instances skip the multi-GB boot `docker pull` and provision much faster.
 # Re-bake (ops/scripts or the runbook) when the base AMI / runner image change;
