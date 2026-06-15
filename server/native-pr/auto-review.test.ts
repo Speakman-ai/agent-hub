@@ -3,13 +3,23 @@
  * unvalidated PR heads when branch protection requires review.
  */
 import '../test/setup.js';
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterEach,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { execSync } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps } from '../types.js';
+import * as engineResolver from '../engine-resolver.js';
 
 let maybeRunPrAutoReview: typeof import('./auto-review.js').maybeRunPrAutoReview;
 let __clearAutoReviewDispatches: typeof import('./auto-review.js').__clearAutoReviewDispatches;
@@ -17,6 +27,7 @@ let stmts: import('../types.js').Stmts;
 let config: import('../types.js').AppConfig;
 let request: Awaited<ReturnType<typeof import('../test/helpers.js').getRequest>>;
 let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
+let resolveSpy: MockInstance<typeof engineResolver.resolveOneShotEngine>;
 
 beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
@@ -29,6 +40,22 @@ beforeAll(async () => {
 
 beforeEach(() => {
   __clearAutoReviewDispatches();
+  // Engine resolution is environment-dependent: with no acting user, only a
+  // host-global Gemini key resolves (see engine-availability.ts). CI runners
+  // have no GEMINI_API_KEY, so the real resolver throws NoEnginesAvailableError
+  // and the dispatch path silently returns. Pin a deterministic default so the
+  // dispatch-path tests don't depend on ambient credentials; tests that care
+  // about the fallback behaviour override this spy.
+  resolveSpy = vi.spyOn(engineResolver, 'resolveOneShotEngine').mockResolvedValue({
+    engine: 'claude-code',
+    model: 'claude-sonnet-4-5',
+    fallbackUsed: false,
+    availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
+  });
+});
+
+afterEach(() => {
+  resolveSpy.mockRestore();
 });
 
 function git(cwd: string, cmd: string): string {
@@ -178,5 +205,38 @@ describe('maybeRunPrAutoReview', () => {
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
     );
     expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a host-global engine when the reviewer engine needs a user', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+    reviewer.model = 'gpt-5.5';
+
+    resolveSpy.mockResolvedValue({
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+      fallbackUsed: true,
+      fallbackFromReason: 'codex-cli:no-credentials',
+      availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
+    });
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true },
+    );
+
+    expect(resolveSpy).toHaveBeenCalledWith(
+      config,
+      expect.objectContaining({ preferred: 'codex-cli', userId: null }),
+    );
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as { engine: string; model: string };
+    expect(session.engine).toBe('gemini-cli');
+    expect(session.model).toBe('gemini-2.5-pro');
   });
 });

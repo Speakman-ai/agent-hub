@@ -22,7 +22,7 @@ import type { Project, PullRequestRow, RouteDeps } from '../types.js';
 import { bareRepoPath, hostedRepoExists } from './host.js';
 import { buildNativePrUrl } from './url.js';
 import { revParse } from './git-read.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 
 export interface AutoReviewDeps {
@@ -85,11 +85,33 @@ export async function maybeRunPrAutoReview(
     const prUrl = buildNativePrUrl(project.id, pr.number);
     const sessionId = uuidv4();
     const taskId = uuidv4();
-    const engine = reviewer.engine || 'claude-code';
-    const model = resolveEffectiveModel(deps.config, engine, {
-      agentModel: reviewer.model,
-      ownerUserId: null,
-    });
+    // System-initiated — no acting user. Per-account engines (Claude/Cursor/Codex)
+    // require user credentials; resolveOneShotEngine falls back to host-global
+    // Gemini when the reviewer's preferred engine isn't available (same as heartbeats).
+    let engine: string;
+    let model: string;
+    try {
+      const resolved = await resolveOneShotEngine(deps.config, {
+        preferred: reviewer.engine || 'claude-code',
+        preferredModel: reviewer.model ?? null,
+        userId: null,
+      });
+      engine = resolved.engine;
+      model = resolved.model;
+      if (resolved.fallbackUsed) {
+        console.warn(
+          `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${reviewer.engine || 'claude-code'}" unavailable (${resolved.fallbackFromReason}); using "${engine}".`,
+        );
+      }
+    } catch (err: unknown) {
+      if (err instanceof NoEnginesAvailableError) {
+        console.warn(
+          `[auto-review] ${project.id} pr#${pr.number}: no AI engine available for background review — ${err.message}`,
+        );
+        return;
+      }
+      throw err;
+    }
     const wt = defaultSessionUseWorktreeFlag(project);
     deps.stmts.createSession.run(
       sessionId,
