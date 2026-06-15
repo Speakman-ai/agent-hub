@@ -79,6 +79,7 @@ import { useVisibleIntervalRefresh } from './hooks/useVisibleIntervalRefresh.js'
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
+import useReadback from './hooks/useReadback.js';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck.js';
 import { api } from './utils/api.js';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
@@ -190,6 +191,11 @@ export default function App({ initialView } = {}) {
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
   const streamingMsgIdRef = useRef(null);
+  // Streaming text-to-speech ("readback"). Mirrored into a ref so the
+  // memoized WebSocket handler can call feed/flush/cancel without dep churn.
+  const readback = useReadback();
+  const readbackRef = useRef(readback);
+  readbackRef.current = readback;
   const [composerPrefill, setComposerPrefill] = useState(null);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
@@ -662,6 +668,12 @@ export default function App({ initialView } = {}) {
     setShowScrollBtn(false);
   }, [activeSessionId]);
 
+  // Stop any in-flight readback when the user switches sessions so audio from
+  // session A doesn't bleed into session B.
+  useEffect(() => {
+    readbackRef.current.cancel();
+  }, [activeSessionId]);
+
   // Auto-scroll on new content, but only if user is near the bottom or it's initial load.
   useLayoutEffect(() => {
     if (initialScrollRef.current || isNearBottomRef.current) {
@@ -1037,6 +1049,7 @@ export default function App({ initialView } = {}) {
           if (forActiveSession) {
             setThinking(false);
             setStreamingContent(data.content);
+            readbackRef.current.feed(data.messageId, data.content);
             setStreamingEngine(data.engine || null);
             if (data.agentId) {
               setStreamingAgent({
@@ -1190,6 +1203,7 @@ export default function App({ initialView } = {}) {
           });
           if (forActiveSession) {
             setThinking(false);
+            readbackRef.current.flush(data.messageId, data.message?.content);
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
@@ -5014,6 +5028,9 @@ export default function App({ initialView } = {}) {
                         onReplaceQueuedMessage={handleEditQueuedMessage}
                         sessionAgents={sessionAgents}
                         enableMentions={sessionAgents.length > 1}
+                        readbackEnabled={readback.enabled}
+                        readbackSupported={readback.supported}
+                        onToggleReadback={readback.toggle}
                       />
                     </div>
                     {showSessionPreviewPane && (
